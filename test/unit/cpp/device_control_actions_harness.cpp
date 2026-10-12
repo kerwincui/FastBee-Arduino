@@ -16,7 +16,8 @@ public:
 };
 class PeriphExecManager {
 public:
-    struct SensorReadCache { String value; };
+    static constexpr uint32_t SENSOR_CACHE_TTL_MS = 10000;
+    struct SensorReadCache { String value, unit; uint64_t sampledAtMs=0; uint32_t maxAgeMs=10000; };
     std::map<String, PeriphExecRule> rules;
     std::map<String, SensorReadCache> cache;
     int cacheCopies=0;
@@ -36,6 +37,7 @@ public:
 class PeriphExecExecutor {
 public: static String resolveChannelField(const String&,const String&,const String& report) { return report; }
 };
+int64_t esp_timer_get_time() { return 1000000; }
 #include "control_serializer.inc"
 struct AsyncWebServerRequest { int status=0; };
 struct Context {
@@ -73,7 +75,7 @@ int main() {
     mixed.actions={{0,"relay",""},{19,"soil",R"({"periphId":"soil","dataField":"temperature","sensorLabel":"Temperature"})"},
                    {18,"modbus-task:1",R"({"poll":[1,2],"ctrl":[{"d":0},{"d":2}]})"},
                    {static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA),"",""}};
-    manager.rules[mixed.id]=mixed; manager.cache["soil_temperature"]={"0"};
+    manager.rules[mixed.id]=mixed; manager.cache["soil_temperature"]={"0", "C\"\n", 0, 10000};
     route.handleGetControls(&request); assert(request.status==200 && output.size()==manager.rules.size());
     assert(manager.cacheCopies==1);
     std::set<std::string> ids;
@@ -85,6 +87,8 @@ int main() {
             assert(doc["actionCount"]==4 && doc["hasSetMode"]==true && doc["hasSystemAction"]==true);
             assert(doc["sensors"][0]["key"]=="soil_temperature");
             assert(doc["sensors"][0]["periphId"]=="soil" && doc["sensors"][0]["value"]=="0");
+            assert(doc["sensors"][0]["unit"] == "C\"\n");
+            assert(doc["sensors"][0]["ageMs"] == 1000 && doc["sensors"][0]["maxAgeMs"] == 10000);
             assert(doc["pollTaskIndex"].size()==2 && doc["pollTaskIndex"][1]==2);
             bool found=false; for(JsonObject t:doc["targets"].as<JsonArray>()) if(t["id"]=="modbus:2") found=true;
             assert(found);

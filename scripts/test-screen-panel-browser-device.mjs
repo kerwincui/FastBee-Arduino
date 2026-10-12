@@ -58,6 +58,15 @@ function requestAllowed(method, url, body, contentType, allowFeatureMutation, or
     (allowFeatureMutation && isFeatureToggle(method, url, body, contentType)) ||
     isReadOnlyBatch(method, url, body, contentType) || isReadOnlyMotorStatus(method, url, body, contentType);
 }
+function isIntentionalBatchNavigationAbort(request, failure, generation, navigation, now, origin) {
+  if (failure !== 'net::ERR_ABORTED' || !navigation || now < navigation.at || now > navigation.until ||
+      !Number.isInteger(generation) || generation >= navigation.generation ||
+      !['fetch', 'xhr'].includes(request.resourceType())) return false;
+  try {
+    return new URL(request.url()).origin === origin && isReadOnlyBatch(
+      request.method(), request.url(), request.postData(), request.headers()['content-type']);
+  } catch { return false; }
+}
 if (process.argv.includes('--contract-only')) {
   for (const count of [1, 2, 5, 6]) {
     const config = { pages: Array.from({ length: count }, (_, index) => ({ id: 'page' + index, cards: [] })),
@@ -87,6 +96,23 @@ if (process.argv.includes('--contract-only')) {
   assert.equal(allowed('/api/features/config', toggle, true), true);
   assert.equal(allowed('/api/features/config', { ...toggle, reset: true }, true), false);
   assert.equal(requestAllowed('GET', 'http://example.invalid/api/health', undefined, '', false, origin), false);
+  const batchRequest = { method: () => 'POST', url: () => origin + '/api/batch', resourceType: () => 'fetch',
+    postData: () => JSON.stringify({ requests: [{ url: '/api/system/status', method: 'GET' }] }),
+    headers: () => ({ 'content-type': 'application/json' }) };
+  const navigation = { at: 1000, until: 2500, generation: 1 };
+  const cancelled = (request = batchRequest, failure = 'net::ERR_ABORTED', generation = 0, now = 1100, nav = navigation) =>
+    isIntentionalBatchNavigationAbort(request, failure, generation, nav, now, origin);
+  assert.equal(cancelled(), true);
+  assert.equal(cancelled(batchRequest, 'net::ERR_TIMED_OUT'), false);
+  assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 1), false);
+  assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', null), false);
+  assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 0, 999), false);
+  assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 0, 2501), false);
+  assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 0, 1100, null), false);
+  assert.equal(cancelled({ ...batchRequest, url: () => 'http://example.invalid/api/batch' }), false);
+  assert.equal(cancelled({ ...batchRequest, url: () => origin + '/api/batch?write=1' }), false);
+  assert.equal(cancelled({ ...batchRequest, resourceType: () => 'document' }), false);
+  assert.equal(cancelled({ ...batchRequest, postData: () => JSON.stringify({ requests: [{ url: '/api/system/status', method: 'POST' }] }) }), false);
   const html = await readFile(new URL('../web-src/pages/screen-panel.html', import.meta.url), 'utf8');
   assert.ok(!html.includes('id="sp-preview"') && !html.includes('id="sp-tab-config"'), 'No duplicate preview/editor tabs');
   assert.ok(html.includes('id="sp-editor-canvas"') && html.includes('id="sp-component-properties"'), 'Unified workspace and component properties required');
@@ -104,7 +130,7 @@ assert.ok(['http:', 'https:'].includes(target.protocol) && !target.username && !
 const baseUrl = target.origin;
 const output = path.resolve(argument('output', 'artifacts/screen-panel-browser-device'));
 await mkdir(output, { recursive: true });
-const report = { baseUrl, at: new Date().toISOString(), passed: false, panelPreviewTested: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], loginRequests: 0, requestFailures: [] };
+const report = { baseUrl, at: new Date().toISOString(), passed: false, panelPreviewTested: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], loginRequests: 0, requestFailures: [], intentionalNavigationAborts: [] };
 let browser;
 const exerciseSwitch = process.argv.includes('--exercise-switch');
 const restoreOnly = process.argv.includes('--restore-only');
@@ -112,6 +138,13 @@ const allowFeatureMutation = exerciseSwitch || restoreOnly;
 let page;
 let restoreSwitch = false;
 let closing = false;
+let pageGeneration = 0;
+let navigation;
+const requestGenerations = new WeakMap();
+function beginMenuNavigation(targetPage) {
+  const at = Date.now();
+  navigation = { at, until: at + 1500, generation: ++pageGeneration, targetPage };
+}
 async function setPanelEnabled(enabled) {
   const result = await page.evaluate(async (value) => {
     const response = await fetch('/api/features/config', {
@@ -139,7 +172,17 @@ try {
   page.setDefaultTimeout(30_000);
   page.on('pageerror', (error) => report.pageErrors.push(error.message));
   page.on('requestfailed', request => {
-    if (!closing) report.requestFailures.push({
+    if (closing) return;
+    const failure = request.failure()?.errorText || '';
+    const generation = requestGenerations.get(request);
+    const at = Date.now();
+    if (isIntentionalBatchNavigationAbort(request, failure, generation, navigation, at, baseUrl)) {
+      report.intentionalNavigationAborts.push({ route: new URL(request.url()).pathname, method: request.method(),
+        resourceType: request.resourceType(), requestGeneration: generation, navigationGeneration: navigation.generation,
+        navigationTarget: navigation.targetPage, millisecondsAfterNavigation: at - navigation.at });
+      return;
+    }
+    report.requestFailures.push({
       route: new URL(request.url()).pathname, method: request.method(), error: request.failure()?.errorText,
     });
   });
@@ -149,6 +192,7 @@ try {
     });
   });
   page.on('request', (request) => {
+    requestGenerations.set(request, pageGeneration);
     const route = new URL(request.url()).pathname;
     if (request.method() === 'POST' && route === '/api/auth/login') ++report.loginRequests;
     if (isStatusRead(request)) report.readOnlyPosts.push({ method: request.method(), route, action: 'readStatus' });
@@ -213,6 +257,7 @@ try {
     report.temporarilyEnabled = true;
   }
   if (feature.userEnabled) {
+    beginMenuNavigation('screen-panel');
     await page.locator('.menu-item[data-page="screen-panel"]').click();
     await page.locator('#screen-panel-page.active').waitFor({ state: 'visible' });
     await page.waitForFunction(() => window.AppState?._spModel?.loaded === true);
@@ -412,6 +457,7 @@ try {
     report.panelPreviewTested = true;
   } else {
     assert.equal(await page.locator('.menu-item[data-page="screen-panel"]').isVisible(), false);
+    beginMenuNavigation('features');
     await page.locator('.menu-item[data-page="features"]').click();
     await page.locator('#features-page.active').waitFor({ state: 'visible' });
     report.limitation = 'Panel disabled in existing user configuration; only capability visibility and feature page verified.';

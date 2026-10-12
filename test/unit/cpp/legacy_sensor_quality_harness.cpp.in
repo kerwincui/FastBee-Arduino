@@ -1,0 +1,333 @@
+#define millis hostRealMillis
+#define delay hostRealDelay
+#define delayMicroseconds hostRealDelayMicroseconds
+#include <Arduino.h>
+#undef millis
+#undef delay
+#undef delayMicroseconds
+#include "core/SensorSampleMetadata.h"
+#include "core/FeatureInstanceRegistry.h"
+#include "core/RuntimeResourceSnapshot.h"
+#include "core/CheckedAdc.h"
+#include "core/Ds18b20Address.h"
+#include <cassert>
+#include <cmath>
+#include <map>
+#include <memory>
+#include <functional>
+using std::isnan;
+using std::isinf;
+static uint64_t clockMs=10000;
+static bool busBusy=false,dsEnabled=true;
+static unsigned held=0,dhtReads=0,dsReads=0,pulseReads=0,adcReads=0;
+static unsigned dsSearches=0,dsScratchReads=0,dsDeleted=0;
+static bool dsReverse=false,dsRemoved=false;
+static float humidity=45,temperature=20,dsTemperature=23;
+static unsigned long pulse=1000;
+static int adc=2048;
+static unsigned adcFailureAt=0, pmHeld=0;
+static bool pmBusy=false, adcPinOwned=false;
+#define pdMS_TO_TICKS(value) (value)
+struct RecursiveMutexGuard {
+    bool acquired;
+    RecursiveMutexGuard(int, unsigned):acquired(!pmBusy){if(acquired)++pmHeld;}
+    ~RecursiveMutexGuard(){if(acquired)--pmHeld;}
+    bool isLocked() const{return acquired;}
+};
+struct PeripheralManager {
+    static PeripheralManager& getInstance(){static PeripheralManager value;return value;}
+    int getMutex()const{return 1;}
+    bool isReservedPin(uint8_t pin)const{return pin==39;}
+    bool managedPinAvailableForAdc(uint8_t)const{assert(pmHeld);return !adcPinOwned;}
+};
+constexpr int OUTPUT=1,INPUT=0,ADC_11db=3,DHT11=11,DHT22=22;
+constexpr float DEVICE_DISCONNECTED_C=-127;
+constexpr uint32_t DHT_STALE_CACHE_WINDOW_MS=10000,SENSOR_FAILURE_BACKOFF_INITIAL_MS=5000,SENSOR_FAILURE_BACKOFF_MAX_MS=60000;
+#define FASTBEE_ENABLE_DS18B20 1
+unsigned long millis(){return static_cast<uint32_t>(clockMs);}
+int64_t esp_timer_get_time(){return static_cast<int64_t>(clockMs)*1000;}
+static std::function<void()> delayHook;
+void delay(unsigned long ms){clockMs+=ms;if(delayHook)delayHook();}
+void delayMicroseconds(unsigned int){}
+struct SensorBusLock {
+    bool acquired;
+    SensorBusLock():acquired(!busBusy){if(acquired)++held;}
+    ~SensorBusLock(){if(acquired)--held;}
+};
+int sensor_bus_mutex(){return 1;}
+bool sensor_pin_valid(uint8_t pin){return pin<40;}
+void pinMode(uint8_t,int){assert(held);}
+void digitalWrite(uint8_t,int){assert(held);}
+unsigned long pulseIn(uint8_t,int,unsigned long){assert(held);++pulseReads;return pulse;}
+namespace FastBee {
+AdcStatus readTransientAdcBatch(uint8_t, uint16_t* samples, uint8_t count) {
+    assert(held && pmHeld);
+    for(uint8_t i=0;i<count;++i){
+        ++adcReads;
+        if(adcFailureAt && adcReads==adcFailureAt)return AdcStatus::ReadFailed;
+        samples[i]=adc;
+    }
+    return AdcStatus::Ok;
+}
+}
+struct DHT {
+    DHT(uint8_t,uint8_t){}
+    void begin(){assert(held);}
+    float readHumidity(){assert(held);++dhtReads;return humidity;}
+    float readTemperature(){assert(held);return temperature;}
+};
+struct OneWire {explicit OneWire(uint8_t){}};
+struct DallasTemperature {
+    explicit DallasTemperature(OneWire*){}
+    ~DallasTemperature(){++dsDeleted;}
+    void begin(){assert(held);}
+    void setWaitForConversion(bool wait){assert(!wait);}
+    int getDeviceCount(){return 2;}
+    void requestTemperatures(){assert(held);++dsReads;}
+    bool getAddress(uint8_t* address,uint8_t index){
+        assert(held);++dsSearches;if(index>1)return false;
+        const uint8_t rom[8]={0x28,0,0,0,0,0,0,0x1e};
+        std::memcpy(address,rom,8);
+        if((index==1)!=dsReverse){address[1]=1;address[7]=0x29;}
+        assert(FastBee::validDs18b20Address(address));return true;
+    }
+    float getTempC(const uint8_t* address){
+        assert(held);++dsScratchReads;
+        return dsTemperature==DEVICE_DISCONNECTED_C || (dsRemoved && address[1]==0) ?
+            DEVICE_DISCONNECTED_C : dsTemperature+address[1]*10;
+    }
+};
+struct Logger {
+    template<class... T> void errorf(const char*,T...){}
+    template<class... T> void warningf(const char*,T...){}
+    template<class... T> void infof(const char*,T...){}
+    template<class... T> void debugf(const char*,T...){}
+}LOGGER;
+namespace FastBee {struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance(){static RuntimeFeatureManager value;return value;}
+    bool shouldEnable(const char*){return dsEnabled;}
+};}
+template<class T> using SensorNodeAllocator=std::allocator<T>;
+// @types@
+// Observation is covered by the owner harness; this fixture isolates reads.
+FastBee::FeatureInstanceSnapshot SensorDriver::observeDs18b20Instances() const { return {}; }
+// @production@
+
+int main(int argc,char** argv){
+    assert(argc==2);const String mode=argv[1];
+    auto& driver=SensorDriver::getInstance();FastBee::SensorSampleMetadata sample;
+    using Quality=FastBee::SensorSampleQuality;
+    if(mode=="adc_pin_conflict"){
+        ADCSensorCalibration cal; CurrentLoopCalibration loop; NTCSensorCalibration ntc;
+        adcPinOwned=true;
+        assert(std::isnan(driver.readCurrent(4,cal,&sample)));
+        assert(std::isnan(driver.readCurrentLoop(4,loop,&sample)));
+        assert(std::isnan(driver.readVoltage(4,cal,&sample)));
+        assert(std::isnan(driver.readNTC(4,ntc,&sample)) && !adcReads && sample.quality==Quality::Unknown);
+        adcPinOwned=false;pmBusy=true;
+        assert(std::isnan(driver.readVoltage(4,cal,&sample)) && !adcReads);
+        return 0;
+    }
+    if(mode=="adc_failure"){
+        ADCSensorCalibration cal;
+        assert(std::isfinite(driver.readVoltage(4,cal,&sample)));
+        clockMs+=1000;adcFailureAt=adcReads+3;
+        assert(std::isnan(driver.readVoltage(4,cal,&sample)) && sample.quality==Quality::Unknown);
+        adcFailureAt=0;clockMs+=1000;
+        assert(std::isfinite(driver.readVoltage(4,cal,&sample)) && sample.quality==Quality::Good && sample.sampledAtMs==clockMs);
+        adcFailureAt=adcReads+1;
+        assert(std::isnan(driver.readCurrent(5,cal,&sample)) && sample.quality==Quality::Unknown);
+        CurrentLoopCalibration loop;adcFailureAt=adcReads+1;
+        assert(std::isnan(driver.readCurrentLoop(6,loop,&sample)) && sample.quality==Quality::Unknown);
+        NTCSensorCalibration ntc;adcFailureAt=adcReads+1;
+        assert(std::isnan(driver.readNTC(7,ntc,&sample)) && sample.quality==Quality::Unknown);
+        return 0;
+    }
+    if(mode=="sample_zero" || mode=="sample_clock_backwards"){
+        FastBee::describeSensorSample(1,mode=="sample_zero"?0:200,100,200,true,&sample);
+        assert(sample.quality==(mode=="sample_zero"?Quality::Good:Quality::Unknown));return 0;
+    }
+    if(mode.startsWith("dht_")){
+        if(mode=="dht_invalid_field"){
+            assert(std::isnan(driver.readDHT(4,SensorDriverType::DHT11,"bad",&sample)) && !dhtReads);return 0;
+        }
+        assert(driver.readDHT(4,SensorDriverType::DHT11,"temperature",&sample)==20);
+        const auto sampled=sample.sampledAtMs;assert(sample.quality==Quality::Good);
+        if(mode=="dht_cache"){
+            clockMs+=100;assert(driver.readDHT(4,SensorDriverType::DHT11,"humidity",&sample)==45);
+            assert(dhtReads==1 && sample.sampledAtMs==sampled && sample.capturedAtMs==clockMs);
+        }else if(mode=="dht_stale"){
+            clockMs+=2000;humidity=NAN;
+            assert(driver.readDHT(4,SensorDriverType::DHT11,"temperature",&sample)==20 && dhtReads==2);
+            assert(sample.quality==Quality::Stale && sample.sampledAtMs==sampled);
+            clockMs+=10;assert(driver.readDHT(4,SensorDriverType::DHT11,"temperature",&sample)==20 && dhtReads==2);
+            assert(sample.quality==Quality::Stale && sample.sampledAtMs==sampled);
+        }else if(mode=="dht_type"){
+            assert(driver.readDHT(4,SensorDriverType::DHT22,"temperature",&sample)==20 && dhtReads==2);
+            assert(sample.sampledAtMs>sampled);
+        }else{
+            clockMs+=UINT64_C(0x100000000)+100;
+            assert(driver.readDHT(4,SensorDriverType::DHT11,"temperature",&sample)==20 && dhtReads==2);
+            assert(sample.sampledAtMs==clockMs);
+        }
+    }else if(mode.startsWith("ds_public_")){
+        const uint8_t rom[8]={0x28,0,0,0,0,0,0,0x1e};
+        const uint8_t other[8]={0x28,1,0,0,0,0,0,0x29};
+        // A running peer avoids conflating its one-time 100ms initialization
+        // delay with the DS18 conversion wait being observed by the hook.
+        assert(driver.readDHT(5,SensorDriverType::DHT11,"temperature",&sample)==20);
+        clockMs+=SensorDriver::DHT_MIN_INTERVAL;
+        dhtReads=0;
+        const auto start=clockMs;
+        unsigned waits=0;
+        delayHook=[&]{
+            assert(!held);++waits;
+            assert(driver.readDHT(5,SensorDriverType::DHT11,"temperature",&sample)==20);
+            if(mode=="ds_public_release" || mode=="ds_public_reinit"){
+                driver.release(4);
+                if(mode=="ds_public_reinit")
+                    assert(std::isnan(driver.readDS18B20Step(4,0,&sample,rom)));
+            }
+        };
+        const float value=driver.readDS18B20(4,0,&sample,rom);
+        assert(waits==1 && clockMs==start+750 && !held && dhtReads==1);
+        if(mode=="ds_public_release" || mode=="ds_public_reinit"){
+            assert(std::isnan(value) && sample.quality==Quality::Unknown && dsDeleted==1);
+            assert(dsScratchReads==0 && dsReads==(mode=="ds_public_reinit"?2U:1U));
+            return 0;
+        }
+        assert(value==23 && sample.quality==Quality::Good && sample.sampledAtMs==start);
+        delayHook={};
+        if(mode=="ds_public_slow"){
+            clockMs=start+60000;
+            assert(driver.readDS18B20(4,0,&sample,rom)==23 && dsReads==2);
+            assert(clockMs==start+60750 && sample.quality==Quality::Good && sample.sampledAtMs==start+60000);
+        }else if(mode=="ds_public_multiple"){
+            dsReverse=true;
+            assert(driver.readDS18B20(4,0,&sample,other)==33 && dsReads==1 && clockMs==start+750);
+            assert(driver.readDS18B20(4,0,&sample,rom)==23 && dsReads==1 && clockMs==start+750);
+        }
+    }else if(mode.startsWith("ds_")){
+        const uint8_t rom[8]={0x28,0,0,0,0,0,0,0x1e};
+        const uint8_t other[8]={0x28,1,0,0,0,0,0,0x29};
+        const bool addressed=mode=="ds_address" || mode=="ds_removed" || mode=="ds_pending";
+        const auto selected=addressed?rom:nullptr;
+        if(mode=="ds_zero")clockMs=0;
+        if(mode=="ds_wrap")clockMs=UINT64_C(0xffffff00);
+        if(mode=="ds_invalid"){
+            uint8_t invalid[8]={};
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample,invalid)) && !dsReads);
+            assert(std::isnan(driver.readDS18B20Step(4,16,&sample)) && !dsReads);return 0;
+        }
+        const auto sampled=clockMs;
+        uint32_t waitMs=0;
+        assert(std::isnan(driver.readDS18B20Step(4,0,&sample,selected,0,nullptr,&waitMs)) && dsReads==1 && !held && waitMs==750);
+        assert(sample.quality==Quality::Unknown && clockMs==sampled && !dsScratchReads);
+        if(mode=="ds_pending"){
+            clockMs+=749;
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample,rom)));
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample,other)));
+            assert(!dsSearches && !dsScratchReads && dsReads==1 && !held);
+            assert(driver.readDHT(5,SensorDriverType::DHT11,"temperature",&sample)==20 && !held);
+            return 0;
+        }
+        if(mode=="ds_release"){
+            driver.release(4);assert(dsDeleted==1);
+            clockMs+=750;assert(std::isnan(driver.readDS18B20Step(4,0,&sample)) && dsReads==2);
+            driver.releaseAll();assert(dsDeleted==2);return 0;
+        }
+        if(mode=="ds_rollback"){
+            --clockMs;assert(std::isnan(driver.readDS18B20Step(4,0,&sample)) && !dsScratchReads);
+            clockMs=sampled;assert(std::isnan(driver.readDS18B20Step(4,0,&sample)) && dsReads==2);return 0;
+        }
+        clockMs=sampled+750;
+        if(mode=="ds_removed"){dsRemoved=true;dsReverse=true;}
+        if(mode=="ds_address")dsReverse=true;
+        if(mode=="ds_removed"){
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample,rom)) && !dsSearches);
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample,other)) && dsReads==2);
+            clockMs+=750;
+            assert(driver.readDS18B20Step(4,0,&sample,other)==33);return 0;
+        }
+        assert(driver.readDS18B20Step(4,0,&sample,selected,0,nullptr,&waitMs)==23 && !held && !waitMs);
+        assert(sample.sampledAtMs==sampled && sample.quality==Quality::Good && dsScratchReads==1);
+        if(mode=="ds_index"){
+            assert(driver.readDS18B20Step(4,1,&sample)==33 && dsReads==1);
+            assert(sample.sampledAtMs==sampled && sample.quality==Quality::Good);
+            dsReverse=true;
+            assert(driver.readDS18B20Step(4,0,&sample)==33 && dsReads==1);
+            assert(driver.readDS18B20Step(4,1,&sample)==23 && dsReads==1);
+        }else if(mode=="ds_stale" || mode=="ds_zero" || mode=="ds_recovery"){
+            clockMs=sampled+1750;dsTemperature=DEVICE_DISCONNECTED_C;
+            assert(driver.readDS18B20Step(4,0,&sample)==23 && sample.quality==Quality::Stale);
+            assert(sample.sampledAtMs==sampled);
+            clockMs+=1;
+            assert(driver.readDS18B20Step(4,0,&sample)==23 && sample.sampledAtMs==sampled && sample.quality==Quality::Stale);
+            if(mode=="ds_recovery"){
+                dsTemperature=26;clockMs=sampled+6750;
+                assert(driver.readDS18B20Step(4,0,&sample)==23 && dsReads==2 && sample.quality==Quality::Stale);
+                clockMs+=750;
+                assert(driver.readDS18B20Step(4,0,&sample)==26 && sample.quality==Quality::Good && sample.sampledAtMs==sampled+6750);
+                return 0;
+            }
+            clockMs=sampled+10000;
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample)));
+        }else if(mode=="ds_slow"){
+            clockMs=sampled+2500;
+            assert(driver.readDS18B20Step(4,0,&sample)==23 && dsReads==2 && sample.quality==Quality::Stale);
+            assert(sample.sampledAtMs==sampled);
+            clockMs+=750;
+            assert(driver.readDS18B20Step(4,0,&sample)==23 && sample.sampledAtMs==sampled+2500 && sample.quality==Quality::Good);
+        }else if(mode=="ds_disabled"){
+            dsEnabled=false;
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample)) && dsReads==1 && dsScratchReads==1);
+        }else if(mode=="ds_wrap"){
+            clockMs=sampled+UINT64_C(0x100000000)+800;
+            assert(std::isnan(driver.readDS18B20Step(4,0,&sample)) && dsReads==2);
+            clockMs+=750;
+            assert(driver.readDS18B20Step(4,0,&sample)==23 && sample.sampledAtMs>UINT32_MAX && sample.quality==Quality::Good);
+        }else if(mode=="ds_address"){
+            assert(!dsSearches);
+            assert(driver.readDS18B20Step(4,0,&sample,other)==33 && sample.sampledAtMs==sampled && dsReads==1);
+        }
+    }else if(mode.startsWith("ultrasonic_")){
+        assert(driver.readUltrasonic(4,5,&sample)>0);const auto sampled=sample.sampledAtMs;
+        if(mode=="ultrasonic_stale"){
+            clockMs+=100;pulse=0;
+            assert(driver.readUltrasonic(4,5,&sample)>0 && sample.quality==Quality::Stale && sample.sampledAtMs==sampled);
+        }else{
+            clockMs+=1;assert(driver.readUltrasonic(4,7,&sample)>0 && pulseReads==2);
+        }
+    }else if(mode=="voltage_calibration"){
+        ADCSensorCalibration cal;
+        const auto first=driver.readVoltage(4,cal,&sample);assert(first>0 && sample.quality==Quality::Good);
+        cal.ratio=2;assert(std::fabs(driver.readVoltage(4,cal,&sample)-2*first)<0.001 && adcReads==20);
+    }else if(mode=="ntc_calibration"){
+        NTCSensorCalibration cal;const auto first=driver.readNTC(4,cal,&sample);
+        assert(std::isfinite(first) && sample.quality==Quality::Good);
+        cal.nominalTempC=35;assert(driver.readNTC(4,cal,&sample)>first+9 && adcReads==20);
+    }else if(mode=="current_cache"){
+        ADCSensorCalibration cal;const auto first=driver.readCurrent(4,cal,&sample);const auto sampled=sample.sampledAtMs;
+        clockMs+=100;assert(driver.readCurrent(4,cal,&sample)==first && adcReads==10 && sample.sampledAtMs==sampled);
+    }else if(mode=="current_loop"){
+        CurrentLoopCalibration cal;assert(driver.readCurrentLoop(4,cal,&sample)>9 && sample.quality==Quality::Good);
+        clockMs+=200;adc=0;assert(std::isnan(driver.readCurrentLoop(4,cal,&sample)) && sample.quality==Quality::Unknown);
+    }else if(mode=="invalid_calibration"){
+        ADCSensorCalibration cal;cal.ratio=0;
+        assert(std::isnan(driver.readVoltage(4,cal,&sample)) && !adcReads);
+        NTCSensorCalibration ntc;ntc.bCoefficient=0;
+        assert(std::isnan(driver.readNTC(4,ntc,&sample)) && !adcReads);
+    }else if(mode=="busy"){
+        busBusy=true;ADCSensorCalibration cal;CurrentLoopCalibration loop;NTCSensorCalibration ntc;
+        assert(std::isnan(driver.readDHT(4,SensorDriverType::DHT11,"temperature",&sample)));
+        assert(std::isnan(driver.readDS18B20(4,0,&sample)));
+        assert(std::isnan(driver.readUltrasonic(4,5,&sample)));
+        assert(std::isnan(driver.readCurrent(4,cal,&sample)));
+        assert(std::isnan(driver.readCurrentLoop(4,loop,&sample)));
+        assert(std::isnan(driver.readVoltage(4,cal,&sample)));
+        assert(std::isnan(driver.readNTC(4,ntc,&sample)));
+        assert(!adcReads && !dhtReads && !pulseReads && !dsReads && sample.quality==Quality::Unknown);
+        busBusy=false;
+    }else assert(false);
+    assert(!held);driver.releaseAll();
+}

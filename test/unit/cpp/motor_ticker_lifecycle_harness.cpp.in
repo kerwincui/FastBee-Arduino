@@ -1,0 +1,229 @@
+#include <Arduino.h>
+#include "core/UartEventOrigin.h"
+#include "core/ManagedPinIo.h"
+#include "core/StepperResourceSnapshot.h"
+#include <cassert>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <new>
+#include <vector>
+
+static bool busy = false, timerWorks = true, pwmWorks = true, detachWorks = true;
+static unsigned held = 0, liveTimers = 0, pwmWrites = 0, detachCalls = 0, pinModes = 0;
+static uint32_t freeMemory = 100000;
+static std::vector<std::pair<uint8_t, int>> writes;
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define ESP_IDF_VERSION_VAL(a,b,c) ((a)*10000+(b)*100+(c))
+#define ESP_IDF_VERSION ESP_IDF_VERSION_VAL(5,1,0)
+constexpr uint16_t STEPPER_DEFAULT_STEPS_PER_REV = 2048, STEPPER_DEFAULT_RPM = 8;
+constexpr uint16_t STEPPER_MIN_RPM = 1, STEPPER_MAX_RPM = 30;
+constexpr uint32_t SERVO_RELEASE_DELAY_MS = 500;
+constexpr int INPUT = 0;
+namespace FastBee { namespace MemoryBudget { uint32_t dramFree() { return freeMemory; } } }
+namespace FastBee { bool adcPinUnavailable(uint8_t) { return false; } }
+struct RecursiveMutexGuard {
+    bool acquired;
+    explicit RecursiveMutexGuard(int,int = 0): acquired(!busy) { if (acquired) ++held; }
+    ~RecursiveMutexGuard() { if (acquired) --held; }
+    bool isLocked() const { return acquired; }
+};
+struct Ticker {
+    bool enabled = false;
+    uint32_t token = 0;
+    uint64_t interval = 0;
+    void (*callback)(uint32_t) = nullptr;
+    Ticker() { ++liveTimers; }
+    ~Ticker() { --liveTimers; }
+    void detach() { enabled = false; }
+    void attach_ms(uint64_t ms, void (*cb)(uint32_t), uint32_t arg) {
+        callback = cb; token = arg; interval = ms; enabled = timerWorks;
+    }
+    bool active() const { return enabled; }
+};
+enum class PeripheralType { STEPPER_MOTOR, PWM_SERVO };
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED, PERIPHERAL_RUNNING, PERIPHERAL_ERROR };
+struct PeripheralConfig {
+    String id = "motor";
+    bool enabled = true;
+    uint8_t pins[4] = {16,17,18,19}, pinCount = 4;
+    PeripheralType type = PeripheralType::STEPPER_MOTOR;
+    struct {
+        struct { uint16_t speed = 8, stepsPerRevolution = 2048; } stepper;
+        struct { bool releaseAfterMove = true; } servo;
+    } params;
+    uint8_t getPrimaryPin() const { return pins[0]; }
+};
+struct Runtime {
+    bool memorySuspended = false;
+    PeripheralStatus status = PeripheralStatus::PERIPHERAL_RUNNING;
+    String lastError;
+    uint32_t lastActivity = 0;
+    struct { struct { bool signalAttached = true; } servo; } state;
+};
+void digitalWrite(uint8_t pin, int value) { assert(held); writes.emplace_back(pin,value); }
+void pinMode(uint8_t, int) { assert(held); ++pinModes; }
+bool ledcWrite(uint8_t, uint32_t value) { assert(held && value == 0); ++pwmWrites; return pwmWorks; }
+bool ledcDetach(uint8_t) { assert(held); ++detachCalls; return detachWorks; }
+// Timer/origin tests use this narrow seam; SDK error paths compile the real
+// ManagedPinIo implementation in test_stepper_managed_lifecycle.py.
+struct TimerPinSeam {
+    bool owned[49]{};
+    bool hasDac(uint8_t) const { return false; }
+    bool conflicts(const char*, bool, uint8_t) const { return false; }
+    bool configure(const char*, bool, uint8_t pin, FastBee::ManagedGpioMode, bool) {
+        owned[pin] = true; return true;
+    }
+    bool write(const char*, bool, uint8_t pin, bool high) {
+        if (!owned[pin]) return false;
+        digitalWrite(pin, high ? HIGH : LOW); return true;
+    }
+    bool release(const char*, bool, uint8_t pin) {
+        if (owned[pin]) digitalWrite(pin, LOW);
+        owned[pin] = false; return true;
+    }
+    bool observeGpio(uint8_t pin, FastBee::GpioResourceSnapshot::Lease& lease) const {
+        if (!owned[pin]) return false;
+        lease.pin = pin; lease.mode = FastBee::ManagedGpioMode::Output;
+        lease.consumer.assign(FastBee::ResourceConsumerRole::Peripheral, "motor"); return true;
+    }
+};
+struct PeripheralManager {
+    // @context@
+    int _mutex = 1;
+    bool current = true;
+    uint32_t _nextActionTickerToken = 0;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, Runtime> runtimeStates;
+    std::map<String, StepperTickerData*> stepperTickers;
+    std::map<String, ServoReleaseTickerData*> servoReleaseTickers;
+    TimerPinSeam _managedPinIo;
+    struct Ledc { uint8_t pin = 255; } _ledcResourceLeases[1];
+    bool controlOutputPinIsClaimed(uint8_t) const { return false; }
+    bool checkPinConflict(uint8_t, const String&) const { return false; }
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+        assert(held); return origin.unbound() || (current && origin.matches(7,19));
+    }
+    bool isValidPin(uint8_t pin) const { return pin < 40; }
+    bool isReservedPin(uint8_t pin) const { return pin == 6; }
+    bool isInputOnlyPin(uint8_t pin) const { return pin == 34; }
+    PeripheralConfig* getPeripheral(const String& id) {
+        auto found = peripherals.find(id); return found == peripherals.end() ? nullptr : &found->second;
+    }
+    bool controlStepper(const String&, const String&, int = 0, const FastBee::UartEventOrigin& = {});
+    bool stopStepper(const String&);
+    void serviceStepperTicker(uint32_t);
+    bool setupStepperHardware(const PeripheralConfig&);
+    bool teardownStepperHardware(const String&);
+    bool writeStepperPhase(StepperTickerData&, uint8_t);
+    void snapshotStepperResources(FastBee::StepperResourceSnapshot&) const;
+    static void servoReleaseTickerCallback(uint32_t);
+    void serviceServoRelease(uint32_t);
+    bool scheduleServoRelease(const String&);
+    void cancelServoRelease(const String&);
+    bool releaseServoSignal(const String&);
+    // The actual LEDC ledger is independently fault-tested by its harness.
+    bool detachManagedLedc(const String&, uint8_t pin) { return ledcDetach(pin); }
+};
+// @production@
+
+int main(int argc, char** argv) {
+    assert(argc == 2); const String mode = argv[1];
+    auto& pm = PeripheralManager::getInstance();
+    pm.peripherals["motor"] = {}; pm.runtimeStates["motor"] = {};
+    auto& config = pm.peripherals.at("motor"); auto& state = pm.runtimeStates.at("motor");
+    if (mode.startsWith("servo_")) {
+        config.type = PeripheralType::PWM_SERVO;
+        assert(pm.scheduleServoRelease("motor"));
+        const auto* timer = pm.servoReleaseTickers.at("motor");
+        const auto token = timer->token; const auto callback = timer->ticker.callback;
+        if (mode == "servo_replace") {
+            assert(pm.scheduleServoRelease("motor")); callback(token); assert(pwmWrites == 0 && liveTimers == 1);
+            pm.serviceServoRelease(pm.servoReleaseTickers.at("motor")->token);
+        } else if (mode == "servo_cancel") {
+            pm.cancelServoRelease("motor"); callback(token); assert(pwmWrites == 0 && liveTimers == 0); return 0;
+        } else if (mode == "servo_pin_changed") {
+            config.pins[0] = 20; callback(token); assert(pwmWrites == 0 && liveTimers == 0); return 0;
+        } else if (mode == "servo_failed_schedule" || mode == "servo_low_memory" || mode == "servo_token_exhausted") {
+            if (mode == "servo_failed_schedule") timerWorks = false;
+            if (mode == "servo_low_memory") freeMemory = 0;
+            if (mode == "servo_token_exhausted") pm._nextActionTickerToken = UINT32_MAX;
+            assert(!pm.scheduleServoRelease("motor") && pm.servoReleaseTickers.at("motor")->token == token);
+            assert(state.lastError == "SERVO_RELEASE_SCHEDULE_FAILED"); callback(token);
+        } else {
+            if (mode == "servo_busy") {
+                busy = true; callback(token); assert(!pwmWrites && liveTimers == 1); busy = false;
+            }
+            if (mode == "servo_failed_write" || mode == "servo_failed_detach") {
+                pwmWorks = mode != "servo_failed_write"; detachWorks = mode != "servo_failed_detach";
+                callback(token); assert(liveTimers == 1 && state.state.servo.signalAttached && pinModes == 0);
+                assert(state.lastError == "SERVO_RELEASE_PENDING"); pwmWorks = detachWorks = true;
+            }
+            callback(token);
+        }
+        assert(liveTimers == 0 && pm.servoReleaseTickers.empty() && !state.state.servo.signalAttached);
+        assert(pinModes == 1); const auto completedWrites = pwmWrites; callback(token); assert(pwmWrites == completedWrites);
+        return 0;
+    }
+    auto origin = FastBee::UartEventOrigin::captured(7,19);
+    if (mode == "origin_invalid") pm.current = false;
+    if (mode == "malformed") origin.required = false;
+    if (mode == "unbound") { origin = {}; pm.current = false; }
+    if (mode == "low_memory") freeMemory = 0;
+    if (mode == "token_exhausted") pm._nextActionTickerToken = UINT32_MAX;
+    if (mode == "reserved_pin") config.pins[0] = 6;
+    if (mode == "invalid_pin") config.pins[0] = 255;
+    const bool rejected = mode == "origin_invalid" || mode == "malformed" || mode == "low_memory" ||
+        mode == "token_exhausted" || mode == "reserved_pin" || mode == "invalid_pin" || mode == "invalid_command";
+    const String command = mode == "invalid_command" ? "bad" : mode == "reverse" ? "reverse" :
+        mode == "speed_idle" ? "speed" : "forward";
+    assert(pm.controlStepper("motor",command,10,origin) != rejected);
+    if (rejected) { assert(writes.empty() && liveTimers == 0 && config.params.stepper.speed == 8); return 0; }
+    if (mode == "speed_idle") {
+        assert(pm.stepperTickers.empty() && config.params.stepper.speed == 10 && writes.empty());
+        return 0;
+    }
+    auto* data = pm.stepperTickers.at("motor");
+    {
+        const auto token = data->token; const auto callback = data->ticker.callback;
+        assert(writes.empty());
+        if (mode == "stop") {
+            assert(pm.stopStepper("motor")); assert(writes.size() == 4);
+            for (auto write : writes) assert(write.second == LOW);
+            callback(token); assert(writes.size() == 4);
+        } else if (mode == "deleted") {
+            data->ticker.detach(); delete data; pm.stepperTickers.clear(); callback(token);
+            assert(writes.empty() && liveTimers == 0); return 0;
+        } else if (mode == "retire" || mode == "pin_changed" || mode == "suspended" || mode == "runtime_error" || mode == "busy") {
+            if (mode == "busy") { busy = true; callback(token); assert(writes.empty() && data->running); busy = false; }
+            if (mode == "retire" || mode == "busy") pm.current = false;
+            if (mode == "pin_changed") config.pins[0] = 20;
+            if (mode == "suspended") state.memorySuspended = true;
+            if (mode == "runtime_error") state.status = PeripheralStatus::PERIPHERAL_ERROR;
+            callback(token); assert(!data->running && data->token == 0 && writes.empty());
+            pm.current = true; callback(token); assert(writes.empty());
+        } else if (mode == "origin_mismatch" || mode == "speed_overflow") {
+            assert(!pm.controlStepper("motor","faster", mode == "speed_overflow" ? 65536 : 2,
+                mode == "origin_mismatch" ? FastBee::UartEventOrigin{} : origin));
+            assert(config.params.stepper.speed == 8 && data->token == token);
+        } else if (mode == "timer_failed") {
+            timerWorks = false; assert(!pm.controlStepper("motor","speed",20,origin));
+            assert(config.params.stepper.speed == 8 && !data->running && data->token == 0);
+            callback(token); assert(writes.empty() && state.lastError == "STEPPER_TIMER_FAILED");
+        } else if (mode == "replacement" || mode == "speed_saturate" || mode == "slower") {
+            assert(pm.controlStepper("motor",mode == "replacement" ? "reverse" : mode == "slower" ? "slower" : "faster",65535,origin));
+            callback(token); assert(writes.empty());
+            assert(data->token != token);
+            if (mode == "speed_saturate") assert(config.params.stepper.speed == STEPPER_MAX_RPM);
+            if (mode == "slower") assert(config.params.stepper.speed == STEPPER_MIN_RPM);
+            pm.serviceStepperTicker(data->token); assert(writes.size() == 4);
+        } else {
+            callback(token); assert(writes.size() == 4);
+            assert(data->phase == (mode == "reverse" ? 7 : 1));
+            assert(data->ticker.interval >= 2 && data->ticker.interval <= 1000);
+        }
+    }
+    data->ticker.detach(); delete data; pm.stepperTickers.clear(); assert(!held && liveTimers == 0);
+}

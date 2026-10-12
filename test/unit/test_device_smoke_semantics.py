@@ -2,6 +2,8 @@
 
 import json
 import pathlib
+import shutil
+import subprocess
 import unittest
 
 
@@ -14,6 +16,38 @@ DEVICE_MATRIX = json.loads(
 
 
 class DeviceSmokeSemanticsTests(unittest.TestCase):
+    def test_rule_script_empty_array_and_invalid_shapes_in_powershell(self):
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if executable is None:
+            self.skipTest("PowerShell unavailable for actual smoke semantics")
+        command = r'''
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('scripts/smoke-test-device.ps1',[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'PowerShell AST parse failed'}
+foreach($name in @('Get-ObjectValue','Test-ObjectHasProperty','Test-CheckSemantics')){
+ $definition=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+ . ([scriptblock]::Create($definition.Extent.Text))
+}
+$cases=@(
+ @{label='empty';json='{"success":true,"data":[]}';expected=$true},
+ @{label='one';json='{"success":true,"data":[{"id":"x"}]}';expected=$true},
+ @{label='missing';json='{"success":true}';expected=$false},
+ @{label='null';json='{"success":true,"data":null}';expected=$false},
+ @{label='object';json='{"success":true,"data":{}}';expected=$false},
+ @{label='string';json='{"success":true,"data":""}';expected=$false}
+)
+foreach($case in $cases){
+ $result=Test-CheckSemantics -Name 'rule-scripts' -Response ($case.json|ConvertFrom-Json)
+ if([string]::IsNullOrEmpty($result) -ne $case.expected){throw ('Contract failed: '+$case.label)}
+}
+Write-Output 'SIX_RULE_SCRIPT_CONTRACT_CASES_PASS'
+'''
+        result = subprocess.run([executable, '-NoProfile', '-Command', command], cwd=ROOT,
+                                capture_output=True, text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('SIX_RULE_SCRIPT_CONTRACT_CASES_PASS', result.stdout)
+
     def test_read_only_mode_skips_mutating_smoke_checks(self):
         self.assertIn("[switch]$ReadOnly", SMOKE_SCRIPT)
         self.assertIn(

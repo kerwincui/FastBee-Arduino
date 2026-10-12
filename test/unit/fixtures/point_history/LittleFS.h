@@ -15,6 +15,7 @@ struct HistoryFileSystem {
     std::string failRenameFrom;
     std::string failRenameTo;
     std::string corruptClose;
+    bool mutateJsonOnClose = false;
     size_t writeLimit = static_cast<size_t>(-1);
     size_t written = 0;
     size_t writeOpens = 0;
@@ -78,6 +79,11 @@ struct File {
     }
     void flush() {}
     void close() {
+        if (valid && writable && LittleFS.mutateJsonOnClose) {
+            auto& bytes = LittleFS.files[path];
+            const auto at = bytes.find("sensor.temp");
+            if (at != std::string::npos) bytes[at] = 'S';
+        }
         if (valid && writable && path == LittleFS.corruptClose) LittleFS.files[path] = "{";
         valid = false;
     }

@@ -1,0 +1,354 @@
+// Real registered route lambdas, real time serializer and real JSON sender.
+// Only transport, storage, synchronization and clock snapshots are host fakes.
+#include "document_json_probe.h"
+#include "network/SystemTimeStatus.h"
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <new>
+
+enum { HTTP_GET = 1, HTTP_POST = 2 };
+static constexpr unsigned long FIXED_UPTIME = 123456UL;
+static DocumentProbeAllocator* responseAllocator = nullptr;
+static FastBee::SystemTimeQuality::Snapshot fixtureTime;
+static FastBee::SystemTimeZone::LocalSnapshot fixtureLocal;
+static unsigned snapshots = 0, locals = 0, observers = 0, sequences = 0;
+static unsigned httpCalls = 0, sntpCalls = 0, tzCalls = 0, startCalls = 0, logs = 0;
+static bool syncResult = false, configureResult = true;
+static std::string selectedTimezone, selectedServer;
+
+FastBee::SystemTimeQuality::Snapshot FastBee::SystemTimeQuality::snapshot() {
+    ++snapshots;
+    return fixtureTime;
+}
+void FastBee::SystemTimeQuality::installSntpObserver() { ++observers; }
+uint32_t FastBee::SystemTimeQuality::sequence() { ++sequences; return fixtureTime.sequence; }
+FastBee::SystemTimeZone::LocalSnapshot FastBee::SystemTimeZone::localSnapshot(int64_t epoch) {
+    ++locals;
+    assert(epoch == (fixtureTime.timeValid ? fixtureTime.epochMs : -1));
+    return fixtureLocal;
+}
+bool FastBee::SystemTimeZone::setPosix(const char* timezone) {
+    ++tzCalls; selectedTimezone = timezone; return configureResult;
+}
+bool FastBee::SystemTimeZone::startSntp(const char* timezone, const char* one,
+                                      const char* two, const char* three) {
+    ++startCalls; selectedTimezone = timezone; selectedServer = one;
+    assert(std::string(two) == "time.nist.gov" && three == nullptr);
+    return configureResult;
+}
+namespace TimeUtils {
+bool syncNTPFromHTTPWithTimestamp(const String& url, long long& timestamp, uint32_t timeout) {
+    ++httpCalls; selectedServer = url.c_str(); assert(timeout == 5000);
+    timestamp = fixtureTime.epochMs; return syncResult;
+}
+bool syncNTP(uint32_t timeout, uint32_t before) {
+    ++sntpCalls; assert(timeout == 5000 && before == fixtureTime.sequence); return syncResult;
+}
+}
+
+struct AsyncWebServerResponse { int code = 0; std::string body; };
+struct AsyncWebServerRequest {
+    AsyncWebServerResponse response;
+    unsigned sends = 0, begins = 0;
+    AsyncWebServerResponse* beginResponse(int code, const char* mime, const String& body) {
+        ++begins; assert(std::string(mime) == "application/json");
+        response.code = code; response.body = body.c_str(); return &response;
+    }
+};
+struct AsyncWebServer {
+    using Callback = std::function<void(AsyncWebServerRequest*)>;
+    struct Route { std::string path; int method; Callback callback; };
+    std::vector<Route> routes;
+    void on(const char* path, int method, Callback callback) {
+        routes.push_back({path, method, std::move(callback)});
+    }
+    void dispatch(const char* path, int method, AsyncWebServerRequest* request) {
+        unsigned matches = 0;
+        for (const auto& route : routes) if (route.path == path && route.method == method) {
+            ++matches; route.callback(request);
+        }
+        assert(matches == 1);
+    }
+};
+namespace FastBee {
+class JsonDocumentResponse : public AsyncWebServerResponse {
+public: explicit JsonDocumentResponse(JsonDocument&&) { assert(false && "unexpected large-response path"); }
+};
+}
+namespace HandlerUtils {
+void sendJsonError(AsyncWebServerRequest* request, int code, const char* message, int retry) {
+    assert(code == 503 && retry == 5);
+    assert(std::string(message) == "JSON document allocation failed");
+    request->response.code = code; request->response.body = message; ++request->sends;
+}
+bool sendJsonFromPsramBuffer(AsyncWebServerRequest*, JsonDocument&, size_t) {
+    assert(false && "unexpected large-response path"); return false;
+}
+bool checkLowMemory(AsyncWebServerRequest*, size_t) { return false; }
+bool checkResponseMemory(AsyncWebServerRequest*, size_t) { return false; }
+void sendWithClose(AsyncWebServerRequest* request, AsyncWebServerResponse* response) {
+    assert(response == &request->response); ++request->sends;
+}
+@REAL_SENDER@
+}
+
+struct NetworkStatusInfo { bool internetAvailable = false; };
+struct FBNetworkManager {
+    NetworkStatusInfo status;
+    unsigned updates = 0, reads = 0;
+    void updateStatusInfo() { ++updates; }
+    NetworkStatusInfo getStatusInfo() { ++reads; return status; }
+};
+struct FakeContext {
+    void* networkManager = nullptr;
+    bool authorized = true;
+    unsigned authCalls = 0;
+    bool requireAuth(AsyncWebServerRequest*) { ++authCalls; return authorized; }
+};
+struct File {
+    std::string bytes;
+    size_t offset = 0;
+    bool available = false;
+    explicit operator bool() const { return available; }
+    int read() { return offset < bytes.size() ? static_cast<unsigned char>(bytes[offset++]) : -1; }
+    size_t readBytes(char* output, size_t count) {
+        count = std::min(count, bytes.size() - offset);
+        std::memcpy(output, bytes.data() + offset, count); offset += count; return count;
+    }
+    void close() { available = false; }
+};
+struct FakeLittleFS {
+    bool present = false, readable = true;
+    unsigned checks = 0, opens = 0;
+    std::string bytes;
+    bool exists(const char* path) {
+        ++checks; assert(std::string(path) == "/config/device.json"); return present;
+    }
+    File open(const char* path, const char* mode) {
+        ++opens; assert(std::string(path) == "/config/device.json" && std::string(mode) == "r");
+        return {bytes, 0, readable};
+    }
+} LittleFS;
+struct FakeLogger { void info(const char*) { ++logs; } } LOGGER;
+static const char* DEVICE_CONFIG_FILE = "/config/device.json";
+
+// Only three response document constructors receive the real fault allocator.
+// Config documents retain their actual default allocator, independently.
+@ROUTE_CLASSES@
+
+enum class Branch { Get, Offline, Online };
+struct Scenario {
+    Branch branch = Branch::Get;
+    unsigned quality = 0, zone = 0, config = 0;
+    bool synchronized = false, configure = true, authorized = true, manager = true;
+};
+struct Result {
+    int code = 0;
+    std::string bytes;
+    size_t allocations = 0, failures = 0;
+    std::vector<DocumentProbeAllocator::Event> events;
+};
+
+static void reset(const Scenario& scenario) {
+    snapshots = locals = observers = sequences = httpCalls = sntpCalls = tzCalls = startCalls = logs = 0;
+    syncResult = scenario.synchronized; configureResult = scenario.configure;
+    selectedTimezone.clear(); selectedServer.clear();
+    fixtureTime = {};
+    if (scenario.quality != 1) {
+        fixtureTime.source = scenario.quality == 0 ? "https" : "http";
+        fixtureTime.quality = scenario.quality == 0 ? "synced_tls" : "stale";
+        fixtureTime.timeValid = true; fixtureTime.synced = scenario.quality == 0;
+        fixtureTime.transportAuthenticated = scenario.quality == 0;
+        fixtureTime.ageMs = scenario.quality == 0 ? 77 : 86400001;
+        fixtureTime.epochMs = 1791095200123LL; fixtureTime.sequence = 41;
+    }
+    fixtureLocal = {};
+    if (scenario.zone != 1) {
+        fixtureLocal.timezoneAvailable = true;
+        std::strcpy(fixtureLocal.timezone, "UTC0-active-not-config");
+        fixtureLocal.calendarAvailable = fixtureTime.timeValid && scenario.zone == 0;
+        if (fixtureLocal.calendarAvailable) std::strcpy(fixtureLocal.calendar, "2026-10-04 12:34:56");
+    }
+    LittleFS = {};
+    if (scenario.config) {
+        LittleFS.present = true;
+        if (scenario.config == 1) LittleFS.bytes = R"({"timezone":"UTC0","ntpServer1":"https://clock.example.test/time"})";
+        if (scenario.config == 2) LittleFS.bytes = R"({"timezone":"UTC0","ntpServer1":"time.example.test"})";
+        if (scenario.config == 3) LittleFS.bytes = "{";
+        if (scenario.config == 4) LittleFS.bytes = R"({"timezone":3,"ntpServer1":false})";
+        if (scenario.config == 5) LittleFS.readable = false;
+        if (scenario.config == 6) LittleFS.bytes = R"({"timezone":"UTC0","ntpServer1":"http://clock.example.test/time"})";
+    }
+    ESP.setFreeHeap(150000);
+}
+
+static void checkPayload(const Scenario& scenario, const Result& result, bool legacy) {
+    JsonDocument parsed;
+    assert(deserializeJson(parsed, result.bytes) == DeserializationError::Ok);
+    assert(parsed["success"].is<bool>());
+    assert(parsed["success"].as<bool>() == (scenario.branch != Branch::Offline));
+    auto data = parsed["data"].as<JsonObjectConst>();
+    assert(!data.isNull());
+    assert(data["internetAvailable"].as<bool>() == (scenario.manager && scenario.branch != Branch::Offline));
+    assert(data["uptime"].as<unsigned long>() == FIXED_UPTIME);
+    static const char* keys[] = {"synced", "timeValid", "timeSource", "timeQuality", "rtcBootStatus",
+        "timeSourceAuthenticated", "timeSyncAgeMs", "timeSyncSequence", "activeTimezoneAvailable",
+        "activeTimezone", "timeDisplayAvailable", "timestamp", "datetime"};
+    for (const char* key : keys) assert(data[key].isUnbound() == legacy);
+    assert(data.size() == (legacy ? 3 : 16));
+    if (!legacy) {
+        assert(data["synced"].is<bool>() && data["synced"].as<bool>() == fixtureTime.synced);
+        assert(data["timeValid"].is<bool>() && data["timeValid"].as<bool>() == fixtureTime.timeValid);
+        assert(data["timeSource"].as<std::string>() == fixtureTime.source);
+        assert(data["timeQuality"].as<std::string>() == fixtureTime.quality);
+        assert(data["rtcBootStatus"].as<std::string>() == fixtureTime.rtcBootStatus);
+        assert(data["timeSourceAuthenticated"].is<bool>() &&
+               data["timeSourceAuthenticated"].as<bool>() == fixtureTime.transportAuthenticated);
+        assert(data["timeSyncAgeMs"].is<uint64_t>() && data["timeSyncAgeMs"].as<uint64_t>() == fixtureTime.ageMs);
+        assert(data["timeSyncSequence"].is<uint32_t>() && data["timeSyncSequence"].as<uint32_t>() == fixtureTime.sequence);
+        assert(data["activeTimezoneAvailable"].is<bool>() &&
+               data["activeTimezoneAvailable"].as<bool>() == fixtureLocal.timezoneAvailable);
+        assert(data["activeTimezone"].as<std::string>() ==
+               (fixtureLocal.timezoneAvailable ? fixtureLocal.timezone : "unknown"));
+        assert(data["timeDisplayAvailable"].is<bool>() &&
+               data["timeDisplayAvailable"].as<bool>() == fixtureLocal.calendarAvailable);
+        if (fixtureTime.timeValid) assert(data["timestamp"].as<int64_t>() == fixtureTime.epochMs / 1000);
+        else assert(data["timestamp"].isNull());
+        if (fixtureLocal.calendarAvailable) assert(data["datetime"].as<std::string>() == fixtureLocal.calendar);
+        else assert(data["datetime"].isNull());
+    }
+    if (scenario.branch == Branch::Get) {
+        assert(data["timezone"].as<std::string>() ==
+               ((scenario.config == 1 || scenario.config == 2 || scenario.config == 6) ? "UTC0" : "CST-8"));
+    } else {
+        assert(data["syncRequestSucceeded"].is<bool>());
+        assert(data["syncRequestSucceeded"].as<bool>() ==
+               (scenario.branch == Branch::Online && scenario.configure && scenario.synchronized));
+    }
+    if (scenario.branch == Branch::Offline) {
+        assert(parsed.size() == 3 && parsed["error"].as<std::string>() == "No internet connection");
+    } else assert(parsed.size() == 2);
+}
+
+template <typename Routes>
+static Result run(const Scenario& scenario, bool legacy, size_t failAt = SIZE_MAX, bool persistent = false) {
+    reset(scenario);
+    DocumentProbeAllocator allocator(failAt, persistent);
+    responseAllocator = &allocator;
+    FBNetworkManager network; network.status.internetAvailable = scenario.branch != Branch::Offline;
+    FakeContext context; context.authorized = scenario.authorized;
+    if (scenario.manager) context.networkManager = &network;
+    AsyncWebServer server; Routes routes(&context); routes.setupRoutes(&server);
+    assert(server.routes.size() == 2);
+    assert(server.routes[0].path == "/api/device/time" && server.routes[0].method == HTTP_GET);
+    assert(server.routes[1].path == "/api/device/time/sync" && server.routes[1].method == HTTP_POST);
+    AsyncWebServerRequest request;
+    server.dispatch(scenario.branch == Branch::Get ? "/api/device/time" : "/api/device/time/sync",
+                    scenario.branch == Branch::Get ? HTTP_GET : HTTP_POST, &request);
+    responseAllocator = nullptr;
+    Result result{request.response.code, request.response.body, allocator.eligible, allocator.failures, allocator.events};
+    assert(allocator.blocks.empty() && context.authCalls == 1);
+    if (!scenario.authorized) {
+        assert(request.sends == 0 && request.begins == 0 && result.code == 0 && result.allocations == 0);
+        assert(snapshots == 0 && locals == 0 && network.updates == 0 && network.reads == 0);
+        assert(LittleFS.checks == 0 && LittleFS.opens == 0 && observers == 0 && sequences == 0);
+        assert(httpCalls == 0 && sntpCalls == 0 && startCalls == 0 && tzCalls == 0 && logs == 0);
+        return result;
+    }
+    assert(request.sends == 1 && snapshots == 1 && locals == 1);
+    assert(network.updates == unsigned(scenario.manager) && network.reads == unsigned(scenario.manager));
+    if (scenario.branch == Branch::Online) {
+        const bool http = scenario.config == 1 || scenario.config == 6;
+        assert(observers == unsigned(!http) && sequences == unsigned(!http));
+        assert(tzCalls == unsigned(http) && startCalls == unsigned(!http));
+        assert(httpCalls == unsigned(http && scenario.configure));
+        assert(sntpCalls == unsigned(!http && scenario.configure));
+        assert(logs == unsigned(scenario.configure && scenario.synchronized));
+        assert(selectedTimezone == ((scenario.config == 1 || scenario.config == 2 || scenario.config == 6) ? "UTC0" : "CST-8"));
+        if (scenario.configure || !http) assert(selectedServer == (scenario.config == 1 ? "https://clock.example.test/time" :
+            scenario.config == 6 ? "http://clock.example.test/time" : scenario.config == 2 ? "time.example.test" : "cn.pool.ntp.org"));
+    } else assert(httpCalls == 0 && sntpCalls == 0 && startCalls == 0 && tzCalls == 0 && observers == 0 && sequences == 0 && logs == 0);
+    if (scenario.branch == Branch::Offline) assert(LittleFS.checks == 0 && LittleFS.opens == 0);
+    else assert(LittleFS.checks == 1 && LittleFS.opens == unsigned(scenario.config != 0));
+    if (result.failures) {
+        assert(result.code == 503 && request.begins == 0);
+        assert(result.bytes == "JSON document allocation failed");
+    } else {
+        assert(result.code == 200 && request.begins == 1);
+        checkPayload(scenario, result, legacy);
+    }
+    return result;
+}
+
+static std::vector<Scenario> scenarios(Branch branch) {
+    std::vector<Scenario> result;
+    for (unsigned quality = 0; quality < 3; ++quality) for (unsigned zone = 0; zone < 3; ++zone)
+        for (unsigned config = 0; config < 7; ++config) for (unsigned sync = 0; sync < 2; ++sync) {
+            Scenario s; s.branch = branch; s.quality = quality; s.zone = zone; s.config = config;
+            s.synchronized = sync != 0; result.push_back(s);
+        }
+    return result;
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    size_t cases = 0;
+    if (mode == "get" || mode == "offline" || mode == "online") {
+        const auto branch = mode == "get" ? Branch::Get : mode == "offline" ? Branch::Offline : Branch::Online;
+        for (const auto& scenario : scenarios(branch)) { run<CurrentRoutes>(scenario, false); ++cases; }
+        if (branch == Branch::Online) for (unsigned config : {0U, 1U, 2U, 6U}) {
+            Scenario s; s.branch = branch; s.config = config; s.configure = false; s.synchronized = true;
+            run<CurrentRoutes>(s, false); ++cases;
+        }
+    } else if (mode == "sharing-differential") {
+        for (auto branch : {Branch::Get, Branch::Offline, Branch::Online})
+            for (const auto& s : scenarios(branch)) {
+                const auto before = run<BaselineRoutes>(s, false);
+                const auto current = run<CurrentRoutes>(s, false);
+                assert(before.code == current.code && before.bytes == current.bytes);
+                assert(before.allocations == current.allocations && before.failures == current.failures);
+                assert(before.events == current.events); ++cases;
+                for (bool persistent : {false, true}) for (size_t index = 0; index < before.allocations; ++index) {
+                    const auto a = run<BaselineRoutes>(s, false, index, persistent);
+                    const auto b = run<CurrentRoutes>(s, false, index, persistent);
+                    assert(a.code == b.code && a.bytes == b.bytes && a.events == b.events);
+                    assert(a.allocations == b.allocations && a.failures == b.failures); ++cases;
+                }
+            }
+    } else if (mode == "legacy-unbound") {
+        for (auto branch : {Branch::Get, Branch::Offline, Branch::Online})
+            for (const auto& scenario : scenarios(branch)) { run<LegacyRoutes>(scenario, true); ++cases; }
+    } else if (mode == "auth-and-null-network") {
+        for (auto branch : {Branch::Get, Branch::Offline, Branch::Online}) {
+            Scenario s; s.branch = branch; s.authorized = false;
+            run<CurrentRoutes>(s, false); run<LegacyRoutes>(s, true); cases += 2;
+        }
+        for (auto branch : {Branch::Get, Branch::Offline}) {
+            Scenario s; s.branch = branch; s.manager = false;
+            run<CurrentRoutes>(s, false); run<LegacyRoutes>(s, true); cases += 2;
+        }
+    } else if (mode == "allocation-faults") {
+        for (auto branch : {Branch::Get, Branch::Offline, Branch::Online})
+            for (unsigned quality = 0; quality < 3; ++quality) for (unsigned zone = 0; zone < 3; ++zone) {
+                Scenario s; s.branch = branch; s.quality = quality; s.zone = zone; s.config = 1; s.synchronized = true;
+                const auto current = run<CurrentRoutes>(s, false), legacy = run<LegacyRoutes>(s, true);
+                assert(current.allocations > 1 && legacy.allocations > 0);
+                for (bool persistent : {false, true}) {
+                    for (size_t index = 0; index < current.allocations; ++index) {
+                        const auto failed = run<CurrentRoutes>(s, false, index, persistent);
+                        assert(failed.failures > 0 && failed.code == 503); ++cases;
+                    }
+                    for (size_t index = 0; index < legacy.allocations; ++index) {
+                        const auto failed = run<LegacyRoutes>(s, true, index, persistent);
+                        assert(failed.failures > 0 && failed.code == 503); ++cases;
+                    }
+                }
+                assert(run<CurrentRoutes>(s, false, current.allocations).bytes == current.bytes);
+                assert(run<LegacyRoutes>(s, true, legacy.allocations).bytes == legacy.bytes);
+            }
+    } else assert(false && "unknown mode");
+    assert(cases > 0);
+    std::cout << "PASS " << mode << " cases=" << cases << '\n';
+}

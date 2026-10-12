@@ -259,6 +259,30 @@ test.describe('Device screen offline workflow', () => {
     expect(saved.pages[0].cards[0].title).toBe('Recover across revision');
   });
 
+  test('WEB-PANEL-037: reload before draft debounce preserves the latest edit', async ({ authPage: page }) => {
+    await resetPanel(page); await openPanel(page);
+    await page.locator('[data-sp-add="clock"]').click(); await savePanel(page);
+    // Hold only the editor debounce, leaving UI/network timers operational.
+    await page.evaluate(() => {
+      const original = window.setTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: any[]) =>
+        original(handler, delay === 160 ? 60000 : delay, ...args)) as typeof window.setTimeout;
+    });
+    await page.locator('#sp-card-title').fill('Pending departure edit');
+    await expect(page.locator('#sp-dirty-state')).toHaveText('有未保存修改');
+    expect(await page.evaluate(() => Object.keys(localStorage)
+      .filter(key => key.startsWith('fastbee.screenPanel.draft.'))
+      .some(key => (localStorage.getItem(key) || '').includes('Pending departure edit')))).toBeFalsy();
+    await page.reload();
+    await page.waitForFunction(() => Boolean((window as any).AppState?._featureStatusReady));
+    await page.evaluate(async () => (window as any).AppState.changePage('screen-panel'));
+    await expect(page.locator('#sp-draft-recovery')).toBeVisible();
+    await page.locator('#sp-draft-restore').click();
+    await expect(page.locator('#sp-editor-canvas')).toContainText('Pending departure edit');
+    await savePanel(page);
+    expect((await smartState(page)).screenPanelConfig.pages[0].cards[0].title).toBe('Pending departure edit');
+  });
+
   test('WEB-PANEL-031: concurrent device settings merge while a genuine layout conflict preserves the draft', async ({ authPage: page }) => {
     await resetPanel(page); await openPanel(page);
     await page.locator('[data-sp-add="clock"]').click();

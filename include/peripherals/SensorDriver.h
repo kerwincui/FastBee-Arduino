@@ -2,11 +2,14 @@
 #define SENSOR_DRIVER_H
 
 #include "core/FeatureFlags.h"
+#include "core/FeatureInstanceRegistry.h"
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 
 #include <Arduino.h>
+#include "core/RuntimeResourceSnapshot.h"
 #include <map>
 #include "utils/StaticPoolAllocator.h"
+#include "core/SensorSampleMetadata.h"
 
 // 传感器实例 map 节点池：96B/块 × 24 块 = 2.3KB DRAM 预分配。
 // 容纳最大节点 _Rb_tree_node<pair<uint8_t, ADC/NTCSensorInstance>>(~88B)，
@@ -34,14 +37,14 @@ struct SensorReadResult {
     bool success;
     float temperature;    // 温度 (°C)
     float humidity;       // 湿度 (%) - 仅 DHT 有效
-    unsigned long timestamp;  // 读取时间戳 (millis)
+    uint64_t timestamp;  // Boot-local monotonic ms, including cached/stale reads.
 };
 
 // 通用传感器读取结果（用于超声波/电流/电压等）
 struct SensorValueResult {
     bool success;
     float value;              // 读取值（单位取决于传感器类型：cm/A/V）
-    unsigned long timestamp;  // 读取时间戳 (millis)
+    uint64_t timestamp;  // Boot-local monotonic ms, including cached/stale reads.
 };
 
 // ADC 传感器校准参数
@@ -111,6 +114,9 @@ enum class SensorDriverType : uint8_t {
 class SensorDriver {
 public:
     static SensorDriver& getInstance();
+    FastBee::FeatureInstanceSnapshot observeDs18b20Instances() const;
+    // Static observation does not instantiate the sensor singleton or its lock.
+    static void snapshotDhtRmtResources(FastBee::DhtRmtResourceSnapshot& result);
 
     /**
      * @brief 读取 DHT 传感器数据
@@ -119,7 +125,8 @@ public:
      * @param field "temperature" 或 "humidity"
      * @return 读取值，失败返回 NAN
      */
-    float readDHT(uint8_t pin, SensorDriverType type, const String& field);
+    float readDHT(uint8_t pin, SensorDriverType type, const String& field,
+                  FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief 读取 DS18B20 温度
@@ -127,7 +134,10 @@ public:
      * @param index 总线上设备索引（默认 0，多设备时指定）
      * @return 温度值 (°C)，失败返回 NAN
      */
-    float readDS18B20(uint8_t pin, uint8_t index = 0);
+    // Yield for at most the remaining 750ms conversion time with the shared
+    // sensor lock released; recheck instance identity before reading results.
+    float readDS18B20(uint8_t pin, uint8_t index = 0, FastBee::SensorSampleMetadata* sample = nullptr,
+                     const uint8_t* address = nullptr);
 
     /**
      * @brief 读取超声波距离 (HC-SR04)
@@ -135,7 +145,7 @@ public:
      * @param echoPin Echo 回响引脚
      * @return 距离 (cm)，失败返回 NAN，有效范围 2~400cm
      */
-    float readUltrasonic(uint8_t trigPin, uint8_t echoPin);
+    float readUltrasonic(uint8_t trigPin, uint8_t echoPin, FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief 读取电流传感器 (ACS712 等)
@@ -143,7 +153,8 @@ public:
      * @param cal 校准参数（灵敏度、零偏移等）
      * @return 电流值 (A)，失败返回 NAN
      */
-    float readCurrent(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration());
+    float readCurrent(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration(),
+                      FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief Read an industrial 4-20 mA current loop through an ADC shunt.
@@ -152,7 +163,8 @@ public:
      *         out-of-range input.
      */
     float readCurrentLoop(uint8_t pin,
-                          const CurrentLoopCalibration& cal = CurrentLoopCalibration());
+                          const CurrentLoopCalibration& cal = CurrentLoopCalibration(),
+                          FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief 读取电压传感器 (分压器 ADC)
@@ -160,7 +172,8 @@ public:
      * @param cal 校准参数（分压比等）
      * @return 电压值 (V)，失败返回 NAN
      */
-    float readVoltage(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration());
+    float readVoltage(uint8_t pin, const ADCSensorCalibration& cal = ADCSensorCalibration(),
+                      FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief 读取 NTC 热敏电阻温度 (分压器 + B 参数法)
@@ -168,7 +181,8 @@ public:
      * @param cal 校准参数（串联电阻/B值/标称电阻等）
      * @return 温度值 (°C)，失败返回 NAN
      */
-    float readNTC(uint8_t pin, const NTCSensorCalibration& cal = NTCSensorCalibration());
+    float readNTC(uint8_t pin, const NTCSensorCalibration& cal = NTCSensorCalibration(),
+                  FastBee::SensorSampleMetadata* sample = nullptr);
 
     /**
      * @brief 释放指定引脚的传感器资源
@@ -202,11 +216,21 @@ private:
         void* oneWire;      // OneWire*
         void* sensors;      // DallasTemperature*
         SensorReadResult lastRead;
+        uint8_t index = 0; // A cached value belongs to one selected bus device.
+        uint8_t address[8] = {};
+        bool selectedByAddress = false;
+        bool conversionPending = false;
+        bool conversionAvailable = false;
+        uint64_t conversionStartedAt = 0;
+        uint64_t generation = 0;
         uint32_t nextRetryAt = 0;       // 失败退避截止时间 (millis)
         uint8_t consecutiveFailures = 0;
     };
     std::map<uint8_t, DS18B20Instance, std::less<uint8_t>,
              SensorNodeAllocator<std::pair<const uint8_t, DS18B20Instance>>> _ds18b20Instances;
+    float readDS18B20Step(uint8_t pin, uint8_t index, FastBee::SensorSampleMetadata* sample,
+        const uint8_t* address = nullptr, uint64_t expectedGeneration = 0,
+        uint64_t* generation = nullptr, uint32_t* waitMs = nullptr);
 
     // 超声波实例缓存 (key = trigPin)
     struct UltrasonicInstance {

@@ -1,0 +1,246 @@
+// Only the two actual serializer bodies are extracted, with their real runtime
+// data types. No rule scheduling, clocks, filesystem, SPI, or device execution.
+#include "document_json_probe.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "core/SdRecorderRuntime.h"
+#include "network/FixedJsonField.h"
+#include <iostream>
+#include <type_traits>
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string result = "object{";
+        for (JsonPairConst field : object) {
+            result += std::string(field.key().c_str(), field.key().size());
+            result += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            result += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return result + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string result = "array[";
+        for (JsonVariantConst value : array) result += ArduinoJson::detail::accept(value, *this) + ";";
+        return result + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        assert(false); return "unsupported";
+    }
+};
+
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflowed = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflowed == other.overflowed;
+    }
+};
+static DocumentProbeAllocator* activeAllocator = nullptr;
+static std::vector<Snapshot>* activeDocuments = nullptr;
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { assert(activeAllocator && activeDocuments); }
+    ~TrackedDocument() {
+        Snapshot result;
+        result.bytes = documentBytes(*this);
+        Shape shape;
+        result.shape = ArduinoJson::detail::accept(as<JsonVariantConst>(), shape);
+        result.overflowed = overflowed();
+        activeDocuments->push_back(result);
+    }
+};
+static uint64_t testNow = 1000;
+static unsigned clockReads = 0;
+static uint64_t sdRecordNow() { ++clockReads; return testNow; }
+
+// Explicit construction-only allocator seam; all dependent headers and the
+// separately linked production helper continue using real JsonDocument types.
+#define JsonDocument TrackedDocument
+@SD_SERIALIZERS@
+#undef JsonDocument
+
+using Runtime = FastBee::SdRecorderRuntime;
+using BatchWriter = size_t(*)(Runtime&, size_t&);
+using StatusWriter = String(*)(const Runtime&);
+static BatchWriter batches[] = {sdRecordBatchOracle, sdRecordBatchCurrent, sdRecordBatchDraft};
+static StatusWriter statuses[] = {sdRecordJsonOracle, sdRecordJsonCurrent, sdRecordJsonDraft};
+
+static Runtime makeRuntime(unsigned scenario, size_t sampleCount) {
+    Runtime runtime;
+    runtime.batch.fill('Z');
+    runtime.ruleId = scenario ? "record_\"\\\n规则" : "";
+    runtime.targetId = scenario ? "sd_\t卡" : "";
+    runtime.config.sourceRef = scenario ? String(std::string(80, 's')) + "\"\\\n值" : "";
+    runtime.sourceRevision = scenario ? "source:v1\"\\\r\n" : "";
+    runtime.unit = scenario ? "°C\t\"\\" : "";
+    runtime.lastError = scenario ? String(std::string(72, 'e')) + "\n\"\\错误" : "";
+    runtime.waitingFresh = scenario % 2 == 0;
+    runtime.checkedAt = scenario == 2 ? UINT64_MAX : scenario == 3 ? 1000 : 0;
+    runtime.config.fileCount = scenario == 3 ? UINT8_MAX : 4;
+    runtime.storage.slot = scenario == 3 ? UINT8_MAX : 0;
+    runtime.queue.arm(0);
+    static char sourcePointer[] = "ntp\"\\\tpeer";
+    static char qualityPointer[] = "synced_\"\\质量";
+    for (size_t i = 0; i < sampleCount; ++i) {
+        FastBee::SdRecordedSample sample;
+        sample.value = scenario == 3 ? -std::numeric_limits<double>::max() :
+            scenario == 2 ? -0.0 : 20.5 + static_cast<double>(i);
+        sample.sampledAtMs = scenario == 3 ? UINT64_MAX - sampleCount + i : i + 1;
+        sample.recordedAtMs = scenario == 3 ? UINT64_MAX : i + 10;
+        sample.identity = scenario == 3 ? UINT32_MAX - static_cast<uint32_t>(i) : static_cast<uint32_t>(i + 1);
+        sample.wallKnown = scenario % 2 != 0;
+        sample.wallEpochMs = scenario == 3 ? INT64_MIN : 1800000000000LL + static_cast<int64_t>(i);
+        sample.timeSequence = scenario == 3 ? UINT32_MAX : static_cast<uint32_t>(i);
+        sample.timeSource = scenario ? sourcePointer : "unknown";
+        sample.timeQuality = scenario ? qualityPointer : "unknown";
+        sample.timeAuthenticated = scenario == 1;
+        assert(runtime.queue.enqueue(sample));
+    }
+    if (scenario == 4) runtime.queue.fail("SD_RECORD_SOURCE_CHANGED");
+    if (scenario >= 2) {
+        runtime.queue.accepted = UINT32_MAX;
+        runtime.queue.written = UINT32_MAX - 1;
+        runtime.queue.dropped = UINT32_MAX - 2;
+    }
+    return runtime;
+}
+
+struct Result {
+    std::string status;
+    size_t length = 0, count = 999, allocations = 0, failures = 0;
+    unsigned reserveCalls = 0, concatCalls = 0, nowCalls = 0;
+    std::array<char, 2048> buffer{};
+    std::vector<Snapshot> documents;
+    std::vector<DocumentProbeAllocator::Event> events;
+    bool operator==(const Result& other) const {
+        return status == other.status && length == other.length && count == other.count &&
+            allocations == other.allocations && failures == other.failures &&
+            reserveCalls == other.reserveCalls && concatCalls == other.concatCalls && nowCalls == other.nowCalls &&
+            buffer == other.buffer && documents == other.documents && events == other.events;
+    }
+};
+static Result execute(const Runtime& input, unsigned writer, bool status,
+                      size_t fault = std::numeric_limits<size_t>::max(),
+                      bool persistent = false, unsigned stringMode = 0) {
+    Runtime runtime = input;
+    Result result;
+    DocumentProbeAllocator allocator(fault, persistent);
+    activeAllocator = &allocator;
+    activeDocuments = &result.documents;
+    StatusStringProbe::reset(stringMode);
+    clockReads = 0;
+    if (status) {
+        const String output = statuses[writer](runtime);
+        result.status.assign(output.c_str(), output.length());
+    } else result.length = batches[writer](runtime, result.count);
+    result.nowCalls = clockReads;
+    result.reserveCalls = StatusStringProbe::reserveCalls;
+    result.concatCalls = StatusStringProbe::concatCalls;
+    StatusStringProbe::reset(0);
+    activeAllocator = nullptr;
+    activeDocuments = nullptr;
+    result.buffer = runtime.batch;
+    result.events = allocator.events;
+    result.allocations = allocator.eligible;
+    result.failures = allocator.failures;
+    assert(allocator.blocks.empty());
+    assert(runtime.queue.size() == input.queue.size());
+    assert(runtime.queue.accepted == input.queue.accepted && runtime.queue.written == input.queue.written &&
+           runtime.queue.dropped == input.queue.dropped && runtime.queue.fault() == input.queue.fault());
+    return result;
+}
+static Result compare(const Runtime& runtime, bool status,
+                      size_t fault = std::numeric_limits<size_t>::max(),
+                      bool persistent = false, unsigned stringMode = 0) {
+    const Result expected = execute(runtime, 0, status, fault, persistent, stringMode);
+    for (unsigned writer = 1; writer < 3; ++writer)
+        assert(expected == execute(runtime, writer, status, fault, persistent, stringMode));
+    assert(expected.nowCalls == (status ? 1U : 0U));
+    if (status) {
+        assert(expected.buffer == runtime.batch && expected.documents.size() == 1);
+        if (expected.failures || stringMode) assert(expected.status == "null");
+        else {
+            JsonDocument doc;
+            assert(!deserializeJson(doc, expected.status));
+            assert(doc.size() == 13);
+            assert(doc["ruleId"].as<std::string>() == std::string(runtime.ruleId.c_str(), runtime.ruleId.length()));
+            assert(doc["sourceRef"].as<std::string>() == std::string(runtime.config.sourceRef.c_str(), runtime.config.sourceRef.length()));
+            assert(doc["pending"].as<size_t>() == runtime.queue.size());
+            assert(doc["accepted"].as<uint32_t>() == runtime.queue.accepted);
+            assert(doc["written"].as<uint32_t>() == runtime.queue.written);
+            assert(doc["dropped"].as<uint32_t>() == runtime.queue.dropped);
+            assert(doc["phase"] == (runtime.queue.fault() ? runtime.queue.fault() :
+                runtime.waitingFresh ? "WAITING_FRESH_SAMPLE" : "RECORDING"));
+            assert(doc["checkAgeMs"].as<uint64_t>() == (testNow >= runtime.checkedAt ? testNow - runtime.checkedAt : UINT64_MAX));
+            assert(doc["writeQuality"] == "sdk_write_flush_only");
+        }
+    } else {
+        assert(expected.reserveCalls == 0 && expected.concatCalls == 0);
+        if (expected.failures) assert(expected.length == 0);
+        else {
+            size_t offset = 0;
+            for (size_t i = 0; i < expected.count; ++i) {
+                const auto end = std::find(expected.buffer.begin() + offset, expected.buffer.end(), '\n');
+                assert(end != expected.buffer.end());
+                const size_t bytes = static_cast<size_t>(end - expected.buffer.begin()) - offset;
+                JsonDocument row;
+                assert(!deserializeJson(row, expected.buffer.data() + offset, bytes));
+                const auto& sample = runtime.queue.at(i);
+                assert(row.size() == 14 && row["schema"] == 1 && row["quality"] == "good");
+                assert(row["sampleId"].as<uint32_t>() == sample.identity);
+                assert(row["sampledAtMs"].as<uint64_t>() == sample.sampledAtMs);
+                assert(row["recordedAtMs"].as<uint64_t>() == sample.recordedAtMs);
+                assert(row["wallEpochMs"].isNull() == !sample.wallKnown);
+                if (sample.wallKnown) assert(row["wallEpochMs"].as<int64_t>() == sample.wallEpochMs);
+                assert(row["timeAuthenticated"].as<bool>() == sample.timeAuthenticated);
+                assert(row["timeSequence"].as<uint32_t>() == sample.timeSequence);
+                assert(expected.documents[i].shape.find("quality:linked-key=linked-string") != std::string::npos);
+                offset += bytes + 1;
+            }
+            assert(offset == expected.length);
+        }
+    }
+    return expected;
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    const bool status = mode.rfind("status-", 0) == 0;
+    if (mode == "batch-boundaries") {
+        Runtime runtime = makeRuntime(0, 1);
+        const Result base = compare(runtime, false);
+        assert(base.count == 1 && base.length < runtime.batch.size());
+        const size_t exact = runtime.batch.size() - base.length;
+        for (size_t extra : {exact - 1, exact, exact + 1}) {
+            runtime.unit = std::string(extra, 'u');
+            const Result result = compare(runtime, false);
+            assert(result.count == (extra <= exact ? 1U : 0U));
+            assert(result.length == (extra <= exact ? base.length + extra : 0));
+            if (extra > exact) assert(result.buffer == runtime.batch);
+        }
+        const Result several = compare(makeRuntime(1, 8), false);
+        assert(several.count > 0 && several.count < 8 && several.length <= runtime.batch.size());
+    } else {
+        assert(mode == "batch-values" || mode == "batch-oom" || mode == "status-values" ||
+               mode == "status-oom" || mode == "status-string-faults");
+        for (unsigned scenario = 0; scenario < 5; ++scenario) {
+            for (size_t count : {size_t(0), size_t(1), size_t(3), size_t(8)}) {
+                const Runtime runtime = makeRuntime(scenario, count);
+                const Result baseline = compare(runtime, status);
+                if (mode == "batch-oom" || mode == "status-oom") {
+                    for (bool persistent : {false, true})
+                        for (size_t fault = 0; fault < baseline.allocations; ++fault)
+                            compare(runtime, status, fault, persistent);
+                } else if (mode == "status-string-faults") {
+                    for (unsigned fault = 1; fault <= 4; ++fault)
+                        compare(runtime, true, std::numeric_limits<size_t>::max(), false, fault);
+                }
+            }
+        }
+    }
+    std::cout << "PASS " << mode << '\n';
+}

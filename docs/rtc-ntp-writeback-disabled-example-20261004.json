@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "rtc_ntp_writeback_demo",
+      "name": "RTC网络同步后复制示例-保持禁用",
+      "enabled": false,
+      "reportAfterExec": false,
+      "recordHistory": false,
+      "allowPanelControl": false,
+      "triggers": [{"triggerType": 4, "eventId": "ntp_synced"}],
+      "actions": [{
+        "actionType": 37,
+        "targetPeriphId": "rtc_demo",
+        "actionValue": "system-local",
+        "useReceivedValue": false,
+        "syncDelayMs": 0,
+        "execMode": 0
+      }]
+    }
+  ]
+}

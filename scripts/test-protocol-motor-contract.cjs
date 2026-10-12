@@ -22,6 +22,8 @@ function setup(responder = (_, request) => request.action === 'operation' ? done
         Notification: Object.fromEntries(['success', 'error', 'warning'].map(level => [level, text => notices.push({ level, text })])),
         apiPostSilentPriority: async (url, request) => { calls.push({ url, ...request }); return responder(url, request, app); }
     });
+    context.window = context;
+    vm.runInContext(fs.readFileSync(path.join(root, 'web-src/js/utils.js'), 'utf8'), context);
     for (const file of ['modbus-control.js', 'modbus-relay-motor.js'])
         vm.runInContext(fs.readFileSync(path.join(root, 'web-src/modules/runtime/protocol', file), 'utf8'), context);
     app._appendDebugLog = app._appendDebugError = () => {};
@@ -33,7 +35,12 @@ async function main() {
         ['setMotorSpeed', 'setSpeed'], ['setMotorPulse', 'setPulse'], ['refreshMotorStatus', 'readStatus']]) {
         const h = setup();
         await h.app[handler]();
-        assert.equal(h.calls.length, 2, handler);
+        const parameterWrite = ['setSpeed', 'setPulse'].includes(action);
+        assert.equal(h.calls.length, parameterWrite ? 4 : 2, handler);
+        if (parameterWrite) {
+            assert.equal(h.calls[2].action, 'readStatus', 'write is followed by shared readback');
+            assert.equal(h.calls[3].action, 'operation');
+        }
         assert.equal(h.calls[0].action, action);
         assert.equal(h.calls[0].slaveAddress, 8);
         assert.match(h.calls[0].requestId, /^[a-z0-9-]+$/);
@@ -46,12 +53,22 @@ async function main() {
         if (['forward', 'reverse', 'stop', 'readStatus'].includes(action)) {
             assert.equal(h.element('motor-cur-direction').textContent,
                 ({ forward: '正转应答', reverse: '反转应答', stop: '停止应答' })[action] || '--');
-            assert.equal(h.element('modbus-ctrl-motor-run-status').textContent, '运动未确认');
+            assert.equal(h.element('modbus-ctrl-motor-run-status').textContent, action === 'readStatus' ? '就绪' : '指令已应答');
         }
     }
     const unique = setup();
     await unique.app.motorForward(); await unique.app.motorForward();
     assert.notEqual(unique.calls[0].requestId, unique.calls[2].requestId);
+    const recovery = setup();
+    recovery.app._modbusDevices[0].deviceType = 'motor';
+    recovery.app._modbusCtrlOffline = true;
+    await recovery.app.motorForward();
+    assert.equal(recovery.calls.filter(call => call.action === 'forward').length, 1,
+        'a previous read timeout must not silently discard a new explicit motor request');
+    recovery.app._modbusDevices[0].enabled = false;
+    await recovery.app.motorReverse();
+    assert.equal(recovery.calls.filter(call => call.action === 'reverse').length, 0,
+        'a disabled motor remains disabled');
     for (const bad of ['', '-1', '65536', 'NaN', '1.25']) {
         for (const [method, id] of [['setMotorSpeed', 'speed'], ['setMotorPulse', 'pulse']]) {
             const h = setup(); h.element('modbus-ctrl-motor-' + id).value = bad;

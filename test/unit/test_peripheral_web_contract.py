@@ -1,7 +1,9 @@
-"""Source-level regression checks for the peripheral Web form contract."""
+"""Source and actual-module regression checks for the peripheral Web form contract."""
 
 import pathlib
 import re
+import shutil
+import subprocess
 import unittest
 
 
@@ -26,6 +28,22 @@ def element_tag(element_id: str) -> str:
 
 
 class PeripheralWebContractTests(unittest.TestCase):
+    def check_form_behavior(self, case):
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node required for actual Web form behavior")
+        result = subprocess.run(
+            [node, "test/helpers/web-form-budget-harness.js", case], cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_event_catalog_caches_keep_ttl_refresh_and_failure_semantics(self):
+        self.check_form_behavior("events")
+
+    def test_saved_fields_zero_defaults_stale_response_and_modal_bindings(self):
+        self.check_form_behavior("refill")
+
     def test_optional_save_and_diagnostics_workflows_are_lazy_loaded(self):
         self.assertNotIn("/api/boards/profiles", PERIPHERALS)
         self.assertNotIn("/api/peripherals/resources", PERIPHERALS)
@@ -90,10 +108,9 @@ class PeripheralWebContractTests(unittest.TestCase):
 
     def test_servo_type_switch_edit_and_save_are_complete(self):
         all_web = PERIPHERALS + PERIPHERAL_SAVE
-        self.assertRegex(
-            PERIPHERALS,
-            r"type === 41[\s\S]*?getElementById\('servo-params'\)",
-        )
+        # Exercise all real type transitions, including legacy ADC, servo,
+        # optional markup, hints and saved/new RF/IR management.
+        self.check_form_behavior("types")
         for field in (
             "frequency",
             "minPulse",

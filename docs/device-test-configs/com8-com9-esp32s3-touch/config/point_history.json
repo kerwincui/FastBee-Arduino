@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "sourceAllowlist": [
+    "sht30_temperature",
+    "sht30_humidity",
+    "modbus.pm25",
+    "modbus.pm10"
+  ]
+}

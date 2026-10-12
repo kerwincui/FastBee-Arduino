@@ -837,7 +837,12 @@ static std::string readProjectFile(const char* relativePath) {
         if (file.is_open()) {
             std::ostringstream ss;
             ss << file.rdbuf();
-            return ss.str();
+            std::string content = ss.str();
+            // Windows text streams normalize CRLF; make source guards portable to Linux too.
+            for (size_t pos = 0; (pos = content.find("\r\n", pos)) != std::string::npos; ++pos) {
+                content.erase(pos, 1);
+            }
+            return content;
         }
     }
     return "";
@@ -1007,10 +1012,11 @@ void test_mqtt_deferred_restart_preserves_active_client() {
     TEST_ASSERT_TRUE_MESSAGE(!route.empty(), "MqttRouteHandler.cpp must be readable");
 
     TEST_ASSERT_TRUE_MESSAGE(
-        header.find("restartMQTTDeferred(bool forceRebuild = false)") != std::string::npos,
+        header.find("restartMQTTDeferred(bool forceRebuild = false,") != std::string::npos &&
+        header.find("FastBee::MqttRestartResult* result = nullptr") != std::string::npos,
         "restartMQTTDeferred must expose default non-forced mode");
 
-    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild,");
     TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos,
         "restartMQTTDeferred implementation must accept forceRebuild");
 
@@ -1070,16 +1076,21 @@ void test_mqtt_restore_restart_handle_survives_null_client() {
     TEST_ASSERT_TRUE_MESSAGE(restorePos != std::string::npos,
         "ProtocolManager::handle must call checkPendingTestRestore");
 
-    size_t debugPos = pm.find("getIsConnected()", restorePos);
+    size_t handlePos = pm.find("void ProtocolManager::handle()");
+    size_t readPos = pm.find("auto mqttRead = acquireMQTTClient()", handlePos);
+    size_t debugPos = pm.find("[PROTO] MQTT handle alive", readPos);
     TEST_ASSERT_TRUE_MESSAGE(debugPos != std::string::npos,
         "ProtocolManager::handle must still emit MQTT alive diagnostics");
 
-    // Diagnostics must call getIsConnected() and be inside the outer if(mqttClient) block,
-    // so no redundant inner "mqttClient &&" guard is needed.
-    TEST_ASSERT_TRUE_MESSAGE(debugPos != std::string::npos && debugPos > restorePos,
-        "MQTT alive diagnostics must call getIsConnected() after test restore check");
+    // The restore may rebuild the client, so diagnostics run under the old
+    // lease BEFORE restore, and no borrowed pointer is read after restore.
+    TEST_ASSERT_TRUE_MESSAGE(readPos != std::string::npos && readPos < debugPos && debugPos < restorePos,
+        "MQTT diagnostics must precede the potentially destructive restore");
+    size_t releasePos = pm.find("} // Release the loop's reference", debugPos);
+    TEST_ASSERT_TRUE_MESSAGE(releasePos != std::string::npos && releasePos < restorePos,
+        "The loop lease must end before restore can rebuild the client");
 
-    TestLog::step("Post-restore MQTT diagnostics inside outer mqttClient guard (no redundant check)");
+    TestLog::step("Lease-protected diagnostics complete before destructive restore");
     TestLog::testEnd(true);
 }
 
@@ -1091,7 +1102,7 @@ void test_mqtt_deferred_restart_keeps_mqtts_client_in_marginal_dram() {
     TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
 
-    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild,");
     TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos,
         "restartMQTTDeferred implementation must exist");
 
@@ -1120,14 +1131,14 @@ void test_mqtt_deferred_restart_keeps_mqtts_client_in_marginal_dram() {
         "MQTTClient::shutdown must exist");
     TEST_ASSERT_TRUE_MESSAGE(
         mqtt.find("_reconnectPending = false", shutdownPos) != std::string::npos &&
-        mqtt.find("while (_reconnectRunning", shutdownPos) != std::string::npos,
-        "shutdown must cancel pending reconnects and wait briefly for a running reconnect to exit");
+        mqtt.find("while (!_reconnectLifetime.requestStop())", shutdownPos) != std::string::npos,
+        "terminal shutdown must retain the object until worker acknowledgement");
 
-    size_t stopFnPos = mqtt.find("void MQTTClient::stop()");
+    size_t stopFnPos = mqtt.find("bool MQTTClient::stop()");
     TEST_ASSERT_TRUE_MESSAGE(stopFnPos != std::string::npos,
         "MQTTClient::stop must exist");
     TEST_ASSERT_TRUE_MESSAGE(
-        mqtt.find("shutdown()", stopFnPos) != std::string::npos &&
+        mqtt.find("if (!_reconnectLifetime.requestStop()) return false", stopFnPos) != std::string::npos &&
         mqtt.find("disconnect()", stopFnPos) != std::string::npos,
         "stop must cancel reconnect worker before disconnecting sockets");
 
@@ -3278,11 +3289,12 @@ void test_mqtt_reconnect_task_on_demand() {
         "reconnectTaskEntry must self-delete after completion to free DRAM");
     TestLog::step("reconnectTaskEntry self-deletes via vTaskDelete(nullptr)");
 
-    // 3. reconnectTaskEntry 完成后必须将 handle 置空
+    // 3. Final object-access acknowledgement replaces the racy task handle.
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("_reconnectTaskHandle = nullptr") != std::string::npos,
-        "After self-delete, _reconnectTaskHandle must be set to nullptr");
-    TestLog::step("_reconnectTaskHandle cleared after task exits");
+        content.find("client->_reconnectLifetime.finish()") != std::string::npos &&
+        content.find("_reconnectTaskHandle") == std::string::npos,
+        "Worker must acknowledge its final object access before self-delete");
+    TestLog::step("Worker acknowledgement replaces externally deleted task handle");
 
     // 4. 头文件必须声明 ensureReconnectTask
     std::string header = readProjectFile("include/protocols/MQTTClient.h");
@@ -3619,7 +3631,7 @@ void test_mqtts_disconnect_releases_tls() {
     std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
 
-    size_t disconnectPos = content.find("void MQTTClient::disconnect()");
+    size_t disconnectPos = content.find("bool MQTTClient::disconnect()");
     TEST_ASSERT_TRUE(disconnectPos != std::string::npos);
 
     size_t releasePos = content.find("releaseTlsTransport()", disconnectPos);
@@ -4459,18 +4471,29 @@ void test_mqtts_protocol_manager_reads_section_scheme_for_cellular_secure() {
     TestLog::testStart("MQTTS: ProtocolManager Reads Section Scheme");
 
     std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
+    std::string secureIntent = readProjectFile("include/protocols/MqttSecureIntent.h");
     TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!secureIntent.empty(), "MqttSecureIntent.h must be readable");
 
     TEST_ASSERT_TRUE_MESSAGE(
         pm.find("JsonVariant mqttSection = doc[\"mqtt\"]") != std::string::npos &&
         pm.find("mqttSection.is<JsonObject>() ? mqttSection : doc.as<JsonVariant>()") != std::string::npos &&
-        pm.find("cfg[\"scheme\"]") != std::string::npos,
-        "configureMqttTransport must read scheme from either nested mqtt object or mqtt section document");
+        pm.find("FastBee::mqttRequiresTls(cfg)") != std::string::npos &&
+        pm.find("#include \"protocols/MqttSecureIntent.h\"") != std::string::npos,
+        "configureMqttTransport must use shared secure intent for nested mqtt objects and section documents");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        secureIntent.find("mqtt[\"downgraded_by_memory\"] | false") != std::string::npos &&
+        secureIntent.find("std::strcmp(mqtt[\"scheme\"] | \"\", \"mqtts\") == 0") != std::string::npos &&
+        secureIntent.find("!mqtt[\"scheme\"].is<const char*>()") != std::string::npos &&
+        secureIntent.find("(mqtt[\"port\"] | 1883U) == 8883U") != std::string::npos,
+        "Secure intent must preserve explicit mqtts, legacy port 8883 and historical secure intent");
 
     TEST_ASSERT_TRUE_MESSAGE(
         pm.find("wantsMqtts && netMgr->getNetworkType() == NetworkType::NET_4G") != std::string::npos &&
-        pm.find("cell->getSecureClient()") != std::string::npos,
-        "4G MQTTS must select the cellular secure client");
+        pm.find("cell->getSecureClient()") != std::string::npos &&
+        pm.find("mqttClient->setTransportClient(transport, true)") != std::string::npos,
+        "4G MQTTS must select and explicitly trust the cellular secure client");
 
     TestLog::step("ProtocolManager detects mqtts from section config and selects cellular secure client");
     TestLog::testEnd(true);
@@ -5569,13 +5592,13 @@ void test_mqtt_manual_reconnect_scheme_branching() {
 
     // 3. 非 TLS 分支：使用 restartMQTTDeferred(true) 运行时重建
     TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("restartMQTTDeferred(true)") != std::string::npos,
+        fnBody.find("pm->restartMQTTDeferred(true, &restartResult)") != std::string::npos,
         "Non-TLS branch must call restartMQTTDeferred(true) for forced runtime rebuild");
     TestLog::step("Non-TLS branch uses restartMQTTDeferred(true)");
 
     // 4. MQTTS 分支必须在非 TLS 分支之前（先判断是否需要重启，再 fallback）
     size_t mqttsBranch = fnBody.find("isMqtts");
-    size_t nonTlsBranch = fnBody.find("restartMQTTDeferred(true)");
+    size_t nonTlsBranch = fnBody.find("pm->restartMQTTDeferred(true, &restartResult)");
     TEST_ASSERT_TRUE_MESSAGE(
         mqttsBranch != std::string::npos && nonTlsBranch != std::string::npos &&
         mqttsBranch < nonTlsBranch,
@@ -5756,18 +5779,19 @@ void test_mqtt_manual_reconnect_failure_resilience() {
 
     // 2. 失败时返回不同的 message（前端可区分）
     TEST_ASSERT_TRUE_MESSAGE(
-        fnBody.find("rebuild failed") != std::string::npos ||
-        fnBody.find("insufficient memory") != std::string::npos,
+        fnBody.find("MQTT rebuild did not complete; check configuration, transport and resources") != std::string::npos &&
+        fnBody.find("FastBee::setFixedJsonField(doc, \"data\", \"failureKnown\", true);") != std::string::npos,
         "Failed rebuild must return descriptive error message");
     TestLog::step("Descriptive error message on rebuild failure");
 
-    // 3. 无论成功或失败，都返回 success: true（HTTP 请求本身是成功的）
-    //    失败只是 MQTT 重建失败，不是 HTTP 错误
-    size_t nonTlsResponse = fnBody.find("deferredOk");
+    // 3. A handled request must not report failed work as success. Pending
+    //    cleanup is accepted separately from an already completed rebuild.
     TEST_ASSERT_TRUE_MESSAGE(
-        nonTlsResponse != std::string::npos,
-        "Non-TLS response must always include success field");
-    TestLog::step("HTTP response always success regardless of rebuild result");
+        fnBody.find("doc[\"success\"] = deferredOk || pending") != std::string::npos &&
+        fnBody.find("FastBee::setFixedJsonField(doc, \"data\", \"lifecyclePending\", pending);") != std::string::npos &&
+        fnBody.find("FastBee::setFixedJsonField(doc, \"data\", \"reconnecting\", deferredOk);") != std::string::npos,
+        "Non-TLS response must distinguish completed rebuild, deferred lifecycle work and known failure");
+    TestLog::step("Response separates ready, pending and failed rebuild outcomes");
 
     // 4. 失败路径不触发设备重启（不会变砖）
     size_t scheduleAfterNonTls = fnBody.find("scheduleConfigReboot", fnBody.find("restartMQTTDeferred"));
@@ -5779,7 +5803,7 @@ void test_mqtt_manual_reconnect_failure_resilience() {
     // 5. 验证 restartMQTTDeferred 内存不足时的安全行为（源码级）
     std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
-    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild,");
     TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos,
         "restartMQTTDeferred must exist");
     // 内存不足时返回 false（不崩溃、不重启）
@@ -5839,7 +5863,7 @@ void test_mqtt_manual_reconnect_response_format() {
 
     // 场景 5：非 TLS → reconnecting=bool(结果), message=描述
     // 注意：注释中也包含 restartMQTTDeferred(true) 文本，需用 "pm->" 前缀定位到实际代码
-    size_t nonTlsBlock = fnBody.find("pm->restartMQTTDeferred(true)");
+    size_t nonTlsBlock = fnBody.find("pm->restartMQTTDeferred(true, &restartResult)");
     size_t nonTlsSend = nonTlsBlock == std::string::npos
         ? std::string::npos
         : fnBody.find("HandlerUtils::sendJsonStream(request, doc);", nonTlsBlock);
@@ -6006,10 +6030,10 @@ void test_mqtt_config_save_uses_hot_restart() {
         route.find("requestMqttRestartAsync()") != std::string::npos,
         "Save handler must request async MQTT hot-restart");
     TEST_ASSERT_TRUE_MESSAGE(
-        route.find("[\"restartRequired\"] = false") != std::string::npos,
+        route.find("FastBee::setFixedJsonField(resp, \"data\", \"restartRequired\", false);") != std::string::npos,
         "Save response must report restartRequired=false (no device reboot)");
     TEST_ASSERT_TRUE_MESSAGE(
-        route.find("[\"mqttHotRestart\"] = true") != std::string::npos,
+        route.find("FastBee::setFixedJsonField(resp, \"data\", \"mqttHotRestart\", true);") != std::string::npos,
         "Save response must expose mqttHotRestart flag for the frontend");
     TEST_ASSERT_TRUE_MESSAGE(
         route.find("pm->stopMQTT()") != std::string::npos,
@@ -6023,8 +6047,8 @@ void test_mqtt_config_save_uses_hot_restart() {
         header.find("void requestMqttRestartAsync()") != std::string::npos,
         "requestMqttRestartAsync must be declared");
     TEST_ASSERT_TRUE_MESSAGE(
-        header.find("volatile bool mqttRestartPending") != std::string::npos,
-        "mqttRestartPending flag must be volatile (set from async_tcp task)");
+        header.find("std::atomic<bool> mqttRestartPending") != std::string::npos,
+        "mqttRestartPending must use atomic cross-task publication");
 
     std::string pm = readProjectFile("src/protocols/ProtocolManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
@@ -6049,7 +6073,7 @@ void test_mqtt_config_save_uses_hot_restart() {
     TEST_ASSERT_TRUE_MESSAGE(handleEnd != std::string::npos, "handle() end marker");
     std::string handleBody = pm.substr(handlePos, handleEnd - handlePos);
 
-    size_t pendingPos = handleBody.find("if (mqttRestartPending)");
+    size_t pendingPos = handleBody.find("if (!mqttStopPending && mqttRestartPending.exchange(false))");
     TEST_ASSERT_TRUE_MESSAGE(pendingPos != std::string::npos,
         "handle() must consume mqttRestartPending flag");
     TEST_ASSERT_TRUE_MESSAGE(
@@ -6072,7 +6096,7 @@ void test_mqtt_config_save_uses_hot_restart() {
     TestLog::step("handle() consumes flag before heap guard, falls back to reboot on failure");
 
     // --- 4. restartMQTTDeferred 的 MQTTS 内存门槛防护保留 ---
-    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    size_t defPos = pm.find("bool ProtocolManager::restartMQTTDeferred(bool forceRebuild,");
     TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos, "restartMQTTDeferred must exist");
     TEST_ASSERT_TRUE_MESSAGE(
         pm.find("MQTTS_NO_PSRAM_MIN_DRAM_FREE", defPos) != std::string::npos,
@@ -6224,9 +6248,10 @@ void test_mqtt_config_save_disable_branch_no_rebuild() {
         disableBody.find("scheduleConfigReboot") == std::string::npos,
         "Disable branch must NOT schedule a reboot");
     TEST_ASSERT_TRUE_MESSAGE(
-        disableBody.find("mqttStoppedNow = true") != std::string::npos,
-        "Disable branch must set mqttStoppedNow for the frontend notification");
-    TestLog::step("Disable branch: no hot-restart, no reboot, sets mqttStoppedNow");
+        disableBody.find("mqttStoppedNow = pm->stopMQTT()") != std::string::npos &&
+        disableBody.find("mqttStopDeferred = !mqttStoppedNow") != std::string::npos,
+        "Disable branch must report the actual stop result and expose deferred cleanup");
+    TestLog::step("Disable branch: no rebuild/reboot, completion follows the stop result");
 
     // 3. 保底分支：无 ProtocolManager 时仍走设备重启（配置必定生效）
     TEST_ASSERT_TRUE_MESSAGE(
@@ -6240,7 +6265,7 @@ void test_mqtt_config_save_disable_branch_no_rebuild() {
         "Enable branch must set mqttHotRestart");
     std::string enableBody = block.substr(elseBranch);
     TEST_ASSERT_TRUE_MESSAGE(
-        enableBody.find("mqttStoppedNow = true") == std::string::npos,
+        enableBody.find("mqttStoppedNow =") == std::string::npos,
         "Enable branch must NOT set mqttStoppedNow (flags are mutually exclusive)");
     TestLog::step("mqttHotRestart / mqttDisconnected flags are mutually exclusive");
 
@@ -6269,7 +6294,7 @@ void test_mqtt_hot_restart_compile_isolation() {
 
     // 1. 消费块在 #if FASTBEE_ENABLE_MQTT 内：标志检查前有 #if，后有 #endif
     size_t ifMqtt = handleBody.find("#if FASTBEE_ENABLE_MQTT");
-    size_t pendingPos = handleBody.find("if (mqttRestartPending)");
+    size_t pendingPos = handleBody.find("if (!mqttStopPending && mqttRestartPending.exchange(false))");
     size_t endifPos = handleBody.find("#endif", pendingPos);
     TEST_ASSERT_TRUE_MESSAGE(ifMqtt != std::string::npos && pendingPos != std::string::npos,
         "MQTT guard and pending consumption must exist in handle()");
@@ -6279,12 +6304,12 @@ void test_mqtt_hot_restart_compile_isolation() {
         "#endif must close the MQTT block after pending consumption");
     TestLog::step("Consumption guarded by FASTBEE_ENABLE_MQTT (lean builds unaffected)");
 
-    // 2. 消费块在 if (mqttClient) 块之外：客户端首次创建（null）时也能消费
-    //    验证方式：if (mqttClient) 块在 pending 检查之前已由 "}" 闭合——
+    // 2. 消费块在 if (mqttRead) 块之外：客户端首次创建（null）时也能消费
+    //    验证方式：if (mqttRead) 块在 pending 检查之前已由 "}" 闭合——
     //    即 pending 检查前的注释明确它是独立块（非嵌套在 mqttClient 块内）
-    size_t clientBlockPos = handleBody.find("if (mqttClient) {");
+    size_t clientBlockPos = handleBody.find("if (mqttRead) {");
     TEST_ASSERT_TRUE_MESSAGE(clientBlockPos != std::string::npos,
-        "if (mqttClient) block must exist");
+        "MQTT loop must hold an admitted lifetime reference");
     TEST_ASSERT_TRUE_MESSAGE(clientBlockPos < pendingPos,
         "Pending consumption must come after the mqttClient handle block");
     // 独立块证据：消费块注释在 mqttClient 块外（两者之间存在块闭合后的注释行）
@@ -6305,7 +6330,7 @@ void test_mqtt_hot_restart_compile_isolation() {
     // 4. 头文件标志声明在条件编译内
     std::string header = readProjectFile("include/protocols/ProtocolManager.h");
     TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "ProtocolManager.h must be readable");
-    size_t declPos = header.find("volatile bool mqttRestartPending");
+    size_t declPos = header.find("std::atomic<bool> mqttRestartPending");
     TEST_ASSERT_TRUE_MESSAGE(declPos != std::string::npos, "Flag declaration must exist");
     size_t guardBefore = header.rfind("#if FASTBEE_ENABLE_MQTT", declPos);
     size_t guardClose = header.find("#endif", declPos);
@@ -6710,8 +6735,11 @@ void test_mqtt_reconnect_task_entry_clears_flags_on_exit() {
 
     auto pos = content.find("void MQTTClient::reconnectTaskEntry");
     TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "reconnectTaskEntry must be defined");
-    // 截取函数体（覆盖到 vTaskDelete）
-    std::string funcBody = content.substr(pos, 1200);
+    // Use the complete function, not a fixed byte window that can truncate
+    // cleanup after comments or new lifecycle guards.
+    const size_t end = content.find("\n}", pos);
+    TEST_ASSERT_TRUE_MESSAGE(end != std::string::npos, "reconnectTaskEntry body must be complete");
+    std::string funcBody = content.substr(pos, end - pos);
     // 加固：任务退出前必须清除 _reconnectRunning（防止异常路径残留卡死）
     TEST_ASSERT_TRUE_MESSAGE(
         funcBody.find("_reconnectRunning = false") != std::string::npos,
@@ -6720,6 +6748,15 @@ void test_mqtt_reconnect_task_entry_clears_flags_on_exit() {
     TEST_ASSERT_TRUE_MESSAGE(
         funcBody.find("_reconnectPending = false") != std::string::npos,
         "reconnectTaskEntry must clear _reconnectPending when doReconnect skipped");
+    const size_t running = funcBody.find("client->_reconnectRunning = false");
+    const size_t scheduled = funcBody.find("client->_reconnectScheduledMs = 0");
+    const size_t finish = funcBody.find("client->_reconnectLifetime.finish()");
+    const size_t taskDelete = funcBody.find("vTaskDelete(nullptr)");
+    TEST_ASSERT_TRUE_MESSAGE(running != std::string::npos && scheduled != std::string::npos &&
+                             finish != std::string::npos && taskDelete != std::string::npos &&
+                             running < finish && scheduled < finish && finish < taskDelete &&
+                             funcBody.find("client->", finish + std::string("client->_reconnectLifetime.finish()").size()) == std::string::npos,
+        "Worker flags must clear before lifetime acknowledgement, with no object access afterwards");
     TestLog::step("reconnectTaskEntry hardened to always clear flags on exit");
 
     TestLog::testEnd(true);
@@ -7011,7 +7048,7 @@ void test_protocol_config_secret_route_contract() {
         TEST_ASSERT_TRUE_MESSAGE(
             block.find("ProtocolSecret::shouldPersist") != std::string::npos &&
             block.find(std::string("hasProtocolParam(request, \"") + contract.param + "\")") != std::string::npos &&
-            block.find(std::string("[\"") + contract.field + "\"] = " + contract.variable) != std::string::npos,
+            block.find(std::string("FastBee::setFixedJsonField(doc, \"mqtt\", \"") + contract.field + "\", " + contract.variable + ");") != std::string::npos,
             "Every MQTT credential write must preserve a returned mask");
     }
 

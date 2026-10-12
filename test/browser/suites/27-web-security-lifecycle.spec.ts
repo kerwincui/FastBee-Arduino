@@ -1,5 +1,6 @@
 import { test, expect } from '../fixtures/base.fixture';
 import { enableOptionalUiFeatures } from '../fixtures/optional-features.fixture';
+const { MAPPING: privateNames } = require('../../../scripts/web-private-properties');
 
 const XSS_PAYLOAD = '<img data-web-xss src=x onerror="window.__fastbeeXss=true">';
 
@@ -258,10 +259,11 @@ test.describe('Suite-27: Web security and lifecycle', () => {
     await expect(typeSelect.locator('option[value="22"]')).toHaveCount(1);
 
     await typeSelect.selectOption('22');
-    await authPage.evaluate(() => {
+    await authPage.evaluate(names => {
       const state = (window as any).AppState;
-      state._syncPeripheralTypeSelect(state._periphTypeCatalog);
-    });
+      const key = (name: string) => names[name] in state ? names[name] : name;
+      state[key('_syncPeripheralTypeSelect')](state[key('_periphTypeCatalog')]);
+    }, privateNames);
     await expect(typeSelect).toHaveValue('22');
     await expect(typeSelect.locator('option[value="51"]')).toHaveCount(0);
   });

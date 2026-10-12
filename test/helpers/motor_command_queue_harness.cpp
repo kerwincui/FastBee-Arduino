@@ -3,14 +3,15 @@
 #include <cstdio>
 using namespace MotorCommands;
 static int submit(Queue& q, const char* ref, const char* action, const char* request,
-                  uint32_t now = 10, int value = 0) {
+                  uint32_t now = 10, int value = 0, const FastBee::UartEventOrigin& origin = {}) {
     int slot = -1; uint32_t existing = 0; const char* error = nullptr;
-    if (!q.reserve(ref, action, value, request, now, slot, existing, error)) return -1;
+    if (!q.reserve(ref, action, value, request, now, slot, existing, error, origin)) return -1;
     if (existing) return -2;
     if (!std::strcmp(action, "stop")) q.cancelQueued(ref, now);
     auto& c = q.commands[slot]; c = Command{};
     std::strcpy(c.ref, ref); std::strcpy(c.action, action); std::strcpy(c.requestId, request);
     c.value = value; c.id = q.allocateId(); c.order = ++q.nextOrder; c.phase = Phase::QUEUED;
+    c.uartOrigin = origin;
     return slot;
 }
 int main() {
@@ -114,5 +115,46 @@ int main() {
     int slot; uint32_t existing; const char* error = nullptr;
     assert(wrap.reserve("one", "forward", 0, "one", 14, slot, existing, error) && existing);
     assert(wrap.reserve("one", "forward", 0, "one", 30000, slot, existing, error) && !existing);
-    std::puts("Motor queue passed: replay, conflict, stop reserve/cancel/priority, FIFO, expiry and wrap.");
+    const auto origin = FastBee::UartEventOrigin::captured(7,19);
+    Queue bound;
+    int boundMove = submit(bound,"motor.a","forward","bound",10,1,origin);
+    assert(boundMove >= 0 && bound.commands[boundMove].uartOrigin.matches(7,19));
+    assert(submit(bound,"motor.a","forward","bound",10,1,origin) == -2);
+    for (const auto changed : {FastBee::UartEventOrigin{}, FastBee::UartEventOrigin::captured(8,19),
+                               FastBee::UartEventOrigin::captured(7,20)}) {
+        assert(submit(bound,"motor.a","forward","bound",10,1,changed) == -1);
+    }
+    Queue boundStops;
+    int boundStop = submit(boundStops,"motor.a","stop","bound-stop",10,0,origin);
+    assert(boundStop >= 0);
+    assert(submit(boundStops,"motor.a","stop","same-origin-stop",10,0,origin) == -2);
+    int manualStop = submit(boundStops,"motor.a","stop","manual-stop");
+    assert(manualStop >= 0 && manualStop != boundStop && boundStops.commands[manualStop].uartOrigin.unbound());
+    assert(boundStops.commands[boundStop].phase == Phase::DONE && boundStops.selectNext() == manualStop);
+    Queue boundReads;
+    assert(submit(boundReads,"motor.a","readStatus","bound-read",10,0,origin) >= 0);
+    assert(submit(boundReads,"motor.a","readStatus","same-origin-read",10,0,origin) == -2);
+    assert(submit(boundReads,"motor.a","readStatus","manual-read") == -1);
+
+    Queue actors;FastBee::OrdinaryControlContext firstActor,secondActor;
+    firstActor.request.actor={FastBee::OrdinaryControl::Source::Http,42};
+    secondActor.request.actor={FastBee::OrdinaryControl::Source::Screen,(uint64_t(1)<<32)|1};
+    FastBee::ModbusControlTarget identity;identity.instance=1;identity.configuration=1;identity.slave=2;
+    assert(actors.reserve("motor.a","forward",1,"same-request",10,slot,existing,error,{},&firstActor,&identity));
+    auto& entry=actors.commands[slot];entry.phase=Phase::DONE;entry.finishedMs=10;entry.id=1;entry.value=1;
+    std::strcpy(entry.ref,"motor.a");std::strcpy(entry.action,"forward");std::strcpy(entry.requestId,"same-request");
+    entry.control=firstActor;entry.target=identity;
+    assert(!actors.reserve("motor.a","forward",1,"same-request",10,slot,existing,error,{},&secondActor,&identity) && !existing);
+    assert(actors.reserve("motor.a","forward",1,"same-request",10,slot,existing,error,{},&firstActor,&identity) && existing==1);
+    ++identity.instance;
+    assert(!actors.reserve("motor.a","forward",1,"same-request",10,slot,existing,error,{},&firstActor,&identity));
+    // A transport result published before PM finalization is still retained.
+    entry.workGeneration=99;entry.terminalAcknowledged=false;
+    assert(actors.reserve("motor.b","forward",1,"new",40000,slot,existing,error));
+    assert(entry.id==1 && entry.phase==Phase::DONE);
+    entry.terminalAcknowledged=true;
+    assert(actors.reserve("motor.b","forward",1,"new",40000,slot,existing,error));
+    assert(entry.phase==Phase::EMPTY);
+    std::puts("Motor queue passed: source/lifetime replay binding, stop reserve and terminal retention.");
+
 }

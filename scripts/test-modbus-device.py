@@ -22,6 +22,49 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def request_api(client, base, route, params, method, report):
+    """Keep transport phases and a safe peripheral ID without storing credentials."""
+    started = time.monotonic()
+    observation = dict(route=route.split('?', 1)[0], method=method, status=None,
+                       at=datetime.now(timezone.utc).isoformat(), failurePhase=None)
+    if (observation['route'] == '/api/peripherals/read' and isinstance(params, dict) and
+            isinstance(params.get('id'), str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', params['id'])):
+        observation['peripheralId'] = params['id']
+    response = None
+    phase = 'response_headers'
+    try:
+        # Streaming exposes the received status even when reading the body fails.
+        response = client.request(method, base + route,
+                                  params=params if method == 'GET' else None,
+                                  data=params if method == 'POST' else None,
+                                  timeout=(3, 12), stream=True,
+                                  headers={'Accept-Encoding': 'identity'})
+        observation['status'] = response.status_code
+        phase = 'http_response'
+        response.raise_for_status()
+        phase = 'response_body'
+        raw = response.content
+        observation['bodyBytes'] = len(raw)
+        declared = response.headers.get('Content-Length')
+        if declared is not None:
+            require(isinstance(declared, str) and declared.isdecimal() and len(raw) == int(declared),
+                    'Incomplete HTTP response body: ' + observation['route'])
+        observation['bodyComplete'] = True
+        phase = 'response_json'
+        body = response.json()
+        require(isinstance(body, dict) and body.get('success') is True,
+                'Request failed: ' + observation['route'])
+        return body.get('data') or {}
+    except Exception as error:
+        observation.update(error=type(error).__name__, failurePhase=phase)
+        raise
+    finally:
+        observation['elapsedMs'] = round((time.monotonic() - started) * 1000)
+        report['requests'].append(observation)
+        if response is not None:
+            response.close()
+
+
 def decode_mapping(task, mapping):
     cache = task.get('cachedData') or {}
     require(task.get('status') == 'ok' and cache.get('valid', True) is not False
@@ -30,6 +73,8 @@ def decode_mapping(task, mapping):
     offset, kind = mapping.get('regOffset', 0), mapping.get('dataType', 0)
     require(type(offset) is int and offset >= 0 and type(kind) is int and 0 <= kind <= 4, 'Invalid mapping')
     count = 2 if kind in (2, 3, 4) else 1
+    order = mapping.get('wordOrder', 0)
+    require(type(order) is int and order in (0, 1) and (count == 2 or order == 0), 'Invalid word order')
     require(isinstance(words, list) and offset + count <= len(words), 'Incomplete register sample')
     selected = words[offset:offset + count]
     require(all(type(w) is int and 0 <= w <= 65535 for w in selected), 'Invalid register word')
@@ -37,12 +82,15 @@ def decode_mapping(task, mapping):
     if kind == 1 and raw >= 32768:
         raw -= 65536
     if count == 2:
-        bits = (selected[0] << 16) | selected[1]
+        bits = (selected[order] << 16) | selected[1 - order]
         raw = struct.unpack('>f', struct.pack('>I', bits))[0] if kind == 4 else bits
         if kind == 3 and bits >= 2147483648:
             raw -= 4294967296
     scale = mapping.get('scaleFactor', 1)
-    require(type(scale) in (int, float) and math.isfinite(scale), 'Invalid scale factor')
+    require(type(scale) in (int, float) and math.isfinite(scale) and abs(scale) <= 3.4028234663852886e38, 'Invalid scale factor')
+    stored_scale = struct.unpack('>f', struct.pack('>f', scale))[0]
+    require(scale == 0 or stored_scale != 0, 'Scale factor underflow')
+    scale = stored_scale
     value = raw * scale
     require(math.isfinite(value), 'Non-finite reading')
     return value
@@ -222,25 +270,10 @@ def main():
         response.raise_for_status(); require(response.json().get('success') is True, 'Login failed')
         cookies = session.cookies.get_dict()
         def api(route, params=None, method='GET'):
-            started = time.monotonic()
             # Separate clients allow real overlapping health/control requests without sharing a Session.
             with requests.Session() as client:
                 client.trust_env = False; client.cookies.update(cookies)
-                observation = dict(route=route, method=method, status=None)
-                try:
-                    result = client.request(method, args.url.rstrip('/') + route,
-                                            params=params if method == 'GET' else None,
-                                            data=params if method == 'POST' else None, timeout=(3, 12))
-                    observation['status'] = result.status_code
-                except (requests.Timeout, requests.ConnectionError) as error:
-                    observation['error'] = type(error).__name__
-                    raise
-                finally:
-                    observation['elapsedMs'] = round((time.monotonic() - started) * 1000)
-                    report['requests'].append(observation)
-                result.raise_for_status(); body = result.json()
-                require(body.get('success') is True, 'Request failed: ' + route)
-                return body.get('data') or {}
+                return request_api(client, args.url.rstrip('/'), route, params, method, report)
         info = api('/api/system/info')
         normalize = lambda text: re.sub('[^0-9a-f]', '', text.lower())
         require(normalize(info.get('network', {}).get('macAddress', '')) == normalize(args.expected_mac)

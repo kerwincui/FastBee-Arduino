@@ -7,10 +7,17 @@
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
 #include "core/RuntimeFeatureManager.h"
+#include "core/FeatureObservationCounter.h"
 #include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 
 namespace {
+FastBee::FeatureObservationCounter<> userAdminOwners;
+const FastBee::FeatureInstanceObserver userAdminObserver{"userAdmin", [](const void* context) {
+    return static_cast<const FastBee::FeatureObservationCounter<>*>(context)->snapshot(
+        FastBee::FeatureInstanceScope::ServiceLifecycle);
+}, &userAdminOwners};
+
 bool requireUserAdministration(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     if (FastBee::RuntimeFeatureManager::instance().shouldEnable("userAdmin")) return true;
     ctx->sendError(request, 503, "User administration disabled by runtime feature config");
@@ -20,7 +27,11 @@ bool requireUserAdministration(WebHandlerContext* ctx, AsyncWebServerRequest* re
 
 UserRouteHandler::UserRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
+    userAdminOwners.enter();
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&userAdminObserver);
 }
+
+UserRouteHandler::~UserRouteHandler() { userAdminOwners.leave(); }
 
 void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/users/update", HTTP_POST,
@@ -124,7 +135,7 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
 
     String usersJson = ctx->userManager->getAllUsers();
     auto usersDoc = FastBee::makeJsonDocument(16384);
-    DeserializationError error = deserializeJson(usersDoc, usersJson);
+    DeserializationError error = deserializeJson(usersDoc, usersJson.c_str(), usersJson.length());
     if (error) {
         ctx->sendError(request, 500, "Failed to parse users data");
         return;

@@ -7,6 +7,7 @@
  */
 
 #include "core/RuntimeFeatureManager.h"
+#include "network/FixedJsonField.h"
 
 #include <string.h>
 #include <time.h>
@@ -156,7 +157,7 @@ void RuntimeFeatureManager::generateDefaults() {
                      "SPI MFRC522", nullptr, 24, true});
     registerFeature({"ioExpander", "通用 IO 扩展器", "peripheral", 6, 1024,
                      FASTBEE_ENABLE_IO_EXPANDER != 0, false,
-                     "I2C PCF8574 · 按父设备共享实例（估算）", nullptr, 12});
+                     "I2C PCF8574/MCP23017 · 按父设备共享实例（估算）", nullptr, 12});
     registerFeature({"i2cSensors", "I2C 传感器采集", "peripheral", 15, 500,
                      FASTBEE_ENABLE_I2C_SENSORS != 0, false,
                      "I2C 温湿度/光照/气压/姿态/电压电流功率 · 按需采样", nullptr, 23, true});
@@ -193,15 +194,18 @@ void RuntimeFeatureManager::generateDefaults() {
     registerFeature({"ota", "OTA 固件升级", "system", 10, 1024,
                      FASTBEE_ENABLE_OTA != 0, false,
                      "Dual partition + LittleFS support", nullptr, 20});
-    // otaFs 作为 ota 的附属功能自动启用
+    // Preserve the legacy key/intent; no filesystem OTA writer is implemented.
+    // FASTBEE_ENABLE_OTA_FS remains a partition/release declaration, not support.
     registerFeature(FeatureMeta{"otaFs", nullptr, "system", 3, 500,
-                     (true), false,
+                     false, false,
                      nullptr, "ota", 0, false});
-    registerFeature({"logViewer", "设备日志", "system", 4, 500,
+    registerFeature({"logViewer", "设备日志", "system", 4,
+                     static_cast<uint32_t>(LoggerSystem::recentLogOptionalBytes()),
                      FASTBEE_ENABLE_LOG_VIEWER != 0, false,
-                     nullptr, nullptr, 0});
+                     "32 recent lines allocated on demand; 8 critical lines remain resident", nullptr, 0});
     // fileLogging 与日志查看器共用一个用户开关，仍保留独立运行态供内存保护降级。
-    registerFeature({"fileLogging", nullptr, "system", 3, 500,
+    registerFeature({"fileLogging", nullptr, "system", 3,
+                     static_cast<uint32_t>(LoggerSystem::fileLoggingBudgetBytes()),
                      FASTBEE_ENABLE_FILE_LOGGING != 0, false,
                      nullptr, "logViewer", 0});
     registerFeature({"userAdmin", "多用户管理", "system", 5, 500,
@@ -412,22 +416,34 @@ bool RuntimeFeatureManager::shouldEnable(const char* key) const {
     }
     const auto* f = findFeature(key);
     if (!f) return false;
-    const bool effectiveEnabled = strcmp(key, "ioExpander") == 0
-        ? ioExpanderBootEnabled_ : strcmp(key, "i2cSensors") == 0
-            ? i2cSensorsBootEnabled_ : f->userEnabled;
-    if (!(f->meta.compiled && effectiveEnabled && f->budgetPassed)) return false;
-    if (f->runtimeDisabled) return false;
-    // 延迟初始化门控: requiresNetwork 的功能在网络子系统就绪前不激活，
-    // 把重型外设/协议的内存分配错峰到 WiFi 启动之后（抬高启动期可用 DRAM）
-    if (f->meta.requiresNetwork && !networkReady_) return false;
-    // 依赖链检查: 父功能必须同样处于激活状态
-    if (f->meta.dependsOn) {
-        const auto* parent = findFeature(f->meta.dependsOn);
-        if (parent && !(parent->meta.compiled && parent->userEnabled && parent->budgetPassed)) {
-            return false;
+    return strcmp(admissionState(*f), "admitted") == 0;
+}
+
+const char* RuntimeFeatureManager::admissionState(const FeatureState& feature) const {
+    const FeatureState* current = &feature;
+    bool ownState = true;
+    // At most one visit per registered feature. No recursion, allocation, or
+    // fail-open result for a missing/cyclic dependency.
+    for (size_t depth = 0; depth < count_; ++depth) {
+        if (!current->meta.compiled) return ownState ? "not_compiled" : "dependency_blocked";
+        const bool effectiveEnabled = strcmp(current->meta.key, "ioExpander") == 0
+            ? ioExpanderBootEnabled_ : strcmp(current->meta.key, "i2cSensors") == 0
+                ? i2cSensorsBootEnabled_ : current->userEnabled;
+        if (!effectiveEnabled) {
+            if (!ownState) return "dependency_blocked";
+            return current->userEnabled ? "restart_required" : "user_disabled";
         }
+        if (!current->budgetPassed) return ownState ? "budget_denied" : "dependency_blocked";
+        if (current->runtimeDisabled) return ownState ? "runtime_disabled" : "dependency_blocked";
+        if (current->meta.requiresNetwork && !networkReady_) {
+            return ownState ? "waiting_for_network" : "dependency_blocked";
+        }
+        if (!current->meta.dependsOn) return "admitted";
+        current = findFeature(current->meta.dependsOn);
+        if (!current) return "dependency_missing";
+        ownState = false;
     }
-    return true;
+    return "dependency_cycle";
 }
 
 bool RuntimeFeatureManager::isUserEnabled(const char* key) const {
@@ -667,19 +683,19 @@ bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) c
     if (index >= count_ || obj.isNull()) return false;
 
     const auto& st = features_[index];
-    obj["key"] = st.meta.key;
-    obj["name"] = st.meta.displayName;
-    obj["group"] = st.meta.group;
-    obj["compiled"] = st.meta.compiled;
-    obj["userEnabled"] = st.userEnabled;
-    obj["budgetPassed"] = st.budgetPassed;
+    FastBee::setFixedJsonField(obj, "key", st.meta.key);
+    FastBee::setFixedJsonField(obj, "name", st.meta.displayName);
+    FastBee::setFixedJsonField(obj, "group", st.meta.group);
+    FastBee::setFixedJsonField(obj, "compiled", st.meta.compiled);
+    FastBee::setFixedJsonField(obj, "userEnabled", st.userEnabled);
+    FastBee::setFixedJsonField(obj, "budgetPassed", st.budgetPassed);
     if (strcmp(st.meta.key, "ioExpander") == 0 || strcmp(st.meta.key, "i2cSensors") == 0) {
         const bool bootEnabled = strcmp(st.meta.key, "ioExpander") == 0
             ? ioExpanderBootEnabled_ : i2cSensorsBootEnabled_;
-        obj["requiresRestart"] = true;
-        obj["bootEnabled"] = bootEnabled;
-        obj["pendingRestart"] = st.userEnabled != bootEnabled;
-        obj["onDemand"] = true;
+        FastBee::setFixedJsonField(obj, "requiresRestart", true);
+        FastBee::setFixedJsonField(obj, "bootEnabled", bootEnabled);
+        FastBee::setFixedJsonField(obj, "pendingRestart", st.userEnabled != bootEnabled);
+        FastBee::setFixedJsonField(obj, "onDemand", true);
     }
     // Report the same effective state that the initialization gates use.
     // A feature can be compiled and user-enabled while still being held
@@ -687,10 +703,26 @@ bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) c
     // runtime memory-recovery override. Counting it as active in that
     // situation makes the Web resource summary overstate live usage.
     const bool active = shouldEnable(st.meta.key);
-    obj["active"] = active;
-    obj["runtimeDisabled"] = st.runtimeDisabled;
+    FastBee::setFixedJsonField(obj, "active", active);
+    // Keep the legacy field for menu/API compatibility, but make its scope
+    // explicit. No driver observation means unknown, not initialized or idle.
+    FastBee::setFixedJsonField(obj, "activeMeaning", "admission_only");
+    FastBee::setFixedJsonField(obj, "admissionState", admissionState(st));
+    auto observed = FeatureInstanceRegistry::instance().observe(st.meta.key);
+    if (observed.state == FeatureInstanceState::Unobserved && observed.reason == FeatureInstanceReason::ObserverMissing)
+        observed.scope = missingFeatureInstanceScope(st.meta.key);
+    FastBee::setFixedJsonField(obj, "instanceState", observed.name());
+    FastBee::setFixedJsonField(obj, "instanceObserved", observed.observed());
+    FastBee::setFixedJsonField(obj, "instanceScope", observed.scopeName());
+    FastBee::setFixedJsonField(obj, "instanceReason", observed.state == FeatureInstanceState::Unobserved &&
+            observed.reason == FeatureInstanceReason::ObserverMissing
+        ? missingFeatureInstanceReason(st.meta.key, st.meta.compiled) : observed.reasonName());
+    if (strcmp(st.meta.key, "otaFs") == 0) FastBee::setFixedJsonField(obj, "instanceReason", "implementation_missing");
+    obj.remove("initializedInstances"); // Objects may be reused for a different feature.
+    if (observed.countKnown()) FastBee::setFixedJsonField(obj, "initializedInstances", observed.initializedCount);
+    FastBee::setFixedJsonField(obj, "runtimeDisabled", st.runtimeDisabled);
     if (st.runtimeDisabled && st.runtimeReason[0] != '\0') {
-        obj["runtimeDisableReason"] = st.runtimeReason;
+        FastBee::setFixedJsonField(obj, "runtimeDisableReason", st.runtimeReason);
     }
     uint32_t displayFlashKB = st.meta.flashKB;
     uint32_t displayRamB = st.meta.ramB;
@@ -709,20 +741,26 @@ bool RuntimeFeatureManager::getFeatureStatusJson(size_t index, JsonObject obj) c
             }
         }
     }
-    obj["flashKB"] = displayFlashKB;
-    obj["ramB"] = displayRamB;
-    if (st.meta.hwDep) obj["hwDep"] = st.meta.hwDep;
-    if (st.meta.dependsOn) obj["dependsOn"] = st.meta.dependsOn;
+    FastBee::setFixedJsonField(obj, "flashKB", displayFlashKB);
+    FastBee::setFixedJsonField(obj, "ramB", displayRamB);
+    if (st.meta.hwDep) FastBee::setFixedJsonField(obj, "hwDep", st.meta.hwDep);
+    if (st.meta.dependsOn) FastBee::setFixedJsonField(obj, "dependsOn", st.meta.dependsOn);
+    bool bundleRequired = false;
+    for (const auto& bundle : kFeatureBundles)
+        if (strcmp(st.meta.key, bundle.member) == 0) bundleRequired = true;
+    FastBee::setFixedJsonField(obj, "bundleRequired", bundleRequired);
     // 延迟初始化标记：true 表示该功能在网络就绪后才激活（错峰启动）
-    if (st.meta.requiresNetwork) obj["deferred"] = true;
+    if (st.meta.requiresNetwork) FastBee::setFixedJsonField(obj, "deferred", true);
     if (!st.meta.compiled) {
-        obj["locked"] = true;
+        FastBee::setFixedJsonField(obj, "locked", true);
         // OTA 在 4MB 单 app 分区中是硬件/分区能力限制，不是统一代码
         // 缺失；将原因透传给页面，避免误导用户重新编译无效固件。
         if (st.meta.key && strcmp(st.meta.key, "ota") == 0) {
-            obj["lockReason"] = "当前分区不支持 OTA（需要带 ota_1 的 A/B 双分区）";
+            FastBee::setFixedJsonField(obj, "lockReason", "当前分区不支持 OTA（需要带 ota_1 的 A/B 双分区）");
+        } else if (strcmp(st.meta.key, "otaFs") == 0) {
+            FastBee::setFixedJsonField(obj, "lockReason", "未实现文件系统 OTA 写入");
         } else {
-            obj["lockReason"] = "Not compiled into firmware";
+            FastBee::setFixedJsonField(obj, "lockReason", "Not compiled into firmware");
         }
     }
     return true;
@@ -744,13 +782,15 @@ void RuntimeFeatureManager::getStatusSummaryJson(JsonObject summary) const {
         }
     }
 
-    summary["totalFlashKB"] = totalFlashKB;
-    summary["activeFlashKB"] = activeFlashKB;
-    summary["activeRamB"] = activeRamB;
-    summary["runtimeDegraded"] = runtimeDegraded_;
+    FastBee::setFixedJsonField(summary, "totalFlashKB", totalFlashKB);
+    FastBee::setFixedJsonField(summary, "activeFlashKB", activeFlashKB);
+    FastBee::setFixedJsonField(summary, "activeRamB", activeRamB);
+    FastBee::setFixedJsonField(summary, "resourceAccounting", "static_estimate");
+    FastBee::setFixedJsonField(summary, "instanceMemoryMeasured", false);
+    FastBee::setFixedJsonField(summary, "runtimeDegraded", runtimeDegraded_);
 #if defined(ESP_PLATFORM)
-    summary["free8KB"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024;
-    summary["largest8KB"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024;
+    FastBee::setFixedJsonField(summary, "free8KB", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024);
+    FastBee::setFixedJsonField(summary, "largest8KB", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024);
 #endif
 }
 

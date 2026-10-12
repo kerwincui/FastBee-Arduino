@@ -763,6 +763,16 @@ function extractReadmeOptionValues(line, optionName) {
     return values;
 }
 
+function validateDocumentedEnvironmentRows(text, label, firmwareEnvs, issues) {
+    const allowed = new Set(firmwareEnvs);
+    text.split(/\r?\n/).forEach((line, index) => {
+        const match = line.match(/^\|\s*`?(esp32(?:c3|c6|s3)?-F\d+R\d+)`?\s*\|/);
+        if (match && !allowed.has(match[1])) {
+            issues.push(`${label}:${index + 1}: documented environment '${match[1]}' is absent from the release matrix`);
+        }
+    });
+}
+
 function validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues) {
     const firmwareEnvSet = new Set(firmwareEnvs);
     const platformioEnvSet = new Set(allPlatformioEnvs);
@@ -776,6 +786,7 @@ function validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNam
 
         const text = readText(readmePath);
         const label = rel(readmePath);
+        validateDocumentedEnvironmentRows(text, label, firmwareEnvs, issues);
 
         LEGACY_ENV_NAMES.forEach((envName) => {
             const index = text.indexOf(envName);
@@ -1063,6 +1074,11 @@ function main() {
     validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
     validateGzipWwwHardwareOptIn(gzipWwwText, issues);
     validatePartitionTables(platformioText, issues);
+    try {
+        require('./generate-build-capabilities').checkReport(ROOT_DIR);
+    } catch (error) {
+        issues.push(error.message);
+    }
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');
@@ -1075,4 +1091,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { validateAsyncWebServerRegexDisabled, extractPlatformioEnvNames };
+module.exports = { validateAsyncWebServerRegexDisabled, extractPlatformioEnvNames, validateDocumentedEnvironmentRows };

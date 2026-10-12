@@ -1,0 +1,90 @@
+{
+  "peripherals": [
+    {
+      "id": "ads1115_scan",
+      "name": "ADS1115 four inputs - review electrical limits",
+      "type": 38,
+      "enabled": false,
+      "pins": [
+        4,
+        5
+      ],
+      "params": {
+        "sensorType": 0,
+        "sampleInterval": 1200,
+        "driver": "ADS1115",
+        "address": 72,
+        "mode": 0,
+        "frequency": 100000,
+        "busPeripheralId": "",
+        "mux": 4,
+        "scanMask": 240,
+        "fullScaleMv": 4096,
+        "dataRate": 8,
+        "calibrationGain": 1,
+        "calibrationOffset": 0
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "ads1115_scan_read",
+      "name": "Read four configured ADC inputs",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 2,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "ads1115_scan",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"ads1115_scan\",\"sensorCategory\":\"ADS1115\",\"channelField\":\"voltage_mux4\",\"dataField\":\"adc_input_0\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":4,\"sensorLabel\":\"ADC 0\",\"unit\":\"V\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "ads1115_scan",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"ads1115_scan\",\"sensorCategory\":\"ADS1115\",\"channelField\":\"voltage_mux5\",\"dataField\":\"adc_input_1\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":4,\"sensorLabel\":\"ADC 1\",\"unit\":\"V\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "ads1115_scan",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"ads1115_scan\",\"sensorCategory\":\"ADS1115\",\"channelField\":\"voltage_mux6\",\"dataField\":\"adc_input_2\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":4,\"sensorLabel\":\"ADC 2\",\"unit\":\"V\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "ads1115_scan",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"ads1115_scan\",\"sensorCategory\":\"ADS1115\",\"channelField\":\"voltage_mux7\",\"dataField\":\"adc_input_3\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":4,\"sensorLabel\":\"ADC 3\",\"unit\":\"V\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    }
+  ]
+}
+

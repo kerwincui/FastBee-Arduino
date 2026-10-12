@@ -23,12 +23,12 @@ public:
 
 private:
     WebHandlerContext* ctx;
-    FastBee::PreflightResult preflightResult;
     SemaphoreHandle_t preflightMutex = nullptr;
 
     void handleGetBoardProfiles(AsyncWebServerRequest* request);
     void handleGetPeripheralResources(AsyncWebServerRequest* request);
     void handlePreflightPeripheral(AsyncWebServerRequest* request);
+    void handleImportConfiguration(AsyncWebServerRequest* request, bool commit);
     void handleGetPeripherals(AsyncWebServerRequest* request);
     void handleGetPeripheralTypes(AsyncWebServerRequest* request);
     void handleGetPeripheral(AsyncWebServerRequest* request);

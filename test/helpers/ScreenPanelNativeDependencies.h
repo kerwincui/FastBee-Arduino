@@ -113,10 +113,17 @@ inline std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapsho
 inline std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
     unexpectedPanelRuntimeDependency();
 }
-inline bool PeriphExecManager::runOnce(const String&, const String&, String*, AsyncExecResult*) {
+inline bool PeriphExecManager::runOnce(const String&, const String&, String*, AsyncExecResult*, const FastBee::OrdinaryControlContext*) {
     unexpectedPanelRuntimeDependency();
 }
 inline PeripheralManager& PeripheralManager::getInstance() {
+    unexpectedPanelRuntimeDependency();
+}
+inline bool PeripheralManager::beginOrdinaryControl(FastBee::OrdinaryControl::Source, uint64_t, uint32_t,
+        bool, uint64_t, const String&, uint32_t, const FastBee::UartEventOrigin&, FastBee::OrdinaryControlContext&) {
+    unexpectedPanelRuntimeDependency();
+}
+inline void PeripheralManager::finishOrdinaryControl(const FastBee::OrdinaryControlContext&, bool) {
     unexpectedPanelRuntimeDependency();
 }
 inline bool PeripheralManager::getPeripheralSnapshot(const String&, PeripheralConfig&, uint32_t*) const {

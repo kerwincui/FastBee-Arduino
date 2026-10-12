@@ -10,7 +10,7 @@
 
 ## 已部署的配置
 
-通过现有事务保存接口只提交 `id=do1, initialState=1`，并同步 `docs/ecm50a-s3-f16r8/peripherals.json`。GPIO15初始化HIGH，按本板驱动和NC接法预期线圈吸合、NC断开、灯熄灭。保持GPIO16初始化LOW、原光电/平台规则及协议配置不变。前后配置逐项核对通过，协议仅比较SHA256，不公开凭据。
+通过现有事务保存接口只提交 `id=do1, initialState=1`，并同步 `docs/device-test-configs/com15-esp32s3-f16r8/config/peripherals.json`。GPIO15初始化HIGH，按本板驱动和NC接法预期线圈吸合、NC断开、灯熄灭。保持GPIO16初始化LOW、原光电/平台规则及协议配置不变。前后配置逐项核对通过，协议仅比较SHA256，不公开凭据。
 
 本次是配置部署，无固件或Web重新刷写。沿用已验证应用SHA256 `0071a394f6fb34e835c393951f6f8a0810bdf9ddb22074de8a96ddf4de4f3df4`、Web SHA256 `9dc53b77bd9f9c56c158054596f7a621da2b34c2b041f4502d6b9b4e077486d8`。此前合并文件系统的摘要仅表示当时刷入镜像，本次持久化配置后不再当作当前运行文件系统摘要。
 

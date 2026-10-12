@@ -51,7 +51,13 @@ public:
 
     // ── JSON 文件接口 ────────────────────────────────────────────────────────
     bool saveJSONConfig(const String& filename, const JsonDocument& config);
+    // Import acknowledgements must mean a completed disk commit, never only
+    // a dirty debounced cache entry. Does not apply a live runtime graph.
+    bool saveImportedJSONConfig(const String& filename, const JsonDocument& config);
     bool loadJSONConfig(const String& filename, JsonDocument& config);
+    // Compare and replace only MQTT, preserving the latest sibling sections.
+    // Busy, conflict, malformed/failed storage return false without a new write.
+    bool compareExchangeMqttConfig(JsonVariantConst expected, JsonVariantConst desired);
 
     // 恢复出厂专用：立即写入并验证 JSON，成功后丢弃旧主文件备份和缓存。
     // 普通配置保存仍使用 saveJSONConfig() 保留上一代回滚能力。
@@ -84,6 +90,8 @@ public:
     bool deleteConfigFile(const String& filename);
 
 private:
+    bool saveJSONConfigImpl(const String& filename, const JsonDocument& config, bool forceImmediate = false);
+    bool loadJSONConfigImpl(const String& filename, JsonDocument& config);
     ConfigStorage();  // 私有构造（Meyers' Singleton）
     bool initializeInternal();
 

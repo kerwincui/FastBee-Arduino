@@ -1,0 +1,85 @@
+#include "core/RuntimeResourceSnapshot.h"
+#include "core/ManagedPinIo.h"
+#include "managed_pin_mock_state.h"
+#include <cassert>
+#include <cstring>
+#include <future>
+#include <mutex>
+#include <thread>
+#include <string>
+using String = std::string;
+static std::recursive_mutex managerMutex;
+static unsigned isrLocks = 0;
+static void portENTER_CRITICAL(int*) { ++isrLocks; }
+static void portEXIT_CRITICAL(int*) {}
+class RecursiveMutexGuard {
+public:
+    RecursiveMutexGuard(std::recursive_mutex* mutex, unsigned timeout) : mutex(mutex) {
+        assert(timeout == 0); held = mutex->try_lock();
+    }
+    ~RecursiveMutexGuard() { if (held) mutex->unlock(); }
+    bool isLocked() const { return held; }
+private:
+    std::recursive_mutex* mutex;
+    bool held;
+};
+class PeripheralManager {
+public:
+    static constexpr size_t MAX_ENCODER_SLOTS = 4;
+    // @slot@
+    static EncoderIsrSlot _encoderSlots[MAX_ENCODER_SLOTS];
+    static int _encoderMux;
+    static uint32_t _nextEncoderGeneration;
+    FastBee::ManagedPinIo _managedPinIo;
+    std::recursive_mutex* _mutex = &managerMutex;
+    void snapshotEncoderResources(FastBee::EncoderResourceSnapshot&) const;
+    EncoderIsrSlot* findEncoderSlot(const String&);
+    EncoderIsrSlot* allocEncoderSlot(const String&, uint8_t, uint8_t);
+    void releaseEncoderSlot(const String&);
+    bool encoderSlotReady(const EncoderIsrSlot*) const;
+};
+PeripheralManager::EncoderIsrSlot PeripheralManager::_encoderSlots[4];
+int PeripheralManager::_encoderMux;
+uint32_t PeripheralManager::_nextEncoderGeneration;
+// @production@
+int main() {
+    PeripheralManager manager;
+    FastBee::EncoderResourceSnapshot snapshot;
+    manager.snapshotEncoderResources(snapshot);
+    assert(snapshot.count == 0 && isrLocks == 0 && allCalls() == 0 && count(Op::Read) == 0);
+    {
+        std::lock_guard<std::recursive_mutex> guard(managerMutex);
+        for (unsigned i=0; i<4; ++i) {
+            String id = "encoder-" + std::to_string(i);
+            auto* slot = manager.allocEncoderSlot(id, static_cast<uint8_t>(4+i), static_cast<uint8_t>(12+i));
+            assert(slot); slot->count = INT64_MAX; slot->delta = INT64_MIN;
+        }
+        assert(!manager.allocEncoderSlot("fifth", 25, 26));
+    }
+    const auto locks = isrLocks;
+    for (unsigned i=0; i<1000; ++i) {
+        manager.snapshotEncoderResources(snapshot);
+        assert(snapshot.status == FastBee::ResourceObservation::Observed && snapshot.count == 4);
+        assert(snapshot.leases[3].slot == 3 && snapshot.leases[3].pinA == 7 && snapshot.leases[3].pinB == 15);
+        assert(std::string(snapshot.leases[3].id) == "encoder-3");
+        assert(manager._encoderSlots[0].count == INT64_MAX && manager._encoderSlots[0].delta == INT64_MIN);
+    }
+    assert(isrLocks == locks);
+    auto saved = snapshot;
+    std::promise<void> locked, release; auto untilRelease = release.get_future();
+    std::thread other([&] { managerMutex.lock(); locked.set_value(); untilRelease.wait(); managerMutex.unlock(); });
+    locked.get_future().wait(); manager.snapshotEncoderResources(snapshot);
+    assert(snapshot.status == FastBee::ResourceObservation::Busy && snapshot.count == 0);
+    release.set_value(); other.join();
+    {
+        std::lock_guard<std::recursive_mutex> guard(managerMutex);
+        manager.releaseEncoderSlot("encoder-1");
+        assert(manager.allocEncoderSlot("replacement", 20, 21));
+    }
+    manager.snapshotEncoderResources(snapshot);
+    assert(snapshot.count == 4 && std::string(snapshot.leases[1].id) == "replacement");
+    assert(std::string(saved.leases[1].id) == "encoder-1" && saved.leases[1].pinA == 5);
+    manager._encoderSlots[1].id = std::string(41, 'x');
+    manager.snapshotEncoderResources(snapshot);
+    assert(snapshot.count == 4 && !snapshot.leases[1].id[0] && snapshot.leases[1].pinA == 20);
+}

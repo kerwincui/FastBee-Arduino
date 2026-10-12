@@ -13,6 +13,9 @@ class WebHandlerContext;
 class UserRouteHandler {
 public:
     explicit UserRouteHandler(WebHandlerContext* ctx);
+    ~UserRouteHandler();
+    UserRouteHandler(const UserRouteHandler&) = delete;
+    UserRouteHandler& operator=(const UserRouteHandler&) = delete;
 
     void setupRoutes(AsyncWebServer* server);
 

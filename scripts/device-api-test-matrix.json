@@ -188,6 +188,16 @@
       ]
     },
     {
+      "name": "peripheral-read-missing-id",
+      "type": "expect-error",
+      "method": "GET",
+      "path": "/api/peripherals/read",
+      "allowedStatuses": [
+        400,
+        429
+      ]
+    },
+    {
       "name": "periph-exec-rules",
       "method": "GET",
       "path": "/api/periph-exec?page=1&pageSize=10"

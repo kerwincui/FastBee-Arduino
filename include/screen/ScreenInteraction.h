@@ -6,6 +6,26 @@
 namespace FastBee {
 namespace Screen {
 
+template <typename Card> const char* screenMotorStartBlockReason(const Card& card, bool) {
+    if (card.pending) return "未启动：请等待指令完成";
+    if (card.motorSpeedDirty || card.motorPulseDirty) return "未启动：请先应用修改后的参数";
+    if (card.motorSoftLimitEnabled && !card.motorReferenceKnown) return "参考位置丢失，请核对可选行程限制";
+    // The service refreshes feedback and sequences STOP before starting when
+    // needed. Its bus interlock checks the current range at dispatch time.
+    return nullptr;
+}
+
+template <typename Card> void screenRememberMotorFeedback(Card& card, uint32_t now) {
+    std::strncpy(card.motorUiFeedback, card.error, sizeof(card.motorUiFeedback) - 1);
+    card.motorUiFeedback[sizeof(card.motorUiFeedback) - 1] = '\0';
+    card.motorUiFeedbackAt = now;
+}
+
+template <typename Card> void screenExpireMotorFeedback(Card& card, uint32_t now) {
+    if (card.motorUiFeedback[0] && static_cast<uint32_t>(now - card.motorUiFeedbackAt) >= 5000U)
+        card.motorUiFeedback[0] = '\0';
+}
+
 // One active local motor session. A different binding, configuration revision,
 // sleep, or inactivity closes it. No permission is persisted across restarts.
 class ScreenControlSession {

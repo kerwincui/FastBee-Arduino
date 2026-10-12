@@ -37,14 +37,37 @@ def expander_prefix(signature, boundary, fallback):
 
 
 class IoExpanderManagerTests(unittest.TestCase):
+    def test_observer_registers_only_after_creating_the_manager_lock(self):
+        initialize = function("bool PeripheralManager::initialize()")
+        self.assertLess(initialize.index("xSemaphoreCreateRecursiveMutex()"),
+                        initialize.index("registerObserver(&observer)"))
+        self.assertIn("if (_mutex)", initialize)
+        self.assertIn('ioObservationMutex().store(_mutex, std::memory_order_release)', initialize)
+        self.assertIn('"ioExpander", observeIoExpanderInstances, &ioObservationMutex()', initialize)
+
     def test_production_admission_maintenance_and_blink_branches(self):
         compiler = shutil.which("g++") or shutil.which("clang++")
         if not compiler:
             self.skipTest("A C++17 compiler is required")
+        json_root = os.environ.get('FASTBEE_TEST_ARDUINOJSON_INCLUDE')
+        if not json_root:
+            headers = sorted((ROOT / '.pio/libdeps').glob('*/ArduinoJson/src/ArduinoJson.h'))
+            if not headers:
+                raise RuntimeError('Installed ArduinoJson headers required')
+            json_root = str(headers[0].parent)
+        if not (Path(json_root) / 'ArduinoJson.h').is_file():
+            raise RuntimeError('FASTBEE_TEST_ARDUINOJSON_INCLUDE must contain ArduinoJson.h')
         globals_start = SOURCE.index("constexpr size_t IO_EXPANDER_MAX_PROVIDERS")
         globals_end = SOURCE.index("std::map<String, std::unique_ptr<uint8_t>>& i2cOwners()")
         snippets = [SOURCE[globals_start:globals_end]]
         snippets.extend(function(signature) for signature in (
+            "bool PeripheralManager::ordinaryIoProducerPresentLocked(",
+            "bool PeripheralManager::prepareOrdinaryIoProducerLocked(",
+            "void PeripheralManager::discardOrdinaryIoReservationLocked(",
+            "bool PeripheralManager::retireOrdinaryIoProducerLocked(",
+            "bool PeripheralManager::startOrdinaryIoProducerLocked(",
+            "bool PeripheralManager::retireOrdinaryIoGroupLocked(",
+            "void PeripheralManager::serviceOrdinaryIoProducerLocked(",
             "bool PeripheralManager::setupIoExpander(",
             "bool PeripheralManager::syncIoExpander(",
             "bool PeripheralManager::teardownIoExpander(",
@@ -74,6 +97,7 @@ class IoExpanderManagerTests(unittest.TestCase):
             command = [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                        "-Wno-unused-parameter", "-Wno-unused-const-variable",
                        f"-I{temporary}", f"-I{ROOT / 'test/mocks'}", f"-I{ROOT / 'include'}",
+                       '-I' + json_root,
                        str(ROOT / "test/unit/cpp/io_expander_manager_harness.cpp"),
                        str(ROOT / "src/peripherals/IoExpander.cpp"), "-o", str(executable)]
             result = subprocess.run(command, capture_output=True, text=True,

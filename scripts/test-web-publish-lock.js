@@ -349,61 +349,61 @@ function testSourceIntegrationAndStageIds() {
 }
 
 async function testPublicWriterEntrypoints(tempRoot) {
-    const lockDir = path.join(tempRoot, 'public-writers.lock');
-    const stageDir = path.join(tempRoot, 'public-writer-stage');
-    const env = {
-        ...process.env,
-        FASTBEE_WEB_LOCK_DIR: lockDir,
-        FASTBEE_WEB_LOCK_TIMEOUT_MS: String(REAL_WRITER_LOCK_TIMEOUT_MS),
-        FASTBEE_WEB_LOCK_STALE_MS: '600000',
-        FASTBEE_WEB_LOCK_POLL_MS: '10'
-    };
-    const holder = acquireWebPublishLock({ lockDir, label: 'public-writer-test-holder' });
-    const writers = [
+    const entrypoints = [
         ['build-web-assets', 'build-web-assets.js', ['--env=esp32s3-F16R8']],
         ['gzip-www', 'gzip-www.js', [
             '--no-upload',
             '--no-monitor',
             '--env=esp32s3-F16R8',
-            `--stage-dir=${stageDir}`
+            `--stage-dir=${path.join(tempRoot, 'public-writer-stage')}`
         ]],
         ['build-web-modules', 'build-web-modules.js', ['--env=esp32s3-F16R8']],
         ['build-admin-bundle', 'build-admin-bundle.js', ['--env=esp32s3-F16R8']],
         ['build-app-bundle', 'build-app-bundle.js', ['--env=esp32s3-F16R8']],
         ['generate-sw-manifest', 'generate-sw-manifest.js', []]
-    ].map(([label, script, args]) => ({
-        label,
-        tracked: trackedProcess(process.execPath, [path.join(ROOT_DIR, 'scripts', script), ...args], {
+    ];
+    const failures = [];
+    for (const [label, script, args] of entrypoints) {
+        const lockDir = path.join(tempRoot, `public-writer-${label}.lock`);
+        const env = {
+            ...process.env,
+            FASTBEE_WEB_LOCK_DIR: lockDir,
+            FASTBEE_WEB_LOCK_TIMEOUT_MS: String(REAL_WRITER_LOCK_TIMEOUT_MS),
+            FASTBEE_WEB_LOCK_STALE_MS: '600000',
+            FASTBEE_WEB_LOCK_POLL_MS: '10'
+        };
+        const holder = acquireWebPublishLock({ lockDir, label: 'public-writer-test-holder' });
+        const tracked = trackedProcess(process.execPath, [path.join(ROOT_DIR, 'scripts', script), ...args], {
             env,
             timeoutMs: REAL_WRITER_PROCESS_TIMEOUT_MS
-        })
-    }));
-
-    let contentionError;
-    try {
-        const deadline = Date.now() + 20_000;
-        while (!writers.every(({ tracked }) => /\[WebPublishLock\] Waiting for /.test(tracked.output()))) {
-            const exited = writers.find(({ tracked }) => tracked.isSettled());
-            assert.ok(!exited, `${exited && exited.label} exited before announcing lock contention`);
-            assert.ok(Date.now() < deadline, 'public writers must announce contention within 20 seconds');
-            await delay(10);
-        }
-        writers.forEach(({ label, tracked }) => {
-            assert.ok(!tracked.isSettled(), `${label} must wait while another publisher owns the lock`);
         });
-    } catch (error) { contentionError = error; }
-    finally { assert.ok(holder.release(), 'public writer test holder must release cleanly'); }
-    const settled = await Promise.allSettled(writers.map(({ tracked }) => tracked.promise));
-    if (contentionError) throw contentionError;
-    const results = settled.map(result => {
-        if (result.status === 'rejected') throw result.reason;
-        return result.value;
-    });
-    results.forEach((result, index) => {
-        const label = writers[index].label;
-        assertSuccessful(result, `${label} public writer`);
-        assert.match(result.stdout, /\[WebPublishLock\] Waiting for /, `${label} must announce lock contention`);
-    });
+        // Observe rejection immediately, but await this child's result after releasing the holder.
+        const outcome = tracked.promise.then(value => ({ value }), error => ({ error }));
+        try {
+            const deadline = Date.now() + 20_000;
+            while (!/\[WebPublishLock\] Waiting for /.test(tracked.output())) {
+                assert.ok(!tracked.isSettled(), `${label} exited before announcing lock contention`);
+                assert.ok(Date.now() < deadline, `${label} must announce contention within 20 seconds`);
+                await delay(10);
+            }
+            assert.ok(!tracked.isSettled(), `${label} must wait while another publisher owns the lock`);
+        } catch (error) { failures.push(error); }
+        finally {
+            try {
+                assert.ok(holder.release(), `${label} test holder must release cleanly`);
+            } catch (error) { failures.push(error); }
+        }
+        const result = await outcome;
+        if (result.error) {
+            failures.push(result.error);
+            continue;
+        }
+        try {
+            assertSuccessful(result.value, `${label} public writer`);
+            assert.match(result.value.stdout, /\[WebPublishLock\] Waiting for /, `${label} must announce lock contention`);
+        } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Public writer entrypoint checks failed');
 }
 
 async function testRealWriterSerialization(tempRoot) {

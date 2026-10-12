@@ -5,6 +5,7 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/RuleScriptManager.h"
+#include "core/RuleScriptConfigValidation.h"
 #include "core/RuntimeFeatureManager.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
 #include <ArduinoJson.h>
@@ -15,6 +16,32 @@ bool requireRuleEngine(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     ctx->sendError(request, 503, "Rule engine disabled by runtime feature config");
     return false;
 }
+
+bool requireRuleMutationMemory(AsyncWebServerRequest* request) {
+    return !HandlerUtils::rejectHeavyRequestOnPressure(request, "Script change", MemoryGuardLevel::SEVERE, 8) &&
+        !HandlerUtils::checkLowMemory(request, 32768);
+}
+
+bool readRuleScriptFormText(AsyncWebServerRequest* request, const char* key, const String& fallback,
+                            String& output, size_t limit) {
+    const String* value = &fallback;
+    if (request->hasParam(key, true)) value = &request->getParam(key, true)->value();
+    else if (request->hasParam(key)) value = &request->getParam(key)->value();
+    return FastBee::copyCheckedText(output, value->c_str(), value->length(), limit);
+}
+
+bool readRuleScriptForm(AsyncWebServerRequest* request, const RuleScript& defaults, RuleScript& output) {
+    String enabled, trigger, protocol;
+    return readRuleScriptFormText(request, "id", defaults.id, output.id, 40) &&
+        readRuleScriptFormText(request, "name", defaults.name, output.name, 128) &&
+        readRuleScriptFormText(request, "scriptContent", defaults.scriptContent, output.scriptContent, 2048) &&
+        readRuleScriptFormText(request, "sourceTopic", defaults.sourceTopic, output.sourceTopic, 256) &&
+        readRuleScriptFormText(request, "targetTopic", defaults.targetTopic, output.targetTopic, 256) &&
+        readRuleScriptFormText(request, "enabled", defaults.enabled ? "true" : "false", enabled, 5) &&
+        readRuleScriptFormText(request, "triggerType", defaults.triggerType == 1 ? "1" : "0", trigger, 1) &&
+        readRuleScriptFormText(request, "protocolType", defaults.protocolType == 1 ? "1" : "0", protocol, 1) &&
+        FastBee::parseRuleScriptFormChoices(enabled, trigger, protocol, output);
+}
 }  // namespace
 
 RuleScriptRouteHandler::RuleScriptRouteHandler(WebHandlerContext* ctx)
@@ -22,6 +49,10 @@ RuleScriptRouteHandler::RuleScriptRouteHandler(WebHandlerContext* ctx)
 }
 
 void RuleScriptRouteHandler::setupRoutes(AsyncWebServer* server) {
+#if FASTBEE_ENABLE_CONFIG_TRANSFER
+    server->on("/api/rule-script/import", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleImportRules(request); });
+#endif
     server->on("/api/rule-script/update", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleUpdateRule(request); });
 
@@ -43,6 +74,33 @@ void RuleScriptRouteHandler::setupRoutes(AsyncWebServer* server) {
 
 // ========== 获取所有规则 ==========
 
+void RuleScriptRouteHandler::handleImportRules(AsyncWebServerRequest* request) {
+    if (!ctx->requireAuth(request) || !ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleEngine(ctx, request)) return;
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Script import", MemoryGuardLevel::SEVERE, 8)) return;
+    if (!request->hasParam("content", true)) { ctx->sendError(request, 400, "Missing script content"); return; }
+    const String& content = request->getParam("content", true)->value();
+    if (content.isEmpty() || content.length() > FastBee::RuleScriptImportMaxBytes ||
+        std::memchr(content.c_str(), '\0', content.length())) {
+        ctx->sendError(request, 413, "Script import must be nonempty text, at most 24KB"); return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 32768)) return;
+    JsonDocument doc;
+    if (deserializeJson(doc, content.c_str(), content.length()) || doc.overflowed()) { ctx->sendError(request, 422, "Invalid script configuration JSON"); return; }
+    String error;
+    if (!RuleScriptManager::getInstance().importConfiguration(doc, error)) {
+        ctx->sendError(request, 409, error.length() ? error.c_str() : "Script import not confirmed"); return;
+    }
+    JsonDocument result;
+    result["name"] = "rule_scripts.json";
+    result["size"] = content.length();
+    result["ruleCount"] = doc["rules"].size();
+    result["saved"] = true;
+    result["applied"] = true;
+    result["restartRequired"] = false;
+    ctx->sendSuccess(request, result);
+}
+
 void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
@@ -59,7 +117,8 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     // 持锁迭代引用，避免全量 vector 拷贝；在持锁临界区内序列化为 items
     std::vector<String> items;
     {
-        MutexGuard lock(mgr.getMutex());
+        RuleScriptManager::AccessGuard access(mgr);
+        MutexGuard lock(access.mutex(), pdMS_TO_TICKS(50));
         if (!lock.isLocked()) {
             HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
             return;
@@ -68,46 +127,23 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         items.reserve(ruleMap.size());
         for (const auto& pair : ruleMap) {
             const auto& rule = pair.second;
-            // 转义 name 中的双引号
-            String safeName = rule.name;
-            safeName.replace("\"", "\\\"");
-            // scriptContent 可能较长，逐项拼接（在持锁内完成，脱锁后不再依赖 map 内部字符串）
-            String safeScript = rule.scriptContent;
-            safeScript.replace("\\", "\\\\");
-            safeScript.replace("\"", "\\\"");
-            safeScript.replace("\n", "\\n");
-            safeScript.replace("\r", "\\r");
-            safeScript.replace("\t", "\\t");
-
+            JsonDocument row;
+            row["id"] = rule.id;
+            row["name"] = rule.name;
+            row["enabled"] = rule.enabled;
+            row["triggerType"] = rule.triggerType;
+            row["protocolType"] = rule.protocolType;
+            row["scriptContent"] = rule.scriptContent;
+            row["lastTriggerTime"] = rule.lastTriggerTime;
+            row["triggerCount"] = rule.triggerCount;
+            row["sourceTopic"] = rule.sourceTopic;
+            row["targetTopic"] = rule.targetTopic;
             String item;
-            item.reserve(128 + safeScript.length());
-            item += F("{\"id\":\"");
-            item += rule.id;
-            item += F("\",\"name\":\"");
-            item += safeName;
-            item += F("\",\"enabled\":");
-            item += rule.enabled ? F("true") : F("false");
-            item += F(",\"triggerType\":");
-            item += String(rule.triggerType);
-            item += F(",\"protocolType\":");
-            item += String(rule.protocolType);
-            item += F(",\"scriptContent\":\"");
-            item += safeScript;
-            item += F("\",\"lastTriggerTime\":");
-            item += String(rule.lastTriggerTime);
-            item += F(",\"triggerCount\":");
-            item += String(rule.triggerCount);
-            // 主题转换字段
-            String safeSrcTopic = rule.sourceTopic;
-            safeSrcTopic.replace("\"", "\\\"");
-            String safeTgtTopic = rule.targetTopic;
-            safeTgtTopic.replace("\"", "\\\"");
-            item += F(",\"sourceTopic\":\"");
-            item += safeSrcTopic;
-            item += F("\",\"targetTopic\":\"");
-            item += safeTgtTopic;
-            item += F("\"");
-            item += F("}");
+            const size_t expected = measureJson(row);
+            if (row.overflowed() || !item.reserve(expected) || serializeJson(row, item) != expected || item.length() != expected) {
+                HandlerUtils::sendJsonError(request, 503, "Script list snapshot could not be serialized");
+                return;
+            }
             items.emplace_back(std::move(item));
         }
     }  // 释放锁
@@ -125,16 +161,12 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleMutationMemory(request)) return;
 
     RuleScript rule;
-    rule.id = ctx->getParamValue(request, "id", "");
-    rule.name = ctx->getParamValue(request, "name", "");
-    rule.enabled = ctx->getParamBool(request, "enabled", true);
-    rule.triggerType = ctx->getParamInt(request, "triggerType", 0);
-    rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
-    rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
-    rule.sourceTopic = ctx->getParamValue(request, "sourceTopic", "");
-    rule.targetTopic = ctx->getParamValue(request, "targetTopic", "");
+    if (!readRuleScriptForm(request, RuleScript(), rule)) {
+        ctx->sendBadRequest(request, "Invalid or incomplete script form"); return;
+    }
 
     if (rule.name.isEmpty()) {
         ctx->sendBadRequest(request, "Name is required");
@@ -143,13 +175,9 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.addRule(rule)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule added");
-        } else {
-            ctx->sendError(request, 500, "Rule added in memory but save to flash failed");
-        }
+        ctx->sendSuccess(request, "Rule saved and added");
     } else {
-        ctx->sendError(request, 500, "Failed to add rule");
+        ctx->sendError(request, 409, "Rule change not confirmed; running rules retained. Reload before retry");
     }
 }
 
@@ -159,38 +187,32 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleMutationMemory(request)) return;
 
-    String id = ctx->getParamValue(request, "id", "");
+    String id;
+    if (!readRuleScriptFormText(request, "id", "", id, 40)) {
+        ctx->sendBadRequest(request, "Invalid script identity"); return;
+    }
     if (id.isEmpty()) {
         ctx->sendError(request, 400, "Rule ID is required");
         return;
     }
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
-    RuleScript* existing = mgr.getRule(id);
-    if (!existing) {
-        ctx->sendError(request, 404, "Rule not found");
+    RuleScript snapshot;
+    if (!mgr.copyRule(id, snapshot)) {
+        ctx->sendError(request, 409, "Rule snapshot unavailable; reload before updating");
         return;
     }
-
     RuleScript rule;
-    rule.id = id;
-    rule.name = ctx->getParamValue(request, "name", existing->name);
-    rule.enabled = ctx->getParamBool(request, "enabled", existing->enabled);
-    rule.triggerType = ctx->getParamInt(request, "triggerType", existing->triggerType);
-    rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
-    rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
-    rule.sourceTopic = ctx->getParamValue(request, "sourceTopic", existing->sourceTopic);
-    rule.targetTopic = ctx->getParamValue(request, "targetTopic", existing->targetTopic);
+    if (!readRuleScriptForm(request, snapshot, rule)) {
+        ctx->sendBadRequest(request, "Invalid or incomplete script form"); return;
+    }
 
-    if (mgr.updateRule(id, rule)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule updated");
-        } else {
-            ctx->sendError(request, 500, "Rule updated in memory but save to flash failed");
-        }
+    if (mgr.updateRule(id, rule, &snapshot)) {
+        ctx->sendSuccess(request, "Rule saved and updated");
     } else {
-        ctx->sendError(request, 500, "Failed to update rule");
+        ctx->sendError(request, 409, "Rule change not confirmed; running rules retained. Reload before retry");
     }
 }
 
@@ -200,8 +222,12 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleMutationMemory(request)) return;
 
-    String id = ctx->getParamValue(request, "id", "");
+    String id;
+    if (!readRuleScriptFormText(request, "id", "", id, 40)) {
+        ctx->sendBadRequest(request, "Invalid script identity"); return;
+    }
     if (id.isEmpty()) {
         ctx->sendError(request, 400, "Rule ID is required");
         return;
@@ -209,13 +235,9 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.removeRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule deleted");
-        } else {
-            ctx->sendError(request, 500, "Rule deleted in memory but save to flash failed");
-        }
+        ctx->sendSuccess(request, "Rule deletion saved");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, 409, "Rule change not confirmed; running rules retained. Reload before retry");
     }
 }
 
@@ -225,8 +247,12 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleMutationMemory(request)) return;
 
-    String id = ctx->getParamValue(request, "id", "");
+    String id;
+    if (!readRuleScriptFormText(request, "id", "", id, 40)) {
+        ctx->sendBadRequest(request, "Invalid script identity"); return;
+    }
     if (id.isEmpty()) {
         ctx->sendError(request, 400, "Rule ID is required");
         return;
@@ -234,13 +260,9 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.enableRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule enabled");
-        } else {
-            ctx->sendError(request, 500, "Rule enabled in memory but save to flash failed");
-        }
+        ctx->sendSuccess(request, "Rule saved and enabled");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, 409, "Rule change not confirmed; running rules retained. Reload before retry");
     }
 }
 
@@ -250,8 +272,12 @@ void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
     if (!requireRuleEngine(ctx, request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
+    if (!requireRuleMutationMemory(request)) return;
 
-    String id = ctx->getParamValue(request, "id", "");
+    String id;
+    if (!readRuleScriptFormText(request, "id", "", id, 40)) {
+        ctx->sendBadRequest(request, "Invalid script identity"); return;
+    }
     if (id.isEmpty()) {
         ctx->sendError(request, 400, "Rule ID is required");
         return;
@@ -259,13 +285,9 @@ void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
     if (mgr.disableRule(id)) {
-        if (mgr.saveConfiguration()) {
-            ctx->sendSuccess(request, "Rule disabled");
-        } else {
-            ctx->sendError(request, 500, "Rule disabled in memory but save to flash failed");
-        }
+        ctx->sendSuccess(request, "Rule saved and disabled");
     } else {
-        ctx->sendError(request, 404, "Rule not found");
+        ctx->sendError(request, 409, "Rule change not confirmed; running rules retained. Reload before retry");
     }
 }
 #endif // FASTBEE_ENABLE_RULE_SCRIPT

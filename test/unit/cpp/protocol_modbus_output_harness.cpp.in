@@ -1,0 +1,373 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "core/ModbusOrdinaryControl.h"
+#include "core/SystemConstants.h"
+#include <cassert>
+#include <functional>
+#include <utility>
+using Context=FastBee::OrdinaryControlContext;
+using Control=FastBee::OrdinaryControlResult;
+using Frame=FastBee::ModbusOutputFrame;
+using Target=FastBee::ModbusControlTarget;
+namespace OC=FastBee::OrdinaryControl;
+#define FASTBEE_ENABLE_MQTT 1
+#define FASTBEE_ENABLE_MODBUS 1
+#define FASTBEE_MODBUS_SLAVE_ENABLE 1
+// @protocol_type@
+// @types@
+inline void convertToJson(const String& value,JsonVariant out) { out.set(value.c_str()); }
+inline void convertFromJson(JsonVariantConst value,String& out) { out=value.as<std::string>(); }
+inline DeserializationError deserializeJson(JsonDocument& doc,const String& value) {
+    return ArduinoJson::deserializeJson(doc,value.c_str(),value.length());
+}
+inline DeserializationError deserializeJson(JsonDocument& doc,String& value) {
+    return ArduinoJson::deserializeJson(doc,value.c_str(),value.length());
+}
+inline size_t serializeJson(const JsonDocument& doc,String& out) {
+    std::string text;const size_t bytes=ArduinoJson::serializeJson(doc,text);out=text;return bytes;
+}
+#define LOG_WARNING(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+#define pdMS_TO_TICKS(value) (value)
+struct Logger { template<class...T> void infof(T...) {} } LOGGER;
+enum ModbusMode { MODBUS_MASTER,MODBUS_SLAVE };
+static unsigned leases=0;
+static unsigned modbusAcquires=0,mqttAcquires=0;
+struct MqttClient {
+    bool available=true,accepted=true;
+    unsigned publishes=0;
+    String topic,data;
+    bool publish(const String& nextTopic,const String& nextData) {
+        ++publishes;topic=nextTopic;data=nextData;return accepted;
+    }
+} mqtt;
+static bool available=true,advanceOnAcquire=false;
+struct ModbusHandler {
+    ModbusMode mode=MODBUS_MASTER;
+    bool mapping=true,vendorOnly=false,attempted=true,oversizedResponse=false;
+    OneShotError error=ONESHOT_SUCCESS;
+    unsigned reads=0,snapshots=0;
+    unsigned legacyWrites=0,slaveWrites=0;
+    bool slaveAccepted=true;
+    uint16_t slaveRegister=0;
+    String slaveData;
+    bool masterWriteSingleRegister(uint8_t,uint16_t,uint16_t) { ++legacyWrites;return true; }
+    bool writeData(uint16_t address,const String& data) {
+        assert(leases && mode==MODBUS_SLAVE);++slaveWrites;slaveRegister=address;slaveData=data;return slaveAccepted;
+    }
+    uint32_t configuration=10;
+    std::vector<uint8_t> response;
+    std::vector<uint8_t> sentRead;
+    uint16_t calculateCRC(const uint8_t*,size_t);
+    ModbusMode getMode() const { return mode; }
+    bool snapshotOrdinaryFrame(const Frame& frame,Target& target) {
+        assert(leases && frame.valid());++snapshots;
+        target.kind=Target::Kind::Frame;target.instance=9;target.configuration=configuration;
+        target.slave=target.frameSlave=frame.bytes[0];target.frameQuantity=frame.quantity();
+        target.frameAccess=frame.access;return mapping && (!vendorOnly || frame.access==FastBee::ModbusFrameAccess::RelayVendor);
+    }
+    OneShotError sendRawFrameBytesOnce(uint8_t slave,const uint8_t* data,size_t size,
+        uint8_t* output,size_t capacity,size_t& length,uint8_t& exception,bool control) {
+        assert(leases && !control && slave==data[0] && data[1]>=1 && data[1]<=4 && capacity>=256);
+        ++reads;sentRead.assign(data,data+size);
+        length=oversizedResponse?257:response.size();
+        if(response.size()<=capacity) std::copy(response.begin(),response.end(),output);
+        exception=error==ONESHOT_EXCEPTION?2:0;return error;
+    }
+} bus;
+// @crc@
+using CoilWrite=std::function<bool(uint8_t,uint16_t,bool,const Context&,Control&)>;
+using RegWrite=std::function<bool(uint8_t,uint16_t,uint16_t,const Context&,Control&)>;
+struct PeripheralManager {
+    unsigned begins=0,submits=0,finishes=0;
+    bool contextReady=true;
+    CoilWrite coil;
+    RegWrite reg;
+    Context issued,submitted;
+    Frame frame;
+    static PeripheralManager& getInstance() { static PeripheralManager instance;return instance; }
+    void setModbusCallbacks(CoilWrite c,RegWrite r) { coil=std::move(c);reg=std::move(r); }
+    bool beginOrdinaryControl(OC::Source source,uint64_t actor,uint32_t hold,bool confirmed,
+        uint64_t generation,const String& target,uint32_t epoch,const FastBee::UartEventOrigin& uart,Context& out) {
+        assert(leases && source==OC::Source::Mqtt && !hold && !confirmed && !generation && target.isEmpty() && uart.unbound());
+        ++begins;
+        if(!contextReady || !actor || !FastBee::SensorConfigEpoch::matches(epoch)) return false;
+        out.request.actor={source,actor};out.request.operation=begins;out.configEpoch=epoch;issued=out;return true;
+    }
+    void finishOrdinaryControl(const Context& context) {
+        assert(leases && context.request.operation==issued.request.operation);++finishes;
+    }
+    OneShotResult submitOrdinaryModbusFrame(ModbusHandler& handler,const Target& target,
+        const Frame& value,const Context& context,Control& control,uint16_t timeout,
+        uint8_t* raw,size_t capacity,size_t* length) {
+        assert(leases && &handler==&bus && target.valid() && value.valid() && !timeout);
+        assert(context.request.operation);++submits;frame=value;submitted=context;
+        if(raw) {
+            assert(capacity>=256 && length);
+            *length=bus.oversizedResponse?257:bus.response.size();
+            if(bus.response.size()<=capacity) std::copy(bus.response.begin(),bus.response.end(),raw);
+        } else assert(!capacity && !length);
+        control={};control.evaluated=true;control.attempted=bus.attempted;
+        control.accepted=bus.error==ONESHOT_SUCCESS;
+        control.reason=bus.error==ONESHOT_SUCCESS?"CONTROL_MODBUS_ACKNOWLEDGED":"INJECTED_RAW_FAILURE";
+        OneShotResult result;result.error=bus.error;result.outputAttempted=bus.attempted;
+        result.controlReason=control.reason;result.exceptionCode=bus.error==ONESHOT_EXCEPTION?2:0;
+        return result;
+    }
+};
+struct ProtocolManager {
+    enum class ModbusDataSource { PeriphExecPoll };
+    struct Lease {
+        ModbusHandler* bus=nullptr;
+        Lease(ModbusHandler* value=nullptr):bus(value) { if(bus) ++leases; }
+        Lease(Lease&& other):bus(other.bus) { other.bus=nullptr; }
+        Lease(const Lease&)=delete;
+        ~Lease() { if(bus) --leases; }
+        ModbusHandler* get() const { return bus; }
+        ModbusHandler* operator->() const { return bus; }
+        explicit operator bool() const { return bus!=nullptr; }
+    };
+    ModbusHandler* modbusHandler=&bus;
+    unsigned dispatches=0;
+    uint8_t dispatchedSlave=0;
+    String dispatched;
+    Lease acquireModbusHandler(unsigned wait) {
+        ++modbusAcquires;
+        assert(wait==2000);if(advanceOnAcquire) FastBee::SensorConfigEpoch::advance();
+        return Lease(available?&bus:nullptr);
+    }
+    String executeModbusRawSend(const String&);
+    MqttClient* acquireMQTTClient() { ++mqttAcquires;return mqtt.available?&mqtt:nullptr; }
+    bool sendData(ProtocolType,const String&,const String&);
+    void dispatchModbusData(uint8_t slave,const String& hex,ModbusDataSource source) {
+        assert(leases && source==ModbusDataSource::PeriphExecPoll);
+        ++dispatches;dispatchedSlave=slave;dispatched=hex;
+    }
+    void registerCallbacks();
+};
+// @helpers@
+// @raw@
+// @send_data@
+void ProtocolManager::registerCallbacks() {
+    auto& pm=PeripheralManager::getInstance();
+    // @callbacks@
+}
+static std::vector<uint8_t> adu(std::vector<uint8_t> payload) {
+    const auto crc=bus.calculateCRC(payload.data(),payload.size());
+    payload.push_back(static_cast<uint8_t>(crc));payload.push_back(static_cast<uint8_t>(crc>>8));
+    return payload;
+}
+static String hex(const std::vector<uint8_t>& data) {
+    String output;
+    for(auto byte:data) { char pair[3];std::snprintf(pair,sizeof(pair),"%02X",byte);output+=pair; }
+    return output;
+}
+static void failure(const String& response,const char* reason,bool attempted=false) {
+    JsonDocument doc;assert(!deserializeJson(doc,response));
+    assert(doc.is<JsonArray>() && doc.size()==1);
+    assert(doc[0]["id"]=="modbus_raw_send" && doc[0]["value"]=="");
+    assert(doc[0]["remark"]==reason && !doc[0]["success"].as<bool>());
+    assert(doc[0]["outputAttempted"].as<bool>()==attempted);
+    assert(!doc[0]["commandAcknowledged"].as<bool>() && !doc[0]["physicalOutputVerified"].as<bool>());
+}
+static unsigned callbackCalls=0,fallbackCalls=0;
+static String preprocess(JsonArray& cmdArr,std::function<String(const String&)> callback) {
+    auto _modbusRawSendCallback=callback;
+    JsonDocument report;JsonArray modbusReportArr=report.to<JsonArray>();
+    // @preprocess@
+    (void)transparentHexResult;
+    for(JsonObject item:cmdArr) {
+        String itemId=item["id"].as<String>();
+        // @handled_guard@
+        ++fallbackCalls;
+    }
+    String result;serializeJson(report,result);return result;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const String mode=argv[1];
+    ProtocolManager protocol;auto& pm=PeripheralManager::getInstance();
+    if(mode.startsWith("send_data_")) {
+        const String scenario=mode.substring(10);
+        if(scenario=="master" || scenario=="narrowing" || scenario=="malformed") {
+            std::vector<std::pair<String,String>> commands={{"7:12","1"}};
+            if(scenario=="narrowing") commands={{"263:12","1"},{"7:65548","1"},{"7:12","65537"},
+                {"-249:12","1"},{"7:-65524","1"},{"7:12","-65535"},
+                {"4294967303:12","18446744073709551617"}};
+            if(scenario=="malformed") commands={{"7:12tail","1"},{"7:12","1tail"},{"7.5:12","1"},
+                {"7:12:13","1"},{"7:",""},{":12","1"},{"","0"},{String("7:12\0tail",9),"1"}};
+            for(const auto& command:commands)
+                assert(!protocol.sendData(ProtocolType::MODBUS,command.first,command.second));
+            assert(modbusAcquires==commands.size());
+        } else if(scenario=="unavailable") {
+            available=false;assert(!protocol.sendData(ProtocolType::MODBUS,"7:12","1"));
+            assert(modbusAcquires==1);
+        } else if(scenario.startsWith("mqtt")) {
+            mqtt.accepted=scenario!="mqtt_failure";mqtt.available=scenario!="mqtt_unavailable";
+            assert(protocol.sendData(ProtocolType::MQTT,"devices/7/set","payload")==
+                (mqtt.accepted && mqtt.available));
+            assert(mqttAcquires==1 && mqtt.publishes==(mqtt.available?1U:0U) && !modbusAcquires);
+            if(mqtt.available)assert(mqtt.topic=="devices/7/set" && mqtt.data=="payload");
+        } else if(scenario=="slave" || scenario=="slave_failure") {
+            bus.mode=MODBUS_SLAVE;bus.slaveAccepted=scenario=="slave";
+            assert(protocol.sendData(ProtocolType::MODBUS,"12","00342")==bus.slaveAccepted);
+            assert(bus.slaveWrites==1 && bus.slaveRegister==12 && bus.slaveData=="00342");
+        } else {
+            assert(scenario=="unknown");
+            assert(!protocol.sendData(static_cast<ProtocolType>(255),"7:12","1"));
+            assert(!modbusAcquires && !mqttAcquires);
+        }
+        assert(!leases && !bus.legacyWrites && !bus.reads && !bus.snapshots && !pm.begins && !pm.submits &&
+            !pm.finishes && !protocol.dispatches);
+        if(!scenario.startsWith("mqtt"))assert(!mqtt.publishes);
+        if(scenario!="slave" && scenario!="slave_failure")assert(!bus.slaveWrites);
+        return 0;
+    }
+    std::vector<uint8_t> payload={7,6,0,12,0x12,0x34};
+    bus.response=adu(payload);
+    if(mode=="handled") {
+        for(unsigned variant=0;variant<3;++variant) {
+            callbackCalls=fallbackCalls=0;
+            JsonDocument doc;JsonArray commands=doc.to<JsonArray>();
+            JsonObject raw=commands.add<JsonObject>();raw["id"]="modbus_raw_send";raw["value"]="payload";
+            JsonObject regular=commands.add<JsonObject>();regular["id"]="ordinary";regular["value"]="1";
+            std::function<String(const String&)> callback;
+            if(variant==1) callback=[](const String& value) { assert(value=="payload");++callbackCalls;return String("[]"); };
+            if(variant==2) callback=[](const String&) {
+                ++callbackCalls;return String("[{\"id\":\"modbus_raw_send\",\"value\":\"\",\"remark\":\"DENIED\",\"success\":false}]");
+            };
+            const String result=preprocess(commands,callback);
+            assert(callbackCalls==(variant?1U:0U) && fallbackCalls==1);
+            JsonDocument report;assert(!deserializeJson(report,result));
+            assert(report.size()==(variant==1?0U:1U));
+            if(variant!=1) assert(!report[0]["success"].as<bool>());
+        }
+        return 0;
+    }
+    if(mode.startsWith("callback_")) {
+        protocol.registerCallbacks();Context context;Control control;
+        context.request.actor={OC::Source::Rule,73};context.request.operation=44;
+        context.configEpoch=FastBee::SensorConfigEpoch::current();context.ruleBound=true;context.ruleEpoch=9;
+        context.operationDeadlineAt=123456;
+        context.uartOrigin.required=true;context.uartOrigin.configEpoch=context.configEpoch;
+        context.uartOrigin.receiveGeneration=17;
+        if(mode=="callback_failure") { bus.error=ONESHOT_TIMEOUT; }
+        if(mode=="callback_mapping") bus.mapping=false;
+        if(mode=="callback_no_context") context.request.operation=0;
+        if(mode=="callback_unavailable") available=false;
+        const bool registerOnly=mode=="callback_register";
+        const bool accepted=registerOnly?pm.reg(7,12,0x1234,context,control):pm.coil(7,12,true,context,control);
+        const bool expected=mode=="callback_coil" || registerOnly;
+        assert(accepted==expected && !leases && !pm.begins && !pm.finishes && !bus.reads);
+        if(expected || mode=="callback_failure") {
+            assert(pm.submits==1 && pm.submitted.request.actor.identity==73 &&
+                pm.submitted.request.actor.source==OC::Source::Rule && pm.submitted.ruleBound &&
+                pm.submitted.ruleEpoch==9 && pm.submitted.operationDeadlineAt==123456 &&
+                pm.submitted.uartOrigin.receiveGeneration==17);
+            assert(pm.frame.bytes[1]==(registerOnly?6:5) && pm.frame.word()==(registerOnly?0x1234:0xff00));
+            assert(control.attempted && control.accepted==expected);
+        } else assert(!pm.submits && control.evaluated && !control.attempted);
+        return 0;
+    }
+    if(mode=="crc_envelope_precedes_all_transmit_paths") {
+        // Exercise the actual production raw-command body on both branches:
+        // FC03 may read directly; FC06 would require mapped PM admission.
+        for(const auto& body:std::vector<std::vector<uint8_t>>{
+                {7,3,0,12,0,1},{7,6,0,12,0x12,0x34}}) {
+            const auto complete=adu(body);
+            for(size_t offset:{1U,2U}) {
+                auto damaged=complete;
+                damaged[damaged.size()-offset]^=1;
+                failure(protocol.executeModbusRawSend(hex(damaged)),"MODBUS_CRC_INVALID");
+                assert(!leases && !bus.reads && !bus.snapshots && !bus.legacyWrites &&
+                    !pm.begins && !pm.submits && !pm.finishes && !protocol.dispatches);
+            }
+            // A CRC-less payload must never acquire an appended CRC and send.
+            failure(protocol.executeModbusRawSend(hex(body)),"MODBUS_CRC_INVALID");
+            assert(!leases && !bus.reads && !bus.snapshots && !bus.legacyWrites &&
+                !pm.begins && !pm.submits && !pm.finishes && !protocol.dispatches);
+            const std::vector<uint8_t> shortFrame(complete.begin(),complete.begin()+3);
+            failure(protocol.executeModbusRawSend(hex(shortFrame)),"MODBUS_HEX_INVALID");
+            assert(!leases && !bus.reads && !bus.snapshots && !bus.legacyWrites &&
+                !pm.begins && !pm.submits && !pm.finishes && !protocol.dispatches);
+        }
+        return 0;
+    }
+    if(mode=="bad_hex") {
+        const std::vector<String> invalid={"","0706000C12ZZ","07060",String(std::string(514,'A')),String("0706\0F00",8)};
+        for(const auto& value:invalid) failure(protocol.executeModbusRawSend(value),"MODBUS_HEX_INVALID");
+        assert(!leases && !bus.reads && !bus.snapshots && !pm.begins && !pm.submits && !protocol.dispatches);
+        return 0;
+    }
+    if(mode.startsWith("read")) {
+        if(mode=="read") {
+            for(uint8_t function:{1,2,3,4}) {
+                const auto frame=adu({7,function,0,12,0,1});
+                bus.response=adu({7,function,2,0x12,0x34});
+                pm.contextReady=false;
+                assert(protocol.executeModbusRawSend(hex(frame))=="[]");
+                assert(protocol.dispatched==hex(bus.response));
+            }
+            assert(bus.reads==4 && protocol.dispatches==4 && !pm.begins && !pm.submits && !pm.finishes && !leases);
+            return 0;
+        }
+        payload={7,3,0,12,0,1};bus.response=adu({7,3,2,0x12,0x34});
+        if(mode=="read_full") {
+            bus.response.assign(253,0xa5);bus.response[0]=7;bus.response[1]=3;bus.response[2]=250;
+            bus.response=adu(bus.response);
+        }
+        if(mode=="read_exception") { bus.error=ONESHOT_EXCEPTION;bus.response=adu({7,0x83,2}); }
+        if(mode=="read_failure") { bus.error=ONESHOT_TIMEOUT;bus.response.clear(); }
+        pm.contextReady=false;
+        const String result=protocol.executeModbusRawSend(hex(adu(payload)));
+        assert(bus.reads==1 && !pm.begins && !pm.submits && !pm.finishes && !leases);
+        if(mode=="read_failure") { failure(result,"MODBUS_RESPONSE_UNCONFIRMED");assert(!protocol.dispatches); }
+        else assert(result=="[]" && protocol.dispatches==1 && protocol.dispatched==hex(bus.response) && protocol.dispatchedSlave==7);
+        return 0;
+    }
+    if(mode=="write_fc05") payload={7,5,0,12,0xff,0};
+    if(mode=="write_fc15") payload={7,15,0,12,0,3,1,5};
+    if(mode=="write_fc16") payload={7,16,0,12,0,2,4,0,1,0,2};
+    if(mode=="write_vendor") payload={7,5,0,12,0x55,0};
+    if(mode=="write_vendor255") { payload={7,5,2,0,0xff,0};bus.vendorOnly=true; }
+    if(mode=="write_vendor_unmapped") { payload={7,5,2,0,0x55,0};bus.mapping=false; }
+    if(mode=="write_exception") { bus.error=ONESHOT_EXCEPTION;bus.response=adu({7,0x86,2}); }
+    if(mode=="write_mapping") bus.mapping=false;
+    if(mode=="write_timeout") { bus.error=ONESHOT_TIMEOUT;bus.response.clear(); }
+    if(mode=="write_denied") { bus.error=ONESHOT_CONTROL_REJECTED;bus.attempted=false;bus.response.clear(); }
+    if(mode=="write_context") pm.contextReady=false;
+    if(mode=="write_epoch") advanceOnAcquire=true;
+    if(mode=="bad_frame") payload={7,16,0,12,0,2,2,0,1};
+    if(mode=="unknown_vendor") payload={7,0xb0,0,0,3,0};
+    if(mode=="broadcast") payload={0,6,0,12,0,1};
+    if(mode=="unavailable") available=false;
+    if(mode=="wrong_mode") bus.mode=MODBUS_SLAVE;
+    if(mode=="response_length") bus.oversizedResponse=true;
+    auto wire=adu(payload);
+    if(mode=="bad_crc") wire.back()^=1;
+    const String command=mode=="bad_hex"?"0706000C12ZZ":hex(wire);
+    const String result=protocol.executeModbusRawSend(command);
+    assert(!leases && !bus.reads);
+    if(mode=="write_mapping" || mode=="write_vendor_unmapped") failure(result,"CONTROL_FRAME_MAPPING_UNCONFIRMED");
+    else if(mode=="write_timeout" || mode=="write_denied") failure(result,"INJECTED_RAW_FAILURE",mode=="write_timeout");
+    else if(mode=="write_context" || mode=="write_epoch") failure(result,"CONTROL_CONTEXT_UNAVAILABLE");
+    else if(mode=="bad_hex") failure(result,"MODBUS_HEX_INVALID");
+    else if(mode=="bad_crc") failure(result,"MODBUS_CRC_INVALID");
+    else if(mode=="bad_frame" || mode=="unknown_vendor" || mode=="broadcast") failure(result,"CONTROL_FRAME_INVALID");
+    else if(mode=="unavailable") failure(result,"MODBUS_UNAVAILABLE");
+    else if(mode=="wrong_mode") failure(result,"MODBUS_MASTER_REQUIRED");
+    else if(mode=="response_length") failure(result,"MODBUS_RESPONSE_UNCONFIRMED",true);
+    else {
+        assert(result=="[]" && protocol.dispatches==1 && protocol.dispatched==hex(bus.response));
+        assert(pm.submits==1 && pm.finishes==1 && pm.issued.request.actor.source==OC::Source::Mqtt &&
+            pm.issued.request.actor.identity && !pm.issued.request.holdMs);
+        assert(pm.frame.length==payload.size() && std::equal(payload.begin(),payload.end(),pm.frame.bytes));
+        assert(pm.frame.access==((mode=="write_vendor" || mode=="write_vendor255")?FastBee::ModbusFrameAccess::RelayVendor:FastBee::ModbusFrameAccess::Standard));
+    }
+    if(result!="[]") assert(!protocol.dispatches);
+    if(mode=="write_mapping" || mode=="write_vendor_unmapped") assert(!pm.submits && !pm.begins && !pm.finishes);
+    if(mode=="write_vendor255") assert(bus.snapshots==2);
+    if(mode=="write_timeout" || mode=="write_denied" || mode=="response_length") assert(pm.submits==1 && pm.finishes==1);
+    if(mode=="bad_hex" || mode=="bad_crc" || mode=="bad_frame" || mode=="unknown_vendor" ||
+       mode=="broadcast" || mode=="unavailable" || mode=="wrong_mode") assert(!pm.begins && !pm.submits);
+}

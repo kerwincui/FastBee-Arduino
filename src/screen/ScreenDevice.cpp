@@ -18,7 +18,7 @@ bool ScreenDevice::configure(const PeripheralConfig& peripheral, String& error) 
         error = "SCREEN_CONFIG_TYPE_INVALID";
         return false;
     }
-    if (_active) {
+    if (_active || _display || _touch) {
         error = "SCREEN_DEVICE_ACTIVE: deactivate before reconfiguration";
         return false;
     }
@@ -34,7 +34,7 @@ bool ScreenDevice::unconfigure(const String& peripheralId) {
     // Backend ownership belongs to ScreenRuntime's UI task. A caller must
     // first request and confirm task shutdown; releasing here would race its
     // touch polling and rendering calls.
-    if (_active) return false;
+    if (_active || _display || _touch) return false;
     memset(&_config, 0, sizeof(_config));
     _peripheralId = "";
     _configured = false;
@@ -46,6 +46,10 @@ bool ScreenDevice::activate(String& error) {
     error = "SCREEN_UI_NOT_COMPILED";
     return false;
 #else
+    if (_stopping) {
+        error = "SCREEN_DEVICE_CLEANUP_PENDING: retry deactivate";
+        return false;
+    }
     if (_active) {
         error = "";
         return true;
@@ -58,12 +62,35 @@ bool ScreenDevice::activate(String& error) {
     _display = createDisplayBackend(_config, error);
     if (!_display || !_display->begin(_config, error)) {
         if (error.isEmpty()) error = "SCREEN_DISPLAY_INIT_FAILED";
-        _display.reset();
+        String cleanupError;
+        if (!deactivate(&cleanupError)) error += String("; ") + cleanupError;
         return false;
     }
 
     _lastTouchAttemptMs = millis();
-    initializeTouch();
+    if (!initializeTouch() && strcasecmp(_config.backend, "rgb") == 0 &&
+        strcasecmp(_config.touchBackend, "gt911") == 0 && _config.touchRst < 0 &&
+        _config.controlResetMask && _config.controlTouchIntMask &&
+        (_touchError == "SCREEN_TOUCH_GT911_CONFIG_INVALID" ||
+         _touchError == "SCREEN_TOUCH_GT911_CONFIG_CHECKSUM_INVALID")) {
+        // On expander-reset panels the touch backend cannot toggle RESET.
+        // Retry the board's complete reset/LCD sequence once, before a UI or
+        // gesture exists. Runtime retries must not repeatedly reset the display.
+        LOG_WARNING("ScreenDevice: retrying board reset for GT911 startup config");
+        String cleanupError;
+        if (!_display->stop(cleanupError)) {
+            _stopping = true;
+            error = cleanupError;
+            return false;
+        }
+        if (!_display->begin(_config, error)) {
+            if (error.isEmpty()) error = "SCREEN_DISPLAY_INIT_FAILED";
+            if (!deactivate(&cleanupError)) error += String("; ") + cleanupError;
+            return false;
+        }
+        initializeTouch();
+    }
+    _lastTouchAttemptMs = millis();
 
     if (!_display->setBrightness(_config.brightness)) {
         LOG_WARNING("ScreenDevice: configured brightness could not be applied");
@@ -106,22 +133,36 @@ bool ScreenDevice::serviceTouch(uint32_t nowMs) {
     return true;
 }
 
-void ScreenDevice::deactivate() {
+bool ScreenDevice::deactivate(String* error) {
+    _stopping = true;
+    String cleanupError;
+    if (_display && !_display->stop(cleanupError)) {
+        if (error) *error = cleanupError.isEmpty() ?
+            String("SCREEN_DISPLAY_STOP_FAILED") : cleanupError;
+        return false;
+    }
     if (_touch) {
         _touch->end();
         _touch.reset();
     }
     if (_display) {
-        _display->setSleep(true);
-        _display->end();
         _display.reset();
     }
     _active = false;
+    _stopping = false;
     _touchError = "";
+    if (error) *error = "";
+    return true;
 }
 
 DisplayCapabilities ScreenDevice::capabilities() const {
     return _display ? _display->capabilities() : DisplayCapabilities{};
+}
+
+void ScreenDevice::snapshotBacklightResource(BacklightResourceSnapshot& result) const {
+    result = {};
+    if (_display) _display->snapshotBacklightResource(result);
+    else result.available = true; // Task-owned cleanup has no surviving backend.
 }
 
 }  // namespace Screen

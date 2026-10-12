@@ -380,6 +380,18 @@
             el.title = text === '--' ? '' : text;
         },
 
+        _setMqttPendingStatus(reason) {
+            const text = reason || 'MQTT 实例切换中，运行状态暂未确认';
+            this._setMqttStatusReason(text);
+            const badge = document.getElementById('mqtt-status-badge');
+            if (badge) {
+                badge.className = 'mqtt-status-badge mqtt-status-detecting';
+                badge.textContent = '状态未确认';
+                badge.title = text;
+            }
+            this._mqttConnectingStartTime = 0;
+        },
+
         _setMqttFailureStatus(reason, badgeText) {
             const text = reason === undefined || reason === null || String(reason).trim() === ''
                 ? 'MQTT 重连失败，请稍后重试' : String(reason);
@@ -428,6 +440,10 @@
                 addSource(value.error, depth + 1);
             };
             addSource(data, 0);
+            if (sources.some(source => source.reconnectStopPending === true))
+                return '重连取消已请求，等待后台任务退出；原连接资源暂时保留';
+            if (sources.some(source => source.reconnectCancellationRequested === true))
+                return '重连已取消；需要时请手动重新连接';
 
             const findText = (fields) => {
                 for (let i = 0; i < sources.length; i++) {
@@ -547,6 +563,7 @@
         _startMqttStatusPolling(options) {
             options = options || {};
             this._stopMqttStatusPolling();
+            this._mqttLitePollStopped = false;
             var self = this;
 
             // 纯 REST 轮询模式：不再创建 SSE 持久连接
@@ -607,6 +624,7 @@
                 .then(function(res) {
                     if (requestSeq !== self._mqttStatusRequestSeq) return;
                     if (!res || !res.success) {
+                        self._updateMqttReportQueueUI(null);
                         self._mqttApiFailCount++;
                         self._handleMqttApiFail(self._getMqttStatusFailureReason(res) || '状态接口返回失败');
                         // 快速重试：首次失败后3秒再试一次（避免与其他请求叠加）
@@ -636,6 +654,7 @@
                     // Preserve diagnostics from request-governor handled HTTP
                     // failures, but do not replace them with a generic message.
                     const diagnostic = self._getMqttStatusFailureReason(err);
+                    self._updateMqttReportQueueUI(null);
                     if (err && err._handled) {
                         // A handled 401/403 can still leave the old green
                         // badge visible when another page request triggered
@@ -673,8 +692,77 @@
             this._setMqttFailureStatus(reason || 'MQTT 状态接口不可用', '状态获取失败');
         },
 
+        _formatMqttReportRetirementStatus: function(history) {
+            const unknown = '销毁历史未确认';
+            const names = {unspecified: '未分类', configuration_disabled: '配置禁用',
+                rebuild: '实例重建', network_switch: '网络切换', shutdown: '系统关闭',
+                initialization_failed: '初始化失败'};
+            const count = value => Number.isInteger(value) && value >= 0 && value <= 4294967295;
+            if (!history || history.scope !== 'boot' || history.persisted !== false ||
+                history.payloadRetained !== false || typeof history.saturated !== 'boolean' ||
+                typeof history.lastLossPendingReport !== 'boolean' ||
+                !['instances', 'instancesWithLoss', 'discardedReports', 'unconfirmedInstances',
+                    'lastLossRingDepth'].every(key => count(history[key])) ||
+                !Object.prototype.hasOwnProperty.call(names, history.lastLossReason) ||
+                history.lastLossRingDepth > 8 || !history.byReason ||
+                !Object.keys(names).every(key => count(history.byReason[key]))) return unknown;
+            const lastDepth = history.lastLossRingDepth + (history.lastLossPendingReport ? 1 : 0);
+            const sum = Object.keys(names).reduce((total, key) => total + history.byReason[key], 0);
+            if (!history.saturated && (sum !== history.discardedReports ||
+                history.instancesWithLoss + history.unconfirmedInstances > history.instances ||
+                history.discardedReports < history.instancesWithLoss ||
+                history.discardedReports > history.instancesWithLoss * 9 ||
+                (history.discardedReports === 0) !== (lastDepth === 0))) return unknown;
+            const reasons = Object.keys(names).filter(key => history.byReason[key] > 0)
+                .map(key => names[key] + history.byReason[key]).join('，');
+            return '本次启动销毁丢弃' + (history.saturated ? '至少' : '') + history.discardedReports +
+                (reasons ? '（' + reasons + '）' : '') +
+                (lastDepth ? '；最近' + names[history.lastLossReason] + '丢弃' + lastDepth +
+                    (history.lastLossPendingReport ? '，含失败保留报告' : '') : '') +
+                (history.unconfirmedInstances ? '；另有' + history.unconfirmedInstances + '次销毁数量未确认' : '') +
+                '；不保留载荷，重启清零';
+        },
+
+        _formatMqttReportQueueStatus: function(queue, connected) {
+            const retirement = ' · ' + this._formatMqttReportRetirementStatus(queue && queue.retirement);
+            const unknown = '未确认（固件未提供完整队列状态或请求失败）' + retirement;
+            if (!queue || queue.available !== true || queue.deliveryVerified !== false) return unknown;
+            const fields = ['capacity', 'ringCapacity', 'depth', 'ringDepth', 'pendingAttempts',
+                'retryDelayMs', 'accepted', 'publishedLocally', 'evictedOldest', 'rejectedInvalid',
+                'rejectedThrottle', 'publishRejected', 'allocationDeferred', 'rejectedTestMode'];
+            if (!fields.every(function(key) {
+                return Number.isInteger(queue[key]) && queue[key] >= 0 && queue[key] <= 4294967295;
+            }) || typeof queue.pendingReport !== 'boolean' || typeof queue.consumerActive !== 'boolean' ||
+                queue.capacity !== 9 || queue.ringCapacity !== 8 || queue.ringDepth > queue.ringCapacity ||
+                queue.depth !== queue.ringDepth + (queue.pendingReport ? 1 : 0) ||
+                queue.retryDelayMs > 1000 || (!queue.pendingReport && queue.pendingAttempts !== 0) ||
+                ((!queue.depth || queue.consumerActive) && queue.retryDelayMs !== 0)) return unknown;
+            const state = queue.consumerActive ? '处理中' : (!queue.depth ? '空' :
+                (connected !== true ? '等待连接' : (queue.retryDelayMs ?
+                    '等待至少' + Math.ceil(queue.retryDelayMs / 1000) + '秒' : '等待调度')));
+            const configured = Number.isInteger(queue.configuredTopicAccepted) && queue.configuredTopicAccepted >= 0 &&
+                queue.configuredTopicAccepted <= queue.accepted
+                ? ' · 指定主题累计入队' + queue.configuredTopicAccepted : ' · 指定主题入队数未确认';
+            return queue.depth + '/' + queue.capacity + ' · ' + state +
+                (queue.pendingReport ? ' · 保留报告尝试' + queue.pendingAttempts + '次' : '') +
+                ' · 淘汰' + queue.evictedOldest + '，格式拒绝' + queue.rejectedInvalid +
+                '，限流拒绝' + queue.rejectedThrottle + '，发布失败' + queue.publishRejected +
+                '，内存推迟' + queue.allocationDeferred + '，测试隔离拒绝' + queue.rejectedTestMode +
+                ' · 本地发布' + queue.publishedLocally +
+                '（平台收件未验证）' + configured + retirement;
+        },
+
+        _updateMqttReportQueueUI: function(data) {
+            const element = document.getElementById('mqtt-status-report-queue');
+            if (!element) return;
+            const text = this._formatMqttReportQueueStatus(data && data.reportQueue, data && data.connected);
+            element.textContent = text;
+            element.title = text;
+        },
+
         _updateMqttStatusUI: function(data) {
             const d = data || {};
+            this._updateMqttReportQueueUI(d);
             const badge = document.getElementById('mqtt-status-badge');
             const serverEl = document.getElementById('mqtt-status-server');
             const clientEl = document.getElementById('mqtt-status-clientid');
@@ -699,6 +787,8 @@
                 const errorCode = d.lastErrorCode !== undefined && d.lastErrorCode !== null
                     ? d.lastErrorCode : d.lastError;
                 const errorClass = String(d.lastErrorClass || '');
+                const lifecycleUnknown = d.stateAvailable === false || d.lifecycleBusy === true ||
+                    d.lifecyclePending === true || d.reconnectStopPending === true;
                 const hasError = (errorCode !== undefined && errorCode !== null && Number(errorCode) !== 0)
                     || (errorClass && errorClass !== 'none' && errorClass !== 'config')
                     || d.tlsMemoryFailure === true;
@@ -708,14 +798,24 @@
                 // 后端做了 deferred restart（初始化 MQTTClient + begin()），实际连接由
                 // loop 异步完成且不可靠。必须调用 /api/mqtt/reconnect 让后端重置并重新启动
                 // ⚠️ 必须检查 d.autoReconnect！用户取消勾选自动重连后不应触发重连
-                if (!this._mqttAutoReconnectTriggered && d.enabled !== false && d.autoReconnect !== false) {
+                const testPending = d.testRestorePending === true || d.connectionTestOnly === true;
+                if (!testPending && d.testRestoreBlocked !== true && !lifecycleUnknown &&
+                    d.reconnectCancellationRequested !== true &&
+                    !this._mqttAutoReconnectTriggered && d.enabled !== false && d.autoReconnect !== false) {
                     this._mqttAutoReconnectTriggered = true;
                     if (!d.connected) {
                         var self = this;
+                        var reconnectRequestSeq = this._mqttStatusRequestSeq;
                         if (typeof apiPostSilent === 'function') {
                             apiPostSilent('/api/mqtt/reconnect', {}).then(function(reconnectRes) {
+                                if (self._mqttLitePollStopped || reconnectRequestSeq !== self._mqttStatusRequestSeq) return;
                                 const reconnectData = reconnectRes && reconnectRes.data
                                     ? reconnectRes.data : {};
+                                if (reconnectData.lifecyclePending === true || reconnectData.lifecycleBusy === true ||
+                                    reconnectData.stateAvailable === false) {
+                                    self._setMqttPendingStatus(self._getMqttStatusFailureReason(reconnectRes));
+                                    return; // Existing status polling observes completion; never repost here.
+                                }
                                 // The firmware reports some local guard failures
                                 // as HTTP 200 with `reconnecting:false` so the
                                 // caller can remain non-blocking.  Handle that
@@ -766,6 +866,7 @@
                                 }
                                 self._mqttAutoReconnPollTimer = setTimeout(pollStatus, 3000);
                             }).catch(function(err) {
+                                if (self._mqttLitePollStopped || reconnectRequestSeq !== self._mqttStatusRequestSeq) return;
                                 // Reconnect is intentionally silent at the
                                 // notification layer, but its failure still
                                 // belongs in the MQTT status panel.  Otherwise
@@ -782,7 +883,21 @@
                     }
                 }
 
-                if (d.testConnected) {
+                if (lifecycleUnknown && d.disabledByMemory !== true && d.stoppedByMemory !== true) {
+                    this._setMqttPendingStatus(this._getMqttStatusFailureReason(d));
+                } else if (d.testRestoreBlocked === true) {
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '配置恢复待处理';
+                    this._setMqttStatusReason('恢复记录已保留；存储失败或配置冲突，尚未确认恢复');
+                    this._mqttConnectingStartTime = 0;
+                    this._mqttTestConnectedDetected = false;
+                } else if (testPending) {
+                    badge.className = 'mqtt-status-badge mqtt-status-connecting';
+                    badge.textContent = d.connected === true ? '测试已连接，待恢复' : '仅连接测试中';
+                    this._setMqttStatusReason('测试期间隔离业务上报、订阅和规则；连接不代表平台收件');
+                    this._mqttConnectingStartTime = 0;
+                    this._mqttTestConnectedDetected = false;
+                } else if (d.testConnected) {
                     // 测试连接成功（后端已自动恢复原配置）
                     badge.className = 'mqtt-status-badge mqtt-status-online';
                     badge.textContent = '测试成功';
@@ -878,20 +993,8 @@
             }
             if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';
             if (clientEl) clientEl.textContent = d.clientId || '--';
-            if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
+            if (reconnEl) reconnEl.textContent = d.stateAvailable === false ? '--' : (d.reconnectCount ?? 0);
         },
 
-        _updateMqttStatusPanel(connected, server, port, clientId) {
-            const badge = document.getElementById('mqtt-status-badge');
-            const serverEl = document.getElementById('mqtt-status-server');
-            const clientEl = document.getElementById('mqtt-status-clientid');
-            this._setMqttStatusReason(connected ? '' : '未连接');
-            if (badge) {
-                if (connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
-                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }
-            }
-            if (serverEl) serverEl.textContent = server ? (server + ':' + port) : '--';
-            if (clientEl) clientEl.textContent = clientId || '--';
-        }
     });
 })();

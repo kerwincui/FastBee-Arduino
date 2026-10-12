@@ -1,0 +1,312 @@
+#include <Arduino.h>
+#include "core/FeatureObservationCounter.h"
+#include "core/FeatureOwnerLifetime.h"
+#include <cassert>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <thread>
+#include <type_traits>
+#include <vector>
+
+#define FASTBEE_ENABLE_ETHERNET 1
+#define LOG_INFO(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+#define LOG_DEBUGF(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define LOG_ERROR(...) ((void)0)
+
+thread_local bool passive = false;
+using SemaphoreHandle_t = std::recursive_mutex*;
+constexpr int pdTRUE = 1;
+constexpr unsigned portMAX_DELAY = ~0u;
+static bool failMutex = false;
+static std::atomic<unsigned> mutexCreates{0}, networkReads{0}, begins{0}, ends{0}, services{0};
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() {
+    assert(!passive); ++mutexCreates;
+    return failMutex ? nullptr : new std::recursive_mutex;
+}
+void vSemaphoreDelete(SemaphoreHandle_t mutex) { assert(!passive); delete mutex; }
+int xSemaphoreTakeRecursive(SemaphoreHandle_t mutex, unsigned timeout) {
+    if (passive) assert(timeout == 0);
+    if (!timeout) return mutex->try_lock();
+    mutex->lock(); return pdTRUE;
+}
+void xSemaphoreGiveRecursive(SemaphoreHandle_t mutex) { mutex->unlock(); }
+
+struct IPAddress {
+    uint32_t value;
+    IPAddress(int a=0, int b=0, int c=0, int d=0) : value((uint32_t(a)<<24)|(uint32_t(b)<<16)|(uint32_t(c)<<8)|uint32_t(d)) {}
+    bool operator!=(const IPAddress& other) const { return value != other.value; }
+    String toString() const { return "synthetic"; }
+};
+const IPAddress INADDR_NONE(255,255,255,255);
+using WiFiMode_t = int;
+constexpr int WIFI_MODE_STA=1, WIFI_MODE_AP=2, WIFI_MODE_APSTA=3, WL_CONNECTED=1;
+struct Wifi {
+    bool valid = true;
+    int getMode() { assert(!passive); ++networkReads; return valid ? WIFI_MODE_STA : 0; }
+    int status() { assert(!passive); ++networkReads; return valid ? WL_CONNECTED : 0; }
+    IPAddress localIP() { assert(!passive); ++networkReads; return valid ? IPAddress(192,168,1,2) : IPAddress(); }
+    IPAddress softAPIP() { assert(!passive); ++networkReads; return IPAddress(); }
+} WiFi;
+struct Ethernet {
+    IPAddress localIP() { assert(!passive); ++networkReads; return IPAddress(); }
+} ETH;
+static std::function<void()> beginHook;
+struct Mdns {
+    bool succeeds = true;
+    bool begin(const char*) {
+        assert(!passive); ++begins;
+        if (beginHook) beginHook();
+        return succeeds;
+    }
+    void end() { assert(!passive); ++ends; }
+    void setInstanceName(const char*) { assert(!passive); ++services; }
+    void addService(const char*, const char*, int) { assert(!passive); ++services; }
+} MDNS;
+
+class WebHandlerContext;
+class AsyncWebServer;
+class AsyncWebServerRequest;
+// @dns-class@
+// @user-class@
+// @log-class@
+// @dns@
+// @user@
+// @log@
+
+using FastBee::FeatureInstanceState;
+using FastBee::FeatureInstanceScope;
+FastBee::FeatureInstanceSnapshot observe(const char* key) {
+    passive = true;
+    const auto value = FastBee::FeatureInstanceRegistry::instance().observe(key);
+    passive = false;
+    assert(!value.countKnown() && value.initializedCount == 0);
+    return value;
+}
+void assertPassiveRepeated(const char* key, FeatureInstanceState state) {
+    const auto a = mutexCreates.load(), b = networkReads.load(), c = begins.load(), d = ends.load(), e = services.load();
+    for (int i = 0; i < 1000; ++i) assert(observe(key).state == state);
+    assert(a == mutexCreates && b == networkReads && c == begins && d == ends && e == services);
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    if (mode == "cold") {
+        assertPassiveRepeated("mdns", FeatureInstanceState::Unobserved);
+        assertPassiveRepeated("userAdmin", FeatureInstanceState::Unobserved);
+        assertPassiveRepeated("commandScript", FeatureInstanceState::Unobserved);
+        assert(mutexCreates == 0 && begins == 0);
+    } else if (mode == "mdns_lifecycle") {
+        DNSManager dns;
+        assert(dns.initialize());
+        assertPassiveRepeated("mdns", FeatureInstanceState::Stopped);
+        assert(dns.startMDNS("Actual Host"));
+        assert(dns.getActualHostname() == "actual-host");
+        assertPassiveRepeated("mdns", FeatureInstanceState::Running);
+        assert(dns.initialize() && dns.isMDNSStarted());
+        dns.setMDNSEnabled(false);
+        assert(ends == 1 && !dns.checkMDNSHealth());
+        assertPassiveRepeated("mdns", FeatureInstanceState::Stopped);
+        dns.setMDNSEnabled(true);
+        assert(dns.checkMDNSHealth());
+        dns.setCustomDomain("replacement");
+        assert(dns.getCustomDomain() == "replacement" && dns.getActualHostname() == "replacement");
+        assert(begins == 3 && ends == 2);
+    } else if (mode == "mdns_failure") {
+        DNSManager dns;
+        MDNS.succeeds = false;
+        assert(!dns.startMDNS("failure") && begins == 3);
+        assertPassiveRepeated("mdns", FeatureInstanceState::Stopped);
+        WiFi.valid = false;
+        assert(!dns.startMDNS("no-network") && begins == 3);
+    } else if (mode == "mdns_busy") {
+        DNSManager dns;
+        std::promise<void> entered, release;
+        auto ready = entered.get_future(); auto continueWork = release.get_future();
+        beginHook = [&] { entered.set_value(); continueWork.wait(); };
+        std::thread worker([&] { assert(dns.startMDNS("blocked")); });
+        ready.wait();
+        assertPassiveRepeated("mdns", FeatureInstanceState::Busy);
+        release.set_value(); worker.join(); beginHook = {};
+        assert(observe("mdns").state == FeatureInstanceState::Running);
+    } else if (mode == "mdns_reentrant_observation") {
+        DNSManager dns;
+        beginHook = [&] { assert(observe("mdns").state == FeatureInstanceState::Busy); };
+        assert(dns.startMDNS("nested")); beginHook = {};
+        assert(observe("mdns").state == FeatureInstanceState::Running);
+    } else if (mode == "mdns_replacement") {
+        { DNSManager first; assert(first.startMDNS("first")); }
+        assertPassiveRepeated("mdns", FeatureInstanceState::Stopped);
+        { DNSManager next; assert(next.startMDNS("next")); }
+        assertPassiveRepeated("mdns", FeatureInstanceState::Stopped);
+        assert(mutexCreates == 1 && begins == 2 && ends == 2);
+    } else if (mode == "mdns_allocation_retry") {
+        failMutex = true;
+        DNSManager dns;
+        assert(observe("mdns").reason == FastBee::FeatureInstanceReason::SynchronizationUnavailable);
+        assert(!dns.initialize() && !dns.startMDNS("oom") && !begins);
+        const auto attempts = mutexCreates.load();
+        assertPassiveRepeated("mdns", FeatureInstanceState::Unobserved);
+        assert(mutexCreates == attempts);
+        failMutex = false;
+        assert(dns.initialize() && dns.startMDNS("retry"));
+        assert(observe("mdns").state == FeatureInstanceState::Running);
+    } else if (mode == "mdns_concurrent") {
+        DNSManager dns;
+        std::atomic<bool> finished{false};
+        std::thread writer([&] {
+            for (int i = 0; i < 400; ++i) { assert(dns.startMDNS("concurrent")); dns.stopMDNS(); }
+            finished = true;
+        });
+        do {
+            const auto value = observe("mdns");
+            assert(value.state == FeatureInstanceState::Busy || value.state == FeatureInstanceState::Running || value.state == FeatureInstanceState::Stopped);
+        } while (!finished);
+        writer.join();
+        assert(begins == 400 && ends == 400 && observe("mdns").state == FeatureInstanceState::Stopped);
+    } else if (mode == "user_owner_lifetime") {
+        static_assert(!std::is_copy_constructible<UserRouteHandler>::value, "Owner tracking cannot be copied");
+        {
+            UserRouteHandler first(nullptr);
+            assertPassiveRepeated("userAdmin", FeatureInstanceState::Allocated);
+            { UserRouteHandler second(nullptr); assert(observe("userAdmin").state == FeatureInstanceState::Allocated); }
+            assert(observe("userAdmin").state == FeatureInstanceState::Allocated);
+        }
+        assertPassiveRepeated("userAdmin", FeatureInstanceState::Stopped);
+    } else if (mode == "log_owner_lifetime") {
+        static_assert(!std::is_copy_constructible<LogRouteHandler>::value, "Owner tracking cannot be copied");
+        assertPassiveRepeated("logViewer", FeatureInstanceState::Unobserved);
+        {
+            LogRouteHandler first(nullptr);
+            assertPassiveRepeated("logViewer", FeatureInstanceState::Allocated);
+            assert(observe("logViewer").scope == FeatureInstanceScope::OwnerLifetime);
+            { LogRouteHandler second(nullptr); assert(observe("logViewer").state == FeatureInstanceState::Allocated); }
+            assert(observe("logViewer").state == FeatureInstanceState::Allocated);
+        }
+        assertPassiveRepeated("logViewer", FeatureInstanceState::OwnerAbsent);
+    } else if (mode == "owner_transitions") {
+        FastBee::FeatureOwnerGroup group;
+        uint8_t slot = 255; uint32_t identity = 0;
+        assert(group.snapshot().state == FeatureInstanceState::OwnerAbsent);
+        assert(group.acquire(slot, identity));
+        assert(group.snapshot().state == FeatureInstanceState::Busy);
+        assert(!group.publish(slot, identity, FeatureInstanceState::Running));
+        assert(group.publish(slot, identity, FeatureInstanceState::Allocated));
+        assert(group.snapshot().state == FeatureInstanceState::Allocated);
+        assert(group.publish(slot, identity, FeatureInstanceState::Retiring));
+        assert(group.snapshot().state == FeatureInstanceState::Retiring);
+        assert(group.release(slot, identity));
+        assert(group.snapshot().state == FeatureInstanceState::OwnerAbsent);
+    } else if (mode == "owner_replacement") {
+        FastBee::FeatureOwnerGroup group;
+        uint8_t first, second, next; uint32_t a, b, c;
+        assert(group.acquire(first, a) && group.publish(first, a, FeatureInstanceState::Allocated));
+        assert(group.acquire(second, b));
+        assert(group.snapshot().state == FeatureInstanceState::Busy);
+        assert(group.publish(second, b, FeatureInstanceState::Allocated));
+        assert(group.publish(first, a, FeatureInstanceState::Retiring));
+        assert(group.snapshot().state == FeatureInstanceState::Retiring);
+        assert(group.release(first, a));
+        assert(group.acquire(next, c) && next == first && c != a);
+        assert(!group.publish(first, a, FeatureInstanceState::Allocated) && !group.release(first, a));
+        assert(group.publish(next, c, FeatureInstanceState::Allocated));
+        assert(group.release(second, b) && group.snapshot().state == FeatureInstanceState::Allocated);
+        assert(group.release(next, c) && group.snapshot().state == FeatureInstanceState::OwnerAbsent);
+    } else if (mode == "owner_capacity") {
+        FastBee::FeatureOwnerGroup group;
+        uint8_t slots[4]; uint32_t ids[4];
+        for (int n = 0; n < 4; ++n) assert(group.acquire(slots[n], ids[n]));
+        uint8_t extra; uint32_t id;
+        assert(!group.acquire(extra, id) && !group.snapshot().observed());
+        for (int n = 0; n < 4; ++n) assert(group.release(slots[n], ids[n]));
+        assert(!group.snapshot().observed()); // Lost owner evidence never silently recovers.
+    } else if (mode == "owner_saturation") {
+        FastBee::BasicFeatureOwnerGroup<2> identities;
+        uint8_t slot; uint32_t id;
+        for (int n = 0; n < 2; ++n) assert(identities.acquire(slot, id) && identities.release(slot, id));
+        assert(!identities.acquire(slot, id) && !identities.snapshot().observed());
+        FastBee::BasicFeatureOwnerGroup<100, 3> revisions;
+        assert(revisions.acquire(slot, id) && revisions.publish(slot, id, FeatureInstanceState::Allocated));
+        assert(revisions.snapshot().state == FeatureInstanceState::Allocated);
+        assert(revisions.release(slot, id) && !revisions.snapshot().observed());
+    } else if (mode == "owner_concurrent") {
+        FastBee::FeatureOwnerGroup group;
+        uint8_t anchor; uint32_t anchorId;
+        assert(group.acquire(anchor, anchorId) && group.publish(anchor, anchorId, FeatureInstanceState::Allocated));
+        std::atomic<unsigned> finished{0};
+        std::vector<std::thread> workers;
+        for (int n = 0; n < 3; ++n) workers.emplace_back([&] {
+            for (int i = 0; i < 2000; ++i) {
+                uint8_t slot; uint32_t id;
+                assert(group.acquire(slot, id));
+                assert(group.publish(slot, id, FeatureInstanceState::Allocated));
+                assert(group.publish(slot, id, FeatureInstanceState::Retiring));
+                assert(group.release(slot, id));
+            }
+            ++finished;
+        });
+        do {
+            const auto value = group.snapshot();
+            assert(value.state == FeatureInstanceState::Busy || value.state == FeatureInstanceState::Allocated ||
+                value.state == FeatureInstanceState::Retiring);
+            assert(!value.countKnown() && value.scope == FeatureInstanceScope::OwnerLifetime);
+        } while (finished != 3);
+        for (auto& worker : workers) worker.join();
+        assert(group.snapshot().state == FeatureInstanceState::Allocated);
+        assert(group.release(anchor, anchorId) && group.snapshot().state == FeatureInstanceState::OwnerAbsent);
+    } else if (mode == "owner_unwind") {
+        auto fail = [] {
+            FastBee::FeatureOwnerLifetime constructing(FastBee::ObservedFeatureOwner::WebServer);
+            assert(observe("webServer").state == FeatureInstanceState::Busy);
+            throw 1;
+        };
+        try { fail(); } catch (int) {}
+        assertPassiveRepeated("webServer", FeatureInstanceState::OwnerAbsent);
+        {
+            FastBee::FeatureOwnerLifetime first(FastBee::ObservedFeatureOwner::WebServer);
+            first.ready();
+            assertPassiveRepeated("webServer", FeatureInstanceState::Allocated);
+            first.retiring();
+            assertPassiveRepeated("webServer", FeatureInstanceState::Retiring);
+        }
+        assertPassiveRepeated("webServer", FeatureInstanceState::OwnerAbsent);
+    } else if (mode == "counter_concurrent") {
+        FastBee::FeatureObservationCounter<> counter;
+        counter.enter();
+        std::vector<std::thread> workers;
+        for (int n = 0; n < 6; ++n) workers.emplace_back([&] {
+            for (int i = 0; i < 2000; ++i) { counter.enter(); counter.leave(); }
+        });
+        for (auto& thread : workers) thread.join();
+        assert(counter.snapshot(FeatureInstanceScope::ServiceLifecycle).state == FeatureInstanceState::Allocated);
+        counter.leave();
+        assert(counter.snapshot(FeatureInstanceScope::ServiceLifecycle).state == FeatureInstanceState::Stopped);
+    } else if (mode == "counter_overflow") {
+        FastBee::FeatureObservationCounter<2> counter;
+        counter.enter(); counter.enter(); counter.enter();
+        for (int i = 0; i < 5; ++i) { counter.leave(); counter.enter(); }
+        assert(!counter.snapshot(FeatureInstanceScope::ExecutionActivity).observed());
+        FastBee::FeatureObservationCounter<> unmatched;
+        unmatched.leave(); unmatched.enter();
+        assert(!unmatched.snapshot(FeatureInstanceScope::ExecutionActivity).observed());
+    } else if (mode == "execution_unwind") {
+        auto earlyReturn = [] {
+            FastBee::CommandScriptExecutionObservation active;
+            assert(observe("commandScript").state == FeatureInstanceState::Running);
+            return;
+        };
+        {
+            FastBee::CommandScriptExecutionObservation outer;
+            earlyReturn();
+            assert(observe("commandScript").state == FeatureInstanceState::Running);
+            try { FastBee::CommandScriptExecutionObservation inner; throw 1; } catch (int) {}
+            assert(observe("commandScript").state == FeatureInstanceState::Running);
+        }
+        assert(observe("commandScript").state == FeatureInstanceState::Idle);
+        assert(observe("commandScript").scope == FeatureInstanceScope::ExecutionActivity);
+    } else assert(false);
+}

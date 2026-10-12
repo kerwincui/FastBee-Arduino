@@ -1,0 +1,123 @@
+// Production parser/serializer/import methods and resource planner. Device
+// validation and storage commit are seams; this does not exercise hardware.
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <LittleFS.h>
+#include <cassert>
+#include <cmath>
+#include <cstring>
+#include <map>
+#include <vector>
+#include "core/FeatureFlags.h"
+#include "core/ResourceProfile.h"
+#include "core/PeripheralConfig.h"
+#include "core/PeripheralResourcePlanner.h"
+#include "core/Pca9685ConfigSupport.h"
+#include "core/RtcBootSeedConfig.h"
+#include "core/H1ParameterContract.h"
+#include "utils/CheckedText.h"
+#include "network/FixedJsonField.h"
+#include "PeripheralManagerConfigHelpers.h"
+using namespace FastBee::PeripheralManagerConfigDetail;
+inline void convertToJson(const String& value, JsonVariant out) { out.set(std::string(value)); }
+inline void convertFromJson(JsonVariantConst value, String& out) { out = value.as<std::string>(); }
+#define LOG_WARNINGF(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+#define LOG_ERROR(...) ((void)0)
+#define LOG_INFO(...) ((void)0)
+struct { void warning(const char*) {} } LOGGER;
+namespace FastBee {
+bool parseSensorConfig(JsonObjectConst, PeripheralConfig&, String&) { assert(false); return false; }
+void serializeSensorConfig(JsonObject, const PeripheralConfig&) { assert(false); }
+}
+static bool busy=false, failCommit=false;
+struct RecursiveMutexGuard {
+ explicit RecursiveMutexGuard(int,unsigned=0){}
+ bool isLocked()const{return !busy;}
+};
+#ifndef pdMS_TO_TICKS
+#define pdMS_TO_TICKS(value) (value)
+#endif
+static constexpr const char* PERIPHERAL_CONFIG_FILE="/config/peripherals.json";
+struct FileUtils {
+ static File openAtomicWrite(const String& path) {return LittleFS.open(path+".tmp","w");}
+ static bool commitAtomicWrite(const String& from,const String& to){
+  if(failCommit)return false;
+  LittleFS.files[std::string(to)]=LittleFS.files.at(std::string(from));
+  LittleFS.files.erase(std::string(from));return true;
+ }
+};
+struct PeripheralManager {
+ int _mutex=0;bool _configurationImportPending=false;uint64_t _configurationReviewVersion=7;
+ std::map<String,PeripheralConfig> peripherals;
+ bool validateConfig(const PeripheralConfig& config,String&,bool running){
+  assert(!running);return !config.id.isEmpty()&&!config.name.isEmpty();
+ }
+ bool configurationImportPending()const;
+ bool prepareConfigurationImport(JsonDocument&,std::vector<PeripheralConfig>&,const FastBee::PreflightContext&,
+                                 FastBee::PreflightResult&,String&);
+ bool commitConfigurationImport(JsonDocument&,uint64_t,String&);
+ bool saveConfiguration();
+};
+HELPERS
+METHODS
+int main(int argc,char**argv){
+ assert(argc==2);const std::string mode=argv[1];
+ PeripheralManager manager;JsonDocument doc;String error;
+ assert(!deserializeJson(doc,R"({"peripherals":[{"id":"out","name":"Output","type":12,"enabled":false,"pins":[4],"params":{}}]})"));
+ auto entry=doc["peripherals"][0].as<JsonObject>();
+ if(mode=="unknown")entry["params"]["unknown"]=1;
+ if(mode=="narrow")entry["params"]["pwmResolution"]=264;
+ if(mode=="nul")entry["id"]=JsonString("out\0hidden",10);
+ if(mode=="duplicate")doc["peripherals"].add(entry);
+ if(mode=="pin_conflict"){
+  entry["enabled"]=true;doc["peripherals"].add(entry);doc["peripherals"][1]["id"]="second";
+ }
+ if(mode=="capacity")for(size_t i=1;i<=FastBee::ResourceProfile::MAX_PERIPHERALS;++i)doc["peripherals"].add(entry);
+ if(mode=="external_conflict"){
+  PeripheralConfig external;external.id="out";external.name="External";external.type=PeripheralType::MODBUS_DEVICE;
+  manager.peripherals[external.id]=external;
+ }
+ if(mode=="reference" || mode=="missing_reference"){
+  assert(!deserializeJson(doc,R"({"peripherals":[{"id":"input","name":"Input","type":11,"enabled":false,"pins":[],"params":{"ioSource":1,"providerId":"pcf","channel":1}},{"id":"pcf","name":"PCF","type":55,"enabled":false,"pins":[],"params":{"driver":"PCF8574","busPeripheralId":"bus","resetPeripheralId":"","address":32,"sampleInterval":20}},{"id":"bus","name":"Bus","type":2,"enabled":false,"pins":[4,5],"params":{"frequency":100000,"address":0,"isMaster":true}}]})"));
+  if(mode=="missing_reference")doc["peripherals"].remove(2);
+ }
+ LittleFS.files[PERIPHERAL_CONFIG_FILE]="OLD";
+ if(mode=="busy")busy=true;
+ FastBee::PreflightContext context;context.uart0ConsoleActive=false;context.usbSerialJtagActive=false;
+ FastBee::PreflightResult result;std::vector<PeripheralConfig> candidates;
+ const bool prepared=manager.prepareConfigurationImport(doc,candidates,context,result,error);
+ const bool invalid=mode=="unknown"||mode=="narrow"||mode=="nul"||mode=="duplicate"||mode=="pin_conflict"||
+                    mode=="capacity"||mode=="external_conflict"||mode=="missing_reference"||mode=="busy";
+ if(prepared==invalid){
+  std::cerr<<"prepare mismatch in "<<mode<<": "<<error.c_str()<<'\n';
+  for(size_t i=0;i<result.issueCount;++i)
+   std::cerr<<FastBee::preflightIssueCodeName(result.issues[i].code)<<'\n';
+ }
+ assert(prepared!=invalid);
+ assert(LittleFS.files.at(PERIPHERAL_CONFIG_FILE)=="OLD" && !manager._configurationImportPending);
+ if(mode=="missing_reference"){
+  assert(error=="CONFIG_IMPORT_RESOURCE_CONFLICT");
+  bool missingBus=false;
+  for(size_t i=0;i<result.issueCount;++i)
+   if(result.issues[i].code==FastBee::PreflightIssueCode::I2C_REFERENCE_INVALID)missingBus=true;
+  assert(missingBus);
+ }
+ if(invalid)return 0;
+ assert(result.allowed&&!result.requiresConfirmation);
+ const size_t before=manager.peripherals.size();
+ if(mode=="open")LittleFS.failOpenWrite=std::string(PERIPHERAL_CONFIG_FILE)+".tmp";
+ if(mode=="short")LittleFS.writeLimit=5;
+ if(mode=="corrupt")LittleFS.corruptClose=std::string(PERIPHERAL_CONFIG_FILE)+".tmp";
+ if(mode=="rename")failCommit=true;
+ const bool committed=manager.commitConfigurationImport(doc,mode=="revision"?6:7,error);
+ const bool failed=mode=="open"||mode=="short"||mode=="corrupt"||mode=="rename"||mode=="revision";
+ assert(committed!=failed && manager.peripherals.size()==before);
+ if(failed){assert(!manager._configurationImportPending&&LittleFS.files.at(PERIPHERAL_CONFIG_FILE)=="OLD");return 0;}
+ assert(manager._configurationImportPending);
+ JsonDocument stored;assert(!deserializeJson(stored,LittleFS.files.at(PERIPHERAL_CONFIG_FILE)));
+ assert(stored.as<JsonVariantConst>()==doc.as<JsonVariantConst>());
+ assert(!manager.saveConfiguration());
+ assert(!manager.prepareConfigurationImport(doc,candidates,context,result,error));
+ assert(!manager.commitConfigurationImport(doc,7,error));
+}

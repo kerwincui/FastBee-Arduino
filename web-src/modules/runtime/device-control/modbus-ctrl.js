@@ -541,6 +541,10 @@
             refresh();
         },
 
+        _dcMotorReport: function(devIdx, data, waiting) {
+            window.renderModbusMotorReport(document.getElementById('dc-motor-report-' + devIdx), data, waiting, '页面');
+        },
+
         _dcMotorRequest: function(devIdx, action, value) {
             var self = this, p = this._dcGetMotorParams(devIdx);
             var generation = this._dcLifecycleGeneration;
@@ -550,8 +554,14 @@
             this._dcMotorSequence = (this._dcMotorSequence || 0) + 1;
             var token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + this._dcMotorSequence;
             if (!isRead) pending[key] = token;
+            function report(data, waiting) {
+                if (!isRead && self._dcIsLifecycleActive(generation) && pending[key] === token)
+                    self._dcMotorReport(devIdx, data, waiting);
+            }
+            report(null, true);
             var started = Date.now();
             var operationId = 0;
+            var terminal = false;
             function completed(response) {
                 if (!self._dcIsLifecycleActive(generation)) throw new Error('页面已关闭，已提交指令不会重发');
                 if (!response || !response.success) throw new Error(response && response.error || '指令结果待确认');
@@ -562,6 +572,8 @@
                     operationId = data.operationId;
                 }
                 if (!data.pending) {
+                    terminal = true;
+                    report(data);
                     // Older firmware returns success only at the envelope.
                     // Never mistake a failed asynchronous operation for that
                     // legacy response shape.
@@ -570,7 +582,7 @@
                 }
                 if (!operationId) throw new Error('缺少电机操作编号');
                 if (Date.now() - started > 20000) throw new Error('指令结果待确认，请查看设备状态');
-                return self._dcDelay(400, generation).then(function(active) {
+                return self._dcDelay(action === 'readStatus' ? 400 : 120, generation).then(function(active) {
                     if (!active) throw new Error('页面已关闭，已提交指令不会重发');
                     return apiPostSilentPriority('/api/modbus/motor/control', { action: 'operation', operationId: operationId }).catch(function(error) {
                         if (error && (error.status === 503 || error.code === 503 || error.data && error.data.code === 503))
@@ -583,7 +595,10 @@
             }
             return apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action, value: value || 0, requestId: token
-            }).then(completed).finally(function() {
+            }).then(completed).catch(function(error) {
+                if (!terminal) report(null);
+                throw error;
+            }).finally(function() {
                 if (pending[key] === token) delete pending[key];
             });
         },
@@ -596,10 +611,12 @@
                 if (!self._dcIsLifecycleActive(generation)) return;
                 self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
                 self._dcUpdatePanelOnlineState(devIdx, true);
+                return true;
             }).catch(function() {
                 if (!self._dcIsLifecycleActive(generation)) return;
                 self._dcUpdateMotorRunUI(devIdx, { parametersKnown: false }, p.motorDecimals);
                 self._dcUpdatePanelOnlineState(devIdx, false);
+                return false;
             });
         },
 
@@ -611,27 +628,29 @@
             var run = document.getElementById('dc-motor-run-' + devIdx);
             if (speed && data.speed !== undefined) speed.textContent = (data.speed / sf).toFixed(decimals || 0);
             if (pulse && data.pulse !== undefined) pulse.textContent = data.pulse;
-            if (data.parametersKnown === false) {
+            if (data.parametersKnown === false && data.parametersCached !== true) {
                 if (speed) speed.textContent = '--';
                 if (pulse) pulse.textContent = '--';
             }
             ['speed', 'pulse'].forEach(function(param) {
                 var input = document.getElementById('dc-motor-' + param + '-in-' + devIdx);
                 if (input && input.dataset.dirty !== 'true' && document.activeElement !== input) {
-                    if (data.parametersKnown === false) input.value = '';
+                    if (data.parametersKnown === false && data.parametersCached !== true) input.value = '';
                     else if (data[param] !== undefined) input.value = param === 'speed' ? (data[param] / sf).toFixed(decimals || 0) : String(data[param]);
                 }
             });
             var remembered = this._dcMotorAcknowledgements || (this._dcMotorAcknowledgements = {});
+            [speed, pulse].forEach(function(el) { if (el) el.title = data.parametersFresh === false && data.parametersCached ? '上次读回值，执行前自动刷新' : ''; });
             if (data.lastAcknowledgedAction !== undefined) remembered[devIdx] = data.lastAcknowledgedAction;
             var acknowledged = remembered[devIdx];
             var label = acknowledged === 'forward' ? '正转应答' : acknowledged === 'reverse' ? '反转应答' : acknowledged === 'stop' ? '停止应答' : '--';
             if (direction) { direction.textContent = label; direction.title = '最近已应答指令，不代表当前实际运动'; }
             if (run) { run.className = 'motor-run-badge motor-run-idle'; run.textContent = data.pending ? '指令处理中' : '运动未确认'; }
             if (run && !data.pending && data.referenceKnown !== undefined) {
-                run.textContent = !data.softLimitEnabled ? '行程未标定' : !data.referenceKnown ? '参考位置未确认' :
-                    !data.stationaryConfirmed ? '运动结束未确认' : '位置范围保护';
-                run.title = '无实际位置反馈；现场确认入口位于通信协议的电机控制面板';
+                run.textContent = !data.softLimitEnabled ? '点动模式' : !data.referenceKnown ? '参考位置未确认' :
+                    data.positionTracking === 'commanded' ? '估算位置 ' + data.estimatedPosition :
+                    data.travelReason === 'TRAVEL_RANGE_EXCEEDED' ? '行程预算已耗尽' : '软限位已启用';
+                run.title = '无编码器反馈；位置模式与上下界位于通信协议的电机编辑面板';
             }
         },
 
@@ -664,13 +683,16 @@
             if (!submittedText.trim() || !Number.isFinite(rawValue) || Math.abs(value - rawValue) > 0.000001 || value < 0 || value > 65535) {
                 Notification.error('请输入0到' + (65535 / scale) + '之间、步长为' + (1 / scale) + '的数值'); return Promise.resolve(false);
             }
-            return this._dcMotorRequest(devIdx, param === 'speed' ? 'setSpeed' : 'setPulse', value).then(function() {
+            return this._dcMotorRequest(devIdx, param === 'speed' ? 'setSpeed' : 'setPulse', value).then(async function() {
                 if (self._dcIsLifecycleActive(generation)) {
                     // Editing during a request creates a new unsent draft.
                     input.dataset.dirty = input.value === submittedText ? 'false' : 'true';
-                    var data = {}; data[param] = value;
-                    self._dcUpdateMotorRunUI(devIdx, data, self._dcGetMotorParams(devIdx).motorDecimals);
-                    Notification.success(param === 'speed' ? '设定速度已更新' : '单次脉冲已更新');
+                    self._dcUpdateMotorRunUI(devIdx, { parametersKnown: false }, self._dcGetMotorParams(devIdx).motorDecimals);
+                    var readback = await self._dcRefreshMotorStatus(devIdx);
+                    if (self._dcIsLifecycleActive(generation)) {
+                        if (readback) Notification.success(param === 'speed' ? '速度已读回' : '脉冲数已读回');
+                        else Notification.warning('参数写入已应答，但读回失败');
+                    }
                 }
             }).catch(function(error) {
                 if (self._dcIsLifecycleActive(generation)) Notification.error(error.message || '参数设置失败');

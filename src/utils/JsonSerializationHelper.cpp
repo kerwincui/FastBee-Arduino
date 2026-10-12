@@ -1,5 +1,6 @@
 // utils/JsonSerializationHelper.cpp
 #include "utils/JsonSerializationHelper.h"
+#include "network/FixedJsonField.h"
 #include <ArduinoJson.h>
 #include "network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
@@ -9,25 +10,25 @@
 bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObject& jsonObj) {
     // 基本配置
     // deviceName 已移至设备配置(device.json)
-    jsonObj["mode"] = static_cast<uint8_t>(config.mode);
-    jsonObj["apSSID"] = config.apSSID;
-    jsonObj["apPassword"] = config.apPassword;
-    jsonObj["apChannel"] = config.apChannel;
-    jsonObj["apHidden"] = config.apHidden;
-    jsonObj["staSSID"] = config.staSSID;
-    jsonObj["staPassword"] = config.staPassword;
+    FastBee::setFixedJsonField(jsonObj, "mode", static_cast<uint8_t>(config.mode));
+    FastBee::setFixedJsonField(jsonObj, "apSSID", config.apSSID);
+    FastBee::setFixedJsonField(jsonObj, "apPassword", config.apPassword);
+    FastBee::setFixedJsonField(jsonObj, "apChannel", config.apChannel);
+    FastBee::setFixedJsonField(jsonObj, "apHidden", config.apHidden);
+    FastBee::setFixedJsonField(jsonObj, "staSSID", config.staSSID);
+    FastBee::setFixedJsonField(jsonObj, "staPassword", config.staPassword);
     
     // IP配置
-    jsonObj["ipConfigType"] = static_cast<uint8_t>(config.ipConfigType);
-    jsonObj["staticIP"] = config.staticIP;
-    jsonObj["gateway"] = config.gateway;
-    jsonObj["subnet"] = config.subnet;
-    jsonObj["dns1"] = config.dns1;
-    jsonObj["dns2"] = config.dns2;
+    FastBee::setFixedJsonField(jsonObj, "ipConfigType", static_cast<uint8_t>(config.ipConfigType));
+    FastBee::setFixedJsonField(jsonObj, "staticIP", config.staticIP);
+    FastBee::setFixedJsonField(jsonObj, "gateway", config.gateway);
+    FastBee::setFixedJsonField(jsonObj, "subnet", config.subnet);
+    FastBee::setFixedJsonField(jsonObj, "dns1", config.dns1);
+    FastBee::setFixedJsonField(jsonObj, "dns2", config.dns2);
     
     // 高级配置
-    jsonObj["enableMDNS"] = config.enableMDNS;
-    jsonObj["customDomain"] = config.customDomain;
+    FastBee::setFixedJsonField(jsonObj, "enableMDNS", config.enableMDNS);
+    FastBee::setFixedJsonField(jsonObj, "customDomain", config.customDomain);
     
     // 备用IP列表
     JsonArray backupIPs = jsonObj.createNestedArray("backupIPs");
@@ -110,19 +111,19 @@ String JsonSerializationHelper::networkStatusToString(NetworkStatus status) {
 }
 
 void JsonSerializationHelper::networkStatusToJson(const NetworkStatusInfo& status, JsonObject& jsonObj) {
-    jsonObj["status"] = static_cast<uint8_t>(status.status);
-    jsonObj["statusText"] = networkStatusToString(status.status);
-    jsonObj["ipAddress"] = status.ipAddress;
-    jsonObj["macAddress"] = status.macAddress;
-    jsonObj["ssid"] = status.ssid;
-    jsonObj["rssi"] = status.rssi;
-    jsonObj["gateway"] = status.currentGateway;
-    jsonObj["subnet"] = status.currentSubnet;
-    jsonObj["dnsServer"] = status.dnsServer;
-    jsonObj["internetAvailable"] = status.internetAvailable;
-    jsonObj["failoverCount"] = status.failoverCount;
-    jsonObj["uptime"] = status.uptime;
-    jsonObj["lastConnectionTime"] = status.lastConnectionTime;
+    FastBee::setFixedJsonField(jsonObj, "status", static_cast<uint8_t>(status.status));
+    FastBee::setFixedJsonField(jsonObj, "statusText", networkStatusToString(status.status));
+    FastBee::setFixedJsonField(jsonObj, "ipAddress", status.ipAddress);
+    FastBee::setFixedJsonField(jsonObj, "macAddress", status.macAddress);
+    FastBee::setFixedJsonField(jsonObj, "ssid", status.ssid);
+    FastBee::setFixedJsonField(jsonObj, "rssi", status.rssi);
+    FastBee::setFixedJsonField(jsonObj, "gateway", status.currentGateway);
+    FastBee::setFixedJsonField(jsonObj, "subnet", status.currentSubnet);
+    FastBee::setFixedJsonField(jsonObj, "dnsServer", status.dnsServer);
+    FastBee::setFixedJsonField(jsonObj, "internetAvailable", status.internetAvailable);
+    FastBee::setFixedJsonField(jsonObj, "failoverCount", status.failoverCount);
+    FastBee::setFixedJsonField(jsonObj, "uptime", status.uptime);
+    FastBee::setFixedJsonField(jsonObj, "lastConnectionTime", status.lastConnectionTime);
 }
 
 String JsonSerializationHelper::fullNetworkInfoToJson(const WiFiConfig& config, 
@@ -139,13 +140,13 @@ String JsonSerializationHelper::fullNetworkInfoToJson(const WiFiConfig& config,
     networkStatusToJson(status, statusObj);
 
     // 可读字符串表示
-    root["modeText"]        = networkModeToString(config.mode);
-    root["ipConfigTypeText"]= ipConfigTypeToString(config.ipConfigType);
-    root["statusText"]      = networkStatusToString(status.status);
+    FastBee::setFixedJsonField(root, "modeText", networkModeToString(config.mode));
+    FastBee::setFixedJsonField(root, "ipConfigTypeText", ipConfigTypeToString(config.ipConfigType));
+    FastBee::setFixedJsonField(root, "statusText", networkStatusToString(status.status));
 
     // 系统信息
-    root["timestamp"] = millis();
-    root["freeHeap"]  = ESP.getFreeHeap();
+    FastBee::setFixedJsonField(root, "timestamp", millis());
+    FastBee::setFixedJsonField(root, "freeHeap", ESP.getFreeHeap());
 
     String jsonString;
     serializeJson(doc, jsonString);

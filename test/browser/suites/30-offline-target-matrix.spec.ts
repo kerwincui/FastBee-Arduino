@@ -243,7 +243,9 @@ test.describe('Offline target capability and runtime matrix', () => {
           await changePage(authPage, 'features', 'features-page');
           const featureRow = authPage.locator(`#features-list tr[data-feature-key="${entry.feature}"]`);
           await expect(featureRow, `${key}: feature config explains why ${entry.page} is hidden`).toBeVisible();
-          await expect(featureRow.locator('.feature-state')).toHaveText(/已停用|未编译|运行受限/);
+          await expect(featureRow.locator('.feature-state')).toHaveText(/用户未启用|未编译|运行受限/);
+          // Saved intent is not evidence of driver teardown or RAM release.
+          await expect(featureRow.locator('.feature-state')).not.toHaveText(/已停用|已释放|运行中/);
           await expect(featureRow.locator('input[data-feature-toggle]')).not.toBeChecked();
           await expectNoOverflow(authPage, 'features-page');
         }
@@ -268,6 +270,7 @@ test.describe('Offline target capability and runtime matrix', () => {
           capabilities: await get('/api/system/capabilities'),
           features: await get('/api/features/status'),
           protocol: await get('/api/protocol/config'),
+          webManifest: await (await fetch('/web-resource-manifest.json', { cache: 'no-store' })).json(),
         };
       });
       expect(snapshot.profile.environment).toBe(key);
@@ -277,7 +280,8 @@ test.describe('Offline target capability and runtime matrix', () => {
       expect(snapshot.protocol.modbusRtu.enabled).toBe(profile.protocol.modbusEnabled);
 
       const expectS3Network = key === 'esp32s3-F16R8';
-      expect(snapshot.capabilities.ota).toBe(expectS3Network);
+      const expectOta = expectS3Network || key === 'esp32c6-F8R0';
+      expect(snapshot.capabilities.ota).toBe(expectOta);
       expect(snapshot.capabilities.ethernet).toBe(expectS3Network);
       expect(snapshot.capabilities.cellular).toBe(expectS3Network);
       for (const capability of ['periphExec', 'mqtt', 'modbus', 'ruleScript', 'deviceControl', 'logViewer', 'userAdmin']) {
@@ -297,9 +301,16 @@ test.describe('Offline target capability and runtime matrix', () => {
       await changePage(page, 'device', 'device-page');
       const otaHint = page.locator('#dev-ota-capability-hint');
       const otaInput = page.locator('#dev-ota-file');
-      if (expectS3Network) {
+      if (expectOta) {
         await expect(otaInput).toBeEnabled();
         await expect(otaHint).toBeHidden();
+      } else if (snapshot.webManifest.compiledCapabilities.ota === false) {
+        // Target-specific resources remove the unsupported OTA tab and its controls.
+        // A shared S3 asset tree retains the disabled runtime fallback below.
+        await expect(page.locator('#device-page .config-tab[data-tab="dev-ota"]')).toHaveCount(0);
+        await expect(page.locator('#dev-ota')).toHaveCount(0);
+        await expect(otaInput).toHaveCount(0);
+        await expect(page.locator('#dev-ota-upload-btn, #device-ota-container')).toHaveCount(0);
       } else {
         await expect(otaInput).toBeDisabled();
         await expect(otaHint).not.toHaveClass(/is-hidden/);

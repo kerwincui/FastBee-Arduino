@@ -19,14 +19,15 @@
             </div>
 
             <section id="peripheral-uart-panel" class="peripheral-io-section fb-hidden">
-                <p class="field-hint">用于独立串口的文本 / HEX 收发与接线调试。Modbus 专用串口请在通信协议页面调试。</p>
+                <p class="field-hint">用于独立串口的文本 / HEX 收发。读取会消费 RX 字节，不保证完整协议帧；失败不自动重试。发送成功仅表示本地驱动接受，须自行核对对端。Modbus 专用串口请在通信协议页面调试。</p>
                 <div class="status-grid peripheral-io-status-grid">
-                    <div class="status-item"><span class="status-label">连接</span><span id="peripheral-uart-connected" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">本地串口</span><span id="peripheral-uart-connected" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">端口</span><span id="peripheral-uart-port" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">帧格式</span><span id="peripheral-uart-framing" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">待接收</span><span id="peripheral-uart-rx-available" class="status-value">--</span></div>
-                    <div class="status-item"><span class="status-label">已发送</span><span id="peripheral-uart-bytes-sent" class="status-value">--</span></div>
-                    <div class="status-item"><span class="status-label">已接收</span><span id="peripheral-uart-bytes-received" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">本地接受发送</span><span id="peripheral-uart-bytes-sent" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">累计发布接收</span><span id="peripheral-uart-bytes-received" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">最近一次读取</span><span id="peripheral-uart-read-quality" class="status-value">尚未读取</span></div>
                 </div>
 
                 <div class="peripheral-io-terminal-grid">
@@ -84,6 +85,28 @@
                 </div>
             </section>
 
+            <section id="peripheral-pca9685-panel" class="peripheral-io-section fb-hidden">
+                <p class="field-hint">OE 需外接上拉并独占；先断开危险负载。点击准备后按所列接线对 PCA9685 芯片断电再上电，主控保持供电。软件无法验证电源和实际输出。</p>
+                <p id="peripheral-pca9685-state">状态未确认</p>
+                <pre id="peripheral-pca9685-review" class="peripheral-io-output">尚未准备</pre>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-pca9685-prepare-btn" type="button" class="fb-btn">1. 准备：保持 OE 禁用</button>
+                    <label><input id="peripheral-pca9685-confirm" type="checkbox">已核对接线，并在本次准备后完成芯片重新上电</label>
+                    <button id="peripheral-pca9685-start-btn" type="button" class="fb-btn">2. 初始化（输出仍禁用）</button>
+                </div>
+                <div class="fb-grid-2">
+                    <div class="fb-form-group"><label for="peripheral-pca9685-channel">通道</label><input id="peripheral-pca9685-channel" type="number" min="0" max="15" value="0"></div>
+                    <div class="fb-form-group"><label for="peripheral-pca9685-mode">设置方式</label><select id="peripheral-pca9685-mode"><option value="duty">占空比（%）</option><option value="pulse">脉宽（μs）</option><option value="angle">角度（°）</option></select></div>
+                    <div class="fb-form-group"><label for="peripheral-pca9685-value">设置值</label><input id="peripheral-pca9685-value" type="number" step="any" value="0"></div>
+                </div>
+                <div class="peripheral-io-actions">
+                    <button id="peripheral-pca9685-set-btn" type="button" class="fb-btn">写入通道</button>
+                    <button id="peripheral-pca9685-enable-btn" type="button" class="fb-btn fb-btn-warning">3. 启用输出</button>
+                    <button id="peripheral-pca9685-disable-btn" type="button" class="fb-btn">禁用输出（保留会话）</button>
+                    <button id="peripheral-pca9685-stop-btn" type="button" class="fb-btn">停止并释放</button>
+                </div>
+                <p class="field-hint">确认仅 60 秒内有效且只能尝试一次。失败、超时或响应未知不会自动重试；请刷新状态，必要时停止并重新准备。关闭窗口不会自动停止已启用的输出。</p>
+            </section>
             <section id="peripheral-sd-panel" class="peripheral-io-section fb-hidden">
                 <div class="status-grid peripheral-io-status-grid">
                     <div class="status-item"><span class="status-label">挂载</span><span id="peripheral-sd-mounted" class="status-value">--</span></div>
@@ -91,12 +114,14 @@
                     <div class="status-item"><span class="status-label">总容量</span><span id="peripheral-sd-total" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">已使用</span><span id="peripheral-sd-used" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">可用</span><span id="peripheral-sd-free" class="status-value">--</span></div>
-                    <div class="status-item"><span class="status-label">文件系统</span><span id="peripheral-sd-filesystem" class="status-value">--</span></div>
+                    <div class="status-item"><span class="status-label">容量快照</span><span id="peripheral-sd-filesystem" class="status-value">--</span></div>
                 </div>
                 <div class="peripheral-io-actions">
                     <button id="peripheral-sd-mount-btn" class="fb-btn fb-btn-primary" type="button">挂载</button>
                     <button id="peripheral-sd-unmount-btn" class="fb-btn" type="button">卸载</button>
+                    <button id="peripheral-sd-recover-btn" class="fb-btn" type="button">重新挂载恢复</button>
                 </div>
+                <p id="peripheral-sd-recovery" class="field-hint">恢复状态未确认</p>
                 <div class="fb-grid-2">
                     <div class="fb-form-group">
                         <label for="peripheral-sd-path">沙箱路径</label>
@@ -174,7 +199,7 @@
                 <div class="status-grid peripheral-io-status-grid">
                     <div class="status-item"><span class="status-label">初始化</span><span id="peripheral-ds1302-ready" class="status-value">--</span></div>
                     <div class="status-item"><span class="status-label">运行</span><span id="peripheral-ds1302-running" class="status-value">--</span></div>
-                    <div class="status-item"><span class="status-label">当前时间</span><span id="peripheral-ds1302-current" class="status-value u-text-mono">--</span></div>
+                    <div class="status-item"><span class="status-label">上次读取（日历，无时区）</span><span id="peripheral-ds1302-current" class="status-value u-text-mono">--</span></div>
                 </div>
                 <div class="fb-form-group">
                     <label for="peripheral-ds1302-datetime">设置日期时间</label>

@@ -1,0 +1,285 @@
+#include <ArduinoJson.h>
+#include "protocols/MqttClientLease.h"
+#include "protocols/MqttSecureIntent.h"
+#include "protocols/MqttMemoryDeadline.h"
+#include "protocols/MqttReportRetirement.h"
+#include <cassert>
+#include <cstring>
+#include <memory>
+#include <string>
+using String = std::string;
+#define LOG_INFO(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+static uint32_t clockMs = 10000;
+static bool beginAllocationFails = false;
+static unsigned initializationFailures = 0;
+unsigned long millis() { return clockMs; }
+struct SerialMock { template<class... T> void printf(const char*, T...) {} void println(const char*) {} };
+[[maybe_unused]] SerialMock Serial;
+struct ConfigStorage {
+    std::string contents = R"({"mqtt":{"enabled":true,"scheme":"mqtts","port":9883,"server":"broker.invalid","password":"fixture-not-secret","username":"fixture","nested":{"retain":true}},"other":{"preserve":[1,2,3]}})";
+    bool readable = true;
+    unsigned reads = 0;
+    static ConfigStorage& getInstance() { static ConfigStorage instance; return instance; }
+    bool loadProtocolSection(const char*, JsonDocument& doc) {
+        ++reads;
+        return readable && !deserializeJson(doc, contents);
+    }
+    // Deliberately no configuration update/save API in this fixture.
+};
+namespace FastBee {
+struct RuntimeFeatureManager {
+    bool disabled = false;
+    unsigned disables = 0, clears = 0;
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager instance; return instance; }
+    void setRuntimeDisabled(const char* feature, const char*) {
+        assert(std::string(feature) == "mqtts"); disabled = true; ++disables;
+    }
+    void clearRuntimeDisabled(const char* feature) {
+        assert(std::string(feature) == "mqtts"); disabled = false; ++clears;
+    }
+};
+}
+struct MQTTClient {
+    struct Config { String scheme = "mqtts"; uint16_t port = 9883; } config;
+    bool stopped = false, stoppedByMemory = false, disabledByMemory = false, canStop = true;
+    unsigned stopCalls = 0;
+    bool isStopped() const { return stopped; }
+    const Config& getConfig() const { return config; }
+    void setStoppedByMemory(bool value) { stoppedByMemory = value; }
+    void setDisabledByMemory(bool value) { disabledByMemory = value; }
+    bool stop() { ++stopCalls; if (!canStop) return false; stopped = true; return true; }
+    bool begin(uint32_t) { stopped = beginAllocationFails; return !beginAllocationFails; }
+    void setReportRetirementReason(FastBee::MqttRetirementReason reason) {
+        assert(reason == FastBee::MqttRetirementReason::InitializationFailed); ++initializationFailures;
+    }
+};
+struct ProtocolManager {
+    mutable FastBee::MqttClientLifetime mqttLifetime;
+    std::atomic<bool> mqttShutdownPending{false}, mqttStopPending{false}, mqttRestartPending{false};
+    std::unique_ptr<MQTTClient> mqttClient{new MQTTClient};
+    bool admission = true;
+    unsigned restarts = 0;
+    String nextScheme = "mqtts";
+    uint16_t nextPort = 9883;
+    FastBee::MqttRestartResult outcome = FastBee::MqttRestartResult::Ready;
+    FastBee::MqttClientLease acquireMQTTClient(bool* absent = nullptr) const;
+    bool stopMQTT();
+    bool finishMqttStop();
+    bool mqttLifetimeAvailable() const { return admission; }
+    bool initializeReplacement();
+    bool finishDeferred() {
+        assert(!FastBee::RuntimeFeatureManager::instance().disabled);
+        FastBee::MqttClientLifetime::Write write(mqttLifetime);
+        assert(write);
+        mqttClient.reset(new MQTTClient);
+        mqttClient->config.scheme = nextScheme;
+        mqttClient->config.port = nextPort;
+        mqttRestartPending = mqttStopPending = false;
+        return initializeReplacement();
+    }
+    bool restartMQTTDeferred(bool forceRebuild, FastBee::MqttRestartResult* result) {
+        assert(forceRebuild && !FastBee::RuntimeFeatureManager::instance().disabled);
+        ++restarts;
+        *result = outcome;
+        if (outcome == FastBee::MqttRestartResult::Deferred) {
+            mqttRestartPending = true;
+            return false; // Production API returns false even when deferred.
+        }
+        if (outcome != FastBee::MqttRestartResult::Ready) return false;
+        const bool started = finishDeferred();
+        if (!started) *result = FastBee::MqttRestartResult::NotStarted;
+        return started;
+    }
+};
+struct FastBeeFramework {
+    ProtocolManager* protocol = nullptr;
+    static FastBeeFramework* getInstance() { static FastBeeFramework instance; return &instance; }
+    ProtocolManager* getProtocolManager() { return protocol; }
+};
+enum class MemoryGuardLevel { NORMAL, WARN, SEVERE, CRITICAL };
+struct HealthMonitor {
+    bool _mqttsMemoryDowngrade = false, _mqttStoppedForMemory = false, _mqttDisabledForMemory = false;
+    bool _mqttRestorePendingForMemory = false, _mqttRecoveryBlockedForStorage = false;
+    bool _modbusStoppedForMemory = false, _periphExecPausedForMemory = false;
+    bool _modbusRestorePendingForMemory = false;
+    bool _optionalPeripheralsSuspendedForMemory = false;
+    uint16_t _memorySuspendedPeripheralCount = 0;
+    unsigned long _mqttsDowngradeTimeMs = 0, _mqttsDowngradeRetryAtMs = 0;
+    unsigned long _mqttsRestoreRetryAtMs = 0, _mqttsRestoreCooldownMs = 0;
+    unsigned long _mqttRestoreRetryAtMs = 0, _mqttDisableRetryAtMs = 0;
+    char _mqttsOriginalScheme[8] = "mqtts";
+    uint16_t _mqttsOriginalPort = 0;
+    static constexpr unsigned long MQTT_MEMORY_CONFIG_RETRY_MS = 30000;
+    MemoryGuardLevel _currentLevel = MemoryGuardLevel::NORMAL;
+    bool isMemoryDegraded() const { return _mqttsMemoryDowngrade || _mqttStoppedForMemory || _mqttDisabledForMemory; }
+    void loadPersistedMqttsDowngrade();
+    void clearMqttMemoryOverrideState();
+    void downgradeMqttsToMqtt();
+    void disableMqttForMemory();
+    void restoreMqttsAfterMemory();
+    void pollNormalMqttRecovery();
+    void restoreMemoryRecovery() { restoreMqttsAfterMemory(); }
+    bool refreshMqttRecoveryAdmission();
+    void fillDegradationJson(JsonObject) const;
+};
+@METHODS@
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    ProtocolManager pm;
+    FastBeeFramework::getInstance()->protocol = &pm;
+    HealthMonitor health;
+    auto& storage = ConfigStorage::getInstance();
+    auto& features = FastBee::RuntimeFeatureManager::instance();
+    if (mode == "compiled_out") {
+        health.loadPersistedMqttsDowngrade(); health.downgradeMqttsToMqtt();
+        health.disableMqttForMemory(); health.restoreMqttsAfterMemory();
+        assert(storage.reads == 0 && pm.restarts == 0 && pm.mqttClient->stopCalls == 0);
+        assert(!health._mqttsMemoryDowngrade && !health._mqttStoppedForMemory && !features.disabled);
+        return 0;
+    }
+    if (mode == "historical_secure" || mode == "historical_incomplete" || mode == "historical_disabled") {
+        JsonDocument doc;
+        assert(!deserializeJson(doc, storage.contents));
+        doc["mqtt"]["scheme"] = "mqtt";
+        doc["mqtt"]["port"] = 1883;
+        doc["mqtt"]["downgraded_by_memory"] = true;
+        if (mode != "historical_incomplete") {
+            doc["mqtt"]["downgraded_original_scheme"] = "mqtts";
+            doc["mqtt"]["downgraded_original_port"] = 9883;
+        }
+        if (mode == "historical_disabled") {
+            doc["mqtt"]["disabled_by_memory"] = true;
+            doc["mqtt"]["enabled"] = false;
+        }
+        storage.contents.clear(); serializeJson(doc, storage.contents);
+    }
+    if (mode == "disabled_intent") {
+        storage.contents = R"({"mqtt":{"enabled":false,"scheme":"mqtts","port":9883}})";
+    }
+    const auto original = storage.contents;
+    if (mode == "severe_preserves") {
+        health.downgradeMqttsToMqtt();
+        assert(health._mqttsMemoryDowngrade && health._mqttStoppedForMemory && !health._mqttDisabledForMemory);
+        assert(pm.mqttClient->stopped && pm.mqttClient->stoppedByMemory && features.disabled);
+        assert(storage.reads == 0 && pm.restarts == 0);
+        health.restoreMqttsAfterMemory();
+        assert(pm.restarts == 1 && !health._mqttsMemoryDowngrade && !health._mqttStoppedForMemory);
+        assert(!features.disabled && !pm.mqttClient->stoppedByMemory);
+    } else if (mode == "critical_preserves") {
+        health.disableMqttForMemory();
+        assert(health._mqttStoppedForMemory && !health._mqttDisabledForMemory);
+        assert(pm.mqttClient->stopped && pm.mqttClient->stoppedByMemory && storage.reads == 0);
+        assert(health._mqttDisableRetryAtMs == clockMs + HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS);
+    } else if (mode == "stop_contention") {
+        auto active = pm.acquireMQTTClient();
+        health.downgradeMqttsToMqtt();
+        assert(active && !active->stopped && pm.mqttStopPending && !pm.acquireMQTTClient());
+        assert(health._mqttsMemoryDowngrade && health._mqttStoppedForMemory);
+        active = {};
+        assert(pm.finishMqttStop() && pm.mqttClient->stopped);
+        health.restoreMqttsAfterMemory();
+        assert(!health._mqttsMemoryDowngrade);
+    } else if (mode == "absent_owner") {
+        FastBeeFramework::getInstance()->protocol = nullptr;
+        health.downgradeMqttsToMqtt(); health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && health._mqttStoppedForMemory && features.disabled);
+        assert(pm.restarts == 0 && health._mqttsRestoreRetryAtMs > clockMs);
+    } else if (mode == "load_failure" || mode == "disabled_intent") {
+        health.downgradeMqttsToMqtt();
+        if (mode == "load_failure") storage.readable = false;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && features.disabled && pm.restarts == 0);
+    } else if (mode == "historical_secure") {
+        health.loadPersistedMqttsDowngrade();
+        assert(health._mqttsMemoryDowngrade && health._mqttsOriginalPort == 9883 && pm.mqttClient->stopped);
+        health.restoreMqttsAfterMemory();
+        assert(!health._mqttsMemoryDowngrade && pm.mqttClient->config.scheme == "mqtts" && pm.mqttClient->config.port == 9883);
+    } else if (mode == "historical_incomplete") {
+        health.loadPersistedMqttsDowngrade(); health.restoreMqttsAfterMemory();
+        assert(health._mqttsOriginalPort == 0 && health._mqttsMemoryDowngrade && features.disabled && pm.restarts == 0);
+    } else if (mode == "historical_disabled") {
+        health.loadPersistedMqttsDowngrade(); health.restoreMqttsAfterMemory();
+        assert(health._mqttDisabledForMemory && health._mqttsMemoryDowngrade && pm.restarts == 0);
+        health.clearMqttMemoryOverrideState(); // Explicit protocol save hook, no implicit disk mutation.
+        assert(!health._mqttDisabledForMemory && !health._mqttsMemoryDowngrade && !features.disabled);
+    } else if (mode == "restart_failure") {
+        health.downgradeMqttsToMqtt();
+        pm.outcome = FastBee::MqttRestartResult::NotStarted;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && health._mqttStoppedForMemory && features.disabled);
+        health.restoreMqttsAfterMemory(); assert(pm.restarts == 1);
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        pm.outcome = FastBee::MqttRestartResult::Ready;
+        health.restoreMqttsAfterMemory();
+        assert(pm.restarts == 2 && !health._mqttsMemoryDowngrade && !features.disabled);
+    } else if (mode == "deferred") {
+        health.downgradeMqttsToMqtt();
+        pm.outcome = FastBee::MqttRestartResult::Deferred;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && health._mqttRestorePendingForMemory && !features.disabled);
+        assert(pm.mqttRestartPending && !pm.acquireMQTTClient());
+        pm.finishDeferred();
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        health.restoreMqttsAfterMemory();
+        assert(!health._mqttsMemoryDowngrade && !health._mqttRestorePendingForMemory && pm.restarts == 1);
+    } else if (mode == "deferred_begin_failure") {
+        health.downgradeMqttsToMqtt(); pm.outcome = FastBee::MqttRestartResult::Deferred;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttRestorePendingForMemory && health._mqttsMemoryDowngrade);
+        beginAllocationFails = true;
+        assert(!pm.finishDeferred() && !pm.mqttClient && initializationFailures == 1);
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        pm.outcome = FastBee::MqttRestartResult::Ready;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && health._mqttStoppedForMemory && !pm.mqttClient);
+        assert(features.disabled && initializationFailures == 2);
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        beginAllocationFails = false; health.restoreMqttsAfterMemory();
+        assert(!health._mqttsMemoryDowngrade && pm.mqttClient && !pm.mqttClient->stopped);
+    } else if (mode == "ready_mismatch") {
+        health.downgradeMqttsToMqtt(); pm.nextScheme = "mqtt";
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && health._mqttRestorePendingForMemory);
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        pm.nextScheme = "mqtts"; pm.nextPort = 1883;
+        health.restoreMqttsAfterMemory(); assert(health._mqttsMemoryDowngrade);
+        clockMs += HealthMonitor::MQTT_MEMORY_CONFIG_RETRY_MS;
+        pm.nextPort = 9883; health.restoreMqttsAfterMemory();
+        assert(!health._mqttsMemoryDowngrade && pm.restarts == 3);
+    } else if (mode == "changed_plain_intent") {
+        health.downgradeMqttsToMqtt();
+        storage.contents = R"({"mqtt":{"enabled":true,"scheme":"mqtt","port":1883}})";
+        const auto changed = storage.contents;
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && features.disabled && pm.restarts == 0 && storage.contents == changed);
+        return 0; // User changed configuration is preserved, not replaced by old secure intent.
+    } else if (mode == "storage_unavailable") {
+        health.downgradeMqttsToMqtt(); pm.admission = false;
+        assert(!health.refreshMqttRecoveryAdmission());
+        health.restoreMqttsAfterMemory();
+        assert(health._mqttsMemoryDowngrade && pm.restarts == 0 && storage.reads == 0);
+    } else if (mode == "clock_wrap") {
+        health.downgradeMqttsToMqtt(); clockMs = UINT32_MAX - 10000;
+        pm.outcome = FastBee::MqttRestartResult::NotStarted;
+        health.pollNormalMqttRecovery(); assert(pm.restarts == 1);
+        clockMs += 15000; health.pollNormalMqttRecovery(); assert(pm.restarts == 1);
+        clockMs += 15000; pm.outcome = FastBee::MqttRestartResult::Ready;
+        // Also cover a deadline just before wrap whose first eligible poll is
+        // after wrap (the old outer >= guard would block for about 49 days).
+        health._mqttRestoreRetryAtMs = UINT32_MAX - 100;
+        health._mqttsRestoreRetryAtMs = UINT32_MAX - 100;
+        health.pollNormalMqttRecovery(); assert(pm.restarts == 2 && !health._mqttsMemoryDowngrade);
+    } else if (mode == "diagnostics") {
+        health.downgradeMqttsToMqtt(); JsonDocument doc;
+        health.fillDegradationJson(doc.to<JsonObject>());
+        assert(!doc["mqttsDowngraded"].as<bool>() && doc["mqttsPaused"].as<bool>());
+        assert(doc["mqttsProtection"].as<String>() == "pause_without_plaintext_fallback");
+        String json; serializeJson(doc, json);
+        assert(json.find("已临时降级为 MQTT") == String::npos);
+        assert(json.find("禁止明文回退") != String::npos);
+    } else assert(false);
+    assert(storage.contents == original);
+}

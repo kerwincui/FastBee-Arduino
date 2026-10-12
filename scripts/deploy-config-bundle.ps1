@@ -94,7 +94,18 @@ function Get-Sha256Text {
 
 function Get-Sha256File {
     param([string]$Path)
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Use the same .NET SHA256 primitive as text hashing. Nested PowerShell
+    # editions can inherit incompatible module paths; verification must not
+    # depend on autoloading the Get-FileHash utility module in that child.
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $sha.Dispose()
+    }
 }
 
 function Read-JsonText {

@@ -8,6 +8,13 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
 /* eslint-enable */
 (function() {
     AppState.registerModule('peripherals', {
+        _restoreRtcBootSeed(params) {
+            const seed = document.getElementById('ds1302-boot-seed');
+            const offset = document.getElementById('ds1302-utc-offset');
+            if (seed) seed.checked = params.bootSeed === true;
+            if (offset) offset.value = Number.isInteger(params.utcOffsetMinutes) &&
+                Math.abs(params.utcOffsetMinutes) <= 840 ? String(params.utcOffsetMinutes) : '';
+        },
 
         // ============ 状态变量 ============
         _periphCurrentPage: 1,
@@ -48,13 +55,17 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             // 刷新按钮
             var refreshBtn = document.getElementById('peripheral-refresh-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', () => this._refreshPeripheralList());
+            var resourcesBtn = document.getElementById('peripheral-resources-btn');
+            if (resourcesBtn) resourcesBtn.addEventListener('click', () => this._openPeripheralResources());
             // 注册模态窗事件绑定器（模态窗 DOM 加载后由 _loadModals 触发）
             if (typeof this._registerModalBinder === 'function') {
                 this._registerModalBinder('peripherals', () => this._bindPeripheralModalEvents());
             }
             if (typeof this.onPageHide === 'function') {
                 this.onPageHide('peripherals-io-poll', () => {
+                    this._periphResourceOpen = null;
                     if (typeof this._stopPeripheralIoPolling === 'function') this._stopPeripheralIoPolling();
+                    if (typeof this.closePeripheralResources === 'function') this.closePeripheralResources();
                 });
             }
             // The capability catalog is large on constrained targets and is
@@ -71,10 +82,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         _bindPeripheralModalEvents() {
             if (this._periphModalBound) return;
             // 外设模态框
-            var closePeripheralModal = document.getElementById('close-peripheral-modal');
-            if (closePeripheralModal) closePeripheralModal.addEventListener('click', () => this.closePeripheralModal());
-            var cancelPeripheralBtn = document.getElementById('cancel-peripheral-btn');
-            if (cancelPeripheralBtn) cancelPeripheralBtn.addEventListener('click', () => this.closePeripheralModal());
+            ['close-peripheral-modal', 'cancel-peripheral-btn', 'close-gpio-modal', 'cancel-gpio-btn'].forEach(id => {
+                document.getElementById(id)?.addEventListener('click', () => this.closePeripheralModal());
+            });
             var savePeripheralBtn = document.getElementById('save-peripheral-btn');
             if (savePeripheralBtn) savePeripheralBtn.addEventListener('click', () => this._savePeripheralConfigWithModule());
             var peripheralTypeInput = document.getElementById('peripheral-type-input');
@@ -101,15 +111,11 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             });
             var sdcardInterface = document.getElementById('sdcard-interface');
             if (sdcardInterface) sdcardInterface.addEventListener('change', () => this._updateSdcardPinHints());
-            document.getElementById('display-touch-backend')?.addEventListener('change', () => this._updateDisplayFields());
-            document.getElementById('display-backend')?.addEventListener('change', () => this._updateDisplayFields());
-            document.getElementById('display-driver')?.addEventListener('change', () => this._updateDisplayFields());
+            ['display-touch-backend', 'display-backend', 'display-driver'].forEach(id => {
+                document.getElementById(id)?.addEventListener('change', () => this._updateDisplayFields());
+            });
             document.getElementById('display-backlight')?.addEventListener('input', () => this._updateDisplayFields());
             // 兼容旧版 GPIO 模态框
-            var closeGpioModal = document.getElementById('close-gpio-modal');
-            if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closePeripheralModal());
-            var cancelGpioBtn = document.getElementById('cancel-gpio-btn');
-            if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closePeripheralModal());
             var saveGpioBtn = document.getElementById('save-gpio-btn');
             if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this._savePeripheralConfigWithModule());
             this._syncPeripheralTypeSelect(this._periphTypeCatalog);
@@ -159,23 +165,16 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             else if (action === 'delete') this.deletePeripheral(id);
         },
 
-        // 懒加载红外遥控管理模块并初始化嵌入面板
-        _initIrManagePanel() {
-            var self = this;
+        // Shared lazy-loader; each manager retains its existing initialization.
+        _initPeripheralRemotePanel(module, method) {
             if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') return;
-            ModuleLoader.loadModule('ir-remote', function() {
-                if (typeof self.initIrManage === 'function') self.initIrManage();
+            ModuleLoader.loadModule(module, () => {
+                if (typeof this[method] === 'function') this[method]();
             });
         },
 
-        // 懒加载 RF 遥控管理模块并初始化嵌入面板
-        _initRfManagePanel() {
-            var self = this;
-            if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') return;
-            ModuleLoader.loadModule('rf-remote', function() {
-                if (typeof self.initRfManage === 'function') self.initRfManage();
-            });
-        },
+        _initIrManagePanel() { this._initPeripheralRemotePanel('ir-remote', 'initIrManage'); },
+        _initRfManagePanel() { this._initPeripheralRemotePanel('rf-remote', 'initRfManage'); },
 
         _renderPeripheralActionButton(action, id, label, className, requiresDeveloper = true, title = '') {
             var locked = requiresDeveloper && !this.isDeveloperModeEnabled();
@@ -200,6 +199,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 peripheral?.typeName, peripheral?.driverName
             ].filter(Boolean).join(' ').toLowerCase();
             if (type === 1 || /\buart\b/.test(identity)) return 'uart';
+            if (type === 57) return 'pca9685';
             if (type === 43 || /encoder/.test(identity)) return 'encoder';
             if (type === 37 || /sdio|sd[_ -]?card|\bsd\b/.test(identity)) return 'sd';
             if (/rfid|mfrc522/.test(identity)) return 'rfid';
@@ -219,6 +219,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
         },
 
         _getPeripheralDiagnosticBlockReason(peripheral) {
+            // A stopped/disabled PWM session must retain read-only status and
+            // explicit disable/stop access; server admission guards new output.
+            if (Number(peripheral?.type) === 57) return '';
             if (peripheral?.diagnosticBlockedReason === 'protocol.modbus') {
                 return '此串口由 Modbus 协议管理，请到通信协议页面调试；终端收发已禁用，避免干扰总线';
             }
@@ -243,6 +246,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 rfid: '执行 RFID 读卡操作',
                 ds1302: '查看并设置时钟',
                 lcd1602: '测试字符屏显示',
+                pca9685: '配置 PWM 通道并管理输出会话',
                 'i2c-sensor': '扫描并读取 I2C 设备'
             };
             return labels[kind] || '打开外设诊断工具';
@@ -302,6 +306,17 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 if (saveBtn) saveBtn.textContent = originalText;
                 if (typeof this.savePeripheralConfig === 'function') this.savePeripheralConfig();
             });
+        },
+
+        _openPeripheralResources() {
+            const page = this.currentPage;
+            const token = this._periphResourceOpen = {};
+            const run = () => {
+                if (this._periphResourceOpen === token && this.currentPage === page && typeof this.openPeripheralResources === 'function')
+                    this.openPeripheralResources();
+            };
+            if (typeof this.openPeripheralResources === 'function') run();
+            else if (typeof ModuleLoader !== 'undefined') ModuleLoader.loadModule('peripheral-io', run);
         },
 
         _openPeripheralIoWorkspace(id) {
@@ -483,6 +498,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 return;
             }
             form?.reset();
+            this._restoreRtcBootSeed({});
             this._periphFormConfig = null;
             this._pendingSensorDriverParams = null;
             this._loadPeripheralProviders();
@@ -559,135 +575,48 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                              ? this.showElement(el) : this.hideElement(el);
                      });
                 }
-            } else if (type === 1) {
-                const uartParams = document.getElementById('uart-params');
-                this.showElement(uartParams);
-                this.showElement(pinHint);
-            } else if (type === 2) {
-                const i2cParams = document.getElementById('i2c-params');
-                this.showElement(i2cParams);
-            } else if (type === 3) {
-                const spiParams = document.getElementById('spi-params');
-                this.showElement(spiParams);
             } else if (type === 26 || type === 15) {
-                const adcParams = document.getElementById('adc-params');
-                this.showElement(adcParams);
-            } else if (type === 38) {
-                const genericSensorParams = document.getElementById('generic-sensor-params');
-                if (genericSensorParams) this.showElement(genericSensorParams);
-                this._updateGenericSensorDriverFields();
-            } else if (type === 55) {
-                this.showElement(document.getElementById('io-expander-params'));
-                this._updateIoExpanderFields(false);
-            } else if (type === 56) {
-                this.showElement(document.getElementById('display-params'));
-                this._updateDisplayFields();
-            } else if (type === 27) {
-                const dacParams = document.getElementById('dac-params');
-                this.showElement(dacParams);
-            } else if (type === 41) {
-                const servoParams = document.getElementById('servo-params');
-                if (servoParams) this.showElement(servoParams);
-            } else if (type === 47) {
-                const segParams = document.getElementById('segment-params');
-                if (segParams) this.showElement(segParams);
-            } else if (type === 42) {
-                const stepperParams = document.getElementById('stepper-params');
-                if (stepperParams) this.showElement(stepperParams);
-            } else if (type === 45) {
-                const neoParams = document.getElementById('neopixel-params');
-                if (neoParams) this.showElement(neoParams);
-            } else if (type === 48) {
-                const rfParams = document.getElementById('rf-params');
-                if (rfParams) this.showElement(rfParams);
-                // RF 遥控管理区域
-                const rfSection = document.getElementById('rf-manage-section');
-                if (rfSection) {
-                    this.showElement(rfSection);
-                    const originalId = document.getElementById('peripheral-original-id')?.value || '';
-                    const hintNew = document.getElementById('rf-manage-hint-new');
-                    const content = document.getElementById('rf-manage-content');
-                    if (originalId) {
-                        if (hintNew) hintNew.style.display = 'none';
-                        if (content) content.style.display = '';
-                        this._initRfManagePanel();
-                    } else {
-                        if (hintNew) hintNew.style.display = '';
-                        if (content) content.style.display = 'none';
-                    }
-                }
-            } else if (type === 49) {
-                const radarParams = document.getElementById('radar-params');
-                if (radarParams) this.showElement(radarParams);
-            } else if (type === 36) {
-                const lcdParams = document.getElementById('lcd-params');
-                if (lcdParams) this.showElement(lcdParams);
-            } else if (type === 43) {
-                // 编码器参数
-                const encoderParams = document.getElementById('encoder-params');
-                if (encoderParams) this.showElement(encoderParams);
-            } else if (type === 53) {
-                // 红外接收头：显示红外管理区域
-                const irSection = document.getElementById('ir-manage-section');
-                if (irSection) {
-                    this.showElement(irSection);
-                    const originalId = document.getElementById('peripheral-original-id')?.value || '';
-                    const hintNew = document.getElementById('ir-manage-hint-new');
-                    const content = document.getElementById('ir-manage-content');
-                    if (originalId) {
-                        // 编辑已有红外外设：显示管理内容并初始化
-                        if (hintNew) hintNew.style.display = 'none';
-                        if (content) content.style.display = '';
-                        this._initIrManagePanel();
-                    } else {
-                        // 新增：仅显示提示
-                        if (hintNew) hintNew.style.display = '';
-                        if (content) content.style.display = 'none';
-                    }
-                }
-            } else if (type === 37) {
-                // SD卡参数
-                const sdcardParams = document.getElementById('sdcard-params');
-                if (sdcardParams) this.showElement(sdcardParams);
-                this._updateSdcardPinHints();
-            } else if (type === 50) {
-                const ds1302Params = document.getElementById('ds1302-params');
-                if (ds1302Params) this.showElement(ds1302Params);
-            } else if (type === 52) {
-                const lcd1602Params = document.getElementById('lcd1602-params');
-                if (lcd1602Params) this.showElement(lcd1602Params);
+                this.showElement(document.getElementById('adc-params'));
+            } else {
+                const group = {1: 'uart', 2: 'i2c', 3: 'spi', 27: 'dac', 36: 'lcd', 37: 'sdcard',
+                    38: 'generic-sensor', 41: 'servo', 42: 'stepper', 43: 'encoder', 45: 'neopixel',
+                    47: 'segment', 48: 'rf', 49: 'radar', 50: 'ds1302', 52: 'lcd1602',
+                    55: 'io-expander', 56: 'display', 57: 'pca9685'}[type];
+                if (group) this.showElement(document.getElementById(group + '-params'));
             }
+            if (type === 1) this.showElement(pinHint);
+            else if (type === 38) this._updateGenericSensorDriverFields();
+            else if (type === 55) this._updateIoExpanderFields(false);
+            else if (type === 56) this._updateDisplayFields();
+            else if (type === 57) this._updatePca9685Fields();
+            else if (type === 37) this._updateSdcardPinHints();
+            else if (type === 48) this._showPeripheralRemoteManagement('rf', '_initRfManagePanel');
+            else if (type === 53) this._showPeripheralRemoteManagement('ir', '_initIrManagePanel');
             // DISPLAY (56) 使用具名引脚字段；DEVICE_EVENT (60) 和 Modbus (51) 无通用引脚配置。
             const pinsGroup = document.getElementById('peripheral-pins-group');
             if (pinsGroup) {
-                (type === 60 || type === 51 || type === 56) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
+                (type === 60 || type === 51 || type === 56 || type === 57) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
             }
             
-            // 设备事件提示信息显示/隐藏
-            const deviceEventHint = document.getElementById('device-event-hint');
-            if (deviceEventHint) {
-                (type === 60) ? this.showElement(deviceEventHint) : this.hideElement(deviceEventHint);
-            }
-            
-            // 通用传感器提示信息显示/隐藏
-            const genericSensorHint = document.getElementById('generic-sensor-hint');
-            if (genericSensorHint) {
-                (type === 38) ? this.showElement(genericSensorHint) : this.hideElement(genericSensorHint);
-            }
-
-            // DS1302 实时时钟提示信息显示/隐藏
-            const ds1302Hint = document.getElementById('ds1302-hint');
-            if (ds1302Hint) {
-                (type === 50) ? this.showElement(ds1302Hint) : this.hideElement(ds1302Hint);
-            }
-
-            // LCD1602 字符液晶提示信息显示/隐藏
-            const lcd1602Hint = document.getElementById('lcd1602-hint');
-            if (lcd1602Hint) {
-                (type === 52) ? this.showElement(lcd1602Hint) : this.hideElement(lcd1602Hint);
+            for (const [value, name] of [[60, 'device-event'], [38, 'generic-sensor'],
+                [50, 'ds1302'], [52, 'lcd1602']]) {
+                const hint = document.getElementById(name + '-hint');
+                (type === value) ? this.showElement(hint) : this.hideElement(hint);
             }
             this._updateGpioSourceFields();
             this._updatePeripheralPinRoleHint(type);
+        },
+
+        _showPeripheralRemoteManagement(kind, initialize) {
+            const section = document.getElementById(kind + '-manage-section');
+            if (!section) return;
+            this.showElement(section);
+            const originalId = document.getElementById('peripheral-original-id')?.value || '';
+            const hintNew = document.getElementById(kind + '-manage-hint-new');
+            const content = document.getElementById(kind + '-manage-content');
+            if (hintNew) hintNew.style.display = originalId ? 'none' : '';
+            if (content) content.style.display = originalId ? '' : 'none';
+            if (originalId) this[initialize]();
         },
 
         loadPeripheralForEdit(id) {
@@ -715,29 +644,36 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                         }
                         this.onPeripheralTypeChange(data.type);
                         if (data.params) {
-                            if (data.params.initialState !== undefined) document.getElementById('gpio-initial-state').value = data.params.initialState;
-                            if (data.params.pwmFrequency !== undefined) document.getElementById('gpio-pwm-freq').value = data.params.pwmFrequency;
-                            if (data.params.pwmResolution !== undefined) document.getElementById('gpio-pwm-resolution').value = data.params.pwmResolution;
-                            if (data.params.baudRate !== undefined) document.getElementById('uart-baudrate').value = data.params.baudRate;
-                            if (data.params.dataBits !== undefined) document.getElementById('uart-databits').value = data.params.dataBits;
-                            if (data.params.stopBits !== undefined) document.getElementById('uart-stopbits').value = data.params.stopBits;
-                            if (data.params.parity !== undefined) document.getElementById('uart-parity').value = data.params.parity;
+                            [
+                                ['gpio-initial-state', 'initialState'],
+                                ['gpio-pwm-freq', 'pwmFrequency'],
+                                ['gpio-pwm-resolution', 'pwmResolution'],
+                                ['uart-baudrate', 'baudRate'],
+                                ['uart-databits', 'dataBits'],
+                                ['uart-stopbits', 'stopBits'],
+                                ['uart-parity', 'parity'],
+                                ['i2c-address', 'address'],
+                                ['spi-mode', 'mode'],
+                                ['adc-resolution', 'resolution'],
+                                ['adc-attenuation', 'attenuation']
+                            ].forEach(([id, key]) => {
+                                if (data.params[key] !== undefined)
+                                    document.getElementById(id).value = data.params[key];
+                            });
                             if (data.params.frequency !== undefined) {
                                 var i2cFreq = document.getElementById('i2c-frequency');
                                 if (i2cFreq) i2cFreq.value = data.params.frequency;
                                 var spiFreq = document.getElementById('spi-frequency');
                                 if (spiFreq) spiFreq.value = data.params.frequency;
                             }
-                            if (data.params.address !== undefined) document.getElementById('i2c-address').value = data.params.address;
-                            if (data.params.mode !== undefined) document.getElementById('spi-mode').value = data.params.mode;
-                            if (data.params.resolution !== undefined) document.getElementById('adc-resolution').value = data.params.resolution;
-                            if (data.params.attenuation !== undefined) document.getElementById('adc-attenuation').value = data.params.attenuation;
-                            { const el = document.getElementById('adc-sample-rate'); if (el && data.params.sampleRate !== undefined) el.value = String(data.params.sampleRate); }
-                            // ADC 工业滤波参数（旧配置缺字段时保持默认：单次采样）
-                            { const el = document.getElementById('adc-sample-count'); if (el && data.params.sampleCount !== undefined) el.value = String(data.params.sampleCount); }
-                            { const el = document.getElementById('adc-filter-mode'); if (el && data.params.filterMode !== undefined) el.value = String(data.params.filterMode); }
-                            // AI 工程量转换参数。旧配置缺字段时保留 form.reset() 的安全默认值。
+                            // Scalar text fields preserve defaults when older configurations omit them.
                             [
+                                ['adc-sample-rate', 'sampleRate'],
+                                ['adc-sample-count', 'sampleCount'],
+                                ['adc-filter-mode', 'filterMode'],
+                                ['generic-sensor-type', 'sensorType'],
+                                ['generic-sensor-interval', 'sampleInterval'],
+                                ['generic-sensor-bus-id', 'busPeripheralId'],
                                 ['adc-signal-mode', 'signalMode'],
                                 ['adc-input-min', 'inputMin'],
                                 ['adc-input-max', 'inputMax'],
@@ -760,14 +696,11 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                             { const el = document.getElementById('adc-clamp-enabled'); if (el && data.params.clampEnabled !== undefined) el.checked = !!data.params.clampEnabled; }
                             { const el = document.getElementById('adc-calibrated-voltage'); if (el) el.checked = !!data.params.calibratedVoltage; }
                             // 通用传感器参数
-                            { const el = document.getElementById('generic-sensor-type'); if (el && data.params.sensorType !== undefined) el.value = String(data.params.sensorType); }
-                            { const el = document.getElementById('generic-sensor-interval'); if (el && data.params.sampleInterval !== undefined) el.value = String(data.params.sampleInterval); }
                             {
                                 const el = document.getElementById('generic-sensor-driver');
                                 const driver = data.params.driverName || data.params.driver;
                                 if (el && driver !== undefined) el.value = String(driver).toLowerCase();
                             }
-                            { const el = document.getElementById('generic-sensor-bus-id'); if (el && data.params.busPeripheralId !== undefined) el.value = String(data.params.busPeripheralId); }
                             {
                                 const el = document.getElementById('generic-sensor-address');
                                 const address = data.params.i2cAddress ?? data.params.address;
@@ -800,30 +733,40 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 { const el = document.getElementById('servo-inverted'); if (el) el.checked = !!data.params.inverted; }
                                 { const el = document.getElementById('servo-release-after-move'); if (el) el.checked = !!data.params.releaseAfterMove; }
                             }
-                            if (data.params.brightness !== undefined) { const el = document.getElementById('segment-brightness'); if (el) el.value = data.params.brightness; }
-                            if (data.params.stepsPerRevolution !== undefined) { const el = document.getElementById('stepper-steps-per-rev'); if (el) el.value = data.params.stepsPerRevolution; }
-                            if (data.params.speed !== undefined) { const el = document.getElementById('stepper-speed'); if (el) el.value = data.params.speed; }
-                            if (data.params.count !== undefined) { const el = document.getElementById('neopixel-count'); if (el) el.value = data.params.count; }
-                            if (data.params.brightness !== undefined) { const el = document.getElementById('neopixel-brightness'); if (el) el.value = data.params.brightness; }
-                            if (data.params.mode !== undefined) { const el = document.getElementById('rf-mode'); if (el) el.value = data.params.mode; }
-                            if (data.params.bitLength !== undefined) { const el = document.getElementById('rf-bit-length'); if (el) el.value = data.params.bitLength; }
-                            if (data.params.pulseWidth !== undefined) { const el = document.getElementById('rf-pulse-width'); if (el) el.value = data.params.pulseWidth; }
-                            if (data.params.repeat !== undefined) { const el = document.getElementById('rf-repeat'); if (el) el.value = data.params.repeat; }
+                            // All fields retain an existing/default value when an old
+                            // configuration omits the parameter. DOM value coercion is unchanged.
+                            [
+                                ['segment-brightness', 'brightness'],
+                                ['stepper-steps-per-rev', 'stepsPerRevolution'],
+                                ['stepper-speed', 'speed'],
+                                ['neopixel-count', 'count'],
+                                ['neopixel-brightness', 'brightness'],
+                                ['rf-mode', 'mode'],
+                                ['rf-bit-length', 'bitLength'],
+                                ['rf-pulse-width', 'pulseWidth'],
+                                ['rf-repeat', 'repeat']
+                            ].forEach(([id, key]) => {
+                                const input = document.getElementById(id);
+                                if (input && data.params[key] !== undefined) input.value = data.params[key];
+                            });
                             if (data.params.activeHigh !== undefined) {
                                 const rfActive = document.getElementById('rf-active-high');
                                 const radarActive = document.getElementById('radar-active-high');
                                 if (rfActive) rfActive.checked = !!data.params.activeHigh;
                                 if (radarActive) radarActive.checked = !!data.params.activeHigh;
                             }
-                            if (data.params.debounceMs !== undefined) { const el = document.getElementById('radar-debounce-ms'); if (el) el.value = data.params.debounceMs; }
-                            if (data.params.holdMs !== undefined) { const el = document.getElementById('radar-hold-ms'); if (el) el.value = data.params.holdMs; }
-                            // OLED/LCD 参数回填
-                            if (data.params.width !== undefined) { const el = document.getElementById('lcd-width'); if (el) el.value = data.params.width; }
-                            if (data.params.height !== undefined) { const el = document.getElementById('lcd-height'); if (el) el.value = data.params.height; }
-                            if (data.params.interface !== undefined) { const el = document.getElementById('lcd-interface'); if (el) el.value = data.params.interface; }
-                            if (data.params.contrast !== undefined) { const el = document.getElementById('lcd-contrast'); if (el) el.value = data.params.contrast; }
-                            // 编码器参数回填
-                            if (data.params.resolution !== undefined) { const el = document.getElementById('encoder-resolution'); if (el) el.value = data.params.resolution; }
+                            [
+                                ['radar-debounce-ms', 'debounceMs'],
+                                ['radar-hold-ms', 'holdMs'],
+                                ['lcd-width', 'width'],
+                                ['lcd-height', 'height'],
+                                ['lcd-interface', 'interface'],
+                                ['lcd-contrast', 'contrast'],
+                                ['encoder-resolution', 'resolution']
+                            ].forEach(([id, key]) => {
+                                const input = document.getElementById(id);
+                                if (input && data.params[key] !== undefined) input.value = data.params[key];
+                            });
                             if (data.params.useInterrupt !== undefined) { const el = document.getElementById('encoder-use-interrupt'); if (el) el.checked = !!data.params.useInterrupt; }
                             // SD卡参数回填
                             {
@@ -838,6 +781,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 }
                             }
                             if (Number(data.type) === 50) {
+                                this._restoreRtcBootSeed(data.params);
                                 { const el = document.getElementById('ds1302-hour-mode'); if (el && data.params.use24Hour !== undefined) el.value = data.params.use24Hour ? '1' : '0'; }
                                 { const el = document.getElementById('ds1302-trickle-charge'); if (el && data.params.trickleCharge !== undefined) el.value = String(data.params.trickleCharge); }
                             }
@@ -850,6 +794,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 this._updateGenericSensorDriverFields(false, data.params);
                             } else if (Number(data.type) === 55) {
                                 this._updateIoExpanderFields(false, data.params);
+                            } else if (Number(data.type) === 57) {
+                                this._updatePca9685Fields(data.params);
                             } else if (Number(data.type) === 56) {
                                 this._updateDisplayFields(data.params);
                             }
@@ -970,7 +916,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 50: 'DS1302 实时时钟',
                 52: 'LCD1602 字符液晶',
                 54: 'MFRC522 RFID',
-                56: '彩色显示与触摸'
+                56: '彩色显示与触摸',
+                57: 'PCA9685 PWM'
             };
             Array.from(typeSelect.options).forEach(function (option) {
                 const item = ready ? byValue[String(option.value)] : null;
@@ -997,6 +944,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             if (Number(typeSelect.value) === 38) this._updateGenericSensorDriverFields(false);
             if (Number(typeSelect.value) === 55) this._updateIoExpanderFields(false);
             if (Number(typeSelect.value) === 56) this._updateDisplayFields();
+            if (Number(typeSelect.value) === 57) this._updatePca9685Fields();
             if (Number(typeSelect.value) === 37) this._updateSdcardPinHints();
         },
 
@@ -1048,13 +996,13 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const logical = [11, 12, 13, 14, 18, 19, 20].indexOf(type) >= 0 && source === 'expander';
             const bus = type === 38 ? document.getElementById('generic-sensor-bus-id')?.value
                 : (type === 55 ? document.getElementById('io-expander-bus-id')?.value : '');
-            const namedPins = type === 56;
+            const namedPins = type === 56 || type === 57;
             input.disabled = logical || !!bus || namedPins;
             input.required = !logical && !bus && !namedPins && type !== 38 && type !== 60 && type !== 51;
             const group = document.getElementById('peripheral-pins-group');
             if (group) group.classList.toggle('is-hidden', logical || !!bus || namedPins || type === 60 || type === 51);
             if (namedPins) {
-                hint.textContent = '显示与触摸引脚在下方按角色配置。';
+                hint.textContent = type === 57 ? '使用所选总线和 OE 输出外设的接线。' : '显示与触摸引脚在下方按角色配置。';
                 return;
             }
             if (logical || bus) {
@@ -1159,7 +1107,8 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const previous = {};
             host.querySelectorAll('[data-driver-param]').forEach((input) => { previous[input.dataset.driverParam] = input.value; });
             host.textContent = '';
-            const labels = { shuntResistance: '分流电阻', maxCurrent: '预期最大电流', conversionTimeUs: '转换时间', averaging: '平均次数' };
+            const refreshScan = () => this._refreshAdsScanFields(meta);
+            const labels = { shuntResistance: '分流电阻', maxCurrent: '预期最大电流', conversionTimeUs: '转换时间', averaging: '平均次数', mux: '单路输入组合', scanMask: '轮询输入组合（最多 4 路）', fullScaleMv: 'ADC 满量程', dataRate: '转换速率', calibrationGain: '电压校准增益', calibrationOffset: '电压校准偏移' };
             (meta?.params || []).forEach(function(param) {
                 if (param.key === 'mode' && String(meta.name).toUpperCase() === 'MPU6050') return;
                 if (!/^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(param.key)) return;
@@ -1177,6 +1126,10 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                         const option = document.createElement('option');
                         option.value = String(typeof choice === 'object' ? choice.value : choice);
                         option.textContent = String(typeof choice === 'object' ? (choice.label || choice.value) : choice);
+                        if (String(meta.name).toUpperCase() === 'ADS1115' && param.key === 'mux') {
+                            const inputs = ['AIN0 - AIN1', 'AIN0 - AIN3', 'AIN1 - AIN3', 'AIN2 - AIN3', 'AIN0 - GND', 'AIN1 - GND', 'AIN2 - GND', 'AIN3 - GND'];
+                            option.textContent = inputs[Number(option.value)] || option.textContent;
+                        }
                         input.appendChild(option);
                     });
                 } else {
@@ -1188,16 +1141,45 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 }
                 input.value = String(saved?.[param.key] ?? (!reset ? previous[param.key] : undefined) ?? param.default ?? '');
                 group.append(label, input);
+                if (String(meta.name).toUpperCase() === 'ADS1115') {
+                    if (param.key === 'scanMask') {
+                        input.type = 'hidden';
+                        const names = ['AIN0 - AIN1', 'AIN0 - AIN3', 'AIN1 - AIN3', 'AIN2 - AIN3', 'AIN0 - GND', 'AIN1 - GND', 'AIN2 - GND', 'AIN3 - GND'];
+                        names.forEach(function(name, mux) {
+                            const choice = document.createElement('label');
+                            const check = document.createElement('input');
+                            check.type = 'checkbox';
+                            check.dataset.adsMux = String(mux);
+                            check.checked = !!(Number(input.value) & (1 << mux));
+                            check.addEventListener('change', function() {
+                                input.value = String(Array.from(group.querySelectorAll('[data-ads-mux]:checked')).reduce((mask, node) => mask | (1 << Number(node.dataset.adsMux)), 0));
+                                refreshScan();
+                            });
+                            choice.append(check, document.createTextNode(' ' + name));
+                            group.appendChild(choice);
+                        });
+                    }
+                    input.addEventListener('change', refreshScan);
+                }
                 host.appendChild(group);
             });
+            if (String(meta?.name).toUpperCase() === 'ADS1115') {
+                const note = document.createElement('p');
+                note.className = 'form-help';
+                note.style.gridColumn = '1 / -1';
+                note.textContent = '不勾选时保留单路电压/原始码；勾选 1～4 路时按输入编号依次转换，全部成功后发布各路电压。任一路失败整轮无效；各路并非同时采样。满量程仅用于换算，不代表允许输入电压。接线须符合供电和输入额定范围；增益/偏移为共用 ADC 校准，各路工程换算在采集动作设置。';
+                host.appendChild(note);
+                refreshScan();
+            }
         },
 
         _setPeripheralReferenceOptions(id, type, selectedValue) {
             const select = document.getElementById(id);
             if (!select) return;
             const selected = selectedValue === undefined ? select.value : selectedValue;
-            select.innerHTML = type === 2 ? '<option value="">直接配置 SDA、SCL</option>' : '<option value="">请选择已配置的扩展器</option>';
-            (this._periphProviders || []).filter((p) => Number(p.type) === type).forEach(function(periph) {
+            select.innerHTML = type === 2 ? '<option value="">直接配置 SDA、SCL</option>' : type === 12 ? '<option value="">请选择专用原生输出</option>' : '<option value="">请选择已配置的扩展器</option>';
+            (this._periphProviders || []).filter((p) => Number(p.type) === type &&
+                (type !== 12 || p.params?.nativeControlEligible === true)).forEach(function(periph) {
                 const option = document.createElement('option');
                 option.value = periph.id;
                 option.textContent = (periph.name || periph.id) + ' (' + periph.id + ')' + (!periph.enabled ? ' · 已禁用' : (periph.featureActive === false ? ' · 功能未启用' : ''));
@@ -1226,6 +1208,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 this._periphProviders = all;
                 this._setPeripheralReferenceOptions('generic-sensor-bus-id', 2);
                 this._setPeripheralReferenceOptions('io-expander-bus-id', 2);
+                this._setPeripheralReferenceOptions('io-expander-reset-id', 12);
+                this._setPeripheralReferenceOptions('pca9685-bus-id', 2);
+                this._setPeripheralReferenceOptions('pca9685-oe-id', 12);
                 this._setPeripheralReferenceOptions('gpio-provider-id', 55);
                 this._updateGpioSourceFields();
             } catch (err) {
@@ -1378,20 +1363,62 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             }
         },
 
+        _updatePca9685Fields(saved) {
+            this._setPeripheralReferenceOptions('pca9685-bus-id', 2, saved?.busPeripheralId);
+            this._setPeripheralReferenceOptions('pca9685-oe-id', 12, saved?.oePeripheralId);
+            const descriptor = this._getPeripheralTypeDescriptor(57);
+            const aliases = {busPeripheralId: 'bus-id', oePeripheralId: 'oe-id'};
+            for (const field of descriptor?.configFields || []) {
+                const input = document.getElementById('pca9685-' + (aliases[field.key] || field.key));
+                const initialize = input && input._h1ConfigSession !== this._periphFormSession;
+                this._applyH1ConfigInput(input, field, saved ? saved[field.key] : field.default,
+                    field.type !== 'reference' && (saved !== undefined || initialize));
+                if (input) input._h1ConfigSession = this._periphFormSession;
+            }
+            this._setFeatureAvailabilityHint('pca9685-feature-status', this._getPeripheralTypeDescriptor(57), 'PCA9685 PWM');
+            if (descriptor?.configSchemaVersion !== 1) {
+                const hint = document.getElementById('pca9685-feature-status');
+                if (hint) hint.textContent = '固件未提供 PCA9685 参数描述，请刷新并使用配套固件后保存';
+            }
+            this._updatePeripheralPinRoleHint(57);
+        },
+
+        _applyH1ConfigInput(input, field, value, replace) {
+            if (!input) return;
+            input.required = field.required === true;
+            for (const attr of ['min', 'max', 'step', 'maxlength']) input.removeAttribute(attr);
+            if (field.type === 'integer' || field.type === 'number') {
+                if (field.min !== undefined) input.min = String(field.min);
+                if (field.exclusiveMin !== undefined) input.min = String(field.exclusiveMin);
+                if (field.max !== undefined) input.max = String(field.max);
+                input.step = field.type === 'integer' ? '1' : 'any';
+            }
+            if (replace) {
+                if (field.type === 'boolean') input.checked = value === true;
+                else input.value = value === undefined ? '' : String(value);
+            }
+        },
+
         _updateIoExpanderFields(applyDefaults, saved) {
             const select = document.getElementById('io-expander-driver');
             if (!select) return;
             this._fillDriverSelect(select, 55, saved?.driverName || saved?.driver || select.value, false);
             const meta = this._getPeripheralDriverMeta(55, select.value);
             this._setPeripheralReferenceOptions('io-expander-bus-id', 2, saved?.busPeripheralId);
+            this._setPeripheralReferenceOptions('io-expander-reset-id', 12, saved?.resetPeripheralId);
+            document.getElementById('io-expander-reset-fields')?.classList.toggle('is-hidden', !meta?.requiresResetReference);
+            document.getElementById('io-expander-group-hint')?.classList.toggle('is-hidden', !meta?.groupActivation);
             const address = document.getElementById('io-expander-address');
             if (address && saved) address.value = this._formatI2cAddress(saved.i2cAddress ?? saved.address);
-            else if (address && applyDefaults && meta) address.value = this._formatI2cAddress(meta.defaultAddress);
+            else if (address && meta && (applyDefaults || address._h1ConfigSession !== this._periphFormSession))
+                address.value = this._formatI2cAddress(meta.defaultAddress);
+            if (address && meta) address._h1ConfigSession = this._periphFormSession;
             const interval = document.getElementById('io-expander-interval');
-            if (interval) {
-                interval.min = String(meta?.minIntervalMs || 20);
-                if (saved?.sampleInterval !== undefined) interval.value = saved.sampleInterval;
-            }
+            const intervalField = meta?.configFields?.find(field => field.key === 'sampleInterval');
+            if (interval && intervalField) this._applyH1ConfigInput(interval, intervalField,
+                saved?.sampleInterval === 0 ? intervalField.default : saved?.sampleInterval ?? intervalField.default,
+                !!saved || applyDefaults || interval._h1ConfigSession !== this._periphFormSession);
+            if (interval && intervalField) interval._h1ConfigSession = this._periphFormSession;
             this._setFeatureAvailabilityHint('io-expander-feature-status', this._getPeripheralTypeDescriptor(55), '通用 IO 扩展器');
             this._updatePeripheralPinRoleHint(55);
         },
@@ -1419,7 +1446,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             const meta = this._getPeripheralDriverMeta(55, parent?.params?.driverName || parent?.params?.driver || 'PCF8574');
             const count = Number(meta?.channelCount || descriptor?.channelCount || meta?.channels?.length || 8);
             if (channels) {
-                channels.innerHTML = Array.from({ length: Math.min(32, count) }, (_, i) => '<option value="' + i + '">P' + i + '</option>').join('');
+                channels.innerHTML = Array.from({ length: Math.min(32, count) }, (_, i) => i)
+                    .filter((i) => type !== 11 || !(meta?.outputOnlyChannels || []).includes(i))
+                    .map((i) => '<option value="' + i + '">P' + i + '</option>').join('');
                 if (!Array.from(channels.options).some((option) => option.value === selected)) {
                     const unavailable = document.createElement('option');
                     unavailable.value = selected;
@@ -1431,9 +1460,35 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             }
             const status = document.getElementById('gpio-source-status');
             if (status) status.textContent = expanded
-                ? (descriptor?.featureActive === false ? 'IO 扩展功能未启用；配置保留，启用并重启后执行。' : (!parentId ? '先配置父扩展器，再绑定逻辑通道。' : (type === 12 ? '初始状态按逻辑值处理；勾选反相后输出电平相反。' : '使用父设备采样；输入为释放高电平，不使用 MCU 内部上下拉。')))
+                ? (descriptor?.featureActive === false ? 'IO 扩展功能未启用；配置保留，启用并重启后执行。' : (!parentId ? '先配置父扩展器，再绑定逻辑通道。' : (meta?.groupActivation ? 'MCP 通道先保持禁用保存，从父设备整组启用。7、15 只允许输出；输入没有上拉，输出初始逻辑值受反相设置影响。' : (type === 12 ? '初始状态按逻辑值处理；勾选反相后输出电平相反。' : '使用父设备采样；输入为释放高电平，不使用 MCU 内部上下拉。'))))
                 : '';
             this._updatePeripheralPinRoleHint(type);
+        },
+
+        _refreshAdsScanFields(meta) {
+            if (String(meta?.name).toUpperCase() !== 'ADS1115') return;
+            const mask = Number(document.getElementById('generic-driver-scanMask')?.value || 0);
+            const count = Array.from({length:8}, (_, bit) => !!(mask & (1 << bit))).filter(Boolean).length;
+            document.querySelectorAll('[data-ads-mux]').forEach(node => { node.disabled = count >= 4 && !node.checked; });
+            const single = document.getElementById('generic-driver-mux');
+            if (single) single.disabled = !!mask;
+            const channel = document.getElementById('generic-sensor-channel');
+            const available = (meta.channels || []).filter(item =>
+                (!item.singleMuxOnly || !mask) && (item.scanMux === undefined || !!(mask & (1 << Number(item.scanMux)))));
+            if (channel) {
+                const selected = channel.value;
+                channel.innerHTML = '';
+                available.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = item.name;
+                    option.textContent = item.name + (item.unit ? ' (' + item.unit + ')' : '');
+                    channel.appendChild(option);
+                });
+                if (available.some(item => item.name === selected)) channel.value = selected;
+            }
+            const rate = Number(document.getElementById('generic-driver-dataRate')?.value || 128);
+            const interval = document.getElementById('generic-sensor-interval');
+            if (interval) interval.min = String(Math.max(100, (count || 1) * (2 * Math.ceil(1000 / rate) + 50)));
         },
 
         _updateGenericSensorDriverFields(applyDefaults, savedParams) {
@@ -1482,6 +1537,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 if (savedParams?.sampleInterval !== undefined) interval.value = savedParams.sampleInterval;
                 else if (applyDefaults && Number(interval.value) < Number(interval.min)) interval.value = interval.min;
             }
+            this._refreshAdsScanFields(meta);
             this._setFeatureAvailabilityHint('generic-sensor-feature-status', descriptor, driver ? 'I2C 传感器采集' : '');
             this._updatePeripheralPinRoleHint(38);
         },
@@ -1573,6 +1629,34 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 });
         },
 
+        _selectMcpGroupChannels(id, getter) {
+            if (typeof this._selectMcpGroupChannelsLoaded === 'function')
+                return this._selectMcpGroupChannelsLoaded(id, getter);
+            const page = this.currentPage;
+            return new Promise((resolve, reject) => {
+                let pending = true;
+                const timer = setTimeout(() => {
+                    pending = false;
+                    reject(new Error('整组确认模块加载超时，未启用设备'));
+                }, 15000);
+                const ready = () => {
+                    if (!pending) return;
+                    pending = false;
+                    clearTimeout(timer);
+                    if (this.currentPage !== page || typeof this._selectMcpGroupChannelsLoaded !== 'function') {
+                        reject(new Error('页面已切换或模块不可用，未启用设备')); return;
+                    }
+                    resolve(this._selectMcpGroupChannelsLoaded(id, getter));
+                };
+                if (typeof ModuleLoader !== 'undefined' && typeof ModuleLoader.loadModule === 'function') {
+                    ModuleLoader.loadModule('peripheral-io', ready);
+                } else {
+                    clearTimeout(timer); pending = false;
+                    reject(new Error('整组确认模块不可用，未启用设备'));
+                }
+            });
+        },
+
         async togglePeripheral(id) {
             if (!this.guardDeveloperModeAction() || this._periphToggleBusy) return;
             this._periphToggleBusy = true;
@@ -1585,6 +1669,16 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
 
                 var isEnabled = status.data.enabled === true;
                 var payload = { id: id };
+                if (status.data.groupActivation === true) {
+                    if (isEnabled) {
+                        if (!confirm('整组禁用将停止所有通道，并尝试将输出恢复为各自配置的初始电平。确认负载与接线后继续？')) return;
+                    } else {
+                        const selected = await this._selectMcpGroupChannels(id, getter);
+                        if (!selected) return;
+                        payload.channelIds = JSON.stringify(selected.channelIds);
+                        payload.groupToken = selected.groupToken;
+                    }
+                }
                 if (!isEnabled) {
                     var post = (typeof apiPostSilent === 'function') ? apiPostSilent : apiPost;
                     var preflight = await post('/api/peripherals/preflight', {

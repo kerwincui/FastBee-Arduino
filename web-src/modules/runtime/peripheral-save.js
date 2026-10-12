@@ -184,6 +184,50 @@
             }
         },
 
+        _h1FieldError(field, value) {
+            if (!field) return '固件未提供参数描述，请刷新并使用配套固件';
+            let valid = false;
+            if (field.type === 'reference') valid = typeof value === 'string' &&
+                (!field.required || value.length > 0) && !value.includes('\0') &&
+                Number.isInteger(field.maxBytes) && new TextEncoder().encode(value).length <= field.maxBytes;
+            else if (field.type === 'boolean') valid = typeof value === 'boolean';
+            else if (field.type === 'integer' || field.type === 'number') valid =
+                typeof value === 'number' && Number.isFinite(value) &&
+                (field.type !== 'integer' || Number.isInteger(value)) &&
+                (field.min === undefined || value >= field.min) &&
+                (field.exclusiveMin === undefined || value > field.exclusiveMin) &&
+                (field.max === undefined || value <= field.max);
+            const labels = {address: 'I2C 地址', sampleInterval: '采样间隔', busPeripheralId: 'I2C 总线',
+                resetPeripheralId: 'RESET 引用', oePeripheralId: 'OE 引用', channelMask: '通道掩码',
+                pwmHz: '共享频率', clockHz: '振荡器频率', minAngle: '最小角度', maxAngle: '最大角度',
+                minPulseUs: '最小脉宽', maxPulseUs: '最大脉宽', openDrain: '开漏模式'};
+            return valid ? '' : (labels[field.key] || field.key) + ' 不在固件允许范围内' + (field.unit ? '（' + field.unit + '）' : '');
+        },
+
+        _collectPca9685Config(data) {
+            const descriptor = this._getPeripheralTypeDescriptor(57);
+            if (descriptor?.configSchemaVersion !== 1 || !Array.isArray(descriptor.configFields) ||
+                descriptor.configFields.length !== 11) return '固件未提供完整 PCA9685 参数描述，请刷新并使用配套固件';
+            const aliases = {busPeripheralId: 'bus-id', oePeripheralId: 'oe-id'};
+            const params = {};
+            for (const field of descriptor.configFields) {
+                const input = document.getElementById('pca9685-' + (aliases[field.key] || field.key));
+                const text = input?.value?.trim() || '';
+                const value = field.type === 'boolean' ? (input ? input.checked === true : null) :
+                    field.type === 'reference' ? text : text ? Number(text) : NaN;
+                const error = this._h1FieldError(field, value);
+                if (error) return error;
+                params[field.key] = value;
+            }
+            if ((descriptor.excludedAddresses || []).includes(params.address) ||
+                params.busPeripheralId === params.oePeripheralId ||
+                params.minAngle >= params.maxAngle || params.minPulseUs >= params.maxPulseUs)
+                return '请选择不同的 I2C 总线和专用 OE；地址不得为保留地址，角度与脉宽范围须递增';
+            data.pins = '';
+            data.pca9685 = JSON.stringify(params);
+            return '';
+        },
+
         _collectI2cDriverConfig(data, type) {
             const prefix = type === 55 ? 'io-expander' : 'generic-sensor';
             const select = document.getElementById(prefix + '-driver');
@@ -193,10 +237,25 @@
             data.driverName = String(meta.name).toUpperCase();
             data.driver = data.driverName;
             data.busPeripheralId = document.getElementById(prefix + '-bus-id')?.value || '';
+            if (type === 55) {
+                if (meta.configSchemaVersion !== 1 || !Array.isArray(meta.configFields))
+                    return '固件未提供 IO 扩展器参数描述，请刷新并使用配套固件';
+                data.resetPeripheralId = meta.requiresResetReference ? document.getElementById('io-expander-reset-id')?.value || '' : '';
+                if (meta.requiresResetReference && !data.resetPeripheralId) return '请选择专用原生 RESET 输出';
+                for (const key of meta.requiresResetReference ? ['busPeripheralId', 'resetPeripheralId'] : ['busPeripheralId']) {
+                    const error = this._h1FieldError(meta.configFields.find(field => field.key === key), data[key]);
+                    if (error) return error;
+                }
+                if (meta.groupActivation && data.enabled && !this._periphFormConfig?.enabled) return 'MCP 父设备请先取消启用并保存，添加通道后从列表整组启用';
+            }
             if (data.busPeripheralId) data.pins = '';
             else if (!/^\d+\s*,\s*\d+$/.test(data.pins || '')) return '请按 SDA、SCL 填写两个引脚，或选择已配置的 I2C 总线';
             const text = document.getElementById(prefix + '-address')?.value.trim() || '';
             const address = /^(?:0x[0-9a-f]+|\d+)$/i.test(text) ? Number(text) : NaN;
+            if (type === 55) {
+                const error = this._h1FieldError(meta.configFields.find(field => field.key === 'address'), address);
+                if (error) return error;
+            }
             const min = meta.addressMin ?? 0x08;
             const max = meta.addressMax ?? 0x77;
             if (!Number.isInteger(address) || address < min || address > max) return 'I2C 地址必须在 ' + this._formatI2cAddress(min) + ' 至 ' + this._formatI2cAddress(max) + ' 之间';
@@ -205,8 +264,13 @@
             data.i2cAddress = address;
             data.frequency = type === 38 ? Number(this._periphFormConfig?.params?.frequency || 100000) : 100000;
             const interval = Number(document.getElementById(prefix + '-interval')?.value);
-            const minInterval = Math.max(type === 55 ? 20 : 100, Number(meta.minIntervalMs) || 0);
-            if (!Number.isInteger(interval) || interval < minInterval || interval > (type === 55 ? 1000 : 86400000)) return '采样间隔不能小于 ' + minInterval + ' ms，且需在页面标注范围内';
+            if (type === 55) {
+                const error = this._h1FieldError(meta.configFields.find(field => field.key === 'sampleInterval'), interval);
+                if (error) return error;
+            } else {
+                const minInterval = Math.max(100, Number(meta.minIntervalMs) || 0);
+                if (!Number.isInteger(interval) || interval < minInterval || interval > 86400000) return '采样间隔不能小于 ' + minInterval + ' ms，且需在页面标注范围内';
+            }
             data.sampleInterval = interval;
             if (type === 38) {
                 const selectedChannel = document.getElementById('generic-sensor-channel')?.value || '';
@@ -230,6 +294,15 @@
                 }
                 if (data.driver === 'INA226' && 2 * data.conversionTimeUs * data.averaging > 500000) {
                     return 'INA226 总转换时间不能超过 500 ms，请减少平均次数或转换时间';
+                }
+                if (data.driver === 'ADS1115') {
+                    const scanCount = Array.from({length:8}, (_, bit) => !!(data.scanMask & (1 << bit))).filter(Boolean).length;
+                    if (scanCount > 4) return 'ADS1115 每轮最多选择 4 路输入组合';
+                    const available = meta.channels.filter(channel => (!channel.singleMuxOnly || !data.scanMask) &&
+                        (channel.scanMux === undefined || !!(data.scanMask & (1 << Number(channel.scanMux)))));
+                    if (!available.some(channel => channel.name === selectedChannel)) return '请选择当前 ADS1115 轮询模式支持的测量通道';
+                    const conversionBudget = Math.max(100, (scanCount || 1) * (2 * Math.ceil(1000 / data.dataRate) + 50));
+                    if (interval < conversionBudget) return 'ADS1115 当前转换速率下采样间隔不能小于 ' + conversionBudget + ' ms';
                 }
             }
             return '';
@@ -383,6 +456,9 @@
                     this.showInlineError(errEl, error);
                     return;
                 }
+            } else if (typeNum === 57) {
+                const error = this._collectPca9685Config(data);
+                if (error) { this.showInlineError(errEl, error); return; }
             } else if (typeNum === 56) {
                 const displayDescriptor = this._getPeripheralTypeDescriptor(56) || {};
                 const displayLimits = displayDescriptor.configLimits || {};
@@ -541,6 +617,15 @@
             } else if (typeNum === 50) {
                 data.use24Hour = document.getElementById('ds1302-hour-mode')?.value === '1';
                 data.trickleCharge = document.getElementById('ds1302-trickle-charge')?.value || '0';
+                data.bootSeed = document.getElementById('ds1302-boot-seed')?.checked === true;
+                const rtcOffset = document.getElementById('ds1302-utc-offset')?.value || '';
+                if ((rtcOffset !== '' && (!/^-?\d{1,3}$/.test(rtcOffset) ||
+                    Number(rtcOffset) < -840 || Number(rtcOffset) > 840)) ||
+                    (data.bootSeed && rtcOffset === '')) {
+                    this.showInlineError(errEl, '启用 RTC 启动时间须填写 -840 到 840 的整数 UTC 偏移');
+                    return;
+                }
+                data.utcOffsetMinutes = rtcOffset;
             } else if (typeNum === 52) {
                 var sizeParts = (document.getElementById('lcd1602-size')?.value || '16x2').split('x');
                 data.cols = parseInt(sizeParts[0], 10) || 16;

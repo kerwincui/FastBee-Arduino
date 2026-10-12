@@ -62,6 +62,10 @@ LoggerSystem::LoggerSystem()
       fileLoggingState(static_cast<uint32_t>(FileLoggingState::Disabled)), initialized(false), espLogCaptureEnabled(false),
       logFileSizeLimit(0) {}
 LoggerSystem::~LoggerSystem() {}
+FastBee::FeatureInstanceSnapshot LoggerSystem::observeFeatureInstance(const void*) {
+    return FastBee::FeatureInstanceSnapshot::unavailable(FastBee::FeatureInstanceReason::BackendUnavailable,
+        FastBee::FeatureInstanceScope::ServiceLifecycle);
+}
 bool LoggerSystem::initialize() { initialized = true; return true; }
 void LoggerSystem::setLogLevel(LogLevel level) { currentLevel = level; }
 void LoggerSystem::error(const char*, const char*) {}
@@ -243,6 +247,18 @@ void test_rfm_dependency_cascade() {
     TEST_ASSERT_TRUE(mgr.shouldEnable("lcdGb2312"));
 }
 
+// Optional recent storage is 32 fixed-width lines plus two indexes. File
+// logging also admits its ring indexes, allocator/control reserve and the
+// PSRAM profile's transient drain stack. Derive the expected cost from those
+// payloads and host ABI widths rather than the production budget helper.
+static constexpr uint32_t kRfmExpectedLogBundleRamB =
+    32U * 128U + 2U * sizeof(uint8_t) +
+    2048U + 2U * sizeof(size_t) + sizeof(unsigned long) + 512U
+#if FASTBEE_USE_PSRAM
+    + 4096U
+#endif
+    ;
+
 // 组合功能只接受一个用户开关；主键优先，旧成员键仍可兼容调用。
 void test_rfm_bundled_features_follow_primary() {
     resetMockFs();
@@ -290,7 +306,7 @@ void test_rfm_bundled_features_follow_primary() {
     uint32_t estimatedRamB = 0;
     mgr.estimateFromJson(legacyEstimate, estimatedFlashKB, estimatedRamB);
     TEST_ASSERT_EQUAL_UINT32(currentFlashKB - 18, estimatedFlashKB);
-    TEST_ASSERT_EQUAL_UINT32(currentRamB - 3548, estimatedRamB);
+    TEST_ASSERT_EQUAL_UINT32(currentRamB - (2548U + kRfmExpectedLogBundleRamB), estimatedRamB);
 }
 
 // 旧版允许成员状态不一致；迁移时任一开启即保留整个组合功能。
@@ -334,7 +350,7 @@ void test_rfm_bundle_status_is_single_user_feature() {
         } else if (strcmp(key, "logViewer") == 0) {
             TEST_ASSERT_EQUAL_STRING("设备日志", feature["name"]);
             TEST_ASSERT_EQUAL_UINT32(7, feature["flashKB"].as<uint32_t>());
-            TEST_ASSERT_EQUAL_UINT32(1000, feature["ramB"].as<uint32_t>());
+            TEST_ASSERT_EQUAL_UINT32(kRfmExpectedLogBundleRamB, feature["ramB"].as<uint32_t>());
         } else if (strcmp(key, "commandScript") == 0 || strcmp(key, "fileLogging") == 0) {
             TEST_ASSERT_TRUE(feature["name"].isNull());
             TEST_ASSERT_EQUAL_UINT32(0, feature["flashKB"].as<uint32_t>());
@@ -517,6 +533,41 @@ void test_rfm_modbus_slave_removed() {
     TEST_ASSERT_TRUE(foundMaster);   // 主站项 modbus 仍保留
 }
 
+void test_rfm_filesystem_ota_is_not_implemented_or_a_required_bundle() {
+    resetMockFs();
+    g_mockFiles["/config/features.json"] =
+        "{\"version\":1,\"features\":{\"mdns\":{\"enabled\":true},"
+        "\"ota\":{\"enabled\":true},\"otaFs\":{\"enabled\":true}}}";
+    auto& mgr = RuntimeFeatureManager::instance();
+    TEST_ASSERT_TRUE(mgr.loadConfig());
+    mgr.setNetworkReady(true);
+    TEST_ASSERT_TRUE(mgr.shouldEnable("ota"));
+    TEST_ASSERT_TRUE(mgr.isUserEnabled("otaFs")); // Legacy saved intent is retained.
+    TEST_ASSERT_FALSE(mgr.shouldEnable("otaFs"));
+    TEST_ASSERT_FALSE(mgr.setUserEnabled("otaFs", true));
+    bool found = false;
+    for (size_t index = 0; index < mgr.featureCount(); ++index) {
+        JsonDocument doc;
+        TEST_ASSERT_TRUE(mgr.getFeatureStatusJson(index, doc.to<JsonObject>()));
+        const char* key = doc["key"];
+        if (strcmp(key, "otaFs") == 0) {
+            found = true;
+            TEST_ASSERT_FALSE(doc["compiled"].as<bool>());
+            TEST_ASSERT_FALSE(doc["active"].as<bool>());
+            TEST_ASSERT_FALSE(doc["bundleRequired"].as<bool>());
+            TEST_ASSERT_EQUAL_STRING("implementation_missing", doc["instanceReason"].as<const char*>());
+        }
+        if (strcmp(key, "lcdGb2312") == 0 || strcmp(key, "deviceControl") == 0) {
+            TEST_ASSERT_EQUAL_STRING("static_resource", doc["instanceScope"].as<const char*>());
+            TEST_ASSERT_FALSE(doc["instanceObserved"].as<bool>());
+            TEST_ASSERT_TRUE(doc["initializedInstances"].isNull());
+        }
+        if (strcmp(key, "fileLogging") == 0 || strcmp(key, "commandScript") == 0)
+            TEST_ASSERT_TRUE(doc["bundleRequired"].as<bool>());
+    }
+    TEST_ASSERT_TRUE(found);
+}
+
 void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_first_run_generates_defaults);
     RUN_TEST(test_rfm_sparse_config_canonicalized_once);
@@ -536,4 +587,5 @@ void test_runtime_feature_manager_group() {
     RUN_TEST(test_rfm_status_json);
     RUN_TEST(test_rfm_budget_denied);
     RUN_TEST(test_rfm_modbus_slave_removed);
+    RUN_TEST(test_rfm_filesystem_ota_is_not_implemented_or_a_required_bundle);
 }

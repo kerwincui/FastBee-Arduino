@@ -63,7 +63,10 @@ int main() {
     for (size_t i = 0; i < sensors.size(); ++i) {
         sensors[i].reset(new FastBee::I2CSensorBus);
         JsonDocument params;
-        assert(sensors[i]->open(&owners[i], "INA226", "{}", params));
+        // The fixture fills all client slots with distinct physical addresses;
+        // duplicate-address admission is now explicitly forbidden.
+        const std::string settings = "{\"addr\":" + std::to_string(0x40 + i) + "}";
+        assert(sensors[i]->open(&owners[i], "INA226", settings.c_str(), params));
     }
     assert(manager.clientCount() == sensors.size());
     locked = false; release = false;

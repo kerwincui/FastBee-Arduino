@@ -6,11 +6,22 @@
  */
 
 #include "core/FeatureFlags.h"
+#include "network/LiteralStringMatch.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include "core/PeriphExecManager.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/NativeOutputDispatch.h"
+#include "core/ActionReportPayload.h"
 #include "core/PeriphExecRemoteBindings.h"
 #include "core/PeriphExecConfigValidation.h"
+#include "core/RtcAction.h"
+#include "core/UartAction.h"
+#include "core/SdStatusAction.h"
+#include "core/Ds18b20Selection.h"
+#include "core/DailyTriggerState.h"
+#include "core/Pca9685ConfigSupport.h"
+#include "core/PeripheralActionContract.h"
 #include "core/MemoryBudget.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecScheduler.h"
@@ -23,6 +34,8 @@
 #include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
 #include "core/SensorConfigEpoch.h"
+#include "core/UartTextDiagnostics.h"
+#include <esp_timer.h>
 #include "utils/StringUtils.h"
 #include "utils/FileUtils.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
@@ -51,270 +64,9 @@ constexpr unsigned long PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
 constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
 constexpr uint32_t PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS = 2000;
-constexpr size_t PERIPH_EXEC_CONFIG_MAX_BYTES = FastBee::PeriphExecConfig::kMaxBytes;
 constexpr unsigned long SENSOR_CACHE_LOCK_WARN_INTERVAL_MS = 5000;
 
-// Stream one JSON value at a time. Scalar look-ahead must not consume the next
-// root delimiter (ArduinoJson's own reader may read one byte beyond a number).
-class ConfigValueReader {
-public:
-    explicit ConfigValueReader(File& file) : file_(file) {}
-    int read() {
-        if (done_) return -1;
-        const int next = file_.peek();
-        if (next < 0) return -1;
-        if (started_ && depth_ == 0 && !quote_ &&
-            (next == ',' || next == '}' || next == ']' || isspace(next))) return -1;
-        const char c = static_cast<char>(file_.read());
-        if (!started_) started_ = true;
-        if (quote_) {
-            if (escaped_) escaped_ = false;
-            else if (c == '\\') escaped_ = true;
-            else if (c == quote_) { quote_ = 0; if (depth_ == 0) done_ = true; }
-        } else if (c == '"' || c == '\'') quote_ = c;
-        else if (c == '{' || c == '[') ++depth_;
-        else if (c == '}' || c == ']') { if (--depth_ <= 0) done_ = true; }
-        return static_cast<unsigned char>(c);
-    }
-    size_t readBytes(char* buffer, size_t count) {
-        size_t copied = 0;
-        while (copied < count) { int c = read(); if (c < 0) break; buffer[copied++] = static_cast<char>(c); }
-        return copied;
-    }
-private:
-    File& file_;
-    int depth_ = 0;
-    char quote_ = 0;
-    bool started_ = false, escaped_ = false, done_ = false;
-};
-
-static int configNext(File& file) {
-    int c;
-    while ((c = file.peek()) >= 0 && isspace(c)) file.read();
-    return c;
-}
-
 static bool configError(String& error, const char* code) { error = code; return false; }
-
-static bool configMemoryAvailable(size_t bytes, size_t contiguous) {
-    // Preserve the existing 8-bit Web severe-pressure floor. Worker stacks
-    // and lazy result history still have their own later admission checks.
-    constexpr size_t reserve = FastBee::MemoryBudget::GUARD8_SEVERE_DRAM_FREE;
-    return FastBee::MemoryBudget::dram8Free() >= bytes + reserve &&
-           FastBee::MemoryBudget::dram8Largest() >= contiguous;
-}
-
-class ConfigJsonAllocator final : public ArduinoJson::Allocator {
-    struct alignas(std::max_align_t) Header { size_t bytes; };
-public:
-    void* allocate(size_t size) override {
-        if (!configMemoryAvailable(size + sizeof(Header), size + sizeof(Header))) return nullptr;
-        auto* block = static_cast<Header*>(malloc(size + sizeof(Header)));
-        if (!block) return nullptr;
-        block->bytes = size;
-        return block + 1;
-    }
-    void deallocate(void* pointer) override {
-        if (pointer) free(static_cast<Header*>(pointer) - 1);
-    }
-    void* reallocate(void* pointer, size_t size) override {
-        if (!pointer) return allocate(size);
-        auto* block = static_cast<Header*>(pointer) - 1;
-        // ArduinoJson shrinks its pool after parsing, including error paths.
-        // A shrink must keep the live allocation even if pressure just rose.
-        if (size <= block->bytes) return pointer;
-        if (!configMemoryAvailable(size + sizeof(Header), size + sizeof(Header))) return nullptr;
-        block = static_cast<Header*>(realloc(block, size + sizeof(Header)));
-        if (!block) return nullptr;
-        block->bytes = size;
-        return block + 1;
-    }
-};
-
-static bool readConfigValue(File& file, JsonDocument& doc, String& error) {
-    ConfigValueReader input(file);
-    const auto parsed = deserializeJson(doc, input);
-    if (!parsed) return true;
-    return configError(error, parsed == DeserializationError::NoMemory ? "CONFIG_MEMORY_PRESSURE" : "CONFIG_JSON");
-}
-
-using ConfigRuleVisitor = bool (*)(JsonObjectConst, void*, String&);
-
-class ConfigStringAppender {
-public:
-    explicit ConfigStringAppender(String& value) : value_(value) {}
-    size_t write(uint8_t c) {
-        const size_t before = value_.length();
-        value_ += static_cast<char>(c);
-        return value_.length() - before;
-    }
-    size_t write(const uint8_t* data, size_t size) {
-        const size_t before = value_.length();
-        for (size_t i = 0; i < size; ++i) value_ += static_cast<char>(data[i]);
-        return value_.length() - before;
-    }
-private:
-    String& value_;
-};
-
-// One temporary rule document plus a fixed ID index; validation never builds
-// a rule map. The optional visitor moves each decoded rule into a candidate map.
-static bool visitConfigurationFile(const char* path, ConfigRuleVisitor visitor,
-                                   void* context, String* irKeys, String& error,
-                                   bool legacyIr = false) {
-    using namespace FastBee::PeriphExecConfig;
-    File file = LittleFS.open(path, "r");
-    if (!file) return configError(error, "CONFIG_OPEN");
-    if (file.size() > kMaxBytes) return configError(error, "CONFIG_TOO_LARGE");
-    if (configNext(file) != '{') return configError(error, "CONFIG_OBJECT");
-    file.read();
-    char ids[FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES][FastBee::ResourceProfile::MAX_RULE_ID_LEN + 1];
-    size_t count = 0;
-    size_t residentEstimate = 0;
-    size_t irEstimate = 0;
-    bool sawRules = false, sawIr = false;
-    while (configNext(file) != '}') {
-        if (file.peek() != '"') return configError(error, "CONFIG_JSON");
-        ConfigJsonAllocator allocator;
-        JsonDocument doc(&allocator);
-        if (!readConfigValue(file, doc, error)) return false;
-        const char* key = doc.as<const char*>();
-        if (!key || doc.as<JsonString>().size() != strlen(key)) return configError(error, "CONFIG_JSON");
-        const bool isRules = !legacyIr && strcmp(key, "rules") == 0;
-        const bool isIr = strcmp(key, legacyIr ? "keys" : "irKeys") == 0;
-        if (configNext(file) != ':') return configError(error, "CONFIG_JSON");
-        file.read();
-        configNext(file);
-        if (isRules || isIr) {
-            if ((isRules && sawRules) || (isIr && sawIr)) return configError(error, "CONFIG_DUPLICATE_FIELD");
-            if (isRules) sawRules = true; else sawIr = true;
-            // Missing/null irKeys in older files means no mappings.
-            if (isIr && file.peek() == 'n') {
-                if (!readConfigValue(file, doc, error)) return false;
-                if (!doc.isNull()) return configError(error, "CONFIG_IR_ARRAY");
-            } else {
-                if (file.read() != '[') return configError(error, isRules ? "CONFIG_RULES_ARRAY" : "CONFIG_IR_ARRAY");
-                if (isIr && irKeys) *irKeys = "[";
-                bool first = true;
-                while (configNext(file) != ']') {
-                    if (isRules && count >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES)
-                        return configError(error, "CONFIG_RULE_COUNT");
-                    if (!readConfigValue(file, doc, error)) return false;
-                    if (isRules) {
-                        const JsonObjectConst rule = doc.as<JsonObjectConst>();
-                        if (const char* issue = validateRule(rule)) return configError(error, issue);
-                        // Deliberately conservative: include node/string allocator
-                        // overhead and both event indexes, not just JSON file size.
-                        const size_t triggerCount = rule["triggers"].size();
-                        const size_t actionCount = rule["actions"].size();
-                        const size_t estimate = measureJson(rule) + sizeof(PeriphExecRule) + 64 +
-                            triggerCount * (sizeof(ExecTrigger) + 96) +
-                            actionCount * (sizeof(ExecAction) + 32);
-                        residentEstimate += estimate;
-                        if (!configMemoryAvailable(visitor ? estimate : residentEstimate + irEstimate,
-                                                   std::max(triggerCount * sizeof(ExecTrigger),
-                                                       actionCount * sizeof(ExecAction))))
-                            return configError(error, "CONFIG_MEMORY_PRESSURE");
-                        const char* id = rule["id"].as<const char*>();
-                        for (size_t i = 0; i < count; ++i)
-                            if (strcmp(ids[i], id) == 0) return configError(error, "CONFIG_DUPLICATE_ID");
-                        strcpy(ids[count++], id);
-                        if (visitor && !visitor(rule, context, error)) return false;
-                    } else {
-                        const size_t expected = measureJson(doc);
-                        irEstimate += expected + 1;
-                        if (!configMemoryAvailable((visitor ? 0 : residentEstimate) + irEstimate, irEstimate))
-                            return configError(error, "CONFIG_MEMORY_PRESSURE");
-                        if (irKeys) {
-                            const size_t before = irKeys->length();
-                            irKeys->reserve(before + expected + 1);
-                            if (!first) *irKeys += ',';
-                            // ArduinoJson's String writer clears its target;
-                            // explicitly append each IR item to the array.
-                            ConfigStringAppender appender(*irKeys);
-                            serializeJson(doc, appender);
-                            if (irKeys->length() != before + expected + (first ? 0 : 1))
-                                return configError(error, "CONFIG_MEMORY_PRESSURE");
-                        }
-                    }
-                    first = false;
-                    const int delimiter = configNext(file);
-                    if (delimiter == ']') break;
-                    if (delimiter != ',') return configError(error, "CONFIG_JSON");
-                    file.read();
-                    if (configNext(file) == ']') return configError(error, "CONFIG_JSON");
-                }
-                file.read();
-                if (isIr && irKeys) {
-                    const size_t expected = irKeys->length() + 1;
-                    *irKeys += ']';
-                    if (irKeys->length() != expected) return configError(error, "CONFIG_MEMORY_PRESSURE");
-                }
-            }
-        } else {
-            if (!readConfigValue(file, doc, error)) return false;
-        }
-        const int delimiter = configNext(file);
-        if (delimiter == '}') break;
-        if (delimiter != ',') return configError(error, "CONFIG_JSON");
-        file.read();
-        if (configNext(file) == '}') return configError(error, "CONFIG_JSON");
-    }
-    file.read();
-    if (configNext(file) != -1) return configError(error, "CONFIG_JSON");
-    if (!(legacyIr ? sawIr : sawRules)) return configError(error, "CONFIG_RULES_ARRAY");
-    return true;
-}
-
-static bool copyConfigText(String& target, JsonVariantConst source) {
-    const char* value = source.as<const char*>();
-    target = value ? value : "";
-    return target.length() == (value ? strlen(value) : 0);
-}
-
-static bool configBool(JsonVariantConst value, bool fallback) {
-    return value.isNull() ? fallback : value.as<bool>();
-}
-
-static bool decodeConfigRule(JsonObjectConst obj, PeriphExecRule& r, String& error) {
-    if (!copyConfigText(r.id, obj["id"]) || !copyConfigText(r.name, obj["name"]) ||
-        !copyConfigText(r.scriptContent, obj["scriptContent"])) return configError(error, "CONFIG_MEMORY_PRESSURE");
-    if (r.scriptContent == "null") r.scriptContent = "";
-    r.enabled = configBool(obj["enabled"], true);
-    r.execMode = obj["execMode"] | 0;
-    r.protocolType = obj["protocolType"] | 0;
-    r.reportAfterExec = configBool(obj["reportAfterExec"], true);
-    r.allowPanelControl = configBool(obj["allowPanelControl"], false);
-    r.recordHistory = configBool(obj["recordHistory"], false);
-    r.triggers.reserve(obj["triggers"].size());
-    for (JsonObjectConst tObj : obj["triggers"].as<JsonArrayConst>()) {
-        ExecTrigger t;
-        if (!copyConfigText(t.triggerPeriphId, tObj["triggerPeriphId"]) ||
-            !copyConfigText(t.compareValue, tObj["compareValue"]) ||
-            !copyConfigText(t.timePoint, tObj["timePoint"]) ||
-            !copyConfigText(t.eventId, tObj["eventId"])) return configError(error, "CONFIG_MEMORY_PRESSURE");
-        t.triggerType = tObj["triggerType"] | 0;
-        t.operatorType = tObj["operatorType"] | 0;
-        t.timerMode = tObj["timerMode"] | 0;
-        t.intervalSec = tObj["intervalSec"] | uint32_t(60);
-        t.pollResponseTimeout = tObj["pollResponseTimeout"] | 1000;
-        t.pollMaxRetries = tObj["pollMaxRetries"] | 2;
-        t.pollInterPollDelay = tObj["pollInterPollDelay"] | 100;
-        r.triggers.push_back(std::move(t));
-    }
-    r.actions.reserve(obj["actions"].size());
-    for (JsonObjectConst aObj : obj["actions"].as<JsonArrayConst>()) {
-        ExecAction a;
-        if (!copyConfigText(a.targetPeriphId, aObj["targetPeriphId"]) ||
-            !copyConfigText(a.actionValue, aObj["actionValue"])) return configError(error, "CONFIG_MEMORY_PRESSURE");
-        a.actionType = aObj["actionType"] | 0;
-        a.useReceivedValue = configBool(aObj["useReceivedValue"], false);
-        a.syncDelayMs = aObj["syncDelayMs"] | 0;
-        a.execMode = aObj["execMode"] | 0;
-        r.actions.push_back(std::move(a));
-    }
-    return true;
-}
 
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
 static bool canonicalRemoteRuleNumber(const String& text) {
@@ -345,36 +97,6 @@ static bool canonicalRemoteRuleNumber(const String& text) {
 }
 #endif
 
-static bool hasWorkerPoolMemoryHeadroom(bool logDeferred) {
-#if defined(ESP_PLATFORM)
-    const uint32_t workerReserve =
-        static_cast<uint32_t>(PeriphExecWorkerPool::WORKER_STACK *
-                              PeriphExecWorkerPool::WORKER_COUNT + 4096U);
-    const uint32_t webReserveAfterWorker =
-        (CHIP_IS_CLASSIC_ESP32 && FASTBEE_USE_PSRAM == 0)
-            ? FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE
-            : 0U;
-    const uint32_t requiredFree8 = workerReserve + webReserveAfterWorker;
-    const uint32_t free8 = FastBee::MemoryBudget::dram8Free();
-    const uint32_t largest8 = FastBee::MemoryBudget::dram8Largest();
-    const bool admitted =
-        free8 >= requiredFree8 && largest8 >= PeriphExecWorkerPool::WORKER_STACK;
-
-    if (!admitted && logDeferred) {
-        LOGGER.warningf(
-            "[PeriphExec] Worker pool memory admission deferred: free8=%lu largest8=%lu needFree8=%lu needLargest=%lu",
-            (unsigned long)free8,
-            (unsigned long)largest8,
-            (unsigned long)requiredFree8,
-            (unsigned long)PeriphExecWorkerPool::WORKER_STACK);
-    }
-    return admitted;
-#else
-    (void)logDeferred;
-    return true;
-#endif
-}
-
 static bool validateRuleProfileLimits(const PeriphExecRule& rule, const char* operation, String* errorMsg = nullptr) {
     const char* issue = FastBee::PeriphExecConfig::validateRule(rule);
     if (!issue) return true;
@@ -384,32 +106,7 @@ static bool validateRuleProfileLimits(const PeriphExecRule& rule, const char* op
 }
 
 static bool actionRequiresPeripheralTarget(uint8_t actionType) {
-    switch (static_cast<ExecActionType>(actionType)) {
-        case ExecActionType::ACTION_HIGH:
-        case ExecActionType::ACTION_LOW:
-        case ExecActionType::ACTION_BLINK:
-        case ExecActionType::ACTION_BREATHE:
-        case ExecActionType::ACTION_SET_PWM:
-        case ExecActionType::ACTION_SET_DAC:
-        case ExecActionType::ACTION_CALL_PERIPHERAL:
-        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
-        case ExecActionType::ACTION_STEPPER_CONTROL:
-        case ExecActionType::ACTION_HIGH_INVERTED:
-        case ExecActionType::ACTION_LOW_INVERTED:
-        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
-        case ExecActionType::ACTION_MODBUS_REG_WRITE:
-        case ExecActionType::ACTION_SENSOR_READ:
-        case ExecActionType::ACTION_DISPLAY_NUMBER:
-        case ExecActionType::ACTION_DISPLAY_TEXT:
-        case ExecActionType::ACTION_DISPLAY_CLEAR:
-        case ExecActionType::ACTION_OLED_DISPLAY:
-        case ExecActionType::ACTION_RF_SEND:
-        case ExecActionType::ACTION_UART_SEND:
-        case ExecActionType::ACTION_GPIO_TOGGLE:
-            return true;
-        default:
-            return false;
-    }
+    return FastBee::PeripheralActionContract::requiresPeripheralTarget(actionType);
 }
 
 static bool isTerminalSystemAction(uint8_t actionType) {
@@ -454,74 +151,9 @@ static bool isTerminalExecStatus(AsyncExecStatus status) {
            status == AsyncExecStatus::TIMED_OUT;
 }
 
-static bool isRuleSensorTarget(PeripheralType type) {
-    return isGpioDigitalInputType(type) ||
-           type == PeripheralType::GPIO_ANALOG_INPUT ||
-           type == PeripheralType::ADC ||
-           type == PeripheralType::SENSOR_GENERIC ||
-           type == PeripheralType::ONE_WIRE ||
-           type == PeripheralType::ENCODER ||
-           type == PeripheralType::RADAR_SENSOR ||
-           type == PeripheralType::RF_MODULE;
-}
 
-static bool actionMatchesPeripheralTarget(uint8_t actionType,
-                                          const PeripheralConfig& target) {
-    if (target.isExpanderChannel()) {
-        const auto action = static_cast<ExecActionType>(actionType);
-        if (action == ExecActionType::ACTION_SET_PWM || action == ExecActionType::ACTION_SET_DAC ||
-            action == ExecActionType::ACTION_BREATHE) return false;
-    }
-    const PeripheralType type = target.type;
-    switch (static_cast<ExecActionType>(actionType)) {
-        case ExecActionType::ACTION_HIGH:
-        case ExecActionType::ACTION_LOW:
-        case ExecActionType::ACTION_HIGH_INVERTED:
-        case ExecActionType::ACTION_LOW_INVERTED:
-        case ExecActionType::ACTION_GPIO_TOGGLE:
-            return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
-                   type == PeripheralType::GPIO_PWM_OUTPUT ||
-                   type == PeripheralType::GPIO_ANALOG_OUTPUT;
-        case ExecActionType::ACTION_BLINK:
-            return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
-                   type == PeripheralType::GPIO_PWM_OUTPUT;
-        case ExecActionType::ACTION_BREATHE:
-            return type == PeripheralType::GPIO_PWM_OUTPUT ||
-                   type == PeripheralType::GPIO_ANALOG_OUTPUT;
-        case ExecActionType::ACTION_SET_PWM:
-            return type == PeripheralType::GPIO_PWM_OUTPUT ||
-                   type == PeripheralType::GPIO_ANALOG_OUTPUT ||
-                   type == PeripheralType::PWM_SERVO ||
-                   (type == PeripheralType::GPIO_DIGITAL_OUTPUT &&
-                    target.params.gpio.passive);
-        case ExecActionType::ACTION_SET_DAC:
-            return type == PeripheralType::DAC;
-        case ExecActionType::ACTION_NEOPIXEL_EFFECT:
-            return type == PeripheralType::NEO_PIXEL;
-        case ExecActionType::ACTION_STEPPER_CONTROL:
-            return type == PeripheralType::STEPPER_MOTOR;
-        case ExecActionType::ACTION_MODBUS_COIL_WRITE:
-        case ExecActionType::ACTION_MODBUS_REG_WRITE:
-            return target.isModbusPeripheral();
-        case ExecActionType::ACTION_SENSOR_READ:
-            return isRuleSensorTarget(type);
-        case ExecActionType::ACTION_DISPLAY_NUMBER:
-        case ExecActionType::ACTION_DISPLAY_TEXT:
-        case ExecActionType::ACTION_DISPLAY_CLEAR:
-            return type == PeripheralType::SEVEN_SEGMENT_TM1637;
-        case ExecActionType::ACTION_OLED_DISPLAY:
-            return type == PeripheralType::LCD;
-        case ExecActionType::ACTION_RF_SEND:
-            return type == PeripheralType::RF_MODULE;
-        case ExecActionType::ACTION_UART_SEND:
-            return type == PeripheralType::UART;
-        case ExecActionType::ACTION_CALL_PERIPHERAL:
-            // This generic action has a command-dependent capability check in
-            // the executor. The shared invariant here is a real, stable target.
-            return true;
-        default:
-            return true;
-    }
+static bool actionMatchesPeripheralTarget(uint8_t actionType, const PeripheralConfig& target) {
+    return FastBee::PeripheralActionContract::matchesPeripheralTarget(actionType, target);
 }
 
 // 判断字符串是否为有效数值（整数或浮点数，含负数）
@@ -552,17 +184,58 @@ static bool tryParseBoolLike(const String& rawValue, bool& outValue) {
 static bool executeDirectOutputCommand(PeripheralManager& pm,
                                        const PeripheralConfig& config,
                                        const String& requestedValue,
-                                       String& actualValue) {
+                                       String& actualValue, uint32_t configEpoch,
+                                       FastBee::OrdinaryControlResult& controlResult) {
     if (!config.enabled) return false;
+    static const uint64_t mqttActor = FastBee::RuleOutputIdentity::allocateActor();
 
-    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
+    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT && !FastBee::isOrdinaryScalarTarget(config)) {
         bool state = false;
         if (!tryParseBoolLike(requestedValue, state)) return false;
-        pm.stopActionTicker(config.id);
         actualValue = state ? "1" : "0";
+        if (FastBee::isOrdinaryDigitalTarget(config)) {
+            FastBee::OrdinaryControlContext context;
+            if (!pm.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Mqtt,
+                mqttActor, 0, false, 0, String(), configEpoch, {}, context))
+                return FastBee::rejectOrdinaryDigitalAction(config.id,
+                    "CONTROL_CONTEXT_UNAVAILABLE", &controlResult);
+            const bool accepted = FastBee::dispatchOrdinaryDigitalAction(pm, config.id,
+                state ? FastBee::DigitalOutputCommand::High : FastBee::DigitalOutputCommand::Low,
+                0, &context, &controlResult);
+            pm.finishOrdinaryControl(context, !accepted);
+            return accepted;
+        }
+        pm.stopActionTicker(config.id);
         return pm.writePin(config.id, state ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW);
     }
 
+    if (FastBee::isOrdinaryScalarTarget(config)) {
+        uint32_t value = 0;
+        bool state = false;
+        const bool dac = config.type == PeripheralType::DAC;
+        const bool passive = config.type == PeripheralType::GPIO_DIGITAL_OUTPUT && config.params.gpio.passive;
+        const bool boolean = !dac && tryParseBoolLike(requestedValue, state);
+        if (passive && !boolean) return FastBee::rejectOrdinaryDigitalAction(config.id,
+            "CONTROL_PARAMETER_INVALID", &controlResult);
+        if (boolean) {
+            if (state && !FastBee::ordinaryScalarHighValue(config, value))
+                return FastBee::rejectOrdinaryDigitalAction(config.id,
+                    "CONTROL_PARAMETER_INVALID", &controlResult);
+        } else if (!FastBee::parseOrdinaryScalarValue(config, requestedValue, value))
+            return FastBee::rejectOrdinaryDigitalAction(config.id,
+                "CONTROL_PARAMETER_INVALID", &controlResult);
+        FastBee::OrdinaryControlContext context;
+        if (!pm.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Mqtt,
+            mqttActor, 0, false, 0, String(), configEpoch, {}, context))
+            return FastBee::rejectOrdinaryDigitalAction(config.id,
+                "CONTROL_CONTEXT_UNAVAILABLE", &controlResult);
+        const bool accepted = FastBee::dispatchOrdinaryScalarAction(pm, config.id,
+            dac ? FastBee::ScalarOutputCommand::Dac : FastBee::ScalarOutputCommand::Pwm,
+            value, &context, &controlResult);
+        pm.finishOrdinaryControl(context, !accepted);
+        if (accepted) actualValue = passive ? (state ? "1" : "0") : String(value);
+        return accepted;
+    }
     if (config.type == PeripheralType::GPIO_PWM_OUTPUT ||
         config.type == PeripheralType::GPIO_ANALOG_OUTPUT) {
         uint32_t duty = 0;
@@ -593,6 +266,7 @@ static bool triggersMatch(const ExecTrigger& actual, const ExecTrigger& expected
            actual.pollInterPollDelay == expected.pollInterPollDelay &&
            actual.lastTriggerTime == expected.lastTriggerTime &&
            actual.triggerCount == expected.triggerCount &&
+           actual.lastCalendarDay == expected.lastCalendarDay &&
            actual._cachedHour == expected._cachedHour &&
            actual._cachedMinute == expected._cachedMinute;
 }
@@ -723,102 +397,6 @@ PeriphExecManager& PeriphExecManager::getInstance() {
     return instance;
 }
 
-bool PeriphExecManager::suspendWorkersForMemory() {
-    if (_workersSuspendedForMemory) return true;
-    // Gate new dispatches before asking workers to drain. A timed-out
-    // shutdown is only "pending"; the fully-suspended flag is set after every
-    // worker acknowledges exit so health reporting and retry logic remain
-    // truthful.
-    _workerSuspensionPending = true;
-    if (_workerPool) {
-        // Do not destroy the pool until every worker has acknowledged exit.
-        // A long-running rule may outlive the first wait window; retaining the
-        // object lets the next health sample retry safely.
-        if (!_workerPool->shutdown()) {
-            LOGGER.warning("[PeriphExec] Worker pool shutdown deferred; worker still running");
-            return false;
-        }
-        _workerPool.reset();
-    }
-    _workerSuspensionPending = false;
-    _workersSuspendedForMemory = true;
-    LOGGER.warning("[PeriphExec] Worker pool suspended for memory pressure");
-    return true;
-}
-
-bool PeriphExecManager::resumeWorkersAfterMemory() {
-    if (!_workersSuspendedForMemory && !_workerSuspensionPending) return true;
-
-    // A prior suspend can time out while a long-running rule is finishing.
-    // Do not allocate a replacement pool until the old workers are confirmed
-    // exited; shutdown() is idempotent and safely retries the wait.
-    if (_workerPool) {
-        if (!_workerPool->shutdown()) {
-            LOGGER.warning("[PeriphExec] Worker pool restore deferred (old worker still active)");
-            return false;
-        }
-        _workerPool.reset();
-    }
-
-    // A pool that finished its deferred shutdown is now fully suspended. Keep
-    // the state explicit before attempting allocation of the replacement.
-    _workersSuspendedForMemory = true;
-
-    // Recovery must preserve the same Web/WiFi reserve as startup.  The
-    // HealthMonitor's aggregate internal-heap level can be NORMAL while the
-    // allocatable 8-bit pool is still below the worker stack requirement on a
-    // classic no-PSRAM target.  Repeated xTaskCreate attempts in that state
-    // fragment the remaining heap and keep WebMemoryGuard active.
-    if (!hasWorkerPoolMemoryHeadroom(true)) {
-        return false;
-    }
-
-    std::unique_ptr<PeriphExecWorkerPool> candidate(new (std::nothrow) PeriphExecWorkerPool());
-    if (!candidate || !candidate->begin()) {
-        LOGGER.warning("[PeriphExec] Worker pool restore deferred (insufficient memory)");
-        return false;
-    }
-    _workerPool = std::move(candidate);
-    _workersSuspendedForMemory = false;
-    _workerSuspensionPending = false;
-    LOGGER.info("[PeriphExec] Worker pool restored after memory recovery");
-    return true;
-}
-
-void PeriphExecManager::cancelWorkerJob(AsyncExecContext* ctx) {
-    if (!ctx) return;
-
-    // The manager pointer is normally this object. If a malformed context was
-    // queued, still return its task slot instead of leaking an async permit.
-    PeriphExecManager* owner = ctx->manager ? ctx->manager : this;
-    if (owner->_runningRulesMutex) {
-        MutexGuard runLock(owner->_runningRulesMutex);
-        owner->_runningRuleIds.erase(ctx->ruleCopy.id);
-        owner->_runningStartTime.erase(ctx->ruleCopy.id);
-    }
-
-    AsyncExecResult result;
-    result.operationId = ctx->operationId;
-    result.ruleId = ctx->ruleCopy.id;
-    result.ruleName = ctx->ruleCopy.name;
-    result.status = AsyncExecStatus::CANCELLED;
-    result.errorCode = AsyncExecError::CANCELLED_BY_SYSTEM;
-    result.queuedAt = ctx->queuedAt;
-    result.startTime = 0;
-    result.endTime = millis();
-    result.deadlineAt = ctx->deadlineAt;
-    result.queuePosition = ctx->queuePosition;
-    result.asyncExecution = true;
-    result.actionCount = static_cast<uint8_t>(
-        ctx->ruleCopy.actions.size() > 255 ? 255 : ctx->ruleCopy.actions.size());
-    owner->recordResult(result);
-    if (FastBee::MemoryBudget::dramFree() > 10000) {
-        owner->dispatchPeriphExecEvent(ctx->ruleCopy.id, "cancelled");
-    }
-    if (ctx->taskSlot) xSemaphoreGive(ctx->taskSlot);
-    owner->_contextPool.release(ctx);
-}
-
 bool PeriphExecManager::initialize() {
     // 创建 FreeRTOS 同步原语
     _rulesMutex = xSemaphoreCreateMutex();
@@ -827,6 +405,7 @@ bool PeriphExecManager::initialize() {
     _runningRulesMutex = xSemaphoreCreateMutex();
     _pollIngressMutex = xSemaphoreCreateMutex();
     _sensorCacheMutex = xSemaphoreCreateMutex();
+    if (!_pendingReports.begin()) LOGGER.warning("[PeriphExec] Pending report queue unavailable");
 #if FASTBEE_ENABLE_POINT_HISTORY
     FastBee::PointHistory::instance().initialize();
 #endif
@@ -842,22 +421,7 @@ bool PeriphExecManager::initialize() {
 
     bool loaded = loadConfiguration();
 
-    // 启动常驻 Worker 任务池（D 方案）。在内存已经紧张的设备上，
-    // 先保留 Web/WiFi 的连续 DRAM；轻量规则仍可同步执行，重规则会被
-    // dispatchAsync 的内存门控跳过，避免启动期一次性分配栈导致 OOM。
-    // On the no-PSRAM classic F4R0, a resident worker stack competes directly
-    // with AsyncTCP/Web/MQTT. Rules remain configured when admission is
-    // deferred; dispatchAsync uses its existing safe degradation path.
-    const bool workerAdmission = hasWorkerPoolMemoryHeadroom(true);
-    if (workerAdmission) {
-        _workerPool.reset(new (std::nothrow) PeriphExecWorkerPool());
-    }
-    if (!workerAdmission || !_workerPool || !_workerPool->begin()) {
-        LOGGER.warning("[PeriphExec] WorkerPool unavailable at startup; async dispatch will degrade safely");
-        _workerPool.reset();  // dispatchAsync will use sync/skip fallback
-        _workersSuspendedForMemory = true;
-        _workerSuspensionPending = false;
-    }
+    initializeWorkerPool();
 
     // 注册 AsyncExecContext 对象池到 HealthMonitor（碎片预防监控）
     {
@@ -1135,20 +699,60 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
     return added;
 }
 
+bool PeriphExecManager::validateMigrationRule(const PeriphExecRule& rule,
+    const std::vector<PeripheralConfig>& targets, const std::vector<String>& ruleIds,
+    String& errorMsg) const {
+    return validateRuleActionsLocked(rule, errorMsg, &targets, &ruleIds);
+}
+
 bool PeriphExecManager::validateRuleActionsLocked(
-    const PeriphExecRule& rule, String& errorMsg) const {
+    const PeriphExecRule& rule, String& errorMsg,
+    const std::vector<PeripheralConfig>* targets, const std::vector<String>* ruleIds) const {
     for (const auto& trigger : rule.triggers) if (hasRetiredRemoteSource(trigger)) {
         errorMsg = "REMOTE_CHANNEL_RETIRED: replace the retired remote source"; return false;
     }
     PeripheralManager& peripherals = PeripheralManager::getInstance();
     bool hasRecordableAction = false;
+    if (!FastBee::validateThermostatRule(rule, errorMsg)) return false;
+    if (!FastBee::validateSdRecorderRule(rule, errorMsg)) return false;
+    if (rule.enabled && FastBee::hasSdRecorderAction(rule)) {
+        if (targets) { errorMsg = "SD_RECORD_IMPORT_DISABLED_REQUIRED"; return false; }
+        FastBee::SdRecorderConfig recorder;
+        String binding;
+        if (!FastBee::parseSdRecorderConfig(rule.actions[0].actionValue, recorder, errorMsg)) return false;
+        if (!sdRecorderSourceBindingLocked(recorder.sourceRef, binding)) {
+            errorMsg = "SD_RECORD_UNIQUE_ENABLED_HISTORY_COLLECTOR_REQUIRED"; return false;
+        }
+        for (const auto& entry : rules) if (entry.first != rule.id && entry.second.enabled &&
+            FastBee::hasSdRecorderAction(entry.second)) {
+            errorMsg = "SD_RECORD_SINGLE_RECORDER_REQUIRED"; return false;
+        }
+    }
+    if (!targets && rule.enabled && FastBee::hasThermostatAction(rule)) {
+        FastBee::ThermostatConfig thermostat;
+        String binding;
+        if (!FastBee::parseThermostatConfig(rule.actions[0].actionValue, thermostat, errorMsg)) return false;
+        if (!thermostatSourceBindingLocked(thermostat.sourceRef, binding)) {
+            errorMsg = "THERMOSTAT_UNIQUE_ENABLED_CELSIUS_COLLECTOR_REQUIRED"; return false;
+        }
+        unsigned controllers = 0;
+        for (const auto& entry : rules) {
+            if (entry.first == rule.id || !entry.second.enabled ||
+                !FastBee::hasThermostatAction(entry.second)) continue;
+            ++controllers;
+            if (entry.second.actions[0].targetPeriphId == rule.actions[0].targetPeriphId) {
+                errorMsg = "THERMOSTAT_OUTPUT_ALREADY_CONFIGURED"; return false;
+            }
+        }
+        if (controllers >= 4) { errorMsg = "THERMOSTAT_CONTROLLER_LIMIT"; return false; }
+    }
 
     for (size_t index = 0; index < rule.actions.size(); ++index) {
         const ExecAction& action = rule.actions[index];
         const String actionPath = String("Action ") + String(index + 1U);
 
         if (action.actionType >
-                static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_READ) ||
+                static_cast<uint8_t>(ExecActionType::ACTION_SD_RECORD) ||
             action.actionType ==
                 static_cast<uint8_t>(ExecActionType::ACTION_RESERVED_20)) {
             errorMsg = "ACTION_TYPE_UNSUPPORTED: " + actionPath;
@@ -1158,6 +762,32 @@ bool PeriphExecManager::validateRuleActionsLocked(
         if (rule.allowPanelControl && !isPanelSafeAction(action.actionType)) {
             errorMsg = "PANEL_ACTION_NOT_ALLOWED: " + actionPath;
             return false;
+        }
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS)) {
+            if (const char* error = FastBee::validateSdStatusAction(action)) {
+                errorMsg = error; return false;
+            }
+        }
+        if (FastBee::isRtcAction(action.actionType)) {
+            if (const char* error = FastBee::validateRtcAction(action)) {
+                errorMsg = error; return false;
+            }
+        }
+
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            JsonDocument parameters;
+            if (deserializeJson(parameters, action.actionValue.c_str()) || !parameters.is<JsonObject>()) {
+                errorMsg = "SENSOR_CONFIG_JSON_INVALID"; return false;
+            }
+            String category = parameters["sensorCategory"] | "analog";
+            category.trim(); category.toLowerCase();
+            if (category == "ds18b20") {
+                uint8_t deviceIndex = 0, address[8]; bool addressed = false;
+                if (const char* error = FastBee::parseDs18b20Selection(parameters.as<JsonVariantConst>(),
+                                                                     deviceIndex, address, addressed)) {
+                    errorMsg = error; return false;
+                }
+            }
         }
 
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
@@ -1210,7 +840,11 @@ bool PeriphExecManager::validateRuleActionsLocked(
                 errorMsg = "ACTION_TARGET_REQUIRED: rule-control action requires a rule ID";
                 return false;
             }
-            if (rules.count(action.targetPeriphId) == 0) {
+            bool found = false;
+            if (ruleIds) {
+                for (const auto& id : *ruleIds) if (id == action.targetPeriphId) { found = true; break; }
+            } else found = rules.count(action.targetPeriphId) != 0;
+            if (!found) {
                 errorMsg = String("ACTION_TARGET_NOT_FOUND: target rule '") +
                            action.targetPeriphId + "' does not exist";
                 return false;
@@ -1239,7 +873,7 @@ bool PeriphExecManager::validateRuleActionsLocked(
         if (jsonAction) {
             JsonDocument actionDocument;
             const DeserializationError jsonError =
-                deserializeJson(actionDocument, jsonValue);
+                deserializeJson(actionDocument, jsonValue.c_str(), jsonValue.length());
             if (jsonError) {
                 if (jsonRequired || action.actionType == static_cast<uint8_t>(
                         ExecActionType::ACTION_CALL_PERIPHERAL)) {
@@ -1269,7 +903,15 @@ bool PeriphExecManager::validateRuleActionsLocked(
         if (!requiresPeripheral) continue;
 
         PeripheralConfig target;
-        if (!peripherals.getPeripheralSnapshot(action.targetPeriphId, target)) {
+        bool found = false;
+        if (targets) {
+            for (const auto& item : *targets) if (item.id == action.targetPeriphId) {
+                target = item;
+                found = target.id == item.id && target.name == item.name;
+                break;
+            }
+        } else found = peripherals.getPeripheralSnapshot(action.targetPeriphId, target);
+        if (!found) {
             errorMsg = String("ACTION_TARGET_NOT_FOUND: peripheral '") +
                        action.targetPeriphId + "' does not exist";
             return false;
@@ -1279,6 +921,25 @@ bool PeriphExecManager::validateRuleActionsLocked(
                        String(action.actionType) + " is incompatible with " +
                        getPeripheralTypeName(target.type);
             return false;
+        }
+        if (target.type == PeripheralType::UART &&
+            (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_UART_SEND) ||
+             action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL))) {
+            if (const char* error = FastBee::validateUartAction(action)) {
+                errorMsg = error; return false;
+            }
+        }
+        if (target.type == PeripheralType::PCA9685_PWM &&
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
+            FastBee::Pca9685Command command;
+            if (action.useReceivedValue || !FastBee::parsePca9685Command(action.actionValue, command, errorMsg)) {
+                if (errorMsg.isEmpty()) errorMsg = "PCA_ACTION_LITERAL_REQUIRED";
+                return false;
+            }
+            if ((strcmp(command.action, "duty") == 0 || strcmp(command.action, "pulse") == 0 || strcmp(command.action, "angle") == 0) &&
+                !(target.params.pca9685.channelMask & (uint16_t(1) << command.channel))) {
+                errorMsg = "PCA_CHANNEL_UNDECLARED"; return false;
+            }
         }
         // A disabled target is valid for pre-configuration. Runtime execution
         // remains fail-closed until the peripheral is enabled and initialized.
@@ -1332,10 +993,14 @@ bool PeriphExecManager::addRuleLocked(const PeriphExecRule& rule,
     }
     if (!validateRuleActionsLocked(newRule, errorMsg)) return false;
     sanitizeRuleForSafety(newRule);
+    if (const char* issue = FastBee::validateRuleCompletionGraph(rules, &newRule)) {
+        errorMsg = issue; return false;
+    }
     // 重置运行时字段
     for (auto& t : newRule.triggers) {
         t.lastTriggerTime = 0;
         t.triggerCount = 0;
+        t.lastCalendarDay = 0;
     }
     rules[newRule.id] = newRule;
     if (storedId) *storedId = newRule.id;
@@ -1413,6 +1078,9 @@ bool PeriphExecManager::updateRuleLocked(const String& id,
     PeriphExecRule updated = rule;
     updated.id = id;
     sanitizeRuleForSafety(updated);
+    if (const char* issue = FastBee::validateRuleCompletionGraph(rules, &updated, &id)) {
+        errorMsg = issue; return false;
+    }
     for (size_t i = 0; i < updated.triggers.size(); i++) {
         if (i < oldTriggers.size()) {
             updated.triggers[i].lastTriggerTime = oldTriggers[i].lastTriggerTime;
@@ -1421,6 +1089,7 @@ bool PeriphExecManager::updateRuleLocked(const String& id,
             updated.triggers[i].lastTriggerTime = 0;
             updated.triggers[i].triggerCount = 0;
         }
+        FastBee::DailyTriggerState::inherit(updated.triggers[i], oldTriggers);
     }
     rules[id] = updated;
     LOGGER.infof("[PeriphExec] Updated rule: %s", id.c_str());
@@ -1450,6 +1119,16 @@ bool PeriphExecManager::removeRuleLocked(const String& id, String& errorMsg) {
 }
 
 void PeriphExecManager::refreshRuleRuntimeIndexesLocked(bool validateScheduler) {
+    // Conservatively retire all captured work when the graph changes. Failed
+    // writes/rollback also advance: an old snapshot must never become live again.
+    if (_ruleRuntimeRevision != UINT64_MAX) ++_ruleRuntimeRevision;
+    retireThermostatsLocked();
+    retireSdRecorderLocked();
+    FastBee::RuleOutputIdentity::invalidate();
+    for (auto& entry : rules) {
+        entry.second.runtimeRevision = _ruleRuntimeRevision;
+        entry.second.outputActor = FastBee::RuleOutputIdentity::allocateActor();
+    }
     rebuildButtonEventCache();
     rebuildDataSourceCache();
     if (validateScheduler && _scheduler) _scheduler->validateLoadedConfig();
@@ -1594,8 +1273,10 @@ bool PeriphExecManager::updateSensorReadCache(
     const String& key, const String& label, const String& value, const String& unit,
     const String& dataField, const String& periphId, uint32_t sampleTimestamp,
     uint32_t maxAgeMs, bool recordable, uint32_t sampleIdentity,
-    const String& sourceRevision, uint32_t configVersion) {
+    const String& sourceRevision, uint32_t configVersion, const FastBee::UartEventOrigin& uartOrigin,
+    uint64_t sampledAtMs) {
     ObservationUpdate update;
+    update.uartOrigin = uartOrigin;
     update.sourceRef = key;
     update.label = label;
     update.value = value;
@@ -1607,6 +1288,7 @@ bool PeriphExecManager::updateSensorReadCache(
         ? periphId + ":" + dataField + ":" + unit : sourceRevision;
     update.quality = ObservationQuality::GOOD;
     update.sampleTimestamp = sampleTimestamp;
+    update.sampledAtMs = sampledAtMs;
     update.maxAgeMs = maxAgeMs;
     update.sampleIdentity = sampleIdentity;
     update.recordable = recordable;
@@ -1622,22 +1304,17 @@ bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint3
         update.sourceRevision.length() > 192 || update.valueType.length() > 16 || update.error.length() > 160)) return false;
 
     const unsigned long now = millis();
-    ObservationUpdate accepted = update;
+    ObservationUpdate accepted;
+    try { accepted = update; }
+    catch (const std::bad_alloc&) { return false; }
     uint32_t publicationToken = 0;
     auto commit = [&]() {
+        if (!PeripheralManager::getInstance().isUartEventOriginCurrent(update.uartOrigin)) return false;
         MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
         if (!guard.isLocked()) return false;
         auto existing = _sensorReadCache.find(update.sourceRef);
-        if (_sensorReadCache.size() >= SENSOR_CACHE_MAX_ENTRIES &&
-            existing == _sensorReadCache.end()) {
-            auto oldest = _sensorReadCache.begin();
-            for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end(); ++it) {
-                if (it->second.timestamp < oldest->second.timestamp) oldest = it;
-            }
-            _sensorReadCache.erase(oldest);
-        }
-
-        SensorReadCache& cache = _sensorReadCache[update.sourceRef];
+        SensorReadCache cache;
+        if (existing != _sensorReadCache.end()) cache = existing->second;
         cache.label = update.label;
         cache.unit = update.unit;
         cache.dataField = update.dataField;
@@ -1650,24 +1327,62 @@ bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint3
         cache.quality = update.quality;
         cache.error = update.error;
         cache.configVersion = configVersion;
-        if (++_nextSensorPublication == 0) ++_nextSensorPublication;
-        cache.publicationToken = publicationToken = _nextSensorPublication;
+        if (_nextSensorPublication == UINT32_MAX ||
+            (!update.sampleIdentity && _nextObservationIdentity == UINT32_MAX)) return false;
+        cache.publicationToken = publicationToken = _nextSensorPublication + 1;
         cache.pendingPublication = true;
         if (update.quality == ObservationQuality::GOOD) {
             cache.value = update.value;
-            cache.timestamp = update.sampleTimestamp ? update.sampleTimestamp : now;
+            const int64_t nowUs = esp_timer_get_time();
+            if (nowUs < 0) return false;
+            const uint64_t nowMs = static_cast<uint64_t>(nowUs) / 1000;
+            const uint32_t legacyAge = update.sampleTimestamp
+                ? static_cast<uint32_t>(millis()) - update.sampleTimestamp : 0;
+            cache.sampledAtMs = update.sampledAtMs != UINT64_MAX ? update.sampledAtMs :
+                legacyAge <= nowMs ? nowMs - legacyAge : UINT64_MAX;
+            const uint32_t maxAge = update.maxAgeMs ? update.maxAgeMs : SENSOR_CACHE_TTL_MS;
+            if (cache.sampledAtMs > nowMs || nowMs - cache.sampledAtMs > maxAge) return false;
+            cache.timestamp = static_cast<uint32_t>(cache.sampledAtMs);
             cache.sampleIdentity = update.sampleIdentity
-                ? update.sampleIdentity : ++_nextObservationIdentity;
+                ? update.sampleIdentity : _nextObservationIdentity + 1;
             accepted.sampleTimestamp = cache.timestamp;
+            accepted.sampledAtMs = cache.sampledAtMs;
             accepted.sampleIdentity = cache.sampleIdentity;
             cache.error = "";
         }
+        if (cache.label != update.label || cache.unit != update.unit || cache.dataField != update.dataField ||
+            cache.periphId != update.periphId || cache.sourceRevision != update.sourceRevision ||
+            (update.quality == ObservationQuality::GOOD && cache.value != update.value) ||
+            accepted.sourceRef != update.sourceRef || accepted.value != update.value || accepted.unit != update.unit ||
+            accepted.label != update.label || accepted.sourceRevision != update.sourceRevision ||
+            accepted.dataField != update.dataField || accepted.periphId != update.periphId ||
+            accepted.valueType != update.valueType || accepted.error != update.error ||
+            cache.valueType != (update.valueType.isEmpty() ? String("number") : update.valueType) ||
+            (update.quality != ObservationQuality::GOOD && cache.error != update.error)) return false;
+        const auto inserted = _sensorReadCache.try_emplace(update.sourceRef);
+        if (inserted.first->first != update.sourceRef) {
+            if (inserted.second) _sensorReadCache.erase(inserted.first);
+            return false;
+        }
+        if (_sensorReadCache.size() > SENSOR_CACHE_MAX_ENTRIES) {
+            auto oldest = _sensorReadCache.end();
+            for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end(); ++it) {
+                if (it == inserted.first) continue;
+                if (oldest == _sensorReadCache.end() || it->second.sampledAtMs < oldest->second.sampledAtMs) oldest = it;
+            }
+            if (oldest != _sensorReadCache.end()) _sensorReadCache.erase(oldest);
+        }
+        inserted.first->second = std::move(cache);
+        ++_nextSensorPublication;
+        if (update.quality == ObservationQuality::GOOD && !update.sampleIdentity) ++_nextObservationIdentity;
         return true;
     };
     // Only bounded cache work is performed under the configuration guard.
     // Unbound observations (e.g. network sources) keep their existing API.
-    const bool cacheUpdated = configVersion
-        ? PeripheralManager::getInstance().commitSensorRead(configVersion, commit) : commit();
+    bool cacheUpdated = false;
+    try { cacheUpdated = configVersion
+        ? PeripheralManager::getInstance().commitSensorRead(configVersion, commit) : commit(); }
+    catch (const std::bad_alloc&) { return false; }
 
     if (!cacheUpdated) {
         if (configVersion && !FastBee::SensorConfigEpoch::matches(configVersion)) return false;
@@ -1680,6 +1395,7 @@ bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint3
     }
 
     auto claim = [&]() {
+        if (!PeripheralManager::getInstance().isUartEventOriginCurrent(update.uartOrigin)) return false;
         MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
         if (!guard.isLocked()) return false;
         const auto it = _sensorReadCache.find(update.sourceRef);
@@ -1688,8 +1404,10 @@ bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint3
             it->second.publicationToken != publicationToken) return false;
         const unsigned long maxAge = it->second.maxAgeMs
             ? it->second.maxAgeMs : SENSOR_CACHE_TTL_MS;
-        if (it->second.quality == ObservationQuality::GOOD &&
-            static_cast<unsigned long>(millis() - it->second.timestamp) > maxAge) return false;
+        const int64_t nowUs = esp_timer_get_time();
+        const uint64_t nowMs = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
+        if (it->second.quality == ObservationQuality::GOOD && (nowUs < 0 ||
+            nowMs < it->second.sampledAtMs || nowMs - it->second.sampledAtMs > maxAge)) return false;
         it->second.pendingPublication = false;
         return true;
     };
@@ -1704,20 +1422,22 @@ bool PeriphExecManager::upsertObservation(const ObservationUpdate& update, uint3
 }
 
 void PeriphExecManager::publishObservation(const ObservationUpdate& accepted) {
+    const auto sourceCurrent = [&]() {
+        return PeripheralManager::getInstance().isUartEventOriginCurrent(accepted.uartOrigin);
+    };
+    if (!sourceCurrent()) return;
     if (accepted.quality == ObservationQuality::GOOD) {
-        notifySensorDataSSE(accepted.sourceRef, accepted.label, accepted.value, accepted.unit);
-        if (_scheduler) {
+        notifySensorDataSSE(accepted.sourceRef, accepted.label, accepted.value, accepted.unit, &accepted);
+        if (_scheduler && sourceCurrent()) {
             JsonDocument doc;
             JsonArray arr = doc.to<JsonArray>();
             JsonObject item = arr.add<JsonObject>();
-            item["id"] = accepted.sourceRef;
-            item["value"] = accepted.value;
-            String payload;
-            serializeJson(doc, payload);
-            _scheduler->handlePollData("sensor_cache", payload);
+            if (item.isNull() || !item["id"].set(accepted.sourceRef) ||
+                !item["value"].set(accepted.value) || doc.overflowed()) return;
+            if (sourceCurrent()) _scheduler->handlePollArray("sensor_cache", arr, accepted.uartOrigin);
         }
 
-        if (accepted.recordable &&
+        if (accepted.recordable && sourceCurrent() &&
             (accepted.valueType.isEmpty() || accepted.valueType == "number")) {
             const char* begin = accepted.value.c_str();
             char* end = nullptr;
@@ -1742,7 +1462,8 @@ bool PeriphExecManager::upsertSensorObservationBatch(
     // Keep preparation off the worker's small stack. Steady-state updates do
     // not allocate map nodes; only first publication needs staged new nodes.
     std::unique_ptr<SensorReadCache[]> prepared(new (std::nothrow) SensorReadCache[count]);
-    if (!prepared) return false;
+    std::unique_ptr<ObservationUpdate[]> accepted(new (std::nothrow) ObservationUpdate[count]);
+    if (!prepared || !accepted) return false;
     std::map<String, SensorReadCache> additions;
     bool missing[4] = {};
     {
@@ -1762,9 +1483,11 @@ bool PeriphExecManager::upsertSensorObservationBatch(
                 update.periphId.isEmpty() || update.periphId.length() > 40 ||
                 update.sourceRevision.length() > 192 || update.valueType != "number" ||
                 update.quality != ObservationQuality::GOOD || !update.error.isEmpty() ||
-                !update.sampleTimestamp || !update.maxAgeMs ||
+                (update.sampledAtMs == UINT64_MAX && !update.sampleTimestamp) || !update.maxAgeMs ||
                 update.periphId != updates[0]->periphId ||
-                update.sampleTimestamp != updates[0]->sampleTimestamp) return false;
+                update.sampleGroup != updates[0]->sampleGroup ||
+                (!update.sampleGroup && (update.sampleTimestamp != updates[0]->sampleTimestamp ||
+                                        update.sampledAtMs != updates[0]->sampledAtMs))) return false;
             for (size_t j = 0; j < i; ++j) {
                 if (update.sourceRef == updates[j]->sourceRef) return false;
             }
@@ -1778,6 +1501,21 @@ bool PeriphExecManager::upsertSensorObservationBatch(
                 cache.dataField != update.dataField || cache.periphId != update.periphId ||
                 cache.valueType != update.valueType || cache.sourceRevision != update.sourceRevision) return false;
             cache.timestamp = update.sampleTimestamp; cache.maxAgeMs = update.maxAgeMs;
+            const int64_t nowUs = esp_timer_get_time();
+            if (nowUs < 0) return false;
+            const uint64_t nowMs = static_cast<uint64_t>(nowUs) / 1000;
+            const uint32_t legacyAge = static_cast<uint32_t>(millis()) - update.sampleTimestamp;
+            cache.sampledAtMs = update.sampledAtMs != UINT64_MAX ? update.sampledAtMs :
+                legacyAge <= nowMs ? nowMs - legacyAge : UINT64_MAX;
+            cache.timestamp = static_cast<uint32_t>(cache.sampledAtMs);
+            accepted[i] = update;
+            if (accepted[i].sourceRef != update.sourceRef || accepted[i].label != update.label ||
+                accepted[i].value != update.value || accepted[i].unit != update.unit ||
+                accepted[i].dataField != update.dataField || accepted[i].periphId != update.periphId ||
+                accepted[i].sourceRevision != update.sourceRevision || accepted[i].valueType != update.valueType)
+                return false;
+            accepted[i].sampleTimestamp = cache.timestamp;
+            accepted[i].sampledAtMs = cache.sampledAtMs;
             cache.sampleIdentity = update.sampleIdentity;
             cache.recordable = update.recordable; cache.bindingValid = update.bindingValid;
             cache.quality = update.quality; cache.configVersion = configVersion;
@@ -1791,20 +1529,25 @@ bool PeriphExecManager::upsertSensorObservationBatch(
     }
     uint32_t publicationToken = 0;
     auto commit = [&]() {
+        for (size_t i = 0; i < count; ++i)
+            if (!PeripheralManager::getInstance().isUartEventOriginCurrent(updates[i]->uartOrigin)) return false;
         MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
         if (!guard.isLocked()) return false;
         size_t newCount = 0;
-        const uint32_t now = static_cast<uint32_t>(millis());
+        const int64_t nowUs = esp_timer_get_time();
+        if (nowUs < 0) return false;
+        const uint64_t now = static_cast<uint64_t>(nowUs) / 1000;
         for (size_t i = 0; i < count; ++i) {
             const auto& update = *updates[i];
-            if (static_cast<uint32_t>(now - update.sampleTimestamp) > update.maxAgeMs) return false;
+            if (now < prepared[i].sampledAtMs || now - prepared[i].sampledAtMs > update.maxAgeMs) return false;
             if (_sensorReadCache.find(update.sourceRef) == _sensorReadCache.end()) {
                 if (additions.find(update.sourceRef) == additions.end()) return false;
                 ++newCount;
             }
         }
         if (_sensorReadCache.size() + newCount > SENSOR_CACHE_MAX_ENTRIES) return false;
-        if (++_nextSensorPublication == 0) ++_nextSensorPublication;
+        if (_nextSensorPublication == UINT32_MAX) return false;
+        ++_nextSensorPublication;
         publicationToken = _nextSensorPublication;
         for (size_t i = 0; i < count; ++i) {
             const auto& update = *updates[i];
@@ -1826,15 +1569,20 @@ bool PeriphExecManager::upsertSensorObservationBatch(
         return false; // std::function construction must also precede mutation.
     }
     auto claim = [&]() {
+        for (size_t i = 0; i < count; ++i)
+            if (!PeripheralManager::getInstance().isUartEventOriginCurrent(updates[i]->uartOrigin)) return false;
         MutexGuard guard(_sensorCacheMutex, pdMS_TO_TICKS(10));
         if (!guard.isLocked()) return false;
-        const uint32_t now = static_cast<uint32_t>(millis());
+        const int64_t nowUs = esp_timer_get_time();
+        if (nowUs < 0) return false;
+        const uint64_t now = static_cast<uint64_t>(nowUs) / 1000;
         for (size_t i = 0; i < count; ++i) {
             const auto found = _sensorReadCache.find(updates[i]->sourceRef);
             if (found == _sensorReadCache.end() || !found->second.pendingPublication ||
                 found->second.configVersion != configVersion ||
                 found->second.publicationToken != publicationToken ||
-                static_cast<uint32_t>(now - found->second.timestamp) > found->second.maxAgeMs) return false;
+                now < found->second.sampledAtMs ||
+                now - found->second.sampledAtMs > found->second.maxAgeMs) return false;
         }
         for (size_t i = 0; i < count; ++i) {
             _sensorReadCache.find(updates[i]->sourceRef)->second.pendingPublication = false;
@@ -1846,7 +1594,7 @@ bool PeriphExecManager::upsertSensorObservationBatch(
     } catch (const std::bad_alloc&) {
         return false;
     }
-    for (size_t i = 0; i < count; ++i) publishObservation(*updates[i]);
+    for (size_t i = 0; i < count; ++i) publishObservation(accepted[i]);
     return true;
 }
 
@@ -1892,13 +1640,14 @@ std::map<String, PeriphExecManager::SensorReadCache> PeriphExecManager::getSenso
     RecursiveMutexGuard configGuard(PeripheralManager::getInstance().getMutex(), pdMS_TO_TICKS(50));
     if (!configGuard.isLocked()) return copy;
     if (_sensorCacheMutex && xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        const unsigned long now = millis();
+        const int64_t nowUs = esp_timer_get_time();
+        const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
         for (const auto& entry : _sensorReadCache) {
             const unsigned long maxAge = entry.second.maxAgeMs
                 ? min(entry.second.maxAgeMs, SENSOR_CACHE_TTL_MS) : SENSOR_CACHE_TTL_MS;
             if ((!entry.second.configVersion || FastBee::SensorConfigEpoch::matches(entry.second.configVersion)) &&
                 entry.second.quality == ObservationQuality::GOOD &&
-                static_cast<unsigned long>(now - entry.second.timestamp) <= maxAge) {
+                nowUs >= 0 && now >= entry.second.sampledAtMs && now - entry.second.sampledAtMs <= maxAge) {
                 copy.emplace(entry.first, entry.second);
             }
         }
@@ -1918,9 +1667,11 @@ bool PeriphExecManager::lookupSensorCache(const String& key, SensorReadCache& ou
     if (it != _sensorReadCache.end()) {
         const unsigned long maxAge = it->second.maxAgeMs
             ? min(it->second.maxAgeMs, SENSOR_CACHE_TTL_MS) : SENSOR_CACHE_TTL_MS;
+        const int64_t nowUs = esp_timer_get_time();
+        const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
         if ((!it->second.configVersion || FastBee::SensorConfigEpoch::matches(it->second.configVersion)) &&
             it->second.quality == ObservationQuality::GOOD &&
-            static_cast<unsigned long>(millis() - it->second.timestamp) <= maxAge) {
+            nowUs >= 0 && now >= it->second.sampledAtMs && now - it->second.sampledAtMs <= maxAge) {
             out = it->second;
             found = true;
         }
@@ -1955,14 +1706,16 @@ bool PeriphExecManager::getObservation(const String& sourceRef,
     out.periphId = cache.periphId;
     out.quality = cache.quality;
     out.sampleTimestamp = cache.timestamp;
+    out.sampledAtMs = cache.sampledAtMs;
     out.maxAgeMs = cache.maxAgeMs;
     out.sampleIdentity = cache.sampleIdentity;
     out.recordable = cache.recordable;
     out.bindingValid = cache.bindingValid;
     out.hasValue = !cache.value.isEmpty();
     const unsigned long maxAge = cache.maxAgeMs ? cache.maxAgeMs : SENSOR_CACHE_TTL_MS;
-    out.stale = cache.timestamp != 0 &&
-        static_cast<unsigned long>(millis() - cache.timestamp) > maxAge;
+    const int64_t nowUs = esp_timer_get_time();
+    const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
+    out.stale = nowUs < 0 || now < cache.sampledAtMs || now - cache.sampledAtMs > maxAge;
     if (out.stale && out.quality == ObservationQuality::GOOD) {
         out.quality = ObservationQuality::STALE;
     }
@@ -2009,7 +1762,8 @@ std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(size
         return observations;
     }
     observations.reserve(limit);
-    const unsigned long now = millis();
+    const int64_t nowUs = esp_timer_get_time();
+    const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
     for (const auto& entry : _sensorReadCache) {
         if (entry.second.configVersion && !FastBee::SensorConfigEpoch::matches(entry.second.configVersion)) continue;
         if (observations.size() >= limit) break;
@@ -2025,6 +1779,7 @@ std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(size
         snapshot.periphId = entry.second.periphId;
         snapshot.quality = entry.second.quality;
         snapshot.sampleTimestamp = entry.second.timestamp;
+        snapshot.sampledAtMs = entry.second.sampledAtMs;
         snapshot.maxAgeMs = entry.second.maxAgeMs;
         snapshot.sampleIdentity = entry.second.sampleIdentity;
         snapshot.recordable = entry.second.recordable;
@@ -2032,8 +1787,7 @@ std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(size
         snapshot.hasValue = !entry.second.value.isEmpty();
         const unsigned long maxAge = entry.second.maxAgeMs
             ? entry.second.maxAgeMs : SENSOR_CACHE_TTL_MS;
-        snapshot.stale = entry.second.timestamp != 0 &&
-            static_cast<unsigned long>(now - entry.second.timestamp) > maxAge;
+        snapshot.stale = nowUs < 0 || now < entry.second.sampledAtMs || now - entry.second.sampledAtMs > maxAge;
         if (snapshot.stale && snapshot.quality == ObservationQuality::GOOD) {
             snapshot.quality = ObservationQuality::STALE;
         }
@@ -2052,7 +1806,8 @@ std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(
         if (!configGuard.isLocked()) return observations;
         MutexGuard cacheGuard(_sensorCacheMutex, pdMS_TO_TICKS(20));
         if (!cacheGuard.isLocked()) return observations;
-        const uint32_t now = static_cast<uint32_t>(millis());
+        const int64_t nowUs = esp_timer_get_time();
+        const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
         for (const char* source : sourceRefs) {
             if (!source || !source[0]) continue;
             bool duplicate = false;
@@ -2078,11 +1833,12 @@ std::vector<ObservationSnapshot> PeriphExecManager::getObservationSnapshots(
                 observations.clear(); return observations;
             }
             out.quality = cache.quality; out.sampleTimestamp = cache.timestamp;
+            out.sampledAtMs = cache.sampledAtMs;
             out.maxAgeMs = cache.maxAgeMs; out.sampleIdentity = cache.sampleIdentity;
             out.recordable = cache.recordable; out.bindingValid = cache.bindingValid;
             out.hasValue = !cache.value.isEmpty();
             const uint32_t maxAge = cache.maxAgeMs ? cache.maxAgeMs : SENSOR_CACHE_TTL_MS;
-            out.stale = cache.timestamp && static_cast<uint32_t>(now - cache.timestamp) > maxAge;
+            out.stale = nowUs < 0 || now < cache.sampledAtMs || now - cache.sampledAtMs > maxAge;
             if (out.stale && out.quality == ObservationQuality::GOOD) out.quality = ObservationQuality::STALE;
         }
     } catch (const std::bad_alloc&) {
@@ -2099,7 +1855,8 @@ void PeriphExecManager::evictStaleSensorCache() {
         return;
     }
 
-    unsigned long now = millis();
+    const int64_t nowUs = esp_timer_get_time();
+    const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
     // Epoch invalidation is immediate even when mutation-time cleanup was
     // contended. Physically reclaim those records during bounded maintenance.
     for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end();) {
@@ -2110,8 +1867,7 @@ void PeriphExecManager::evictStaleSensorCache() {
     for (auto& entry : _sensorReadCache) {
         const unsigned long maxAge = entry.second.maxAgeMs
             ? entry.second.maxAgeMs : SENSOR_CACHE_TTL_MS;
-        if (entry.second.timestamp != 0 &&
-            static_cast<unsigned long>(now - entry.second.timestamp) > maxAge &&
+        if ((nowUs < 0 || now < entry.second.sampledAtMs || now - entry.second.sampledAtMs > maxAge) &&
             entry.second.quality == ObservationQuality::GOOD) {
             entry.second.quality = ObservationQuality::STALE;
             entry.second.error = "STALE";
@@ -2120,354 +1876,30 @@ void PeriphExecManager::evictStaleSensorCache() {
     xSemaphoreGive(_sensorCacheMutex);
 }
 
-void PeriphExecManager::notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit) {
+void PeriphExecManager::notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit,
+                                          const ObservationUpdate* sample) {
     if (!_sensorSSECb) return;
-    // 构建简单 JSON: {"key":"...","label":"...","value":"...","unit":"..."}
-    String json = "{\"key\":\"" + key + "\",\"label\":\"" + label + "\",\"value\":\"" + value + "\",\"unit\":\"" + unit + "\"}";
-    _sensorSSECb(json);
+    JsonDocument doc;
+    if (!doc["key"].set(key) || !doc["label"].set(label) || !doc["value"].set(value) || !doc["unit"].set(unit)) return;
+    const int64_t nowUs = esp_timer_get_time();
+    const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
+    const bool known = sample && nowUs >= 0 && sample->sampledAtMs <= now;
+    const uint32_t maxAge = sample && sample->maxAgeMs ? sample->maxAgeMs : SENSOR_CACHE_TTL_MS;
+    const bool valid = known && sample->quality == ObservationQuality::GOOD && now - sample->sampledAtMs <= maxAge;
+    doc["valid"] = valid; doc["valueValid"] = valid;
+    doc["quality"] = valid ? "good" : known ? "stale" : "unknown";
+    if (known) {
+        doc["sampledAtMs"] = sample->sampledAtMs;
+        doc["ageMs"] = now - sample->sampledAtMs;
+        doc["maxAgeMs"] = maxAge;
+    }
+    if (doc.overflowed()) return;
+    String payload;
+    const size_t bytes = measureJson(doc);
+    if (!payload.reserve(bytes) || serializeJson(doc, payload) != bytes || payload.length() != bytes) return;
+    _sensorSSECb(payload);
 }
 
-// ========== 持久化 ==========
-
-bool PeriphExecManager::saveConfiguration() {
-    MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) {
-        LOGGER.warning("[PeriphExec] Save skipped: rule configuration is locked");
-        return false;
-    }
-    return saveConfigurationLocked();
-}
-
-bool PeriphExecManager::saveConfigurationLocked() {
-    if (configurationWriteError()) return false;
-    return writeConfigurationLocked(rules, _irKeysJson);
-}
-
-bool PeriphExecManager::writeConfigurationLocked(const RuleMap& sourceRules, const String& irKeys) {
-    if (sourceRules.size() > FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) return false;
-    for (const auto& pair : sourceRules) {
-        if (!validateRuleProfileLimits(pair.second, "saveConfiguration")) return false;
-    }
-    // 流式保存：逐规则构建小 JsonDocument（单条约 1~2KB）并直接序列化进临时文件，
-    // 避免把整份配置表（20+KB）构建进单个 JsonDocument，在堆碎片化
-    // （freeHeap~30KB / maxAlloc~27KB）下直接 overflow 失败。
-    String tmpPath = String(PERIPH_EXEC_CONFIG_FILE) + ".tmp";
-    File out = FileUtils::openAtomicWrite(PERIPH_EXEC_CONFIG_FILE);
-    if (!out) {
-        LOGGER.errorf("[PeriphExec] Save aborted: cannot open temp file (freeHeap=%u, maxAlloc=%u)",
-                      (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-        return false;
-    }
-
-    size_t written = out.print("{\"rules\":[");
-    bool complete = written == 10;
-    bool first = true;
-
-    for (const auto& pair : sourceRules) {
-        const PeriphExecRule& r = pair.second;
-
-        JsonDocument doc; // 只容纳单条规则，峰值内存与规则总数无关
-        JsonObject obj = doc.to<JsonObject>();
-        obj["id"] = r.id;
-        obj["name"] = r.name;
-        obj["enabled"] = r.enabled;
-        obj["execMode"] = r.execMode;
-
-        // 触发器数组
-        JsonArray trigArr = obj["triggers"].to<JsonArray>();
-        for (const auto& t : r.triggers) {
-            JsonObject tObj = trigArr.add<JsonObject>();
-            tObj["triggerType"] = t.triggerType;
-            tObj["triggerPeriphId"] = t.triggerPeriphId;
-            tObj["operatorType"] = t.operatorType;
-            tObj["compareValue"] = t.compareValue;
-            tObj["timerMode"] = t.timerMode;
-            tObj["intervalSec"] = t.intervalSec;
-            tObj["timePoint"] = t.timePoint;
-            tObj["eventId"] = t.eventId;
-            // 轮询触发通信参数
-            tObj["pollResponseTimeout"] = t.pollResponseTimeout;
-            tObj["pollMaxRetries"] = t.pollMaxRetries;
-            tObj["pollInterPollDelay"] = t.pollInterPollDelay;
-        }
-
-        // 动作数组
-        JsonArray actArr = obj["actions"].to<JsonArray>();
-        for (const auto& a : r.actions) {
-            JsonObject aObj = actArr.add<JsonObject>();
-            aObj["targetPeriphId"] = a.targetPeriphId;
-            aObj["actionType"] = a.actionType;
-            aObj["actionValue"] = a.actionValue;
-            aObj["useReceivedValue"] = a.useReceivedValue;
-            aObj["syncDelayMs"] = a.syncDelayMs;
-            aObj["execMode"] = a.execMode;
-        }
-
-        // 数据转换管道
-        obj["protocolType"] = r.protocolType;
-        obj["scriptContent"] = r.scriptContent;
-
-        // 数据上报控制
-        obj["reportAfterExec"] = r.reportAfterExec;
-        obj["allowPanelControl"] = r.allowPanelControl;
-        obj["recordHistory"] = r.recordHistory;
-
-        // 构建过程中若堆不足，ArduinoJson 会置位 overflowed，此时该规则不完整，
-        // 拒绝保存以防写入残缺配置（保留原文件不动）
-        if (doc.overflowed()) {
-            out.close();
-            LittleFS.remove(tmpPath);
-            LOGGER.errorf("[PeriphExec] Save aborted: rule '%s' serialization overflow (freeHeap=%u, maxAlloc=%u)",
-                          r.id.c_str(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-            return false;
-        }
-
-        size_t expected = measureJson(doc);
-        if (!first) {
-            const size_t separator = out.print(",");
-            complete = complete && separator == 1;
-            written += separator;
-        }
-        // 流式序列化直写 Flash；written != expected 即检出截断（堆/Flash 不足）
-        size_t w = serializeJson(doc, out);
-        if (w != expected) {
-            out.close();
-            LittleFS.remove(tmpPath);
-            LOGGER.errorf("[PeriphExec] Save aborted: truncated at rule '%s' (written=%u, expected=%u, fsFree=%u)",
-                          r.id.c_str(), (unsigned)w, (unsigned)expected,
-                          (unsigned)(LittleFS.totalBytes() > LittleFS.usedBytes()
-                                     ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0));
-            return false;
-        }
-        written += w;
-        first = false;
-    }
-
-    size_t part = out.print("]");
-    complete = complete && part == 1;
-    written += part;
-
-    // IR 按键映射（红外对码结果）随本配置文件统一持久化，不再单独建 ir_keys.json；
-    // irKeys 本身即 serializeJson 产出的合法 JSON 数组串，直接透传写入
-    if (!irKeys.isEmpty()) {
-        part = out.print(",\"irKeys\":");
-        complete = complete && part == 10;
-        written += part;
-        part = out.print(irKeys);
-        complete = complete && part == irKeys.length();
-        written += part;
-    }
-
-    part = out.print("}");
-    complete = complete && part == 1;
-    written += part;
-    out.flush();
-    out.close();
-
-    // 超限检查：加载端会拒绝超过上限的配置，写入无意义
-    if (!complete || written > PERIPH_EXEC_CONFIG_MAX_BYTES) {
-        LittleFS.remove(tmpPath);
-        LOGGER.errorf("[PeriphExec] Save aborted: config too large (%u bytes, max=%u)",
-                      (unsigned)written, (unsigned)PERIPH_EXEC_CONFIG_MAX_BYTES);
-        return false;
-    }
-
-    // 以文件长度复核总写入字节，兜底检出 Flash 写满导致的静默截断
-    File check = LittleFS.open(tmpPath, "r");
-    size_t actual = check ? check.size() : 0;
-    if (check) check.close();
-    if (actual != written) {
-        LittleFS.remove(tmpPath);
-        LOGGER.errorf("[PeriphExec] Save aborted: size mismatch (file=%u, written=%u)",
-                      (unsigned)actual, (unsigned)written);
-        return false;
-    }
-
-    // 原子替换：失败时 tmp 已被 commit 内部清理，原配置保留不动
-    if (!FileUtils::commitAtomicWrite(tmpPath, PERIPH_EXEC_CONFIG_FILE)) {
-        LOGGER.errorf("[PeriphExec] Failed to save config: commit failed (json=%u bytes)", (unsigned)written);
-        return false;
-    }
-
-    LOGGER.infof("[PeriphExec] Saved %d rules (%u bytes, v3-streaming, freeHeap=%u)",
-                 (int)sourceRules.size(), (unsigned)written, (unsigned)ESP.getFreeHeap());
-    return true;
-}
-
-bool PeriphExecManager::validateConfigurationFile(const char* path, String& errorMsg) {
-    errorMsg = "";
-    try {
-        return visitConfigurationFile(path, nullptr, nullptr, nullptr, errorMsg);
-    } catch (const std::bad_alloc&) {
-        return configError(errorMsg, "CONFIG_MEMORY_PRESSURE");
-    }
-}
-
-bool PeriphExecManager::importConfigurationFile(const char* stagedPath, String& errorMsg) {
-    MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS));
-    if (!lock.isLocked()) return configError(errorMsg, "RULE_SERVICE_BUSY");
-    if (_configurationRestartPending) return configError(errorMsg, "CONFIG_PENDING_RESTART");
-    if (_weatherReferenceLease) return configError(errorMsg, "WEATHER_MIGRATION_BUSY");
-    if (!stagedPath || strcmp(stagedPath, PERIPH_EXEC_CONFIG_FILE) == 0)
-        return configError(errorMsg, "CONFIG_STAGING_PATH");
-    try {
-        if (!validateConfigurationFile(stagedPath, errorMsg)) return false;
-        if (!FileUtils::commitAtomicWrite(stagedPath, PERIPH_EXEC_CONFIG_FILE))
-            return configError(errorMsg, "CONFIG_COMMIT_FAILED");
-        _configurationRestartPending = true;
-        return true;
-    } catch (const std::bad_alloc&) {
-        return configError(errorMsg, "CONFIG_MEMORY_PRESSURE");
-    }
-}
-
-bool PeriphExecManager::loadConfiguration() {
-    MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS));
-    if (!lock.isLocked() || _configurationRestartPending || _weatherReferenceLease) return false;
-    _configurationLoadFailed = true;
-    String error;
-    try {
-        if (!LittleFS.exists(PERIPH_EXEC_CONFIG_FILE)) {
-            const bool saved = writeConfigurationLocked(rules, _irKeysJson);
-            _configurationLoadFailed = !saved;
-            return saved;
-        }
-        RuleMap candidate;
-        String candidateIr;
-        bool normalizedLoadedConfig = false;
-        bool hasRetiredRemoteAction = false;
-        struct Context {
-            PeriphExecManager* owner;
-            RuleMap* candidate;
-            bool* normalized;
-            bool* retired;
-        } context{this, &candidate, &normalizedLoadedConfig, &hasRetiredRemoteAction};
-        const auto readRule = [](JsonObjectConst obj, void* opaque, String& issue) -> bool {
-            auto& ctx = *static_cast<Context*>(opaque);
-            PeriphExecRule r;
-            if (!decodeConfigRule(obj, r, issue)) return false;
-            for (const auto& trigger : r.triggers)
-                if (hasRetiredRemoteSource(trigger)) *ctx.retired = true;
-            for (const auto& action : r.actions)
-                if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) *ctx.retired = true;
-            *ctx.normalized = ctx.owner->sanitizeRuleForSafety(r) || *ctx.normalized;
-            // Move vectors and strings; no second full rule/map copy.
-            auto inserted = ctx.candidate->emplace(r.id, std::move(r));
-            if (!inserted.second || inserted.first->first != (obj["id"] | ""))
-                return configError(issue, "CONFIG_MEMORY_PRESSURE");
-            return true;
-        };
-        if (!visitConfigurationFile(PERIPH_EXEC_CONFIG_FILE, readRule, &context, &candidateIr, error)) {
-            LOGGER.errorf("[PeriphExec] Configuration retained, load failed: %s", error.c_str());
-            return false;
-        }
-
-        // Build indexes before publishing the map, so even allocation failure
-        // here cannot expose a partially replaced configuration.
-        decltype(_buttonEventCache) buttonCache;
-        decltype(_dataSourceCache) sourceCache;
-        const auto memoryFailure = []() {
-            LOGGER.error("[PeriphExec] CONFIG_MEMORY_PRESSURE: configuration retained");
-            return false;
-        };
-        for (const auto& pair : candidate) {
-            if (!pair.second.enabled) continue;
-            for (const auto& trigger : pair.second.triggers) {
-                if (!configMemoryAvailable(trigger.eventId.length() + trigger.triggerPeriphId.length() + 128, 128))
-                    return memoryFailure();
-                if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) {
-                    if (trigger.eventId.startsWith("button_")) {
-                        String key = trigger.triggerPeriphId.isEmpty() ? trigger.eventId :
-                            trigger.triggerPeriphId + ":" + trigger.eventId;
-                        const size_t expected = trigger.eventId.length() +
-                            (trigger.triggerPeriphId.isEmpty() ? 0 : trigger.triggerPeriphId.length() + 1);
-                        if (key.length() != expected) return memoryFailure();
-                        buttonCache.insert(std::move(key));
-                    }
-                    if (trigger.eventId.startsWith("ds:")) {
-                        String key = trigger.eventId.substring(3);
-                        if (key.length() != trigger.eventId.length() - 3) return memoryFailure();
-                        sourceCache.insert(std::move(key));
-                    }
-                }
-                if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER) &&
-                    !trigger.triggerPeriphId.isEmpty()) {
-                    String key = trigger.triggerPeriphId;
-                    if (key.length() != trigger.triggerPeriphId.length()) return memoryFailure();
-                    sourceCache.insert(std::move(key));
-                }
-            }
-        }
-
-        bool migratedLegacyIrKeys = false;
-        const bool hasLegacyIr = LittleFS.exists("/config/ir_keys.json");
-        if (hasLegacyIr && (candidateIr.isEmpty() || candidateIr == "[]")) {
-            candidateIr = "";
-            if (!visitConfigurationFile("/config/ir_keys.json", nullptr, nullptr, &candidateIr, error, true)) {
-                LOGGER.errorf("[PeriphExec] Legacy IR file retained: %s", error.c_str());
-                return false;
-            }
-            migratedLegacyIrKeys = true;
-        }
-
-        const char* remoteMigrationBackup = "/config/periph_exec.pre-screen-remote.json";
-        bool canonicalRewriteSafe = true;
-        if (hasRetiredRemoteAction && !LittleFS.exists(remoteMigrationBackup) &&
-            !FileUtils::copyFile(PERIPH_EXEC_CONFIG_FILE, remoteMigrationBackup)) {
-            canonicalRewriteSafe = false;
-            LOGGER.warning("[PeriphExec] Remote migration deferred; original files retained");
-        }
-        if ((normalizedLoadedConfig || migratedLegacyIrKeys) && canonicalRewriteSafe) {
-            if (!writeConfigurationLocked(candidate, candidateIr)) return false;
-        }
-        // Existing main-file IR mappings are already durable. For migrated
-        // mappings, removal is allowed only after the main-file commit above.
-        if (hasLegacyIr && canonicalRewriteSafe &&
-            (!migratedLegacyIrKeys || !candidateIr.isEmpty())) LittleFS.remove("/config/ir_keys.json");
-
-        rules.swap(candidate);
-        _irKeysJson = std::move(candidateIr);
-        _buttonEventCache.swap(buttonCache);
-        _dataSourceCache.swap(sourceCache);
-        _configurationLoadFailed = false;
-        LOGGER.infof("[PeriphExec] Loaded %u complete rules", static_cast<unsigned>(rules.size()));
-        return true;
-    } catch (const std::bad_alloc&) {
-        LOGGER.error("[PeriphExec] CONFIG_MEMORY_PRESSURE: configuration retained");
-        return false;
-    }
-}
-
-// ========== IR 按键映射（随 periph_exec.json 统一持久化） ==========
-
-String PeriphExecManager::getIrKeysJson() const {
-    if (!_rulesMutex) return "";
-    MutexGuard lock(_rulesMutex);
-    return _irKeysJson;
-}
-
-bool PeriphExecManager::setIrKeysJson(const String& jsonArray) {
-    if (!_rulesMutex) return false;
-    MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked() || configurationWriteError()) return false;
-    try {
-        String normalized;
-        if (!jsonArray.isEmpty()) {
-            if (jsonArray.length() > PERIPH_EXEC_CONFIG_MAX_BYTES) return false;
-            ConfigJsonAllocator allocator;
-            JsonDocument checkDoc(&allocator);
-            if (deserializeJson(checkDoc, jsonArray) || !checkDoc.is<JsonArray>()) return false;
-            const size_t expected = measureJson(checkDoc);
-            serializeJson(checkDoc, normalized);
-            if (normalized.length() != expected) return false;
-        }
-        if (!writeConfigurationLocked(rules, normalized)) return false;
-        _irKeysJson = std::move(normalized);
-        return true;
-    } catch (const std::bad_alloc&) {
-        return false;
-    }
-}
 
 // ========== 委托给 Scheduler 的方法 ==========
 
@@ -2475,12 +1907,13 @@ void PeriphExecManager::handleMqttMessage(const String& topic, const String& mes
     if (_scheduler) _scheduler->handleMqttMessage(topic, message);
 }
 
-void PeriphExecManager::handlePollData(const String& source, const String& data) {
+void PeriphExecManager::handlePollData(const String& source, const String& data,
+                                      const FastBee::UartEventOrigin& uartOrigin) {
     unsigned long now = millis();
     if (shouldThrottlePollIngress(source, now)) {
         return;
     }
-    if (_scheduler) _scheduler->handlePollData(source, data);
+    if (_scheduler) _scheduler->handlePollData(source, data, uartOrigin);
 }
 
 String PeriphExecManager::handleDataCommand(const String& message) {
@@ -2489,6 +1922,9 @@ String PeriphExecManager::handleDataCommand(const String& message) {
 }
 
 void PeriphExecManager::checkTimers() {
+    // Safety evaluation precedes the scheduler's low-memory/worker pause gates.
+    checkThermostats();
+    checkSdRecorder();
     if (_scheduler) _scheduler->checkTimers();
     // 重试待上报数据（MQTT 恢复后自动发送缓存的报告）
     retryPendingReports();
@@ -2497,12 +1933,14 @@ void PeriphExecManager::checkTimers() {
 #endif
 }
 
-void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
-    if (_scheduler) _scheduler->triggerEvent(eventType, eventData);
+void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData,
+                                    const FastBee::UartEventOrigin& uartOrigin) {
+    if (_scheduler) _scheduler->triggerEvent(eventType, eventData, uartOrigin);
 }
 
-void PeriphExecManager::triggerEventById(const String& eventId, const String& eventData) {
-    if (_scheduler) _scheduler->triggerEventById(eventId, eventData);
+void PeriphExecManager::triggerEventById(const String& eventId, const String& eventData,
+                                        const FastBee::UartEventOrigin& uartOrigin, bool publishToMqtt) {
+    if (_scheduler) _scheduler->triggerEventById(eventId, eventData, uartOrigin, publishToMqtt);
 }
 
 String PeriphExecManager::getStaticEventsJson() {
@@ -2547,9 +1985,12 @@ void PeriphExecManager::setMqttEventPublishCallback(MqttEventPublishCallback cb)
     _mqttEventPublishCb = cb;
 }
 
-bool PeriphExecManager::notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData) {
+bool PeriphExecManager::notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData,
+                                             const FastBee::UartEventOrigin& uartOrigin) {
     if (!_mqttEventPublishCb) return false;
     if (eventId.isEmpty()) return false;
+    // Rule callbacks may have reconfigured the UART since event dispatch.
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return false;
     return _mqttEventPublishCb(eventId, eventName, eventData);
 }
 
@@ -2559,42 +2000,40 @@ void PeriphExecManager::checkButtonEvents() {
 
 // ========== 待上报数据缓存与重试 ==========
 
-void PeriphExecManager::queuePendingReport(const String& reportData) {
-    // 堆守卫：低堆时跳过缓存，避免 STL 分配导致 abort
-    if (FastBee::MemoryBudget::dramFree() < 10000) return;
-
-    if (_pendingReports.size() >= MAX_PENDING_REPORTS) {
-        _pendingReports.erase(_pendingReports.begin());  // 移除最旧的
-        LOGGER.warning("[PeriphExec] Pending report queue full, dropped oldest");
-    }
-    _pendingReports.push_back(reportData);
+bool PeriphExecManager::queuePendingReport(const String& reportData, uint32_t instanceId,
+                                         uint32_t currentInstanceId) {
+    using Admission = FastBee::PendingReportQueue::Admission;
+    const Admission result = _pendingReports.enqueueAt(reportData, [] { return static_cast<uint32_t>(millis()); },
+                                                     FastBee::MemoryBudget::dramFree() >= 10000,
+                                                     instanceId, currentInstanceId);
+    if (result == Admission::ReplacedOldest)
+        LOGGER.warning("[PeriphExec] Pending report queue full, evicted oldest unpinned report");
+    const bool accepted = result == Admission::Accepted || result == Admission::ReplacedOldest;
+    if (!accepted) LOGGER.warningf("[PeriphExec] Pending report admission rejected (%u)",
+                                   static_cast<unsigned>(result));
+    return accepted;
 }
 
 void PeriphExecManager::retryPendingReports() {
-    if (_pendingReports.empty()) return;
-
-    // 检查重试间隔
-    unsigned long now = millis();
-    if (_lastPendingReportRetry > 0 && (now - _lastPendingReportRetry) < PENDING_REPORT_RETRY_MS) return;
-
-    // 通过回调检查 MQTT 连接状态
-    if (!_mqttIsConnectedCb || !_mqttIsConnectedCb()) return;
-    if (!_mqttQueueReportCb) return;
-
-    _lastPendingReportRetry = now;
-
-    // 取出所有待重试数据
-    std::vector<String> toRetry;
-    toRetry.swap(_pendingReports);
-
-    for (const auto& report : toRetry) {
-        bool ok = _mqttQueueReportCb(report);
-        LOGGER.infof("[PeriphExec] Retry pending report: %s", ok ? "queued" : "failed");
-    }
+    // Protocol callbacks are configured before scheduling starts. The queue
+    // does not hold its mutex while asking MQTT to admit a report.
+    if (!_mqttIsConnectedCb || !_mqttQueueReportCb) return;
+    const auto result = _pendingReports.retryOneAt([] { return static_cast<uint32_t>(millis()); },
+        _mqttIsConnectedCb(), [&](const String& report, uint32_t instanceId) {
+            return _mqttQueueReportCb(report, instanceId);
+        });
+    if (result == FastBee::PendingReportQueue::Retry::Rejected)
+        LOGGER.warning("[PeriphExec] Pending retry rejected locally; report retained");
+    else if (result == FastBee::PendingReportQueue::Retry::InstanceChanged)
+        LOGGER.warning("[PeriphExec] Pending report discarded: MQTT instance changed; not replayed");
 }
 
 size_t PeriphExecManager::getPendingReportCount() const {
-    return _pendingReports.size();
+    return getPendingReportStatus().depth; // legacy count; new callers must check available
+}
+
+FastBee::PendingReportQueue::Status PeriphExecManager::getPendingReportStatus() const {
+    return _pendingReports.snapshotAt([] { return static_cast<uint32_t>(millis()); });
 }
 
 // ========== 启动后一次性物模型状态上报 ==========
@@ -2729,6 +2168,17 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif
+        } else if (pType == PeripheralType::PCA9685_PWM) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "PCA9685 已初始化会话(duty/pulse/angle/enable/disable/stop)", "PWM");
+        } else if (pType == PeripheralType::SDIO) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS), "SD 状态快照（只读）", "存储");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SD_RECORD), "SD 持续记录（执行只读状态）", "存储");
+        } else if (pType == PeripheralType::DS1302_RTC) {
+#if FASTBEE_ENABLE_DS1302
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_RTC_CONTROL), "RTC 计时启停", "RTC");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_RTC_READ), "RTC 日历读取（无时区）", "RTC");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_RTC_SET), "RTC 复制系统本地时间", "RTC");
+#endif
         } else if (pType == PeripheralType::UART) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "串口发送(send/text)", "串口");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
@@ -2745,6 +2195,9 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif
         } else if (isOutputType(pType)) {
+            if (FastBee::PeripheralActionContract::matchesPeripheralTarget(
+                    static_cast<uint8_t>(ExecActionType::ACTION_THERMOSTAT), *config))
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_THERMOSTAT), "温控继电器（低电平吸合）", "持续控制");
             // 输出类型外设：支持所有GPIO输出动作
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
@@ -2789,6 +2242,8 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         }
     } else {
         // 未指定外设，返回所有动作类型
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SD_RECORD), "SD 持续记录（执行只读状态）", "存储");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_THERMOSTAT), "温控继电器（低电平吸合）", "持续控制");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "GPIO");
@@ -2883,8 +2338,18 @@ bool PeriphExecManager::recordResult(const AsyncExecResult& result) {
 bool PeriphExecManager::beginOperation(const PeriphExecRule& rule,
                                        bool asyncExecution,
                                        uint8_t queuePosition,
-                                       AsyncExecResult& operation) {
+                                       AsyncExecResult& operation,
+                                       const FastBee::UartEventOrigin& uartOrigin,
+                                       const FastBee::OrdinaryControlContext& control) {
     operation = AsyncExecResult();
+    operation.ordinaryControl = control;
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) {
+        operation.errorCode = AsyncExecError::UART_SOURCE_UNCONFIRMED;
+        return false;
+    }
+    operation.uartOrigin = uartOrigin;
+    operation.peripheralConfigEpoch = uartOrigin.required
+        ? uartOrigin.configEpoch : FastBee::SensorConfigEpoch::current();
     {
         MutexGuard lock(_resultsMutex);
         if (!lock.isLocked()) return false;
@@ -2936,7 +2401,13 @@ std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
 
 bool PeriphExecManager::runOnce(const String& id, const String& receivedValue,
                                 String* rejectionReason,
-                                AsyncExecResult* admittedOperation) {
+                                AsyncExecResult* admittedOperation,
+                                const FastBee::OrdinaryControlContext* control) {
+    // A direct-target review cannot authorize all outputs in a multi-action rule.
+    if (control && control->request.overrideConfirmed) {
+        if (rejectionReason) *rejectionReason = "control_rule_override_not_supported";
+        return false;
+    }
     PeriphExecRule ruleCopy;
     if (!getRuleSnapshot(id, ruleCopy)) {
         LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
@@ -2957,7 +2428,7 @@ bool PeriphExecManager::runOnce(const String& id, const String& receivedValue,
     }
     LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s, value='%s')",
                  ruleCopy.name.c_str(), id.c_str(), resolvedValue.c_str());
-    return dispatchAsync(ruleCopy, resolvedValue, rejectionReason, admittedOperation);
+    return dispatchAsync(ruleCopy, resolvedValue, rejectionReason, admittedOperation, {}, control);
 }
 
 // ========== 异步调度 ==========
@@ -2982,9 +2453,30 @@ bool PeriphExecManager::shouldRunAsync() const {
 bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
                                       const String& receivedValue,
                                       String* rejectionReason,
-                                      AsyncExecResult* admittedOperation) {
+                                      AsyncExecResult* admittedOperation,
+                                      const FastBee::UartEventOrigin& uartOrigin,
+                                      const FastBee::OrdinaryControlContext* control,
+                                      FastBee::OrdinaryControl::Source automaticSource) {
+    FastBee::OrdinaryControlContext capturedControl;
+    if (control) capturedControl = *control;
+    else {
+        // Invalid context rejects outputs without blocking read-only actions.
+        PeripheralManager::getInstance().beginOrdinaryControl(
+            automaticSource, rule.outputActor, 0, false, 0, String(),
+            FastBee::SensorConfigEpoch::current(), uartOrigin, capturedControl);
+    }
+    capturedControl.ruleBound = true;
+    capturedControl.ruleEpoch = FastBee::RuleOutputIdentity::currentEpoch();
     if (rejectionReason) *rejectionReason = "";
     if (admittedOperation) *admittedOperation = AsyncExecResult();
+    if (!isRuleExecutionCurrent(rule)) {
+        if (rejectionReason) *rejectionReason = "rule_revision_unconfirmed";
+        return false;
+    }
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) {
+        if (rejectionReason) *rejectionReason = "uart_source_unconfirmed";
+        return false;
+    }
     for (const auto& trigger : rule.triggers) if (hasRetiredRemoteSource(trigger)) {
         if (rejectionReason) *rejectionReason = "remote_source_retired"; return false;
     }
@@ -3013,6 +2505,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
         }
     }
 
+    const bool requiresWorker = ruleRequiresWorkerPool(rule);
     // MemGuard SEVERE/CRITICAL pauses timer polling, but event sources (button,
     // MQTT and platform commands) can still arrive.  Do not let a heavy rule
     // fall back to synchronous execution during that window: script, sensor
@@ -3021,7 +2514,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
     {
         FastBeeFramework* fw = FastBeeFramework::getInstance();
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-        if (monitor && monitor->isMemorySevere() && shouldAvoidSyncFallback(rule)) {
+        if (monitor && monitor->isMemorySevere() && requiresWorker) {
             LOGGER.warningf("[PeriphExec] Skip heavy rule during memory pressure: '%s'",
                             rule.name.c_str());
             MutexGuard runLock(_runningRulesMutex);
@@ -3029,6 +2522,13 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
             if (rejectionReason) *rejectionReason = "memory_pressure";
             return false;
         }
+    }
+
+    // A dormant no-PSRAM pool is created only for genuine worker demand.
+    // Reject before recording an operation or reserving a running-rule entry.
+    if (!ensureWorkerPoolForRule(rule)) {
+        if (rejectionReason) *rejectionReason = "worker_memory_pending";
+        return false;
     }
 
     // 原子检查并预留运行标记。系统动作与普通动作走同一准入路径，
@@ -3068,9 +2568,10 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
     };
     auto runTrackedSync = [&]() -> bool {
         AsyncExecResult operation;
-        if (!beginOperation(rule, false, 0, operation)) {
+        if (!beginOperation(rule, false, 0, operation, uartOrigin, capturedControl)) {
             releaseReservation(true);
-            if (rejectionReason) *rejectionReason = "tracking_unavailable";
+            if (rejectionReason) *rejectionReason = operation.errorCode == AsyncExecError::UART_SOURCE_UNCONFIRMED
+                ? "uart_source_unconfirmed" : "tracking_unavailable";
             return false;
         }
         // Admission and execution outcome are separate contracts. Once the
@@ -3083,7 +2584,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
 
     // 异步模式：判断资源是否充足
     if (!shouldRunAsync()) {
-        if (shouldAvoidSyncFallback(rule)) {
+        if (requiresWorker) {
             LOGGER.warningf("[PeriphExec] Skip heavy rule sync fallback (heap=%d, slots=%d): '%s'",
                             (int)ESP.getFreeHeap(),
                             (int)uxSemaphoreGetCount(_taskSlotSemaphore),
@@ -3101,7 +2602,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
 
     // 获取一个任务槽（非阻塞）
     if (xSemaphoreTake(_taskSlotSemaphore, 0) != pdTRUE) {
-        if (shouldAvoidSyncFallback(rule)) {
+        if (requiresWorker) {
             LOGGER.warningf("[PeriphExec] Skip heavy rule without async slot: '%s'", rule.name.c_str());
             releaseReservation(true);
             if (rejectionReason) *rejectionReason = "no_task_slot";
@@ -3114,7 +2615,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
     // 从对象池获取异步上下文（避免频繁堆分配）
     AsyncExecContext* ctx = _contextPool.acquire();
     if (!ctx) {
-        if (shouldAvoidSyncFallback(rule)) {
+        if (requiresWorker) {
             LOGGER.warningf("[PeriphExec] Context pool exhausted, skip heavy rule: '%s'", rule.name.c_str());
             xSemaphoreGive(_taskSlotSemaphore);
             releaseReservation(true);
@@ -3137,20 +2638,24 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
     const uint8_t queuePosition = static_cast<uint8_t>(
         pendingBeforeEnqueue >= 254 ? 255 : pendingBeforeEnqueue + 1);
     AsyncExecResult operation;
-    if (!beginOperation(rule, true, queuePosition, operation)) {
+    if (!beginOperation(rule, true, queuePosition, operation, uartOrigin, capturedControl)) {
         _contextPool.release(ctx);
         xSemaphoreGive(_taskSlotSemaphore);
         releaseReservation(true);
-        if (rejectionReason) *rejectionReason = "tracking_unavailable";
+        if (rejectionReason) *rejectionReason = operation.errorCode == AsyncExecError::UART_SOURCE_UNCONFIRMED
+            ? "uart_source_unconfirmed" : "tracking_unavailable";
         return false;
     }
     ctx->operationId = operation.operationId;
+    ctx->peripheralConfigEpoch = operation.peripheralConfigEpoch;
+    ctx->uartOrigin = operation.uartOrigin;
+    ctx->ordinaryControl = operation.ordinaryControl;
     ctx->queuedAt = operation.queuedAt;
     ctx->deadlineAt = operation.deadlineAt;
     ctx->queuePosition = operation.queuePosition;
 
     // D 方案：投递到常驻 worker pool，避免运行期 xTaskCreate 碎片
-    // worker pool 在启动期预分配 3×20KB 栈，运行期只需一次队列投递
+    // 常驻任务复用有界队列；S3 第二 worker 仅在实际积压且预算充足时创建
     bool dispatched = false;
     if (_workerPool && _workerPool->isStarted()) {
         dispatched = _workerPool->enqueue(ctx);
@@ -3165,7 +2670,7 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
         // 重资源规则（脚本/Modbus/多动作）绝对不能同步 fallback：
         // 9s+ 同步执行会阻塞 timer 任务，饯死 web_client_handler / network_update 等 100ms 调度，
         // 导致 Web 服务少响应。此处与前面三个失败分支保持一致：heavy rule 丢入 backoff 跳过本轮。
-        if (shouldAvoidSyncFallback(rule)) {
+        if (requiresWorker) {
             operation.status = AsyncExecStatus::REJECTED;
             operation.errorCode = AsyncExecError::WORKER_QUEUE_FULL;
             operation.endTime = millis();
@@ -3198,6 +2703,9 @@ bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule,
 void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     AsyncExecResult result;
     result.operationId = ctx->operationId;
+    result.peripheralConfigEpoch = ctx->peripheralConfigEpoch;
+    result.uartOrigin = ctx->uartOrigin;
+    result.ordinaryControl = ctx->ordinaryControl;
     result.ruleId = ctx->ruleCopy.id;
     result.ruleName = ctx->ruleCopy.name;
     result.queuedAt = ctx->queuedAt;
@@ -3276,7 +2784,7 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
     // 如果执行失败，设置退避时间（30秒后才能再次触发）
     // 堆守卫：低堆时跳过 map 插入，防止 abort()
-    if (FastBee::MemoryBudget::dramFree() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000 && ctx->manager->isRuleExecutionCurrent(ctx->ruleCopy)) {
         if (!allOk) {
             MutexGuard runLock(ctx->manager->_runningRulesMutex);
             ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
@@ -3289,8 +2797,8 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     }
 
     // 触发外设执行完成事件（低堆时跳过，避免内部 STL 分配导致 abort）
-    if (FastBee::MemoryBudget::dramFree() > 10000) {
-        ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
+    if (FastBee::MemoryBudget::dramFree() > 10000 && ctx->manager->isRuleExecutionCurrent(ctx->ruleCopy)) {
+        ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed", ctx->uartOrigin);
     }
 
     // 释放任务槽
@@ -3353,7 +2861,7 @@ bool PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule,
     }
 
     // 5. 设置或清除退避记录
-    if (FastBee::MemoryBudget::dramFree() > 10000) {
+    if (FastBee::MemoryBudget::dramFree() > 10000 && isRuleExecutionCurrent(rule)) {
         if (!allOk) {
             MutexGuard runLock(_runningRulesMutex);
             _failureBackoff[rule.id] = millis() + 30000;
@@ -3364,8 +2872,8 @@ bool PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule,
     }
 
     // 6. 触发外设执行完成事件（链式执行关键）
-    if (FastBee::MemoryBudget::dramFree() > 10000) {
-        dispatchPeriphExecEvent(rule.id, allOk ? "success" : "failed");
+    if (FastBee::MemoryBudget::dramFree() > 10000 && isRuleExecutionCurrent(rule)) {
+        dispatchPeriphExecEvent(rule.id, allOk ? "success" : "failed", operation.uartOrigin);
     }
 
     // 7. 记录执行结果
@@ -3388,6 +2896,8 @@ bool PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule,
 // ========== 内部调度接口实现 ==========
 
 void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailable) {
+    FastBee::DailyTriggerState::TickGuard tick(_timerDispatchBusy);
+    if (!tick.held()) return;
     // MemGuard CRITICAL 安全底线：Scheduler 已做动态降频，此处仅保留 CRITICAL 防护
     // 防止被其他路径直接调用时跳过内存保护
     {
@@ -3452,6 +2962,9 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         String name;
         bool needsModbus;
         size_t triggerIdx;
+        uint64_t revision;
+        uint32_t calendarDay = 0;
+        int8_t calendarHour = -1, calendarMinute = -1;
     };
     std::vector<CandidateRule> candidates;
     candidates.reserve(4);
@@ -3463,6 +2976,8 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
+            if (FastBee::hasThermostatAction(rule)) continue; // Dedicated continuous controller.
+            if (FastBee::hasSdRecorderAction(rule)) continue; // Dedicated bounded recording pipeline.
 
             // 遍历触发器，寻找定时触发或轮询触发类型
             for (size_t ti = 0; ti < rule.triggers.size(); ti++) {
@@ -3472,6 +2987,7 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                     tt != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
 
                 bool shouldTrigger = false;
+                uint32_t calendarDay = 0;
 
                 if (trigger.timerMode == 0) {
                     // 间隔模式
@@ -3482,10 +2998,12 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                     }
                 } else if (trigger.timerMode == 1) {
                     // 每日时间点模式：使用缓存的解析值，避免锁内重复解析字符串
-                    if (trigger._cachedHour < 0 || trigger._cachedMinute < 0) continue;
+                    if (!FastBee::DailyTriggerState::isDaily(trigger)) continue;
 
-                    struct tm timeinfo;
-                    if (!getLocalTime(&timeinfo, 0) || timeinfo.tm_year < 100) continue;
+                    struct tm timeinfo{};
+                    if (!getLocalTime(&timeinfo, 0)) continue;
+                    calendarDay = FastBee::DailyTriggerState::dateKey(timeinfo);
+                    if (!calendarDay || calendarDay <= trigger.lastCalendarDay) continue;
 
                     if (timeinfo.tm_hour == trigger._cachedHour && timeinfo.tm_min == trigger._cachedMinute) {
                         if (trigger.lastTriggerTime > 0 && (now - trigger.lastTriggerTime) < 60000) continue;
@@ -3499,6 +3017,10 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                     c.name = rule.name;
                     c.needsModbus = rule._cachedNeedsModbus;
                     c.triggerIdx = ti;
+                    c.revision = rule.runtimeRevision;
+                    c.calendarDay = calendarDay;
+                    c.calendarHour = trigger._cachedHour;
+                    c.calendarMinute = trigger._cachedMinute;
                     candidates.push_back(c);
                     break;  // 一个触发器匹配即可触发该规则
                 }
@@ -3550,8 +3072,16 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         }
         if (skip) continue;
 
+        // A scan is not an admission. Do not replay a minute/date which was
+        // skipped by a clock correction while checking resource availability.
+        if (c.calendarDay) {
+            struct tm current{};
+            if (!getLocalTime(&current, 0) ||
+                FastBee::DailyTriggerState::dateKey(current) != c.calendarDay ||
+                current.tm_hour != c.calendarHour || current.tm_min != c.calendarMinute) continue;
+        }
         String rejectionReason;
-        const bool accepted = dispatchByRuleId(c.id, "", &rejectionReason);
+        const bool accepted = dispatchByRuleId(c.id, "", &rejectionReason, {}, c.revision);
         if (!accepted) {
             LOGGER.warningf("[PeriphExec] Timer admission rejected: '%s' (%s)",
                             c.name.c_str(),
@@ -3572,9 +3102,12 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
             MutexGuard lock(_rulesMutex, portMAX_DELAY);
             if (lock.isLocked()) {
                 auto it = rules.find(c.id);
-                if (it != rules.end() && c.triggerIdx < it->second.triggers.size()) {
+                if (it != rules.end() && c.triggerIdx < it->second.triggers.size() &&
+                    it->second.runtimeRevision == c.revision) {
                     it->second.triggers[c.triggerIdx].lastTriggerTime = now;
                     it->second.triggers[c.triggerIdx].triggerCount++;
+                    FastBee::DailyTriggerState::accept(it->second.triggers,
+                        it->second.triggers[c.triggerIdx], c.calendarDay);
                 }
             }
         }
@@ -3586,9 +3119,12 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
 bool PeriphExecManager::dispatchAndCommitTrigger(const String& ruleId,
                                                  size_t triggerIndex,
                                                  const String& receivedValue,
-                                                 const char* sourceLabel) {
+                                                 const char* sourceLabel,
+                                                 const FastBee::UartEventOrigin& uartOrigin, uint64_t expectedRevision) {
     String rejectionReason;
-    if (!dispatchByRuleId(ruleId, receivedValue, &rejectionReason)) {
+    const auto outputSource = sourceLabel && strcmp(sourceLabel, "mqtt") == 0
+        ? FastBee::OrdinaryControl::Source::Mqtt : FastBee::OrdinaryControl::Source::Rule;
+    if (!dispatchByRuleId(ruleId, receivedValue, &rejectionReason, uartOrigin, expectedRevision, outputSource)) {
         LOGGER.warningf("[PeriphExec] %s admission rejected for rule '%s' (%s)",
                         sourceLabel ? sourceLabel : "trigger",
                         ruleId.c_str(),
@@ -3605,7 +3141,8 @@ bool PeriphExecManager::dispatchAndCommitTrigger(const String& ruleId,
         return false;
     }
     auto it = rules.find(ruleId);
-    if (it == rules.end() || triggerIndex >= it->second.triggers.size()) {
+    if (it == rules.end() || triggerIndex >= it->second.triggers.size() ||
+        (expectedRevision && it->second.runtimeRevision != expectedRevision)) {
         LOGGER.warningf("[PeriphExec] %s trigger disappeared after admission for rule '%s'",
                         sourceLabel ? sourceLabel : "trigger", ruleId.c_str());
         return false;
@@ -3617,20 +3154,32 @@ bool PeriphExecManager::dispatchAndCommitTrigger(const String& ruleId,
     return true;
 }
 
-void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const String& eventData) {
+void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const String& eventData,
+                                                const FastBee::UartEventOrigin& uartOrigin) {
+    // Observe before taking rulesMutex; never hold the PM lock across callbacks.
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return;
     int motorResultIndex = -1;
     if (eventId.startsWith("mc:")) {
         JsonDocument result;
-        if (!deserializeJson(result, eventData) && result["origin"] == "motor-result") motorResultIndex = result["d"] | -1;
+        if (!deserializeJson(result, eventData.c_str(), eventData.length()) && result["origin"] == "motor-result") motorResultIndex = result["d"] | -1;
     }
     struct MatchedRule {
         String ruleId;
         size_t triggerIndex;
+        uint64_t revision;
     };
     std::vector<MatchedRule> triggeredRules;
 
     {
         MutexGuard lock(_rulesMutex);
+        if (!lock.isLocked()) return;
+        // Legacy/internal state can bypass persisted configuration admission.
+        // Validate potential action21 and completion fanout before any event
+        // child is queued; cooldown alone does not terminate delayed cycles.
+        if (const char* eventIssue = FastBee::validateRuleCompletionGraph(rules)) {
+            LOGGER.warningf("[PeriphExec] Event fanout rejected: %s", eventIssue);
+            return;
+        }
 
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
@@ -3643,7 +3192,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 for (const auto& action : rule.actions) {
                     if (action.targetPeriphId == "modbus:" + String(motorResultIndex)) feedback = true;
                     JsonDocument value;
-                    if (!deserializeJson(value, action.actionValue)) {
+                    if (!deserializeJson(value, action.actionValue.c_str(), action.actionValue.length())) {
                         for (JsonObjectConst control : value["ctrl"].as<JsonArrayConst>()) {
                             if ((control["d"] | -1) == motorResultIndex) feedback = true;
                         }
@@ -3662,13 +3211,13 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 if (eventId.startsWith("mc:") && !trigger.compareValue.isEmpty()) {
                     bool ctrlMatched = false;
                     JsonDocument trigDoc;
-                    if (!deserializeJson(trigDoc, trigger.compareValue) && trigDoc.is<JsonObject>()) {
+                    if (!deserializeJson(trigDoc, trigger.compareValue.c_str(), trigger.compareValue.length()) && trigDoc.is<JsonObject>()) {
                         JsonArray trigCtrlArr = trigDoc["ctrl"].as<JsonArray>();
                         if (trigCtrlArr && trigCtrlArr.size() > 0) {
                             JsonObject trigCtrl = trigCtrlArr[0].as<JsonObject>();
                             // 解析事件数据
                             JsonDocument evDoc;
-                            if (!deserializeJson(evDoc, eventData) && evDoc.is<JsonObject>()) {
+                            if (!deserializeJson(evDoc, eventData.c_str(), eventData.length()) && evDoc.is<JsonObject>()) {
                                 JsonObject evObj = evDoc.as<JsonObject>();
                                 // 匹配通道和动作
                                 // 支持两种事件数据格式：
@@ -3696,7 +3245,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                                 // 旧格式降级：从 v 字段推导动作
                                 if (evActStr.isEmpty() && evObj.containsKey("v")) {
                                     String evVal = evObj["v"].as<String>();
-                                    evActStr = (evVal == "1" || evVal.equalsIgnoreCase("on") || evVal.equalsIgnoreCase("true")) ? "on" : "off";
+                                    evActStr = (evVal == "1" || FastBee::stringEqualsIgnoreCaseLiteral(evVal, "on") || FastBee::stringEqualsIgnoreCaseLiteral(evVal, "true")) ? "on" : "off";
                                 }
                                 if (evCh == 255) evCh = 0;  // 无法解析通道时默认为 0
                                 const char* evAct = evActStr.c_str();
@@ -3721,12 +3270,12 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 if (eventId == "ir_code_received" && !trigger.compareValue.isEmpty()) {
                     bool codeMatched = false;
                     JsonDocument evDoc;
-                    if (!deserializeJson(evDoc, eventData) && evDoc.is<JsonObject>()) {
+                    if (!deserializeJson(evDoc, eventData.c_str(), eventData.length()) && evDoc.is<JsonObject>()) {
                         String want = trigger.compareValue;
                         want.trim();
                         int keyColon = want.indexOf(':');
                         String wantPrefix = keyColon > 0 ? want.substring(0, keyColon) : String("");
-                        if (wantPrefix.equalsIgnoreCase("key")) {
+                        if (FastBee::stringEqualsIgnoreCaseLiteral(wantPrefix, "key")) {
                             // 按键名匹配（大小写不敏感）
                             String wantName = want.substring(keyColon + 1);
                             wantName.trim();
@@ -3756,7 +3305,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 if (eventId == "rf_code_received" && !trigger.compareValue.isEmpty()) {
                     bool rfMatched = false;
                     JsonDocument rfDoc;
-                    if (!deserializeJson(rfDoc, eventData) && rfDoc.is<JsonObject>()) {
+                    if (!deserializeJson(rfDoc, eventData.c_str(), eventData.length()) && rfDoc.is<JsonObject>()) {
                         String want = trigger.compareValue;
                         want.trim();
                         if (want.startsWith("key:") || want.startsWith("KEY:")) {
@@ -3780,7 +3329,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 LOGGER.infof("[PeriphExec] Event rule matched: '%s' (event=%s)",
                     rule.name.c_str(), eventId.c_str());
 
-                triggeredRules.push_back({rule.id, triggerIndex});
+                triggeredRules.push_back({rule.id, triggerIndex, rule.runtimeRevision});
                 break;  // 一个触发器匹配即可
             }
         }
@@ -3790,19 +3339,31 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
     // 阶段2: 无锁异步分发
     for (const auto& matched : triggeredRules) {
         dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
-                                 eventData, "event");
+                                 eventData, "event", uartOrigin, matched.revision);
     }
 }
 
-void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const String& eventData) {
+void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const String& eventData,
+                                              const FastBee::UartEventOrigin& uartOrigin) {
+    // Completion/cancellation remains recorded even when its source has retired;
+    // it cannot spawn an unbound child rule after that retirement.
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return;
     struct MatchedRule {
         String ruleId;
         size_t triggerIndex;
+        uint64_t revision;
     };
     std::vector<MatchedRule> triggeredRules;
 
     {
         MutexGuard lock(_rulesMutex);
+        if (!lock.isLocked()) return;
+        // Also protect internal callers/legacy state that bypassed CRUD. Only
+        // completion fanout is stopped; other event routes keep their guards.
+        if (const char* issue = FastBee::validateRuleCompletionGraph(rules)) {
+            LOGGER.warningf("[PeriphExec] Completion fanout rejected: %s", issue);
+            return;
+        }
 
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
@@ -3820,7 +3381,7 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
                 LOGGER.infof("[PeriphExec] Periph exec event rule matched: '%s' (triggerRule=%s)",
                     rule.name.c_str(), ruleId.c_str());
 
-                triggeredRules.push_back({rule.id, triggerIndex});
+                triggeredRules.push_back({rule.id, triggerIndex, rule.runtimeRevision});
                 break;
             }
         }
@@ -3830,7 +3391,7 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
     // 阶段2: 无锁异步分发
     for (const auto& matched : triggeredRules) {
         dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
-                                 eventData, "periph-event");
+                                 eventData, "periph-event", uartOrigin, matched.revision);
     }
 }
 
@@ -3838,6 +3399,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
     struct MatchedRule {
         String ruleId;
         size_t triggerIndex;
+        uint64_t revision;
     };
     std::vector<MatchedRule> triggeredRules;
 
@@ -3865,7 +3427,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
                 LOGGER.infof("[PeriphExec] Button event rule matched: '%s' (event=%s, periph=%s)",
                     rule.name.c_str(), eventId.c_str(), periphId.c_str());
 
-                triggeredRules.push_back({rule.id, triggerIndex});
+                triggeredRules.push_back({rule.id, triggerIndex, rule.runtimeRevision});
                 break;
             }
         }
@@ -3875,7 +3437,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
     // 阶段2: 无锁异步分发
     for (const auto& matched : triggeredRules) {
         dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
-                                 "", "button-event");
+                                 "", "button-event", {}, matched.revision);
     }
 }
 
@@ -3886,6 +3448,7 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
         String ruleId;
         String receivedValue;
         size_t triggerIndex;
+        uint64_t revision;
     };
     std::vector<MatchedRule> matchedRules;
 
@@ -3961,7 +3524,7 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex});
+                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex, rule.runtimeRevision});
                 }
             }
         }
@@ -3971,16 +3534,26 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
         dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
-                                 matched.receivedValue, "mqtt");
+                                 matched.receivedValue, "mqtt", {}, matched.revision);
     }
 }
 
-void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& source) {
+void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& source,
+                                            const FastBee::UartEventOrigin& uartOrigin) {
+    // Validate outside _rulesMutex; never invert PM -> rule callback lock order.
+    // Serial ingress must carry its captured identity, not bind to current state.
+    if ((source == "serial" && !uartOrigin.required) ||
+        (source != "serial" && source != "sensor_cache" && !uartOrigin.unbound()) ||
+        !PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) {
+        FastBee::UartTextDiagnostics::record(FastBee::UartTextDiagnostics::StaleFrame);
+        return;
+    }
     // 阶段1: 持锁匹配，收集规则ID及其匹配的接收值
     struct MatchedRule {
         String ruleId;
         String receivedValue;
         size_t triggerIndex;
+        uint64_t revision;
     };
     std::vector<MatchedRule> matchedRules;
 
@@ -4048,7 +3621,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex});
+                    matchedRules.push_back({rule.id, itemValue, matchedTriggerIndex, rule.runtimeRevision});
                 }
             }
         }
@@ -4058,7 +3631,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
         dispatchAndCommitTrigger(matched.ruleId, matched.triggerIndex,
-                                 matched.receivedValue, "poll-data");
+                                 matched.receivedValue, "poll-data", uartOrigin, matched.revision);
     }
 }
 
@@ -4089,7 +3662,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                 LOGGER.infof("[PeriphExec] DataCommand: modbus_read command detected");
                 String modbusResult = _modbusReadCallback(itemValue);
                 JsonDocument tmpDoc;
-                if (!deserializeJson(tmpDoc, modbusResult) && tmpDoc.is<JsonArray>()) {
+                if (!deserializeJson(tmpDoc, modbusResult.c_str(), modbusResult.length()) && tmpDoc.is<JsonArray>()) {
                     for (JsonVariant v : tmpDoc.as<JsonArray>()) {
                         modbusReportArr.add(v);
                     }
@@ -4101,16 +3674,16 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 
     // 预处理阶段：处理 modbus_raw_send 指令（透传模式：平台下发 HEX 帧）
     String transparentHexResult;
-    if (_modbusRawSendCallback) {
-        int idx = 0;
+    {
         for (JsonObject item : cmdArr) {
             String itemId = item["id"].as<String>();
             if (itemId == "modbus_raw_send") {
                 String itemValue = item["value"].as<String>();
                 LOGGER.infof("[PeriphExec] DataCommand: modbus_raw_send command detected, hex='%s'", itemValue.c_str());
-                String rawResult = _modbusRawSendCallback(itemValue);
+                String rawResult = _modbusRawSendCallback ? _modbusRawSendCallback(itemValue) :
+                    "[{\"id\":\"modbus_raw_send\",\"value\":\"\",\"remark\":\"MODBUS_UNAVAILABLE\",\"success\":false}]";
                 JsonDocument tmpDoc;
-                if (!deserializeJson(tmpDoc, rawResult) && tmpDoc.is<JsonArray>()) {
+                if (!deserializeJson(tmpDoc, rawResult.c_str(), rawResult.length()) && tmpDoc.is<JsonArray>()) {
                     for (JsonVariant v : tmpDoc.as<JsonArray>()) {
                         modbusReportArr.add(v);
                     }
@@ -4119,7 +3692,6 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                     transparentHexResult = rawResult;
                 }
             }
-            idx++;
         }
     }
 
@@ -4128,6 +3700,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         String ruleId;
         String itemId;
         String itemValue;
+        uint64_t revision;
     };
     std::vector<MatchedItem> matchedItems;
     std::vector<String> unmatchedIds;    // 未匹配的 item id
@@ -4147,6 +3720,12 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             if (!item.containsKey("id") || !item.containsKey("value")) continue;
 
             String itemId = item["id"].as<String>();
+            // Reserved raw commands are handled by the preprocessing callback,
+            // including rejection/unavailability; never execute a same-ID rule
+            // or direct-output fallback as a second command.
+            if (itemId == "modbus_raw_send") {
+                continue;
+            }
             String itemValue = item["value"].as<String>();
             bool matched = false;
 
@@ -4178,7 +3757,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                     matched = true;
                     trigger.lastTriggerTime = millis();
                     trigger.triggerCount++;
-                    matchedItems.push_back({rule.id, itemId, itemValue});
+                    matchedItems.push_back({rule.id, itemId, itemValue, rule.runtimeRevision});
                     break;  // 一个触发器匹配即可
                 }
             }
@@ -4209,7 +3788,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
             if (!lock.isLocked()) continue;
             auto it = rules.find(mi.ruleId);
-            if (it == rules.end()) continue;
+            if (it == rules.end() || it->second.runtimeRevision != mi.revision) continue;
             ruleCopy = it->second;
         }
 
@@ -4218,47 +3797,32 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 
         // 使用 suppressReport 抑制 executeAllActions 内部的 reportActionResults 上报，
         // 由 processDataCommandMatch 统一构建响应并返回给调用方上报，避免双重上报
-        auto results = executeAllActions(ruleCopy, mi.itemValue, true);
+        AsyncExecResult mqttTrace;
+        PeripheralManager::getInstance().beginOrdinaryControl(
+            FastBee::OrdinaryControl::Source::Mqtt, ruleCopy.outputActor, 0, false, 0, String(),
+            FastBee::SensorConfigEpoch::current(), {}, mqttTrace.ordinaryControl);
+        mqttTrace.ordinaryControl.ruleBound = true;
+        mqttTrace.ordinaryControl.ruleEpoch = FastBee::RuleOutputIdentity::currentEpoch();
+        mqttTrace.peripheralConfigEpoch = mqttTrace.ordinaryControl.configEpoch;
+        auto results = executeAllActions(ruleCopy, mi.itemValue, true, nullptr, nullptr, 0, &mqttTrace);
 
         // 构建响应：每个动作的结果（Modbus 目标映射 sensorId）
         for (const auto& ar : results) {
-            String reportId = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
-            String reportValue = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
-
-            // 上报 ID 通用规则：默认用外设配置 id（与平台物模型标识符对应）；
-            // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时才覆盖，
-            // 类别推断出的默认字段不作为上报 ID，避免与物模型标识符不匹配
-            if (!ar.dataField.isEmpty()) {
-                reportId = ar.dataField;
+            // Execution captured the report identity/value before I/O. Reuse
+            // the same serializer as asynchronous reporting: no current PM/
+            // Modbus lookup and no request value masquerading as observation.
+            if (FastBee::appendCapturedReportRow(reportArr, ar) != FastBee::CapturedReportRow::Added) {
+                LOGGER.warning("[PeriphExec] REPORT_IDENTITY_OR_SERIALIZATION_FAILED; matched batch not returned");
+                return String();
             }
-
-            // Modbus 目标 sensorId 映射（通过回调）
-            if (_modbusBuildSensorIdCb && ar.targetPeriphId.startsWith("modbus:")) {
-                PeripheralManager& periMgr = PeripheralManager::getInstance();
-                PeripheralConfig pcfg;
-                if (periMgr.getPeripheralSnapshot(ar.targetPeriphId, pcfg) &&
-                    pcfg.isModbusPeripheral() && pcfg.params.modbus.sensorId[0] != '\0') {
-                    uint16_t channel = 0;
-                    int sepIdx = ar.actualValue.indexOf(':');
-                    if (sepIdx > 0) {
-                        channel = ar.actualValue.substring(0, sepIdx).toInt();
-                        reportValue = ar.actualValue.substring(sepIdx + 1);
-                    }
-                    String sid = _modbusBuildSensorIdCb(pcfg.params.modbus.deviceIndex, channel);
-                    if (!sid.isEmpty()) reportId = sid;
-                }
-            }
-
-            JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = reportId;
-            reportItem["value"] = reportValue;
-            reportItem["remark"] = ar.success ? "success" : "execute failed";
         }
         if (results.empty()) {
             JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = mi.itemId;
-            reportItem["value"] = mi.itemValue;
-            reportItem["remark"] = "no actions";
+            if (reportItem.isNull() || !reportItem["id"].set(mi.itemId) ||
+                !reportItem["value"].set("") || !reportItem["remark"].set("no actions")) {
+                LOGGER.warning("[PeriphExec] REPORT_SERIALIZATION_FAILED; matched batch not returned");
+                return String();
+            }
         }
     }
 
@@ -4266,13 +3830,26 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
     PeripheralManager& periMgr = PeripheralManager::getInstance();
     for (size_t i = 0; i < unmatchedIds.size(); i++) {
         // 优先尝试 Modbus 直接控制回调（协议层注入）
-        if (_modbusDirectControlCb && _modbusDirectControlCb(unmatchedIds[i], unmatchedValues[i], reportArr)) {
-            continue;  // Modbus 回调已处理
+        if (_modbusDirectControlCb) {
+            static const uint64_t directModbusActor = FastBee::RuleOutputIdentity::allocateActor();
+            FastBee::OrdinaryControlContext control;
+            periMgr.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Mqtt,
+                directModbusActor, 0, false, 0, String(), FastBee::SensorConfigEpoch::current(), {}, control);
+            // Even unavailable admission is delivered as a matched rejection;
+            // callback true still means handled and must never fall through.
+            struct ModbusTerminal {
+                PeripheralManager& manager;
+                const FastBee::OrdinaryControlContext& control;
+                ~ModbusTerminal() { manager.finishOrdinaryControl(control); }
+            } terminal{periMgr, control};
+            const bool handled = _modbusDirectControlCb(unmatchedIds[i], unmatchedValues[i], reportArr, control);
+            if (handled) continue;
         }
 
         // 回退：尝试直接外设控制
         PeripheralConfig directSnapshot;
-        PeripheralConfig* directCfg = periMgr.getPeripheralSnapshot(unmatchedIds[i], directSnapshot)
+        uint32_t directConfigEpoch = 0;
+        PeripheralConfig* directCfg = periMgr.getPeripheralSnapshot(unmatchedIds[i], directSnapshot, &directConfigEpoch)
             ? &directSnapshot : nullptr;
         if (!directCfg) {
             // 既无规则匹配、也不存在对应外设（如平台属性下发附带的
@@ -4284,12 +3861,15 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             continue;
         }
         String actualValue = unmatchedValues[i];
-        bool directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
+        FastBee::OrdinaryControlResult controlResult;
+        bool directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue,
+            directConfigEpoch, controlResult);
 
         JsonObject reportItem = reportArr.add<JsonObject>();
         reportItem["id"] = unmatchedIds[i];
         reportItem["value"] = actualValue;
-        reportItem["remark"] = directOk ? "direct_peripheral" : "no matching rule";
+        reportItem["remark"] = controlResult.evaluated ? controlResult.reason :
+            directOk ? "direct_peripheral" : "no matching rule";
     }
 
     // 透传模式：若返回的是纯 HEX 字符串且无其他 JSON 内容，直接返回 HEX
@@ -4305,7 +3885,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
 bool PeriphExecManager::dispatchByRuleId(const String& ruleId,
                                          const String& receivedValue,
-                                         String* rejectionReason) {
+                                         String* rejectionReason,
+                                         const FastBee::UartEventOrigin& uartOrigin, uint64_t expectedRevision,
+                                         FastBee::OrdinaryControl::Source automaticSource) {
     if (rejectionReason) *rejectionReason = "";
     PeriphExecRule ruleCopy;
     bool ruleAcquired = false;
@@ -4319,6 +3901,10 @@ bool PeriphExecManager::dispatchByRuleId(const String& ruleId,
             if (it == rules.end() || !it->second.enabled) {
                 ruleMissing = true;  // 规则不存在或被禁用，不再重试
                 break;
+            }
+            if (!expectedRevision || it->second.runtimeRevision != expectedRevision) {
+                if (rejectionReason) *rejectionReason = "rule_revision_unconfirmed";
+                return false;
             }
             ruleCopy = it->second;  // 锁内做一次深拷贝
             ruleAcquired = true;
@@ -4335,7 +3921,7 @@ bool PeriphExecManager::dispatchByRuleId(const String& ruleId,
         return false;
     }
     // 锁已释放，安全调用 dispatchAsync
-    return dispatchAsync(ruleCopy, receivedValue, rejectionReason);
+    return dispatchAsync(ruleCopy, receivedValue, rejectionReason, nullptr, uartOrigin, nullptr, automaticSource);
 }
 
 String PeriphExecManager::getDynamicEventsJsonInternal() {

@@ -151,7 +151,7 @@
             try {
                 const params = {
                     slaveAddress: p.slaveAddress, channel: ch, delayBase: 0x0200,
-                    delayUnits: units, ncMode: p.ncMode, coilBase: p.coilBase
+                    delayUnits: units, ncMode: p.ncMode, coilBase: p.coilBase, mode: p.relayMode
                 };
                 const res = await apiPostPriority('/api/modbus/coil/delay', params);
                 if (res && res.success) {
@@ -332,19 +332,24 @@
                 var checkbox = document.getElementById('motor-travel-stationary');
                 if (checkbox && (!previous || previous.travelToken !== data.travelToken || previous.motorRef !== data.motorRef)) checkbox.checked = false;
                 this._protocolMotorTravel = Object.assign({ index: this._activeDeviceIdx, generation: this._modbusCtrlGeneration || 0 }, data);
+                var travelSection = document.getElementById('motor-travel-section');
+                if (travelSection) travelSection.hidden = !data.softLimitEnabled;
                 var safety = document.getElementById('motor-travel-status');
-                if (safety) safety.textContent = !data.softLimitEnabled ? '软限位未启用，行程尚未标定' :
+                if (safety) safety.textContent = data.readError ? '电机通信失败：' + data.readError :
+                    !data.softLimitEnabled ? '点动模式，可直接正转、反转、停止' :
                     !data.referenceKnown ? '软限位已配置，参考位置未确认' :
-                    !data.stationaryConfirmed ? '运动结束未确认，停止仍可请求' :
+                    data.positionTracking === 'commanded' ? '指令估算位置：' + data.estimatedPosition + '；软限位 ' + data.minPosition + ' ~ ' + data.maxPosition + '（无编码器反馈）' :
+                    data.travelReason === 'TRAVEL_RANGE_EXCEEDED' ? '行程预算已耗尽，请核对位置或调整软限位位置模式' :
                     '可能位置范围：' + data.possiblePositionMin + ' ~ ' + data.possiblePositionMax + ' 计数；无实际位置反馈';
             }
             var decimals = p.motorDecimals || 0, sf = Math.pow(10, decimals);
             ['speed', 'pulse'].forEach(function(param) {
-                var value = data.parametersKnown === false ? '' : data[param] === undefined ? undefined :
+                var value = data.parametersKnown === false && data.parametersCached !== true ? '' : data[param] === undefined ? undefined :
                     param === 'speed' ? (data[param] / sf).toFixed(decimals) : String(data[param]);
                 var current = document.getElementById('motor-cur-' + param);
                 var input = document.getElementById('modbus-ctrl-motor-' + param);
                 if (current && value !== undefined) current.textContent = value || '--';
+                if (current) current.title = data.parametersFresh === false && data.parametersCached ? '上次读回值，执行前自动刷新' : '';
                 if (input && value !== undefined && input.dataset.dirty !== 'true' && document.activeElement !== input) input.value = value;
                 if (input && param === 'speed') { input.max = String(65535 / sf); input.step = String(1 / sf); }
             });
@@ -394,6 +399,10 @@
             };
         },
 
+        _protocolMotorReport(data, waiting) {
+            window.renderModbusMotorReport(document.getElementById('modbus-ctrl-motor-report'), data, waiting, '窗口');
+        },
+
         async _protocolMotorRequest(params, action, value) {
             var self = this, index = this._activeDeviceIdx;
             var generation = this._modbusCtrlGeneration || 0;
@@ -406,7 +415,14 @@
             this._protocolMotorSequence = (this._protocolMotorSequence || 0) + 1;
             var requestId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + this._protocolMotorSequence;
             if (!isRead) pending[key] = requestId;
+            // A newer stop may finish before this operation. Only the latest
+            // control in this view may change its report display; reads never do.
+            var report = function(data, waiting) {
+                if (!isRead && current() && pending[key] === requestId) self._protocolMotorReport(data, waiting);
+            };
+            report(null, true);
             var started = Date.now(), operationId = 0;
+            var terminal = false;
             try {
                 // Submit once. Poll only the operation ID; never retry a movement.
                 var response = await apiPostSilentPriority('/api/modbus/motor/control', {
@@ -423,11 +439,13 @@
                     if (operationId && data.operationId !== operationId) throw new Error('电机操作编号不匹配');
                     operationId = data.operationId;
                     if (!data.pending) {
+                        terminal = true;
+                        report(data);
                         if (data.success !== true) throw new Error(data.error || '电机未确认指令');
                         return response;
                     }
                     if (Date.now() - started >= 20000) throw new Error('指令结果尚未确认，请读取状态；不要重复启动');
-                    await new Promise(function(resolve) { setTimeout(resolve, 400); });
+                    await new Promise(function(resolve) { setTimeout(resolve, action === 'readStatus' ? 400 : 120); });
                     if (!current()) {
                         var cancelled = new Error('控制窗口已关闭，已提交指令不会重发');
                         cancelled.motorViewClosed = true; throw cancelled;
@@ -444,6 +462,7 @@
                     }
                 }
             } catch (error) {
+                if (!terminal) report(null);
                 if (!current()) {
                     var stale = new Error('控制窗口已关闭，已提交指令不会重发');
                     stale.motorViewClosed = true; throw stale;
@@ -462,7 +481,7 @@
                 direction.textContent = acknowledged === 'forward' ? '正转应答' : acknowledged === 'reverse' ? '反转应答' : acknowledged === 'stop' ? '停止应答' : '--';
                 direction.title = '最近已应答指令，不代表当前实际运动';
             }
-            if (run) { run.className = 'motor-run-badge motor-run-idle'; run.textContent = pending ? '指令处理中' : '运动未确认'; }
+            if (run) { run.className = 'motor-run-badge motor-run-idle'; run.textContent = pending ? '指令处理中' : acknowledged ? '指令已应答' : '就绪'; }
         },
 
         _motorRequestError(error) {
@@ -471,7 +490,7 @@
         },
 
         async motorForward() {
-            if (this._isCtrlModalOffline()) return;
+            if (this._ctrlModalCommandsBlocked()) return;
             if (this._protocolMotorHasDraft()) { Notification.warning('请先设置修改后的速度和脉冲'); return; }
             var p = this._getMotorDevParams();
             if (!p) return;
@@ -490,7 +509,7 @@
         },
 
         async motorReverse() {
-            if (this._isCtrlModalOffline()) return;
+            if (this._ctrlModalCommandsBlocked()) return;
             if (this._protocolMotorHasDraft()) { Notification.warning('请先设置修改后的速度和脉冲'); return; }
             var p = this._getMotorDevParams();
             if (!p) return;
@@ -526,7 +545,7 @@
         },
 
         async setMotorSpeed() {
-            if (this._isCtrlModalOffline()) return;
+            if (this._ctrlModalCommandsBlocked()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             var input = document.getElementById('modbus-ctrl-motor-speed').value.trim();
@@ -536,10 +555,10 @@
                 if (!Number.isFinite(scaled) || Math.abs(scaled - speed) > 1e-7) throw new Error('速度精度与电机配置不符');
                 var res = await this._protocolMotorRequest(p, 'setSpeed', speed);
                 if (res && res.success) {
-                    Notification.success('速度设置成功');
                     var field = document.getElementById('modbus-ctrl-motor-speed');
                     field.dataset.dirty = field.value.trim() === input ? 'false' : 'true';
                     this._appendDebugLog(res.debug, 'Motor SetSpeed');
+                    if (await this.refreshMotorStatus()) Notification.success('速度已读回');
                 } else {
                     Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor SetSpeed failed', res && res.debug);
@@ -548,7 +567,7 @@
         },
 
         async setMotorPulse() {
-            if (this._isCtrlModalOffline()) return;
+            if (this._ctrlModalCommandsBlocked()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             var input = document.getElementById('modbus-ctrl-motor-pulse').value.trim();
@@ -556,10 +575,10 @@
             try {
                 var res = await this._protocolMotorRequest(p, 'setPulse', pulse);
                 if (res && res.success) {
-                    Notification.success('脉冲数设置成功');
                     var field = document.getElementById('modbus-ctrl-motor-pulse');
                     field.dataset.dirty = field.value.trim() === input ? 'false' : 'true';
                     this._appendDebugLog(res.debug, 'Motor SetPulse');
+                    if (await this.refreshMotorStatus()) Notification.success('脉冲数已读回');
                 } else {
                     Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor SetPulse failed', res && res.debug);
@@ -585,6 +604,7 @@
                     this._motorUnknownRunState();
                     if (data.count !== undefined && elCount) elCount.textContent = data.count + ' 计数';
                     this._appendDebugLog(res.debug, 'Motor ReadStatus');
+                    return true;
                 } else {
                     this._appendDebugError('Motor ReadStatus failed', res && res.debug);
                     this._setCtrlModalOffline(true, (res && res.error) || '设备离线，当前控制不可操作');
@@ -598,6 +618,7 @@
                 this._motorUnknownRunState();
                 this._setCtrlModalOffline(true, e && e.message || '电机状态读取失败');
             }
+            return false;
         },
 
         // ========== 调试日志 ==========

@@ -1,0 +1,207 @@
+#include "core/ManagedPinIo.h"
+#include "core/ChipConfig.h"
+#include "managed_pin_mock_state.h"
+#include <cstring>
+#include "core/PeripheralTypes.h"
+#include <atomic>
+#include <future>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+using String=std::string;
+#define IRAM_ATTR
+#define LOG_INFOF(...) ((void)0)
+static std::recursive_mutex encoderMutex;
+static unsigned criticalCalls=0;
+static void portENTER_CRITICAL(int*) { ++criticalCalls;encoderMutex.lock(); }
+static void portEXIT_CRITICAL(int*) { encoderMutex.unlock(); }
+#define portENTER_CRITICAL_ISR portENTER_CRITICAL
+#define portEXIT_CRITICAL_ISR portEXIT_CRITICAL
+static uint32_t nowMicros=100;
+static uint32_t micros() { return nowMicros; }
+static uint32_t millis() { return nowMicros/1000; }
+static constexpr uint32_t ENCODER_MIN_STALE_TIMEOUT_US=1000000;
+static bool adcBusy=false, controlClaim=false, configuredConflict=false;
+namespace FastBee { bool adcPinUnavailable(uint8_t) { return adcBusy; } }
+class RecursiveMutexGuard {
+public:
+    explicit RecursiveMutexGuard(std::recursive_mutex* value,unsigned timeout=0):mutex(value) {
+        assert(timeout==0);held=mutex->try_lock();
+    }
+    ~RecursiveMutexGuard() { if(held)mutex->unlock(); }
+    bool isLocked() const { return held; }
+private:std::recursive_mutex* mutex;bool held;
+};
+// @rf_mode@
+enum class GPIOState { STATE_UNDEFINED,STATE_LOW,STATE_HIGH };
+struct PeripheralConfig {
+    String id="encoder";PeripheralType type=PeripheralType::ENCODER;bool enabled=true;
+    uint8_t pinCount=2,pins[2]{18,19};
+    struct { struct { bool passive=false; } gpio;
+        struct { uint8_t mode=RF_MODE_TX; } rf;
+        struct { bool useInterrupt=true;uint16_t resolution=20; } encoder; } params;
+    uint8_t configuredPinCount() const { return pinCount; }
+    uint8_t configuredPinAt(uint8_t index) const { return pins[index]; }
+};
+struct EncoderReading { int64_t count,delta;int8_t direction;float frequencyHz,rpm; };
+struct Runtime {
+    String lastError;uint32_t lastActivity=0;
+    struct { EncoderReading encoder{}; } state;
+};
+struct PeripheralManager {
+    static constexpr size_t MAX_ENCODER_SLOTS=4;
+    // @slot@
+    static EncoderIsrSlot _encoderSlots[MAX_ENCODER_SLOTS];
+    static int _encoderMux;
+    static uint32_t _nextEncoderGeneration;
+    std::recursive_mutex mutex;std::recursive_mutex* _mutex=&mutex;
+    FastBee::ManagedPinIo _managedPinIo;
+    std::map<String,PeripheralConfig> peripherals;
+    std::map<String,Runtime> runtimeStates;
+    bool isValidPin(uint8_t pin) const { return pin<=CHIP_MAX_GPIO; }
+    bool isReservedPin(uint8_t pin) const { return pin==6; }
+    bool controlOutputIsClaimed(const String&) const { return controlClaim; }
+    bool controlOutputPinIsClaimed(uint8_t) const { return controlClaim; }
+    bool checkPinConflict(uint8_t,const String&) const { return configuredConflict; }
+    bool managedPinConflict(const PeripheralConfig&) const;
+    bool encoderSlotReady(const EncoderIsrSlot*) const;
+    bool setupEncoderHardware(const PeripheralConfig&);
+    bool teardownEncoderHardware(const PeripheralConfig&);
+    EncoderIsrSlot* findEncoderSlot(const String&);
+    EncoderIsrSlot* allocEncoderSlot(const String&,uint8_t,uint8_t);
+    void releaseEncoderSlot(const String&);
+    void snapshotEncoderResources(FastBee::EncoderResourceSnapshot&) const;
+    bool getEncoderReading(const String&,EncoderReading&);
+    bool resetEncoder(const String&);
+    static void handleEncoderInterrupt(void*);
+    GPIOState readEncoderPin(const String& peripheralId) {
+        const auto* config=&peripherals.at(peripheralId);
+        // @read_branch@
+        return GPIOState::STATE_UNDEFINED;
+    }
+};
+PeripheralManager::EncoderIsrSlot PeripheralManager::_encoderSlots[4];
+int PeripheralManager::_encoderMux;
+uint32_t PeripheralManager::_nextEncoderGeneration;
+// @production@
+static FastBee::EncoderResourceSnapshot observe(PeripheralManager& pm) {
+    FastBee::EncoderResourceSnapshot out;pm.snapshotEncoderResources(out);return out;
+}
+static void edge(void(*handler)(void*),void* token) {
+    levels[18]=1;levels[19]=1;nowMicros+=100;handler(token);
+}
+static void expectUnavailable(PeripheralManager& pm,const PeripheralConfig& config) {
+    EncoderReading reading{123,456,1,99,99};
+    assert(!pm.getEncoderReading(config.id,reading) && reading.count==123);
+    assert(!pm.resetEncoder(config.id));
+    assert(pm.readEncoderPin(config.id)==GPIOState::STATE_UNDEFINED);
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string scenario=argv[1];
+    PeripheralManager pm;PeripheralConfig config;
+    pm.peripherals[config.id]=config;pm.runtimeStates[config.id]=Runtime{};
+    if(scenario=="healthy") {
+        assert(pm.setupEncoderHardware(config));auto* slot=pm.findEncoderSlot(config.id);assert(slot);
+        auto handler=handlerFunctions[18];auto token=handlerArguments[18];assert(handler && token);
+        edge(handler,token);assert(slot->count==1 && slot->delta==1);
+        const auto callsBefore=allCalls();
+        assert(pm.setupEncoderHardware(config) && slot->count==1 && allCalls()==callsBefore);
+        const auto criticalBefore=criticalCalls;
+        for(int i=0;i<1000;++i) {
+            const auto out=observe(pm);assert(out.count==1 && out.leases[0].active);
+            assert(out.leases[0].interruptAttached && !out.leases[0].fault);
+        }
+        assert(allCalls()==callsBefore && criticalCalls==criticalBefore);
+        assert(pm.readEncoderPin(config.id)==GPIOState::STATE_HIGH);
+        EncoderReading reading{};assert(pm.getEncoderReading(config.id,reading) && reading.count==1 && reading.delta==1);
+        assert(pm.resetEncoder(config.id) && slot->count==0);
+        auto saved=observe(pm);assert(pm.teardownEncoderHardware(config));
+        assert(!handlers[18] && count(Op::Remove)==1 && observe(pm).count==0);
+        assert(std::string(saved.leases[0].id)=="encoder" && saved.leases[0].active);
+        assert(pm.setupEncoderHardware(config));slot=pm.findEncoderSlot(config.id);
+        assert(handlerArguments[18]!=token);edge(handler,token);assert(slot->count==0);
+        edge(handlerFunctions[18],handlerArguments[18]);assert(slot->count==1);
+    } else if(scenario=="add_failure" || scenario=="setup_a_failure" || scenario=="setup_b_failure") {
+        failure=scenario=="add_failure"?Op::Add:Op::Config;
+        failureCall=scenario=="setup_b_failure"?2:0;
+        assert(!pm.setupEncoderHardware(config));auto* slot=pm.findEncoderSlot(config.id);assert(slot && !slot->active);
+        auto out=observe(pm);assert(out.count==1 && out.leases[0].fault && !out.leases[0].interruptAttached);
+        expectUnavailable(pm,config);
+        if(scenario=="add_failure") {
+            assert(out.leases[0].interruptCleanupPending && handlers[18]);
+            edge(handlerFunctions[18],handlerArguments[18]);assert(slot->count==0);
+        }
+        const auto before=allCalls();assert(!pm.setupEncoderHardware(config) && allCalls()==before);
+        failure=Op::Count;failureCall=0;assert(pm.teardownEncoderHardware(config) && observe(pm).count==0);
+        assert(pm.setupEncoderHardware(config));
+    } else if(scenario=="remove_failure" || scenario=="disable_failure" ||
+              scenario=="type_cleanup_failure" || scenario=="pad_cleanup_failure") {
+        assert(pm.setupEncoderHardware(config));auto handler=handlerFunctions[18];auto token=handlerArguments[18];
+        edge(handler,token);auto* slot=pm.findEncoderSlot(config.id);const auto oldCount=slot->count;
+        failure=scenario=="remove_failure"?Op::Remove:scenario=="disable_failure"?Op::Disable:
+            scenario=="type_cleanup_failure"?Op::Type:Op::Config;
+        assert(!pm.teardownEncoderHardware(config));auto out=observe(pm);
+        assert(out.count==1 && !out.leases[0].active && out.leases[0].fault && out.leases[0].cleanupPending);
+        assert(out.leases[0].interruptAttached==(scenario=="remove_failure" || scenario=="disable_failure"));
+        edge(handler,token);assert(slot->count==oldCount);expectUnavailable(pm,config);
+        assert(!pm.setupEncoderHardware(config));pm.releaseEncoderSlot(config.id);assert(pm.findEncoderSlot(config.id));
+        PeripheralConfig other=config;other.id="wrong";assert(!pm.setupEncoderHardware(other));
+        assert(pm.teardownEncoderHardware(other) && pm.findEncoderSlot(config.id));
+        failure=Op::Count;config.pins[0]=14;config.pins[1]=15;
+        assert(pm.teardownEncoderHardware(config) && !pm.findEncoderSlot(config.id));
+        assert(!pm._managedPinIo.hasGpio(18) && !pm._managedPinIo.hasGpio(19));
+        config.pins[0]=18;config.pins[1]=19;assert(pm.setupEncoderHardware(config));
+        edge(handler,token);assert(pm.findEncoderSlot(config.id)->count==0);
+        if(scenario=="type_cleanup_failure") assert(count(Op::Remove)==1);
+    } else if(scenario=="capacity") {
+        for(unsigned i=0;i<4;++i) {
+            config.id="encoder-"+std::to_string(i);config.pins[0]=4+4*i;config.pins[1]=5+4*i;
+            assert(pm.setupEncoderHardware(config));
+        }
+        config.id="fifth";config.pins[0]=18;config.pins[1]=19;
+        const auto before=allCalls();assert(!pm.setupEncoderHardware(config) && allCalls()==before);
+        assert(observe(pm).count==4);
+    } else if(scenario=="generation_exhaustion") {
+        pm._nextEncoderGeneration=(UINT32_MAX>>2)-1;assert(pm.setupEncoderHardware(config));
+        assert(pm.findEncoderSlot(config.id)->token!=0);assert(pm.teardownEncoderHardware(config));
+        const auto before=allCalls();assert(!pm.setupEncoderHardware(config) && allCalls()==before);
+        assert(pm._nextEncoderGeneration==(UINT32_MAX>>2) && observe(pm).count==0);
+        pm.handleEncoderInterrupt(nullptr);pm.handleEncoderInterrupt(reinterpret_cast<void*>(uintptr_t(1)));
+    } else if(scenario=="admission") {
+        config.params.encoder.useInterrupt=false;assert(!pm.setupEncoderHardware(config));
+        config.params.encoder.useInterrupt=true;config.pins[1]=18;assert(!pm.setupEncoderHardware(config));
+        config.pins[1]=19;adcBusy=true;assert(!pm.setupEncoderHardware(config));adcBusy=false;
+        controlClaim=true;assert(!pm.setupEncoderHardware(config));controlClaim=false;
+        configuredConflict=true;assert(!pm.setupEncoderHardware(config));configuredConflict=false;
+        assert(allCalls()==0 && observe(pm).count==0);
+        assert(pm.setupEncoderHardware(config));auto* slot=pm.findEncoderSlot(config.id);
+        config.pins[0]=14;assert(!pm.setupEncoderHardware(config) && slot->pinA==18);
+        pm.releaseEncoderSlot(config.id);assert(pm.findEncoderSlot(config.id)==slot);
+    } else if(scenario=="busy_snapshot") {
+        assert(pm.setupEncoderHardware(config));const auto before=allCalls();
+        std::promise<void> locked,done;auto finish=done.get_future();
+        std::thread owner([&]{std::lock_guard<std::recursive_mutex> lock(pm.mutex);locked.set_value();finish.wait();});
+        locked.get_future().wait();const auto out=observe(pm);
+        assert(out.status==FastBee::ResourceObservation::Busy && out.count==0);
+        assert(!pm.setupEncoderHardware(config) && !pm.teardownEncoderHardware(config) && allCalls()==before);
+        done.set_value();owner.join();assert(observe(pm).count==1);
+    } else if(scenario=="concurrent_retirement") {
+        assert(pm.setupEncoderHardware(config));auto handler=handlerFunctions[18];auto token=handlerArguments[18];
+        levels[18]=1;levels[19]=1;std::atomic<bool> running{true};std::promise<void> entered;
+        std::thread late([&]{handler(token);entered.set_value();while(running.load())handler(token);});
+        entered.get_future().wait();
+        for(unsigned i=0;i<64;++i) {
+            assert(pm.teardownEncoderHardware(config) && pm.setupEncoderHardware(config));
+        }
+        running.store(false);late.join();
+        assert(handlerArguments[18]!=token && pm.findEncoderSlot(config.id)->count==0);
+        edge(handlerFunctions[18],handlerArguments[18]);assert(pm.findEncoderSlot(config.id)->count==1);
+    } else if(scenario=="counter_saturation") {
+        assert(pm.setupEncoderHardware(config));auto* slot=pm.findEncoderSlot(config.id);
+        slot->count=INT64_MAX;slot->delta=INT64_MAX;edge(handlerFunctions[18],handlerArguments[18]);
+        assert(slot->count==INT64_MAX && slot->delta==INT64_MAX);
+        slot->count=INT64_MIN;slot->delta=INT64_MIN;levels[18]=0;levels[19]=1;
+        handlerFunctions[18](handlerArguments[18]);assert(slot->count==INT64_MIN && slot->delta==INT64_MIN);
+    } else return 2;
+}

@@ -7,6 +7,34 @@ import {isReadOnlyBatch} from './lib/read-only-device-requests.mjs';
 import {EXPECTED_CARDS, createReport, CoverageTracker, recordError, recordHttpStatus, validateSnapshot,
   finishReport, installSseEvidence, recordSseFailures} from './lib/soak-evidence.mjs';
 
+const reportPublishWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+// Retry only transient Windows atomic replacement failures; keep the previous report intact.
+export function publishBrowserSoakReport(out, report, io = {}) {
+  const write = io.writeFile || fs.writeFileSync, rename = io.rename || fs.renameSync;
+  const wait = io.wait || (ms => Atomics.wait(reportPublishWaitBuffer, 0, 0, ms));
+  const platform = io.platform || process.platform;
+  const pending = path.join(out, 'report.pending'), target = path.join(out, 'report.json');
+  report.reportPublishRetries ??= 0;
+  report.reportPublishFailures ??= 0;
+  report.reportPublishErrorCounts ??= {};
+  if (report.reportPublishFailures) report.status = report.stabilityStatus = 'FAIL';
+  write(pending, JSON.stringify(report, null, 2));
+  for (let attempt = 0; ; attempt++) {
+    try { rename(pending, target); return; }
+    catch (error) {
+      const code = error.code || 'UNKNOWN';
+      report.reportPublishErrorCounts[code] = (report.reportPublishErrorCounts[code] || 0) + 1;
+      const retry = platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(code) && attempt < 3;
+      if (retry) report.reportPublishRetries++;
+      else { report.reportPublishFailures++; report.status = report.stabilityStatus = 'FAIL'; }
+      write(pending, JSON.stringify(report, null, 2));
+      if (!retry) throw error;
+      wait(50);
+    }
+  }
+}
+
 export function requestAllowed(method, url, body, contentType, loginAllowed) {
   const target = new URL(url), p = target.pathname;
   const unsafe = value => /^\/api\/(?:modbus\/(?:coil\/(?:control|batch|delay)|register\/(?:write|batch-write)|motor\/control|device\/(?:address|baudrate))|periph-exec\/run|system\/(?:reboot|restart|reset)|auth\/(?:login|logout))/.test(new URL(value, url).pathname);
@@ -56,8 +84,7 @@ export async function runBrowserSoak(args, dependencies = {}) {
   function save() {
     if (coverage && observing) coverage.update(now());
     report.updatedAt = new Date().toISOString(); report.elapsedSeconds = now() - started;
-    const temp = path.join(output, 'report.pending');
-    fs.writeFileSync(temp, JSON.stringify(report, null, 2)); fs.renameSync(temp, path.join(output, 'report.json'));
+    publishBrowserSoakReport(output, report, dependencies.reportIO);
   }
   function example(kind, value) {
     const event = recordError(report, kind, value);
@@ -159,13 +186,15 @@ export async function runBrowserSoak(args, dependencies = {}) {
       if (stopped || report.authenticationLost || now() >= freshDeadline) throw Error('Dashboard data freshness unavailable');
       await sleep(.2);
     }
-    report.firstReadyAt = new Date().toISOString(); const observationStarted = now(), deadline = observationStarted + seconds;
+    report.firstReadyAt = new Date().toISOString(); const observationStarted = now();
+    let deadline = observationStarted + seconds, sampleWindowStarted = false;
     report.plannedEndAt = new Date(Date.now() + seconds * 1000).toISOString();
     coverage = new CoverageTracker(report, observationStarted); observing = true;
     let nextNavigation = observationStarted + 600;
     while (!stopped && !terminalFailure) {
       const tick = now(); coverage.attempt(tick);
       let row = {at: new Date().toISOString(), complete: false};
+      let sampledAt;
       try {
         if (report.authenticationLost) throw Error('Authentication lost; cached DOM is not a successful sample');
         if (tick >= nextNavigation) {
@@ -174,7 +203,7 @@ export async function runBrowserSoak(args, dependencies = {}) {
           await page.locator('#peripheral-table-body').waitFor({state: 'visible'});
           await page.locator('.menu-item[data-page="device-control"]').click(); await waitForDashboard();
         }
-        row = await snapshot(); await Promise.allSettled([...pending]);
+        row = await snapshot(); sampledAt = now(); await Promise.allSettled([...pending]);
         Object.assign(row, validateSnapshot(row, {authenticated: !report.authenticationLost && row.appVisible, fresh: fresh(row)}));
         if (!row.complete) { report.displayErrors++; report.stabilityStatus = 'FAIL'; example('display', row); }
         if (!row.measurementValid) { report.invalidMeasurementSamples++; report.measurementStatus = 'FAIL'; }
@@ -186,7 +215,14 @@ export async function runBrowserSoak(args, dependencies = {}) {
           observerClosed(error.message);
         }
       }
-      row.completedAt = new Date().toISOString(); coverage.complete(now(), row.completedAt, row.complete);
+      row.completedAt = new Date().toISOString();
+      // Screenshot/export/cleanup time cannot extend the measured data span.
+      coverage.complete(sampledAt ?? now(), row.at, row.complete);
+      if (!sampleWindowStarted && coverage.firstSuccess !== null) {
+        sampleWindowStarted = true;
+        deadline = Math.max(deadline, coverage.firstSuccess + seconds);
+        report.plannedEndAt = new Date(Date.now() + Math.max(0, deadline - now()) * 1000).toISOString();
+      }
       fs.appendFileSync(path.join(output, 'samples.jsonl'), JSON.stringify(row) + '\n'); save();
       if (terminalFailure) break;
       if (tick >= deadline) { completed = true; break; }

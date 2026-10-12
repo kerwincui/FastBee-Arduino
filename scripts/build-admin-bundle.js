@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { minifyJS } = require('./minify-js');
+const { minifyRuntimeJS } = require('./minify-js');
 const { resolveWebBuildContext, shouldIncludeAsset } = require('./web-profile');
 const { withWebPublishLock } = require('./web-publish-lock');
 
@@ -50,7 +50,7 @@ function buildAdminBundle(context = resolveWebBuildContext()) {
     sourceFiles.forEach((fileName) => {
         const publishFile = path.join(PUBLISH_MODULE_DIR, fileName);
         const raw = readSourceFile(fileName);
-        const content = noMinify ? raw : minifyJS(raw);
+        const content = noMinify ? raw : minifyRuntimeJS(raw);
         fs.writeFileSync(publishFile, content, 'utf8');
         modules.push({
             fileName,

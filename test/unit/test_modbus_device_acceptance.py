@@ -17,6 +17,99 @@ spec.loader.exec_module(acceptance)
 
 
 class ModbusDeviceAcceptanceTests(unittest.TestCase):
+    def test_request_evidence_saves_only_safe_peripheral_id(self):
+        import requests
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{"success":true,"data":{"state":1}}'
+        response.headers['Content-Length'] = str(len(response._content))
+        client = MagicMock()
+        client.request.return_value = response
+        report = dict(requests=[])
+        result = acceptance.request_api(client, 'http://test.invalid', '/api/peripherals/read',
+            dict(id='di1', password='private', token='private'), 'GET', report)
+        self.assertEqual(result, dict(state=1))
+        row = report['requests'][0]
+        self.assertEqual(row['peripheralId'], 'di1')
+        self.assertTrue(row['bodyComplete'])
+        self.assertIsNone(row['failurePhase'])
+        self.assertNotIn('private', json.dumps(row))
+        self.assertEqual(client.request.call_args.kwargs['timeout'], (3, 12))
+        self.assertTrue(client.request.call_args.kwargs['stream'])
+        self.assertEqual(client.request.call_args.kwargs['headers'], {'Accept-Encoding': 'identity'})
+
+    def test_request_headers_failure_has_no_status_or_secret_query(self):
+        import requests
+        client = MagicMock()
+        client.request.side_effect = requests.ConnectTimeout('private URL or credential')
+        report = dict(requests=[])
+        with self.assertRaises(requests.ConnectTimeout):
+            acceptance.request_api(client, 'http://test.invalid', '/api/peripherals/read?token=private',
+                dict(id='../private', password='private'), 'GET', report)
+        row = report['requests'][0]
+        self.assertEqual(row['route'], '/api/peripherals/read')
+        self.assertEqual(row['failurePhase'], 'response_headers')
+        self.assertIsNone(row['status'])
+        self.assertNotIn('peripheralId', row)
+        self.assertNotIn('private', json.dumps(row))
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_request_truncated_body_records_received_status_and_closes(self):
+        import requests
+        for error in (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError):
+            with self.subTest(error=error):
+                response = MagicMock(status_code=200)
+                type(response).content = property(lambda _: (_ for _ in ()).throw(error('private body')))
+                client = MagicMock()
+                client.request.return_value = response
+                report = dict(requests=[])
+                with self.assertRaises(error):
+                    acceptance.request_api(client, 'http://test.invalid', '/api/peripherals/read',
+                        dict(id='do1'), 'GET', report)
+                row = report['requests'][0]
+                self.assertEqual(row['status'], 200)
+                self.assertEqual(row['failurePhase'], 'response_body')
+                self.assertEqual(row['error'], error.__name__)
+                self.assertEqual(row['peripheralId'], 'do1')
+                self.assertNotIn('private', json.dumps(row))
+                response.close.assert_called_once()
+                self.assertEqual(client.request.call_count, 1)
+
+    def test_request_incomplete_length_and_invalid_json_do_not_pass(self):
+        import requests
+        for raw, declared, expected_phase in ((b'{"success":true,"data":{}}', '200', 'response_body'),
+                                              (b'{', '1', 'response_json')):
+            with self.subTest(phase=expected_phase):
+                response = requests.Response()
+                response.status_code = 200
+                response._content = raw
+                response.headers['Content-Length'] = declared
+                client = MagicMock()
+                client.request.return_value = response
+                report = dict(requests=[])
+                with self.assertRaises(ValueError):
+                    acceptance.request_api(client, 'http://test.invalid', '/api/system/info', None, 'GET', report)
+                self.assertEqual(report['requests'][0]['failurePhase'], expected_phase)
+                self.assertEqual(report['requests'][0]['status'], 200)
+
+    def test_http_guard_failure_keeps_status_and_phase_without_retry(self):
+        import requests
+        response = requests.Response()
+        response.status_code = 503
+        response._content = b'private error content'
+        response.raw = MagicMock()
+        response.url = 'http://test.invalid/api/peripherals/read'
+        client = MagicMock()
+        client.request.return_value = response
+        report = dict(requests=[])
+        with self.assertRaises(requests.HTTPError):
+            acceptance.request_api(client, 'http://test.invalid', '/api/peripherals/read', dict(id='di2'), 'GET', report)
+        self.assertEqual(report['requests'][0]['status'], 503)
+        self.assertEqual(report['requests'][0]['failurePhase'], 'http_response')
+        self.assertEqual(client.request.call_count, 1)
+        self.assertNotIn('private', json.dumps(report))
+        response.raw.close.assert_called_once()
+
     def test_transport_recovery_keeps_evidence_but_does_not_pass(self):
         import requests
         client = MagicMock()
@@ -43,6 +136,8 @@ class ModbusDeviceAcceptanceTests(unittest.TestCase):
                 data = dict(state=1)
             response = MagicMock(status_code=200)
             response.json.return_value = dict(success=True, data=data)
+            response.content = json.dumps(dict(success=True, data=data)).encode()
+            response.headers = {}
             return response
         client.request.side_effect = request
         with tempfile.TemporaryDirectory() as temp:
@@ -95,6 +190,8 @@ class ModbusDeviceAcceptanceTests(unittest.TestCase):
             else:
                 data = dict(state=1)
             response.json.return_value = dict(success=True, data=data)
+            response.content = json.dumps(dict(success=True, data=data)).encode()
+            response.headers = {}
             return response
 
         client.request.side_effect = request
@@ -173,9 +270,16 @@ class ModbusDeviceAcceptanceTests(unittest.TestCase):
                  ([0x41C0, 0], 4, 1, 24), ([12], 0, 0, 0)]
         for words, kind, scale, expected in cases:
             with self.subTest(kind=kind, words=words):
-                self.assertEqual(acceptance.decode_mapping(
+                self.assertAlmostEqual(acceptance.decode_mapping(
                     dict(status='ok', cachedData=dict(values=words)),
                     dict(dataType=kind, scaleFactor=scale)), expected)
+
+    def test_explicit_word_order_and_invalid_single_word_order(self):
+        task = dict(status='ok', cachedData=dict(values=[0, 0x41c0]))
+        self.assertEqual(acceptance.decode_mapping(task, dict(dataType=4, wordOrder=1)), 24)
+        for mapping in (dict(dataType=0, wordOrder=1), dict(dataType=4, wordOrder=2), dict(wordOrder=True)):
+            with self.assertRaises(ValueError):
+                acceptance.decode_mapping(task, mapping)
 
     def test_failed_stale_and_partial_samples_are_not_zero(self):
         for task, mapping in [

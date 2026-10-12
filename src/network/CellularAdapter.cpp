@@ -12,6 +12,7 @@
 #include "systems/LoggerSystem.h"
 #include "core/MemoryBudget.h"
 #include "core/ChipConfig.h"
+#include "network/CellularUartPort.h"
 #include <SSLClient.h>
 #include <ctype.h>
 #include <new>
@@ -647,15 +648,20 @@ bool QuectelSslClient::parseLastInteger(const String& line, int& value) {
     return true;
 }
 
-CellularAdapter::CellularAdapter() {}
+CellularAdapter::CellularAdapter() { featureOwner_.ready(); }
 
 CellularAdapter::~CellularAdapter() {
+    featureOwner_.retiring();
     disconnect();
-    if (_softwareTlsClient) { delete _softwareTlsClient; _softwareTlsClient = nullptr; }
+    if (_softwareTlsClient) { _softwareTlsOwner.retiring(); delete _softwareTlsClient; _softwareTlsClient = nullptr; _softwareTlsOwner.released(); }
     if (_trackedClient) { delete _trackedClient; _trackedClient = nullptr; }
-    if (_qsslClient) { delete _qsslClient; _qsslClient = nullptr; }
+    if (_qsslClient) { _qsslOwner.retiring(); delete _qsslClient; _qsslClient = nullptr; _qsslOwner.released(); }
     if (_gsmClient) { delete _gsmClient; _gsmClient = nullptr; }
     if (_modem) { delete _modem; _modem = nullptr; }
+    if (_uartLease.owned()) {
+        if (_serial) _serial->end();
+        _uartLease.releaseAfterStop();
+    }
     // _serial 使用 HardwareSerial 全局实例，不 delete
 }
 
@@ -664,8 +670,20 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
         LOG_WARNING("CellularAdapter: Already initialized");
         return true;
     }
+    if (!_uartLease.acquire(FastBee::cellularUartPort(CHIP_UART_COUNT), FastBee::ResourceConsumerRole::Cellular)) {
+        LOG_WARNING("CellularAdapter: UART_RESOURCE_BUSY; no power or serial changed");
+        return false;
+    }
+    // A failed start can retain transport clients. Keep ownership while they
+    // are disposed; retry must not leak them or touch another UART owner.
+    if (_softwareTlsClient) { _softwareTlsOwner.retiring(); delete _softwareTlsClient; _softwareTlsClient = nullptr; _softwareTlsOwner.released(); }
+    if (_trackedClient) { delete _trackedClient; _trackedClient = nullptr; }
+    if (_qsslClient) { _qsslOwner.retiring(); delete _qsslClient; _qsslClient = nullptr; _qsslOwner.released(); }
+    if (_gsmClient) { delete _gsmClient; _gsmClient = nullptr; }
+    if (_modem) { delete _modem; _modem = nullptr; }
 
     _pinConfig = config.cellular;
+    _clientBusy = false;
     _apn = config.cellular.apn;
 
     ets_printf("[4G] Initializing EC801E-CN 4G module...\n");
@@ -675,11 +693,13 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
     // 上电（EC801E-CN PWRKEY 低电平有效，需要脉冲触发）
     powerOn();
 
-    // 初始化串口：有 UART2 的芯片（经典 ESP32 / C6 等）优先 Serial2；
-    // C3/S3 等仅有 UART0/1 的芯片回退 Serial1（UART0 被日志/USB 占用）
+    // Keep the actual fixed controller in sync with resource preflight.
+    // UART0 is reserved; use UART2 when compiled, otherwise UART1.
 #if CHIP_UART_COUNT >= 3
+    static_assert(FastBee::cellularUartPort(CHIP_UART_COUNT) == 2, "Cellular UART contract mismatch");
     _serial = &Serial2;
 #else
+    static_assert(FastBee::cellularUartPort(CHIP_UART_COUNT) == 1, "Cellular requires UART1");
     _serial = &Serial1;
 #endif
     _serial->begin(_pinConfig.baudRate, SERIAL_8N1, _pinConfig.rxPin, _pinConfig.txPin);
@@ -714,16 +734,22 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
     }
     _trackedClient = new (std::nothrow) CellularTrackedClient(_gsmClient, _clientBusy, _connected);
     Client* tlsBaseClient = _trackedClient ? static_cast<Client*>(_trackedClient) : static_cast<Client*>(_gsmClient);
+    _softwareTlsOwner.allocating();
     _softwareTlsClient = new (std::nothrow) CellularSoftwareTlsClient(tlsBaseClient, _clientBusy, _connected);
     if (_softwareTlsClient) {
+        _softwareTlsOwner.allocated();
         ets_printf("[4G] Software TLS client ready (TinyGSM TCP + ESP32 mbedTLS)\n");
     } else {
+        _softwareTlsOwner.released();
         ets_printf("[4G] WARNING: Software TLS client allocation failed; QSSL fallback only\n");
     }
+    _qsslOwner.allocating();
     _qsslClient = new (std::nothrow) QuectelSslClient(*_serial, 1, 4, 1);
     if (_qsslClient) {
         _qsslClient->setApn(_apn);
+        _qsslOwner.allocated();
     } else {
+        _qsslOwner.released();
         ets_printf("[4G] WARNING: QuectelSslClient allocation failed\n");
     }
 
@@ -798,6 +824,9 @@ bool CellularAdapter::isConnected() const {
 }
 
 void CellularAdapter::disconnect() {
+    // Rejected/never-started adapters must not pulse the configured power pin
+    // or send AT commands on a controller they do not own.
+    if (!_uartLease.owned()) { _connected = false; _initialized = false; return; }
     if (_softwareTlsClient) _softwareTlsClient->stop();
     if (_trackedClient) _trackedClient->stop();
     if (_gsmClient) _gsmClient->stop();
@@ -809,6 +838,8 @@ void CellularAdapter::disconnect() {
     _connected = false;
     _initialized = false;
     powerOff();
+    // Clients still reference HardwareSerial; destructor disposes them before
+    // ending the controller and releasing the lease. Disconnected != released.
 }
 
 Client* CellularAdapter::getClient() {
@@ -818,7 +849,7 @@ Client* CellularAdapter::getClient() {
 Client* CellularAdapter::getSecureClient() {
     if (_softwareTlsClient) return static_cast<Client*>(_softwareTlsClient);
     if (_qsslClient) return static_cast<Client*>(_qsslClient);
-    return getClient();
+    return nullptr; // Secure requests never fall back to a plaintext transport.
 }
 
 String CellularAdapter::getSignalQuality() {

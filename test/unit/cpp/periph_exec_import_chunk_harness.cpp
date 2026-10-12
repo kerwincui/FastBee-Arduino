@@ -14,10 +14,8 @@ struct String : std::string {
 static unsigned long clockNow=100;
 unsigned long millis(){return clockNow;}
 struct Param {String text;const String& value()const{return text;}};
-struct JsonDocument {
-    std::map<std::string,size_t> values;
-    size_t& operator[](const char* name){return values[name];}
-};
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 struct AsyncWebServerRequest {
     std::map<std::string,Param> params;
     int status=0;String error;JsonDocument result;
@@ -36,7 +34,7 @@ namespace HandlerUtils {
 bool pressure=false,lowMemory=false;
 bool rejectHeavyRequestOnPressure(AsyncWebServerRequest* r,const char*,MemoryGuardLevel,int){if(pressure)r->status=503;return pressure;}
 bool checkLowMemory(AsyncWebServerRequest* r,int){if(lowMemory)r->status=503;return lowMemory;}
-void sendJsonError(AsyncWebServerRequest* r,int code,const char* message,int retryAfter){r->status=code;r->error=message;r->result.values["retryAfter"]=retryAfter;}
+void sendJsonError(AsyncWebServerRequest* r,int code,const char* message,int retryAfter){r->status=code;r->error=message;r->result["retryAfter"]=retryAfter;}
 }
 struct Files {
     std::map<std::string,std::string> data;
@@ -115,7 +113,7 @@ static void gates(){
 static void retryAndCommit(){
     reset();WebHandlerContext ctx;PeriphExecRouteHandler h(&ctx);auto& mgr=PeriphExecManager::getInstance();
     auto r=request(sessionA,0,6,"abc");h.handleImportChunk(&r);
-    assert(r.status==200&&r.result.values["received"]==3&&!r.result.values["saved"]);
+    assert(r.status==200&&r.result["received"]==3&&!r.result["saved"]);
     assert(files.data.at(primary)=="original-primary");
     const auto writes=files.writes;h.handleImportChunk(&r);assert(r.status==200&&files.writes==writes);
     auto wrong=request(sessionA,0,6,"xyz");h.handleImportChunk(&wrong);assert(wrong.status==409&&files.data.at(staging)=="abc");
@@ -123,7 +121,7 @@ static void retryAndCommit(){
     auto sizeChange=request(sessionA,3,7,"def");h.handleImportChunk(&sizeChange);assert(sizeChange.status==409);
     auto other=request(sessionB,0,6,"xyz");h.handleImportChunk(&other);assert(other.status==409&&files.data.at(staging)=="abc");
     auto last=request(sessionA,3,6,"def");h.handleImportChunk(&last);
-    assert(last.status==200&&last.result.values["saved"]&&last.result.values["restartRequired"]&&!last.result.values["applied"]);
+    assert(last.status==200&&last.result["saved"]&&last.result["restartRequired"]&&!last.result["applied"]);
     assert(files.data.at(primary)=="abcdef"&&mgr.commits==1&&mgr.pending);
     h.handleImportChunk(&last);assert(last.status==200&&mgr.commits==1);
     h.handleImportChunk(&r);assert(r.status==200&&mgr.commits==1);
@@ -153,7 +151,7 @@ static void transientCommitPressure(){
         auto first=request(sessionA,0,6,"abc");h.handleImportChunk(&first);
         auto last=request(sessionA,3,6,"def");mgr.commitSuccess=false;mgr.failure=error;
         h.handleImportChunk(&last);
-        assert(last.status==503 && last.result.values["retryAfter"]==5);
+        assert(last.status==503 && last.result["retryAfter"]==5);
         assert(files.data.at(staging)=="abcdef" && files.data.at(primary)=="original-primary");
         assert(h.importReceived==6 && !h.importCommitted && mgr.commits==1);
         const auto writes=files.writes;mgr.commitSuccess=true;h.handleImportChunk(&last);

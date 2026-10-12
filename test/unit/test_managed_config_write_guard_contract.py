@@ -88,7 +88,7 @@ class ManagedConfigWriteGuardContractTests(unittest.TestCase):
             self, route, "isManagedRuntimeConfigFileName", "name"
         )
         self.assertLess(guard_pos, route.find("configPathForName(name)"))
-        self.assertLess(guard_pos, route.find("configStorage.saveJSONConfig(path, importedConfig)"))
+        self.assertLess(guard_pos, route.find("configStorage.saveImportedJSONConfig(path, importedConfig)"))
         self.assertIn('request->hasParam("content", true)', route)
 
     def test_chunk_import_rejects_before_create_append_or_resume(self):
@@ -97,12 +97,12 @@ class ManagedConfigWriteGuardContractTests(unittest.TestCase):
             self, route, "isManagedRuntimeConfigFileName", "name"
         )
         self.assertLess(guard_pos, route.find("configPathForName(name)"))
-        self.assertLess(guard_pos, route.find("if (index > 0"))
+        self.assertLess(guard_pos, route.find("ordinaryImport.inspect("))
         self.assertLess(
             guard_pos,
-            route.find('LittleFS.open(stagedPath, index == 0 ? "w" : "a")'),
+            route.find('LittleFS.open(stagedPath, "a")'),
         )
-        for parameter in ("chunk", "index", "total"):
+        for parameter in ("chunk", "index", "total", "session"):
             self.assertIn('request->hasParam("{}", true)'.format(parameter), route)
 
     def test_file_editor_save_rejects_before_extension_check_and_open(self):
@@ -123,6 +123,7 @@ class ManagedConfigWriteGuardContractTests(unittest.TestCase):
     def test_all_three_write_routes_are_registered_as_post(self):
         for path in (
             "/api/config/transfer/import",
+            "/api/config/transfer/import-begin",
             "/api/config/transfer/import-chunk",
             "/api/files/save",
         ):

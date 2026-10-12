@@ -9,12 +9,19 @@
 #include <new>
 #include <utility>
 #include <functional>
+#include <atomic>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include "PeripheralExecution.h"
 #include "AsyncExecTypes.h"
 #include "ResourceProfile.h"
+#include "PendingReportQueue.h"
+#include "core/UartEventOrigin.h"
+#include "core/ThermostatRuntime.h"
+#include "core/SdRecorderRuntime.h"
 #include "utils/StaticPoolAllocator.h"
+
+struct PeripheralConfig;
 
 enum class ObservationQuality : uint8_t {
     UNKNOWN = 0,
@@ -25,6 +32,7 @@ enum class ObservationQuality : uint8_t {
 };
 
 struct ObservationUpdate {
+    FastBee::UartEventOrigin uartOrigin;
     String sourceRef;
     String label;
     String value;
@@ -36,8 +44,10 @@ struct ObservationUpdate {
     String periphId;
     ObservationQuality quality = ObservationQuality::GOOD;
     uint32_t sampleTimestamp = 0;
+    uint64_t sampledAtMs = UINT64_MAX; // Exact monotonic timestamp; zero is a valid boot-time sample.
     uint32_t maxAgeMs = 0;
     uint32_t sampleIdentity = 0;
+    uint64_t sampleGroup = 0; // Same completed scan, not simultaneous channel acquisition.
     bool recordable = false;
     bool bindingValid = true;
 };
@@ -57,11 +67,12 @@ class PeriphExecWorkerPool;
 // MQTT 连接状态检查
 using MqttIsConnectedCallback = std::function<bool()>;
 // MQTT 队列上报数据
-using MqttQueueReportCallback = std::function<bool(const String& reportData)>;
+using MqttQueueReportCallback = std::function<FastBee::ReportReplayResult(const String& reportData, uint32_t instanceId)>;
 // Modbus sensorId 构建 (deviceIndex, channel) → sensorId string
 using ModbusBuildSensorIdCallback = std::function<String(uint8_t deviceIndex, uint16_t channel)>;
 // Modbus 未匹配 sensorId 直接控制 (sensorId, value, reportArr) → true=已处理
-using ModbusDirectControlCallback = std::function<bool(const String& sensorId, const String& value, JsonArray& reportArr)>;
+using ModbusDirectControlCallback = std::function<bool(const String& sensorId, const String& value,
+    JsonArray& reportArr, const FastBee::OrdinaryControlContext& control)>;
 // Modbus 动态事件列表填充
 using ModbusDynamicEventsCallback = std::function<void(JsonArray& arr)>;
 // MQTT 设备事件上报回调：(eventId, eventName, eventData) → true=已发布
@@ -131,6 +142,7 @@ public:
     bool removeRuleAndSave(const String& id, String& errorMsg);
     PeriphExecRule* getRule(const String& id);
     bool getRuleSnapshot(const String& id, PeriphExecRule& snapshot) const;
+    bool isRuleExecutionCurrent(const PeriphExecRule& snapshot) const;
     std::vector<PeriphExecRule> getAllRules() const;
     // Fail closed on lock/load failure; callers must acquire this snapshot
     // before taking the remote-resource configuration lock.
@@ -149,6 +161,15 @@ public:
     bool loadConfiguration();
     // Validate without allocating a second rule table or changing runtime state.
     static bool validateConfigurationFile(const char* path, String& errorMsg);
+    using ConfigurationReviewVisitor = bool (*)(const PeriphExecRule&, void*, String&);
+    // Streaming, read-only schema/reference review against a caller-owned
+    // candidate graph. It never changes the runtime rule map.
+    static bool reviewConfigurationFile(const char* path, ConfigurationReviewVisitor visitor,
+                                        void* context, String& errorMsg);
+    static bool readConfigurationIrKeys(const char* path, bool legacy, String& keys, String& errorMsg);
+    bool validateMigrationRule(const PeriphExecRule& rule,
+        const std::vector<PeripheralConfig>& targets, const std::vector<String>& ruleIds,
+        String& errorMsg) const;
     // Commit a validated staged file for the next boot. No rule is executed or
     // hot-swapped. Further configuration writes are rejected until restart.
     bool importConfigurationFile(const char* stagedPath, String& errorMsg);
@@ -158,8 +179,9 @@ public:
     // ========== IR 按键映射（随 periph_exec.json 统一持久化，不再单独建 ir_keys.json） ==========
     // 返回当前红外按键映射 JSON 数组字符串（如 [{"name":"k1","code":"0x00FF6897","protocol":"NEC"}]，无配置时为空串）
     String getIrKeysJson() const;
+    bool copyIrKeysJson(String& output) const;
     // 更新红外按键映射并保存配置（传空数组字符串表示清空）
-    bool setIrKeysJson(const String& jsonArray);
+    bool setIrKeysJson(const String& jsonArray, const String* expectedJson = nullptr);
 
     // ========== 执行引擎（委托给 Executor） ==========
 
@@ -178,7 +200,8 @@ public:
     void handleMqttMessage(const String& topic, const String& message);
 
     // 轮询数据处理入口（由 Modbus/其他本地数据源回调调用）
-    void handlePollData(const String& source, const String& data);
+    void handlePollData(const String& source, const String& data,
+                        const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 数据下发命令处理：匹配 trigger.triggerPeriphId == item["id"]，执行规则并返回上报 JSON
     // 注意：此方法始终同步执行，立即返回结果
@@ -186,6 +209,13 @@ public:
 
     // 定时器检查（由 TaskManager 定时任务调用）
     void checkTimers();
+    // Continuous controllers run outside normal rule worker/trigger queues.
+    // Executing action 39 reads this status only; it never arms/rearms a fault.
+    bool getThermostatStatus(const PeriphExecRule& rule, ActionExecResult& result);
+    String getThermostatDiagnosticsJson() const; // null means unavailable, never an empty successful snapshot.
+    bool shutdownThermostats(); // Fence new control; false requires keeping the maintenance task alive.
+    bool getSdRecorderStatus(const PeriphExecRule& rule, ActionExecResult& result);
+    String getSdRecorderDiagnosticsJson() const;
 
     // ========== 启动后主动上报当前物模型状态（一次性） ==========
 
@@ -205,10 +235,12 @@ public:
     // ========== 触发事件（委托给 Scheduler） ==========
 
     // 触发事件（由各系统模块调用）
-    void triggerEvent(EventType eventType, const String& eventData = "");
+    void triggerEvent(EventType eventType, const String& eventData = "",
+                      const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 触发事件（通过事件ID）
-    void triggerEventById(const String& eventId, const String& eventData = "");
+    void triggerEventById(const String& eventId, const String& eventData = "",
+                          const FastBee::UartEventOrigin& uartOrigin = {}, bool publishToMqtt = true);
 
     // 获取静态事件列表（用于前端配置）
     static String getStaticEventsJson();
@@ -231,12 +263,14 @@ public:
     void setMqttEventPublishCallback(MqttEventPublishCallback cb);
 
     // 通知 MQTT 层发布设备事件（由 Scheduler triggerEvent/triggerEventById 调用）
-    bool notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData);
+    bool notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData,
+                                const FastBee::UartEventOrigin& uartOrigin = {});
 
     // SSE 传感器数据广播回调
     using SensorSSECallback = std::function<void(const String& data)>;
     void setSensorSSECallback(SensorSSECallback cb) { _sensorSSECb = cb; }
-    void notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit);
+    void notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit,
+                             const ObservationUpdate* sample = nullptr);
 
     // ========== 异步执行 ==========
 
@@ -252,7 +286,8 @@ public:
     // 手动执行规则（用于"执行一次"按钮，可携带用户输入值）
     bool runOnce(const String& id, const String& receivedValue = "",
                  String* rejectionReason = nullptr,
-                 AsyncExecResult* admittedOperation = nullptr);
+                 AsyncExecResult* admittedOperation = nullptr,
+                 const FastBee::OrdinaryControlContext* control = nullptr);
 
     // ========== 动作执行后数据上报（委托给 Scheduler） ==========
 
@@ -296,13 +331,15 @@ public:
     bool isInitialized() const { return _rulesMutex != nullptr; }
 
     // 缓存待上报数据（MQTT 未连接时由 Executor 调用）
-    void queuePendingReport(const String& reportData);
+    // Nonzero currentInstanceId must come from a held MQTT instance lease.
+    bool queuePendingReport(const String& reportData, uint32_t instanceId, uint32_t currentInstanceId = 0);
 
     // 重试待上报数据（在 checkTimers 中调用，MQTT 恢复后自动重试）
     void retryPendingReports();
 
     // 获取待上报缓存数量
     size_t getPendingReportCount() const;
+    FastBee::PendingReportQueue::Status getPendingReportStatus() const;
 
     // 获取规则互斥量
     SemaphoreHandle_t getRulesMutex() const { return _rulesMutex; }
@@ -345,7 +382,10 @@ public:
     // 正在运行和队列拒绝必须返回 false，避免 API 报告“已提交”假成功。
     bool dispatchAsync(const PeriphExecRule& rule, const String& receivedValue,
                        String* rejectionReason = nullptr,
-                       AsyncExecResult* admittedOperation = nullptr);
+                       AsyncExecResult* admittedOperation = nullptr,
+                       const FastBee::UartEventOrigin& uartOrigin = {},
+                       const FastBee::OrdinaryControlContext* control = nullptr,
+                       FastBee::OrdinaryControl::Source automaticSource = FastBee::OrdinaryControl::Source::Rule);
 
     // 单任务执行（由 WorkerPool 在 worker 线程内调用）
     // 包含执行规则、清理 _runningRuleIds、归还信号量、归还对象池等完整生命周期
@@ -356,7 +396,7 @@ public:
     void cancelWorkerJob(AsyncExecContext* ctx);
 
     // 执行规则的所有动作（供异步任务调用）
-    // reportCountOut（可选）：回填本次实际上报的动作结果数量
+    // reportCountOut（可选）：交给上报路径的结果数，不是MQTT接收/投递确认
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule,
                                                     const String& receivedValue,
                                                     bool suppressReport = false,
@@ -374,10 +414,12 @@ public:
     void checkTimerTriggers(unsigned long now, bool modbusAvailable);
 
     // 事件匹配分发（内部使用）
-    void dispatchEventMatchedRules(const String& eventId, const String& eventData);
+    void dispatchEventMatchedRules(const String& eventId, const String& eventData,
+                                   const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 外设执行事件分发（内部使用）
-    void dispatchPeriphExecEvent(const String& ruleId, const String& eventData);
+    void dispatchPeriphExecEvent(const String& ruleId, const String& eventData,
+                                 const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 按键事件分发（内部使用）
     void dispatchButtonEventRules(const String& eventId, const String& periphId);
@@ -386,7 +428,8 @@ public:
     void processMqttMessageMatch(JsonArray& arr);
 
     // 轮询数据匹配处理（内部使用）
-    void processPollDataMatch(JsonArray& arr, const String& source);
+    void processPollDataMatch(JsonArray& arr, const String& source,
+                              const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 数据命令匹配处理（内部使用）
     String processDataCommandMatch(JsonArray& cmdArr, const std::vector<int>& processedIndices);
@@ -396,6 +439,17 @@ public:
 
 private:
     PeriphExecManager() = default;
+    void initializeWorkerPool();
+    void checkThermostats();
+    void retireThermostatsLocked();
+    void checkSdRecorder();
+    void retireSdRecorderLocked();
+    bool sdRecorderSourceBindingLocked(const String& sourceRef, String& binding) const;
+    std::unique_ptr<FastBee::SdRecorderRuntime> _sdRecorder;
+    bool thermostatSourceBindingLocked(const String& sourceRef, String& binding) const;
+    std::unique_ptr<FastBee::ThermostatRuntime> _thermostats[4];
+    uint32_t _lastThermostatCheck = 0;
+    std::atomic<bool> _thermostatShutdown{false};
 
     enum class RuleMutationType : uint8_t {
         ADD,
@@ -426,12 +480,16 @@ private:
     // Authoritative rule-action validation used by every Manager add/update
     // path. Route/UI preflight is advisory and must not be the only guard.
     bool validateRuleActionsLocked(const PeriphExecRule& rule,
-                                   String& errorMsg) const;
+                                   String& errorMsg,
+                                   const std::vector<PeripheralConfig>* targets = nullptr,
+                                   const std::vector<String>* ruleIds = nullptr) const;
     bool ensureResultHistoryCapacity();
     bool beginOperation(const PeriphExecRule& rule,
                         bool asyncExecution,
                         uint8_t queuePosition,
-                        AsyncExecResult& operation);
+                        AsyncExecResult& operation,
+                        const FastBee::UartEventOrigin& uartOrigin,
+                        const FastBee::OrdinaryControlContext& control);
     void refreshRuleRuntimeIndexesLocked(bool validateScheduler = true);
     bool saveConfigurationLocked();
     bool writeConfigurationLocked(const RuleMap& sourceRules, const String& irKeys);
@@ -450,6 +508,9 @@ private:
     // 规则是否包含可作为物模型状态上报的动作（传感器读取 / Modbus 轮询 / 物理输出控制）
     bool ruleHasReportableStateAction(const PeriphExecRule& rule) const;
     bool shouldAvoidSyncFallback(const PeriphExecRule& rule) const;
+    bool ruleRequiresWorkerPool(const PeriphExecRule& rule) const;
+    bool hasWorkerPoolDemandLocked() const;
+    bool ensureWorkerPoolForRule(const PeriphExecRule& rule);
     bool sanitizeTriggerForSafety(ExecTrigger& trigger, bool hasPollCollectionAction, const String& ruleName) const;
     bool sanitizeRuleForSafety(PeriphExecRule& rule) const;
     unsigned long getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const;
@@ -457,13 +518,16 @@ private:
 
     // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
     bool dispatchByRuleId(const String& ruleId, const String& receivedValue,
-                          String* rejectionReason = nullptr);
+                          String* rejectionReason = nullptr,
+                          const FastBee::UartEventOrigin& uartOrigin = {}, uint64_t expectedRevision = 0,
+                          FastBee::OrdinaryControl::Source automaticSource = FastBee::OrdinaryControl::Source::Rule);
     // Match paths must not consume cooldown/counters until dispatch admission
     // succeeds. This helper centralizes that ordering and exact trigger commit.
     bool dispatchAndCommitTrigger(const String& ruleId,
                                   size_t triggerIndex,
                                   const String& receivedValue,
-                                  const char* sourceLabel);
+                                  const char* sourceLabel,
+                                  const FastBee::UartEventOrigin& uartOrigin = {}, uint64_t expectedRevision = 0);
 
     std::unique_ptr<PeriphExecExecutor> _executor;
     std::unique_ptr<PeriphExecScheduler> _scheduler;
@@ -477,6 +541,7 @@ private:
 
     // ========== FreeRTOS 同步原语 ==========
     SemaphoreHandle_t _rulesMutex = nullptr;       // 保护 rules map 的互斥量
+    uint64_t _ruleRuntimeRevision = 0;
     SemaphoreHandle_t _taskSlotSemaphore = nullptr; // 并发任务槽计数信号量
     SemaphoreHandle_t _resultsMutex = nullptr;      // 保护 executionResults 的互斥量
 
@@ -507,6 +572,7 @@ private:
     unsigned long _lastBackoffCleanupTime = 0;  // 上次 _failureBackoff 过期清理时间
     unsigned long _lastDiagLogTime = 0;         // 上次诊断日志输出时间
     String _lastTimerDispatchRuleId;             // 定时任务轮转游标，避免 map 前部规则长期占满槽位
+    std::atomic_flag _timerDispatchBusy = ATOMIC_FLAG_INIT;
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
     SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
     std::map<String, unsigned long, std::less<String>,
@@ -534,6 +600,7 @@ public:
                                 // 未显式配置时为空，上报 id 回退为外设配置 id（与平台物模型标识符对应）
         String periphId;        // 外设配置 id：dataField 未显式配置时的上报 id 回退来源
         unsigned long timestamp = 0; // 实际采样时间 millis()
+        uint64_t sampledAtMs = UINT64_MAX;
         unsigned long maxAgeMs = 0;  // 0 使用兼容 TTL；非 0 时限制该读数的新鲜期
         String valueType = "number";
         String sourceRevision;
@@ -553,7 +620,9 @@ public:
                                const String& dataField = "", const String& periphId = "",
                                uint32_t sampleTimestamp = 0, uint32_t maxAgeMs = 0,
                                bool recordable = false, uint32_t sampleIdentity = 0,
-                               const String& sourceRevision = "", uint32_t configVersion = 0);
+                               const String& sourceRevision = "", uint32_t configVersion = 0,
+                               const FastBee::UartEventOrigin& uartOrigin = {},
+                               uint64_t sampledAtMs = UINT64_MAX);
     void invalidateSensorReadCache(const String& periphId, const String& reason,
                                     uint32_t configVersion = 0);
     void invalidateAllSensorReadCache();
@@ -589,12 +658,10 @@ private:
     std::unique_ptr<PeriphExecWorkerPool> _workerPool;
     bool _workersSuspendedForMemory = false;
     bool _workerSuspensionPending = false;
+    bool _workerPoolDemandPending = false; // Also retains a rejected manual heavy-rule request.
 
     // ========== 待上报数据缓存（MQTT 未连接时缓存，恢复后重试） ==========
-    static const size_t MAX_PENDING_REPORTS = 5;           // 最大缓存条数
-    static const unsigned long PENDING_REPORT_RETRY_MS = 5000;  // 重试间隔 5秒
-    std::vector<String> _pendingReports;                    // 待上报数据缓存
-    unsigned long _lastPendingReportRetry = 0;              // 上次重试时间
+    mutable FastBee::PendingReportQueue _pendingReports;
 
     // ========== 启动一次性物模型状态上报（重启后主动对齐平台显示） ==========
     bool _bootReportPending = false;       // 已调度但未完成

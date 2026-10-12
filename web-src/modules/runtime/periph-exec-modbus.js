@@ -291,40 +291,6 @@
         // ============ Poll tasks / Modbus device panel ============
 
         // 轮询触发专用: 仅显示采集传感器任务(无控制设备)
-        _populatePollTasksOnly(container, actionValue) {
-            if (!container) return;
-            var tasks = this._masterTasks || [];
-            if (tasks.length === 0) {
-                container.innerHTML = '<span class="pe-empty-inline">暂无采集任务</span>';
-                return;
-            }
-            // 解析已选任务索引
-            var selTaskIdx = -1;
-            if (actionValue) {
-                if (actionValue.charAt(0) === '{') {
-                    try { var p = JSON.parse(actionValue); if (p.poll && p.poll.length > 0) selTaskIdx = p.poll[0]; } catch(e) {}
-                } else {
-                    var parts = actionValue.split(',');
-                    if (parts.length > 0 && parts[0].trim()) selTaskIdx = parseInt(parts[0].trim());
-                }
-            }
-            var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
-            var html = '<div class="pe-modbus-select-grid">';
-            html += '<div class="fb-form-group pe-field-stack-compact">';
-            html += '<label class="pe-field-label-compact">选择采集任务</label>';
-            html += '<select class="pe-poll-task-select">';
-            html += '<option value="">--</option>';
-            for (var i = 0; i < tasks.length; i++) {
-                var t = tasks[i];
-                if (t.enabled === false) continue;
-                var label = t.name || t.label || ('Slave ' + (t.slaveAddress || 1));
-                var desc = (fcNames[t.functionCode] || 'FC03') + ' @' + (t.startAddress || 0) + ' x' + (t.quantity || 10);
-                var val = i;
-                html += '<option value="' + val + '"' + (val === selTaskIdx ? ' selected' : '') + '>' + escapeHtml(label + ' (' + desc + ')') + '</option>';
-            }
-            html += '</select></div></div>';
-            container.innerHTML = html;
-        },
 
         _populateModbusDevicePanel(container, actionValue) {
             if (!container) return;
@@ -371,7 +337,8 @@
         // ============ Target periph change (Modbus routing) ============
 
         _syncModbusActionOptions(block) {
-            var isModbus = (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
+            var isRtc = [35, 36, 37, 38].includes(Number(block.querySelector('.pe-action-type')?.value));
+            var isModbus = !isRtc && (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
             block.querySelectorAll('.pe-action-type option').forEach(function(option) {
                 var restricted = isModbus && ['16', '17', '18'].indexOf(option.value) < 0;
                 if (restricted) {
@@ -402,7 +369,7 @@
             // Remote targets use their own resource catalogue. Re-entering the
             // local action-type handler clears the just-selected resource.
             var selectedAction = Number(block.querySelector('.pe-action-type')?.value);
-            if (selectedAction === 33 || selectedAction === 34) return;
+            if ([33, 34, 35, 36, 37, 38, 39].includes(selectedAction)) return;
             var periphId = selectEl.value;
             var isModbus = periphId && periphId.indexOf('modbus:') === 0;
             var isModbusTask = periphId && periphId.indexOf('modbus-task:') === 0;

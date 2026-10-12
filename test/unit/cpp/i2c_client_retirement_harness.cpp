@@ -15,7 +15,7 @@
 #define LOG_ERRORF(...) ((void)0)
 #define LOG_WARNINGF(...) ((void)0)
 
-enum class PeripheralType { I2C, IO_EXPANDER, SENSOR_GENERIC };
+enum class PeripheralType { I2C, IO_EXPANDER, SENSOR_GENERIC, PCA9685_PWM };
 enum class PeripheralStatus { PERIPHERAL_ERROR };
 struct PeripheralConfig {
     String id = "bus";
@@ -23,7 +23,7 @@ struct PeripheralConfig {
     uint8_t pinCount = 2, pins[2] = {4, 5};
     struct {
         struct { uint32_t frequency = 100000; bool isMaster = true; } i2c;
-        struct { char busPeripheralId[32] = {}; } ioExpander, sensor;
+        struct { char busPeripheralId[32] = {}; } ioExpander, sensor, pca9685;
     } params;
 };
 struct RuntimeState { String lastError; PeripheralStatus status{}; };
@@ -49,6 +49,7 @@ public:
 
 static const void* g_lcdI2cOwner = nullptr;
 static bool g_lcdI2cTransferLocked = false;
+static bool g_lcdI2cTransferFailed = false;
 class LCDManager {
 public:
     int* _display = nullptr;
@@ -56,15 +57,20 @@ public:
     bool _initialized = true, _contentChanged = true, _busAcquired = false;
     int _sdaPin = 4, _sclPin = 5;
     ~LCDManager();
-    void deinitialize();
+    String _activeId;
+    bool _foregroundFailed=false;
+    bool deinitialize(const String& expectedId="");
 };
+#define LCD_GUARD_OR_RETURN(value) \
+    RecursiveMutexGuard guard(_displayMutex, pdMS_TO_TICKS(250)); \
+    if (!guard.isLocked()) return value
 #define LCD_GUARD_OR_RETURN_VOID() \
     RecursiveMutexGuard guard(_displayMutex, pdMS_TO_TICKS(250)); \
     if (!guard.isLocked()) return
 struct LCD1602Config { uint8_t cols = 16, rows = 2, i2cAddress = 0; bool backlight = true; };
 class LCD1602Driver {
 public:
-    bool _initialized = false, _backlightOn = true, _busAcquired = false;
+    bool _initialized = false, _backlightOn = true, _busAcquired = false, _writeFailed = false;
     uint8_t _sdaPin = 255, _sclPin = 255, _cols = 16, _rows = 2, _address = 0;
     std::function<uint8_t()> onDetect;
     uint8_t detectAddress() { return onDetect ? onDetect() : 0; }
@@ -138,6 +144,8 @@ static void temporaryAndDisplayClients() {
     scan->~ScanLease();
 
     auto lcd = std::make_unique<LCDManager>();
+    lcd->_activeId = "owned";
+    assert(!lcd->deinitialize("other") && lcd->_activeId == "owned" && lcd->_initialized);
     assert(bus.acquire(lcd.get(), 4, 5, 100000, error)); lcd->_busAcquired = true;
     {
         BusHolder holder;

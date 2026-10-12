@@ -1,0 +1,79 @@
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <vector>
+#include <iostream>
+
+// std::string supplies only the String operations actually used by these two
+// extracted production blocks. This is not an Arduino allocation-failure test.
+using String = std::string;
+static std::string oracle(const uint8_t* bytes, size_t size) {
+    std::string result;
+    for (size_t i = 0; i < size; ++i) {
+        char byte[4];
+        std::snprintf(byte, sizeof(byte), "%02X", unsigned(bytes[i]));
+        if (i) result += ' ';
+        result += byte;
+    }
+    return result;
+}
+
+// Keep the independent oracle above the poison boundary: production capture
+// must compile without calling any printf-family formatter.
+#define snprintf FASTBEE_FORBIDDEN_snprintf
+#define sprintf FASTBEE_FORBIDDEN_sprintf
+#define printf FASTBEE_FORBIDDEN_printf
+static void captureTx(bool heapSafe, const uint8_t* request, size_t reqLen,
+                      String& _lastTxHex, String& _lastRxHex) {
+@TX_BLOCK@
+}
+static void captureRx(bool heapSafe, const uint8_t* respBuf, size_t respIdx,
+                      String& _lastTxHex, String& _lastRxHex) {
+    (void)_lastTxHex;
+@RX_BLOCK@
+}
+#undef snprintf
+#undef sprintf
+#undef printf
+
+static size_t checks = 0;
+static bool check(bool condition, const char* name) {
+    ++checks;
+    if (!condition) std::cerr << "FAIL " << name << '\n';
+    return condition;
+}
+static bool exercise(const std::vector<uint8_t>& source) {
+    const auto before = source;
+    const uint8_t* bytes = source.empty() ? nullptr : source.data();
+    const std::string expected = oracle(bytes, source.size());
+    std::string tx = "old-tx", rx = "old-rx";
+    captureTx(false, bytes, source.size(), tx, rx);
+    if (!check(tx == "old-tx" && rx == "old-rx", "tx heapSafe false keeps both")) return false;
+    captureRx(false, bytes, source.size(), tx, rx);
+    if (!check(tx == "old-tx" && rx == "old-rx", "rx heapSafe false keeps both")) return false;
+    captureTx(true, bytes, source.size(), tx, rx);
+    if (!check(tx == expected && rx.empty(), "tx resets rx and exact bytes")) return false;
+    tx = "tx-sentinel"; rx = "stale-longer-rx";
+    captureRx(true, bytes, source.size(), tx, rx);
+    if (!check(tx == "tx-sentinel" && rx == expected, "rx keeps tx and exact bytes")) return false;
+    if (!check(source == before, "source bytes unchanged")) return false;
+    return check(expected.size() == (source.empty() ? 0 : source.size() * 3 - 1), "encoded length");
+}
+int main() {
+    if (!exercise({})) return 1; // null with length zero must never be dereferenced.
+    for (unsigned value = 0; value != 256; ++value)
+        if (!exercise({static_cast<uint8_t>(value)})) return 1;
+    for (size_t length : {size_t(2), size_t(7), size_t(8), size_t(31), size_t(32),
+                         size_t(254), size_t(255), size_t(256)}) {
+        std::vector<uint8_t> ascending(length), descending(length);
+        for (size_t i = 0; i < length; ++i) {
+            ascending[i] = static_cast<uint8_t>(i);
+            descending[i] = static_cast<uint8_t>(255 - i);
+        }
+        if (!exercise(ascending) || !exercise(descending)) return 1;
+    }
+    if (!exercise({0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xa5, 0xff})) return 1;
+    std::cout << "PASS checks=" << checks << '\n';
+    return 0;
+}

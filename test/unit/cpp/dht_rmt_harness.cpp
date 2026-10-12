@@ -4,9 +4,30 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cassert>
+#include <future>
+#include <mutex>
+#include <thread>
+#include "core/RuntimeResourceSnapshot.h"
 using std::isnan;
 using std::isinf;
 #define SOC_RMT_SUPPORTED 1
+#define ARDUINO_ARCH_ESP32 1
+class SensorDriver {
+public: static void snapshotDhtRmtResources(FastBee::DhtRmtResourceSnapshot&);
+};
+static std::mutex sensorMutex;
+static bool mutexExists = true;
+static unsigned mutexCreates = 0, snapshotLocks = 0;
+static std::mutex* sensor_bus_mutex(bool create = true) {
+    if (create && !mutexExists) { ++mutexCreates; mutexExists = true; }
+    return mutexExists ? &sensorMutex : nullptr;
+}
+static constexpr int pdTRUE = 1;
+static int xSemaphoreTake(std::mutex* mutex, unsigned timeout) {
+    assert(timeout == 0); ++snapshotLocks; return mutex->try_lock() ? pdTRUE : 0;
+}
+static void xSemaphoreGive(std::mutex* mutex) { mutex->unlock(); }
 static constexpr int LOW=0,HIGH=1,INPUT_PULLUP=2,OUTPUT=3;
 static constexpr int RMT_RX_MODE=0,RMT_MEM_NUM_BLOCKS_1=1,GPIO_MODE_INPUT_OUTPUT_OD=7,ESP_OK=0;
 using gpio_num_t=int;
@@ -15,18 +36,18 @@ struct rmt_data_t { unsigned duration0=0,level0=0,duration1=0,level1=0; };
 static std::string scenario;
 static uint64_t nowUs=0,releasedAt=0,armedAt=0;
 static bool active=false,armed=false,delivered=false,cleanupBlocked=false,interrupted=false;
-static unsigned line=1,initCalls=0,armCalls=0;
+static unsigned line=1,initCalls=0,armCalls=0,hardwareCalls=0;
 static rmt_data_t* output=nullptr;
 static size_t* countOutput=nullptr;
 static std::vector<rmt_data_t> frame;
 static uint32_t micros(){return static_cast<uint32_t>(nowUs++);}
 static uint32_t millis(){return static_cast<uint32_t>(nowUs/1000);}
 static void delay(unsigned ms){nowUs+=ms*1000ULL;}
-static void pinMode(int,int){if(active)throw std::string("pinMode detached live RMT");}
-static int digitalRead(int){return scenario=="stuck-low" ? 0 : 1;}
-static int gpio_get_level(int){return static_cast<int>(line);}
-static int gpio_set_direction(int,int){return 0;}
-static int gpio_pullup_en(int){return 0;}
+static void pinMode(int,int){++hardwareCalls;if(active)throw std::string("pinMode detached live RMT");}
+static int digitalRead(int){++hardwareCalls;return scenario=="stuck-low" ? 0 : 1;}
+static int gpio_get_level(int){++hardwareCalls;return static_cast<int>(line);}
+static int gpio_set_direction(int,int){++hardwareCalls;return 0;}
+static int gpio_pullup_en(int){++hardwareCalls;return 0;}
 static void expireHostLow(){
     // Model the RX idle threshold independently of polling by the CPU. The
     // peripheral can finish while the task is descheduled and still drives low.
@@ -35,6 +56,7 @@ static void expireHostLow(){
     }
 }
 static int gpio_set_level(int,unsigned v){
+    ++hardwareCalls;
     // A task can also be preempted after the final completion check. Keep this
     // remaining race visible as a failed frame, never fabricated sensor data.
     if(scenario=="arm-expiry-after-check"&&v&&line==0&&armed&&!delivered)nowUs+=12000;
@@ -42,11 +64,12 @@ static int gpio_set_level(int,unsigned v){
     if(v&&line==0&&armed)releasedAt=nowUs;
     line=v;return 0;
 }
-static bool rmtInit(int,int,int,unsigned frequency){++initCalls;if(frequency!=1000000)throw std::string("wrong tick");active=scenario!="init-fail";return active;}
-static bool rmtDeinit(int){if(cleanupBlocked)return false;active=false;armed=false;return true;}
-static bool rmtSetRxMaxThreshold(int,unsigned value){return value==10000&&scenario!="config-fail";}
-static bool rmtSetRxMinThreshold(int,unsigned value){return value==1;}
+static bool rmtInit(int,int,int,unsigned frequency){++hardwareCalls;++initCalls;if(frequency!=1000000)throw std::string("wrong tick");active=scenario!="init-fail";return active;}
+static bool rmtDeinit(int){++hardwareCalls;if(cleanupBlocked)return false;active=false;armed=false;return true;}
+static bool rmtSetRxMaxThreshold(int,unsigned value){++hardwareCalls;return value==10000&&scenario!="config-fail";}
+static bool rmtSetRxMinThreshold(int,unsigned value){++hardwareCalls;return value==1;}
 static bool rmtReadAsync(int,rmt_data_t* data,size_t* count){
+    ++hardwareCalls;
     if(line!=0||*count!=48)throw std::string("receiver not armed before open-drain release");
     ++armCalls;
     if(scenario=="arm-retry-fail"&&armCalls==2)return false;
@@ -59,6 +82,7 @@ static bool rmtReadAsync(int,rmt_data_t* data,size_t* count){
     return scenario!="arm-fail";
 }
 static bool rmtReceiveCompleted(int){
+    ++hardwareCalls;
     expireHostLow();
     if(delivered)return true;
     if(line==0)return false;
@@ -90,6 +114,27 @@ static void makeFrame(std::array<uint8_t,5> bytes){
 int main(int argc,char** argv){
     if(argc!=2)return 2;
     scenario=argv[1];
+    if (scenario=="snapshot-empty" || scenario=="snapshot-busy") {
+        FastBee::DhtRmtResourceSnapshot snapshot;
+        mutexExists=false;
+        SensorDriver::snapshotDhtRmtResources(snapshot);
+        assert(snapshot.supported && snapshot.retainedPin==-1 && mutexCreates==0 && snapshotLocks==0);
+        mutexExists=true;
+        std::promise<void> locked, release; auto untilRelease=release.get_future();
+        std::thread holder([&] { sensorMutex.lock(); locked.set_value(); untilRelease.wait(); sensorMutex.unlock(); });
+        locked.get_future().wait();
+        for (unsigned n=0; n<1000; ++n) {
+            SensorDriver::snapshotDhtRmtResources(snapshot);
+            assert(snapshot.status==FastBee::ResourceObservation::Busy && snapshot.retainedPin==-1);
+        }
+        release.set_value(); holder.join();
+        SensorDriver::snapshotDhtRmtResources(snapshot);
+        assert(snapshot.status==FastBee::ResourceObservation::Observed && snapshot.retainedPin==-1);
+        assert(initCalls==0 && armCalls==0 && nowUs==0 && mutexCreates==0 && hardwareCalls==0);
+        return 0;
+    }
+    const bool snapshotRetained=scenario=="snapshot-retained";
+    if (snapshotRetained) scenario="cleanup-recovery";
     auto type=SensorDriverType::DHT11;
     std::array<uint8_t,5> bytes={55,0,24,0,79};
     float expectedHumidity=55,expectedTemperature=24;
@@ -131,9 +176,19 @@ int main(int argc,char** argv){
         if(scenario=="arm-expiry-after-check"&&armCalls!=1)throw std::string("late expiry was hidden by an extra retry");
         if(scenario=="cleanup-recovery"){
             const auto calls=initCalls;
+            const auto observedTime=nowUs;
+            const auto observedCalls=hardwareCalls;
+            FastBee::DhtRmtResourceSnapshot snapshot;
+            for (unsigned n=0; n<1000; ++n) {
+                SensorDriver::snapshotDhtRmtResources(snapshot);
+                assert(snapshot.status==FastBee::ResourceObservation::Observed && snapshot.supported && snapshot.retainedPin==10);
+            }
+            assert(active && initCalls==calls && nowUs==observedTime && mutexCreates==0 && hardwareCalls==observedCalls);
             if(readDhtBounded(10,type,humidity,temperature,&diagnostic)||initCalls!=calls)throw std::string("failed cleanup allowed new RX");
             cleanupBlocked=false;scenario="valid";
             if(!readDhtBounded(10,type,humidity,temperature,&diagnostic))throw std::string("cleanup recovery failed");
+            SensorDriver::snapshotDhtRmtResources(snapshot);
+            assert(snapshot.retainedPin==-1);
         }
         if(active)throw std::string("channel leaked");
     }catch(const std::string& error){std::cerr<<scenario<<": "<<error<<'\n';return 1;}

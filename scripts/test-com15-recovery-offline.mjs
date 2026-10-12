@@ -65,7 +65,7 @@ const sources = ['scripts/test-com15-recovery-offline.mjs', 'scripts/test-device
   'test/browser/fixtures/device-control-layout-before.js', 'web-src/css/main.css',
   'web-src/modules/runtime/protocol/modbus-relay-motor.js',
   ...browserSuites.map(name => 'test/browser/suites/' + name + '.spec.ts'),
-  'web-src/js/state-sse.js', ...['core', 'render', 'modbus-ops', 'modbus-ctrl', 'layout']
+  'web-src/js/state-sse.js', 'web-src/js/utils.js', ...['core', 'render', 'modbus-ops', 'modbus-ctrl', 'layout']
     .map(name => 'web-src/modules/runtime/device-control/' + name + '.js')];
 const hashSources = () => Object.fromEntries(sources.map(file => [file,
   createHash('sha256').update(readFileSync(join(root, file))).digest('hex')]));

@@ -24,6 +24,8 @@ class LoggerRingRuntimeTests(unittest.TestCase):
             "LoggerSystem::LoggerSystem(", "LoggerSystem::~LoggerSystem(",
             "bool LoggerSystem::initialize(", "void LoggerSystem::enableFileLogging(",
             "void LoggerSystem::cancelFileLoggingRequest(",
+            "void LoggerSystem::enableLogViewer(", "void LoggerSystem::appendRecentLine(",
+            "size_t LoggerSystem::recentLogLineCount(",
             "void LoggerSystem::logToBuffer(", "size_t LoggerSystem::bufferedDataSize(",
             "void LoggerSystem::flushBufferInternal(", "void LoggerSystem::flushBuffer(",
             "void LoggerSystem::flushBufferIfDue(",
@@ -31,6 +33,7 @@ class LoggerRingRuntimeTests(unittest.TestCase):
             "const char* LoggerSystem::getLevelString(", "int LoggerSystem::espLogCallback(",
             "void LoggerSystem::captureRecentLine(", "size_t LoggerSystem::snapshotRecentLogs(",
             "bool LoggerSystem::lockLogFiles(", "void LoggerSystem::unlockLogFiles(",
+            "FastBee::FeatureInstanceSnapshot LoggerSystem::observeFeatureInstance(",
             "bool LoggerSystem::rotateLogFile(", "bool LoggerSystem::rotateLogFileInternal(",
             "bool LoggerSystem::clearLogFile(",
             "void LoggerSystem::writeRawLog(",
@@ -48,7 +51,7 @@ class LoggerRingRuntimeTests(unittest.TestCase):
             (temporary / "logger_degradation.inc").write_text(
                 "void degradeFileLogging(LoggerSystem& logger) {\n" + degradation + "\n}", encoding="utf-8")
             executable = temporary / ("logger.exe" if os.name == "nt" else "logger")
-            command = [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", f"-I{temporary}",
+            command = [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", f"-I{temporary}", f"-I{ROOT / 'include'}",
                        str(ROOT / "test/unit/cpp/logger_ring_runtime_harness.cpp"), "-o", str(executable)]
             result = subprocess.run(
                 command,

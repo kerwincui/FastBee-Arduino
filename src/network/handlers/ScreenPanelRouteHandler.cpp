@@ -3,6 +3,7 @@
 #if FASTBEE_ENABLE_SCREEN_PANEL || FASTBEE_ENABLE_POINT_HISTORY
 
 #include <AsyncJson.h>
+#include <cstring>
 #if FASTBEE_ENABLE_POINT_HISTORY
 #include <vector>
 #endif
@@ -370,7 +371,20 @@ void ScreenPanelRouteHandler::handleSaveHistoryConfig(
                                  "History sourceRef values must be strings");
             return;
         }
-        sources.emplace_back(rawSource.as<const char*>());
+        const JsonString text = rawSource.as<JsonString>();
+        // Validate the explicit JSON length before a C-string copy can hide a
+        // NUL suffix. Never submit a partial reference after allocation failure.
+        if (text.size() == 0 || text.size() > FastBee::PointHistory::MAX_SOURCE_REF_LENGTH ||
+            memchr(text.c_str(), '\0', text.size())) {
+            _ctx->sendBadRequest(request, "Invalid history sourceRef length or content");
+            return;
+        }
+        sources.emplace_back(text.c_str());
+        if (sources.back().length() != text.size() ||
+            memcmp(sources.back().c_str(), text.c_str(), text.size()) != 0) {
+            _ctx->sendError(request, 503, "Unable to prepare history configuration");
+            return;
+        }
     }
 
     auto& history = FastBee::PointHistory::instance();

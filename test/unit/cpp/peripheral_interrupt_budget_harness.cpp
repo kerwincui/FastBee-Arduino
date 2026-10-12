@@ -51,6 +51,7 @@ struct RuntimeState {
 #endif
 class PeripheralManager {
 public:
+    struct { bool current = true; bool interruptCurrent(const char*,uint8_t) const { return current; } } _managedPinIo;
     std::recursive_timed_mutex mutex;
     SemaphoreHandle_t _mutex = &mutex;
     std::map<uint8_t, String> pinToPeripheral;
@@ -79,6 +80,7 @@ static void configure(PeripheralManager& pm, TestQueue& queue, PeripheralType ty
     PeripheralManager::_isrQueue = &queue;
     pm.pinToPeripheral[7] = "input";
     auto& input = pm.peripherals["input"];
+    input.enabled = true;
     input.type = type;
     input.params.gpio.debounceMs = 5;
     input.params.gpio.invertLogic = false;
@@ -146,7 +148,18 @@ static void debounceAndLogicalLevelRemainCorrect() {
     assert(callbacks == 2 && pm._digitalInterruptCount == 1);
     assert(pm.runtimeStates["input"].state.gpio.currentState == GPIOState::STATE_LOW);
 }
+static void retiredOrFailedHandlersDoNotDispatch() {
+    PeripheralManager pm; TestQueue queue;
+    configure(pm, queue, PeripheralType::GPIO_INTERRUPT_RISING);
+    pm._managedPinIo.current = false;
+    queue.events.push_back({7,1}); pm.processInterruptQueue();
+    assert(callbacks == 0 && pm._digitalInterruptCount == 0 && queue.events.empty());
+    pm._managedPinIo.current = true; pm.peripherals["input"].enabled = false;
+    queue.events.push_back({7,1}); pm.processInterruptQueue();
+    assert(callbacks == 0 && pm._digitalInterruptCount == 0 && queue.events.empty());
+}
 int main() {
+    retiredOrFailedHandlersDoNotDispatch();
     continuouslyRefilledQueue();
     timeBudgetAndClockWrap();
     slowConfigurationWriterPreservesEvents();

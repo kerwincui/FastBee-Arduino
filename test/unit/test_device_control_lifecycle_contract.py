@@ -1,4 +1,5 @@
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,49 @@ MODBUS_CTRL = (ROOT / "web-src/modules/runtime/device-control/modbus-ctrl.js").r
 
 
 class DeviceControlLifecycleContractTests(unittest.TestCase):
+    def test_modbus_polling_warning_uses_chinese_and_escapes_other_text(self):
+        script = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const {minifyRuntimeJS} = require('./scripts/minify-js');
+const raw = fs.readFileSync('web-src/modules/runtime/device-control/render.js', 'utf8');
+const route = fs.readFileSync('src/network/handlers/ModbusRouteHandler.cpp', 'utf8');
+const messages = Array.from(route.matchAll(/warnings\.add\("([^"]+)"\)/g), row => row[1]);
+assert.equal(messages.length, 8);
+const known = 'Many polling tasks are enabled; watch bus load and Web response time.';
+assert(messages.includes(known));
+for (const source of [raw, minifyRuntimeJS(raw)]) {
+    const app = {};
+    const context = vm.createContext({AppState: app, window: {}});
+    context.window = context;
+    vm.runInContext(fs.readFileSync('web-src/js/utils.js', 'utf8'), context);
+    vm.runInContext(source, context);
+    app._modbusStatus = {health: {riskLevel: 'medium', enabledTaskCount: 5, warnings: [known]}};
+    const knownHtml = app._renderModbusHealthBanner();
+    assert.equal(app._formatDcModbusWarning(known), '轮询任务较多，请留意总线负载和页面响应速度。');
+    assert(!knownHtml.includes(known), 'Observed API warning must use the page language');
+    assert(knownHtml.includes('轮询任务较多，请留意总线负载和页面响应速度。'));
+    assert(knownHtml.includes('Modbus 轮询健康'));
+    assert.equal(app._modbusStatus.health.warnings[0], known, 'API data must remain unchanged');
+    for (const unknown of [...messages.filter(message => message !== known), 'Unrecognized warning', '<img src=x onerror="alert(1)">', '__proto__']) {
+        app._modbusStatus = {health: {riskLevel: 'medium', warnings: [unknown]}};
+        const html = app._renderModbusHealthBanner();
+        assert.equal(app._formatDcModbusWarning(unknown), unknown);
+        assert.equal(app._modbusStatus.health.warnings[0], unknown, 'API data must remain unchanged');
+        assert(html.includes(context.escapeHtml(unknown)), 'Unknown messages must remain visible and escaped');
+        assert(!html.includes('<img src=x'), 'Unknown warning cannot inject HTML');
+    }
+    app._modbusStatus = {health: {riskLevel: 'medium', warnings: messages}};
+    assert.equal((app._renderModbusHealthBanner().match(/class="dc-risk-warning"/g) || []).length, 3);
+    app._modbusStatus = {health: {riskLevel: 'low', enabledTaskCount: 0, warnings: []}};
+    assert.equal(app._renderModbusHealthBanner(), '');
+}
+"""
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True,
+                                text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_disabled_direct_page_stops_before_runtime_loader(self):
         gate = STATE.index("const featureUnavailable = !!featureEntry")
         fallback = STATE.index("disabledError.code = 'FEATURE_DISABLED'", gate)
@@ -65,12 +109,51 @@ class DeviceControlLifecycleContractTests(unittest.TestCase):
         self.assertIn("return device.enabled !== false", CORE)
 
     def test_initial_page_load_does_not_call_motor_command_endpoint(self):
-        init_start = CORE.index("_dcInitModbusDeviceStates: async function()")
-        init_end = CORE.index("_dcStopAllAutoRefresh: function()", init_start)
+        init_start = CORE.index("_dcInitModbusDeviceStates: async function(")
+        init_end = CORE.index("_dcStopAllAutoRefresh: function(", init_start)
         init_body = CORE[init_start:init_end]
         self.assertNotIn("_dcRefreshMotorStatus", init_body)
         self.assertIn("explicit refresh button", init_body)
         self.assertIn("_dcRefreshMotorStatus: function(devIdx)", MODBUS_CTRL)
+
+    def test_initial_motor_state_loading_is_read_only_for_both_modes(self):
+        script = """
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const {minifyRuntimeJS} = require('./scripts/minify-js');
+const raw = fs.readFileSync('web-src/modules/runtime/device-control/core.js', 'utf8');
+(async () => {
+  for (const source of [raw, minifyRuntimeJS(raw)]) {
+    for (const immediate of [false, true]) {
+      const state = {}, calls = [];
+      const context = vm.createContext({AppState: state, window: {}});
+      vm.runInContext(fs.readFileSync('web-src/js/utils.js', 'utf8'), context);
+      vm.runInContext(source, context);
+      Object.assign(state, {
+        _modbusDevices: ['motor', 'relay', 'pwm', 'pid', 'motor'].map(deviceType => ({deviceType})),
+        _dcIsLifecycleActive: () => true,
+        _dcDelay: async () => true,
+        _dcRefreshCoilStatus: async () => calls.push('relay'),
+        _dcRefreshPwmStatus: async () => calls.push('pwm'),
+        _dcRefreshPidStatus: async () => calls.push('pid'),
+        _dcRefreshMotorStatus: () => { throw Error('Initial navigation invoked a motor command'); }
+      });
+      await state._dcInitModbusDeviceStates(immediate);
+      assert.deepEqual(calls, ['relay', 'pwm', 'pid']);
+      assert.equal(state._dcModbusInitRunning, false);
+      calls.length = 0;
+      state._dcIsLifecycleActive = () => false;
+      await state._dcInitModbusDeviceStates(immediate);
+      assert.deepEqual(calls, [], 'Hidden/stale page must not continue probing');
+      assert.equal(state._dcModbusInitRunning, false);
+    }
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True,
+                                text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_stale_load_and_runtime_callbacks_are_generation_guarded(self):
         self.assertIn("var loadGeneration = ++this._dcLifecycleGeneration", CORE)

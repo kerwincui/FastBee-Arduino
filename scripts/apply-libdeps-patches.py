@@ -19,6 +19,7 @@ It can also be run directly:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -701,8 +702,224 @@ def _patch_final_buffer_completion(text: str) -> Tuple[str, bool]:
     return text, changed
 
 
-def _patch_web_response_impl(path: Path) -> bool:
-    text = _read(path)
+_FINITE_PROGRESS_BASE = """  // FastBee patch: finite response progress hook (other response types opt out).
+  virtual bool _fastbeeCheckProgress(AsyncWebServerRequest *request) {
+    (void)request;
+    return true;
+  }
+"""
+
+_FINITE_PROGRESS_FIELDS = """  // FastBee patch: bounded finite-response progress, no per-response allocation.
+  bool _fastbeeProgressInitialized{false};
+  uint32_t _fastbeeLastProgressMs{0};
+  size_t _fastbeeObservedWritten{0};
+  size_t _fastbeeDrainedHighWater{0};
+"""
+
+_FINITE_PROGRESS_DECLARATION = "  bool _fastbeeCheckProgress(AsyncWebServerRequest *request) final;\n"
+
+_FINITE_PROGRESS_METHOD = """bool AsyncAbstractResponse::_fastbeeCheckProgress(AsyncWebServerRequest *request) {
+  // FastBee patch: finite responses cannot renew their deadline with empty send().
+  if (_chunked || !_sendContentLength) return true;
+  if (_state == RESPONSE_FAILED) return false;
+  if (_state == RESPONSE_SETUP || _state == RESPONSE_END) return true;
+  const size_t tcpSpace = std::min<size_t>(TCP_SND_BUF, request->client()->space());
+  if (_state == RESPONSE_WAIT_ACK && !_send_buffer_len &&
+      !_fastbeePendingOutputBytes && tcpSpace == TCP_SND_BUF) {
+    _state = RESPONSE_END;
+    return true;
+  }
+  const size_t outstanding = TCP_SND_BUF - tcpSpace;
+  const size_t drained = _writtenLength - std::min(_writtenLength, outstanding);
+  const uint32_t now = millis();
+  if (!_fastbeeProgressInitialized) {
+    _fastbeeProgressInitialized = true;
+    _fastbeeLastProgressMs = now;
+    _fastbeeObservedWritten = _writtenLength;
+    _fastbeeDrainedHighWater = drained;
+    return true;
+  }
+  // ACK callback lengths may be duplicated; only accepted bytes and actual
+  // sndbuf recovery count. A successful flush of old bytes is not new progress.
+  if (_writtenLength > _fastbeeObservedWritten || drained > _fastbeeDrainedHighWater) {
+    _fastbeeLastProgressMs = now;
+    _fastbeeObservedWritten = std::max(_fastbeeObservedWritten, _writtenLength);
+    _fastbeeDrainedHighWater = std::max(_fastbeeDrainedHighWater, drained);
+  }
+  if (static_cast<uint32_t>(now - _fastbeeLastProgressMs) >= 10000U) {
+    _state = RESPONSE_FAILED;
+    return false;
+  }
+  return true;
+}
+
+"""
+
+_FINITE_REQUEST_CHECK = """  // FastBee patch: check finite progress even when canSend() is false.
+  if (_response && _client && !_response->_fastbeeCheckProgress(this)) {
+    _client->close();
+    return;
+  }
+"""
+
+
+def _strict_finite_insertion(text: str, anchor: str, addition: str, label: str) -> Tuple[str, bool]:
+    """Accept only a complete old or complete new insertion, never a partial marker."""
+    patched = anchor + addition
+    if patched in text:
+        if text.count(patched) != 1:
+            raise PatchError(f"{label}: duplicate complete insertion")
+        return text, False
+    if addition.splitlines()[0].strip() in text:
+        raise PatchError(f"{label}: incomplete finite-progress insertion")
+    return _replace_once(text, anchor, patched, label)
+
+
+def _patch_finite_progress_base(text: str) -> Tuple[str, bool]:
+    if "_fastbeeCheckProgress" in text and _FINITE_PROGRESS_BASE not in text:
+        raise PatchError("finite progress base hook: partial declaration")
+    return _strict_finite_insertion(
+        text, "  virtual ~AsyncWebServerResponse() {}\n", _FINITE_PROGRESS_BASE,
+        "finite progress base hook",
+    )
+
+
+def _patch_finite_progress_impl(text: str) -> Tuple[str, bool]:
+    start = text.find("class AsyncAbstractResponse : public AsyncWebServerResponse {")
+    if start < 0:
+        raise PatchError("finite progress: missing Abstract class")
+    prefix, body = text[:start], text[start:]
+    if (_FINITE_PROGRESS_FIELDS in body) != (_FINITE_PROGRESS_DECLARATION in body):
+        raise PatchError("finite progress Abstract: fields/declaration upgrade is incomplete")
+    if any(name in body for name in (
+        "_fastbeeProgressInitialized", "_fastbeeLastProgressMs",
+        "_fastbeeObservedWritten", "_fastbeeDrainedHighWater",
+    )) and _FINITE_PROGRESS_FIELDS not in body:
+        raise PatchError("finite progress Abstract fields: partial state")
+    if "_fastbeeCheckProgress" in body and _FINITE_PROGRESS_DECLARATION not in body:
+        raise PatchError("finite progress Abstract declaration: partial hook")
+    body, fields_changed = _strict_finite_insertion(
+        body, "  size_t _fastbeePendingOutputBytes{0};\n", _FINITE_PROGRESS_FIELDS,
+        "finite progress Abstract fields",
+    )
+    body, declaration_changed = _strict_finite_insertion(
+        body, "  virtual ~AsyncAbstractResponse() {}\n", _FINITE_PROGRESS_DECLARATION,
+        "finite progress Abstract declaration",
+    )
+    return prefix + body, fields_changed or declaration_changed
+
+
+def _patch_finite_progress_request(text: str) -> Tuple[str, bool]:
+    if text.count(_FINITE_REQUEST_CHECK) not in (0, 2):
+        raise PatchError("finite progress Request: only one callback was upgraded")
+    changed = False
+    for signature in (
+        "void AsyncWebServerRequest::_onPoll() {\n",
+        "void AsyncWebServerRequest::_onTimeout(uint32_t time) {\n",
+    ):
+        start = text.find(signature)
+        if start < 0:
+            raise PatchError("finite progress: missing Request callback")
+        next_method = text.find("\nvoid AsyncWebServerRequest::", start + len(signature))
+        end = len(text) if next_method < 0 else next_method
+        body = text[start:end]
+        if "_response->_fastbeeCheckProgress" in body and _FINITE_REQUEST_CHECK not in body:
+            raise PatchError("finite progress Request: partial callback hook")
+        # Keep the pre-existing local shared_ptr before any synchronous close.
+        owner = "  std::shared_ptr<AsyncWebServerRequest> self = _this;"
+        owner_start = body.find(owner)
+        if owner_start < 0:
+            raise PatchError("finite progress: missing Request lifetime owner")
+        owner_end = body.find("\n", owner_start) + 1
+        anchor = body[:owner_end]
+        body, did_change = _strict_finite_insertion(body, anchor, _FINITE_REQUEST_CHECK, "finite Request check")
+        text = text[:start] + body + text[end:]
+        changed = changed or did_change
+    return text, changed
+
+
+def _patch_finite_progress_response(text: str) -> Tuple[str, bool]:
+    signature = "size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, size_t len, uint32_t time) {\n"
+    following = "size_t AsyncAbstractResponse::_readDataFromCacheOrContent("
+    start, end = text.find(signature), text.find(following)
+    if start < 0 or end <= start:
+        raise PatchError("finite progress: missing Abstract response boundaries")
+    additions = (
+        (signature + "  (void)time;\n", "  if (!_fastbeeCheckProgress(request)) return 0;\n"),
+        ("      _writtenLength += pcb_written;\n", "      if (pcb_written) _fastbeeCheckProgress(request);\n"),
+        ("    _writtenLength += payloadlen;\n", "    if (payloadlen) _fastbeeCheckProgress(request);\n"),
+    )
+    body = text[start:end]
+    marker = "bool AsyncAbstractResponse::_fastbeeCheckProgress("
+    if marker in text:
+        if text.count(_FINITE_PROGRESS_METHOD) != 1 or any(body.count(a + b) != 1 for a, b in additions):
+            raise PatchError("finite progress: partial response method/observations")
+        return text, False
+    if "_fastbeeCheckProgress(request)" in body:
+        raise PatchError("finite progress: observations without method")
+    for anchor, addition in additions:
+        body, _ = _replace_once(body, anchor, anchor + addition, "finite response observation")
+    return text[:start] + _FINITE_PROGRESS_METHOD + body + text[end:], True
+
+
+
+_BASIC_FINITE_PROGRESS_METHOD = (
+    _FINITE_PROGRESS_METHOD.replace("AsyncAbstractResponse::", "AsyncBasicResponse::")
+    .replace("  if (_chunked || !_sendContentLength) return true;\n", "")
+    .replace(" && !_send_buffer_len", "")
+)
+
+
+def _patch_basic_finite_progress_impl(text: str) -> Tuple[str, bool]:
+    boundary = "class AsyncAbstractResponse : public AsyncWebServerResponse {"
+    if text.count(boundary) != 1:
+        raise PatchError("finite progress Basic: missing Abstract boundary")
+    body, suffix = text.split(boundary, 1)
+    if (_FINITE_PROGRESS_FIELDS in body) != (_FINITE_PROGRESS_DECLARATION in body):
+        raise PatchError("finite progress Basic: fields/declaration upgrade is incomplete")
+    if any(name in body for name in (
+        "_fastbeeProgressInitialized", "_fastbeeLastProgressMs",
+        "_fastbeeObservedWritten", "_fastbeeDrainedHighWater",
+    )) and _FINITE_PROGRESS_FIELDS not in body:
+        raise PatchError("finite progress Basic fields: partial state")
+    if "_fastbeeCheckProgress" in body and _FINITE_PROGRESS_DECLARATION not in body:
+        raise PatchError("finite progress Basic declaration: partial hook")
+    body, fields_changed = _strict_finite_insertion(
+        body, "  size_t _fastbeePendingOutputBytes{0};\n", _FINITE_PROGRESS_FIELDS,
+        "finite progress Basic fields",
+    )
+    body, declaration_changed = _strict_finite_insertion(
+        body, "  void _respond(AsyncWebServerRequest *request) final;\n", _FINITE_PROGRESS_DECLARATION,
+        "finite progress Basic declaration",
+    )
+    return body + boundary + suffix, fields_changed or declaration_changed
+
+
+def _patch_basic_finite_progress_response(text: str) -> Tuple[str, bool]:
+    signature = "size_t AsyncBasicResponse::write_send_buffs(AsyncWebServerRequest *request, size_t len, uint32_t time) {\n"
+    following = "/*\n * Abstract Response\n *\n */"
+    start = text.find(signature)
+    end = text.find(following, start)
+    if start < 0 or end <= start:
+        raise PatchError("finite progress: missing Basic response boundaries")
+    additions = (
+        (signature + "  (void)time;\n", "  if (!_fastbeeCheckProgress(request)) return 0;\n"),
+        ("    _writtenHeadersLength += pcb_written;\n", "    if (pcb_written) _fastbeeCheckProgress(request);\n"),
+        ("    payloadlen += pcb_written;      // data writtent in current buff\n", "    if (pcb_written) _fastbeeCheckProgress(request);\n"),
+    )
+    body = text[start:end]
+    if "bool AsyncBasicResponse::_fastbeeCheckProgress(" in text:
+        if text.count(_BASIC_FINITE_PROGRESS_METHOD) != 1 or any(body.count(a + b) != 1 for a, b in additions):
+            raise PatchError("finite progress: partial Basic method/observations")
+        return text, False
+    if "_fastbeeCheckProgress(request)" in body:
+        raise PatchError("finite progress Basic: observations without method")
+    for anchor, addition in additions:
+        body, _ = _replace_once(body, anchor, anchor + addition, "finite Basic observation")
+    return text[:start] + _BASIC_FINITE_PROGRESS_METHOD + body + text[end:], True
+
+
+def _patch_web_response_impl_text(text: str) -> Tuple[str, bool]:
     marker = "FastBee patch: dynamic send buffer"
     changed = False
     old = "  std::unique_ptr<std::array<uint8_t, ASYNC_RESPONCE_BUFF_SIZE> > _send_buffer;"
@@ -723,6 +940,15 @@ def _patch_web_response_impl(path: Path) -> bool:
             raise PatchError("WebResponseImpl.h expected two response header counters")
         text = text.replace(anchor, anchor + "\n" + pending)
         changed = True
+    text, finite_changed = _patch_finite_progress_impl(text)
+    changed = changed or finite_changed
+    text, basic_changed = _patch_basic_finite_progress_impl(text)
+    changed = changed or basic_changed
+    return text, changed
+
+
+def _patch_web_response_impl(path: Path) -> bool:
+    text, changed = _patch_web_response_impl_text(_read(path))
     if changed:
         _write(path, text)
     return changed
@@ -767,8 +993,7 @@ def _patch_bounded_response_batch(text: str) -> Tuple[str, bool]:
     return text, True
 
 
-def _patch_web_responses(path: Path) -> bool:
-    text = _read(path)
+def _patch_web_responses_text(text: str) -> Tuple[str, bool]:
     changed = False
     replacements = [
         (
@@ -913,6 +1138,15 @@ def _patch_web_responses(path: Path) -> bool:
     changed = changed or did_change
     text, did_change = _patch_peer_drained_completion(text)
     changed = changed or did_change
+    text, did_change = _patch_finite_progress_response(text)
+    changed = changed or did_change
+    text, did_change = _patch_basic_finite_progress_response(text)
+    changed = changed or did_change
+    return text, changed
+
+
+def _patch_web_responses(path: Path) -> bool:
+    text, changed = _patch_web_responses_text(_read(path))
     if changed:
         _write(path, text)
     return changed
@@ -1218,7 +1452,11 @@ def _patch_web_request_source_text(text: str) -> Tuple[str, bool]:
             "WebRequest bounded ACK-timeout recovery",
         ),
     ):
-        if new in text:
+        if new in text or (
+            label == "WebRequest bounded ACK-timeout recovery"
+            and new.replace("  std::shared_ptr<AsyncWebServerRequest> self = _this;\n",
+                            "  std::shared_ptr<AsyncWebServerRequest> self = _this;\n" + _FINITE_REQUEST_CHECK) in text
+        ):
             continue
         text, did_change = _replace_once(text, old, new, label)
         changed = changed or did_change
@@ -1406,6 +1644,27 @@ def _patch_async_tcp_source_text(text: str) -> Tuple[str, bool]:
     return text, changed
 
 
+def _patch_async_tcp_admission_snapshot(header: str, source: str):
+    """Expose existing atomic count only; no new counter or lifecycle mutation."""
+    declaration = "  static uint32_t fastbeeAcceptedClientSnapshot();\n"
+    implementation = 'uint32_t AsyncClient::fastbeeAcceptedClientSnapshot() {\n  return __atomic_load_n(&_fastbee_accepted_count, __ATOMIC_RELAXED);\n}\n\nextern "C" bool fastbee_async_tcp_admission_snapshot(uint32_t* accepted, uint32_t* limit) {\n  if (!accepted || !limit) return false;\n  *accepted = AsyncClient::fastbeeAcceptedClientSnapshot();\n#ifdef CONFIG_ASYNC_TCP_MAX_CONNECTIONS\n  *limit = CONFIG_ASYNC_TCP_MAX_CONNECTIONS;\n#else\n  *limit = 4U;\n#endif\n  return true;\n}\n'
+    header_has = declaration in header
+    source_has = "fastbee_async_tcp_admission_snapshot" in source
+    if header_has != source_has:
+        raise PatchError("AsyncTCP admission snapshot partially present")
+    if header_has:
+        if (header.count(declaration) != 1 or source.count(implementation) != 1
+                or source.count('extern "C" bool fastbee_async_tcp_admission_snapshot(') != 1):
+            raise PatchError("AsyncTCP admission snapshot source differs")
+        return header, source, False
+    anchor = "class AsyncClient {\npublic:\n"
+    if header.count(anchor) != 1 or "_fastbee_accepted_count" not in source:
+        raise PatchError("AsyncTCP admission snapshot counter or class missing")
+    header = header.replace(anchor, anchor + declaration, 1)
+    source = source.rstrip() + "\n\n" + implementation
+    return header, source, True
+
+
 def apply_to_async_tcp_library(
     library_dir: Path, *, log: Callable[[str], None] = print
 ) -> bool:
@@ -1434,6 +1693,9 @@ def apply_to_async_tcp_library(
     original_source = _read(source_path)
     header, header_changed = _patch_async_tcp_header_text(original_header)
     source, source_changed = _patch_async_tcp_source_text(original_source)
+    header, source, snapshot_changed = _patch_async_tcp_admission_snapshot(header, source)
+    header_changed = header_changed or snapshot_changed
+    source_changed = source_changed or snapshot_changed
     if header_changed or source_changed:
         # Both transformations are validated before the first write. If the
         # second write fails, restore both originals so a later incremental
@@ -1463,6 +1725,87 @@ def apply_to_async_tcp_library(
     return changed
 
 
+_NEOPIXEL_UPSTREAM_SHA256 = {
+    "esp.c": "1f158b01845a3798f5cba7094c8fffba7effd96fe1903a379472ddc563ef1905",
+    "Adafruit_NeoPixel.cpp": "90e288b7c1b32ed21fec8c0e782acb5526ebf3a167a0fc35c9dd1ee6e60e97f0",
+    "Adafruit_NeoPixel.h": "25a8279dcaa27519c92726fe3dcced0e452ec7c2786c303f3e18cc82028e59f4",
+}
+_NEOPIXEL_ABI_SHA256 = "bc2afcd3bf070ca0d5b9f543f6f6877fcfa6e8a3a49ebbc82ee0f8728a3254ef"
+_NEOPIXEL_PRE_LTO_PATCH_SHA256 = "266bf1b3028657180a6729d67d47ccf061beaea5099074849c664a0a44a57524"
+
+
+def _neopixel_abi_include_dir(project_dir: Path) -> Path:
+    """Use the one archived project ABI, never a generated libdeps copy."""
+    include_dir = project_dir.resolve() / "include"
+    header = include_dir / "peripherals/NeoPixelTransport.h"
+    if not header.is_file() or hashlib.sha256(_read(header).encode("utf-8")).hexdigest() != _NEOPIXEL_ABI_SHA256:
+        raise PatchError("NeoPixel project ABI missing or unsupported source SHA256")
+    return include_dir
+
+
+def configure_neopixel_include_path(build_env, project_dir: Path) -> None:
+    # PlatformIO clones this pre-build environment for dependency libraries.
+    # PROJECT_INCLUDE_DIR is otherwise added only to the project's own builder.
+    # Keep the canonical header in SCons' dependency graph for incremental builds.
+    build_env.PrependUnique(CPPPATH=[str(_neopixel_abi_include_dir(project_dir))])
+
+
+def _neopixel_patched_source(project_dir: Path | None = None) -> tuple[str, str]:
+    # SCons executes extra scripts without a dependable __file__; callers from
+    # that path provide PROJECT_DIR explicitly. Import/unit use has __file__.
+    root = project_dir if project_dir is not None else Path(__file__).resolve().parents[1]
+    _neopixel_abi_include_dir(root)
+    folder = root / "patches/libdeps/Adafruit_NeoPixel@1.15.5"
+    original = _read(folder / "esp.upstream.c")
+    if hashlib.sha256(original.encode("utf-8")).hexdigest() != _NEOPIXEL_UPSTREAM_SHA256["esp.c"]:
+        raise PatchError("NeoPixel pinned upstream fixture SHA256 mismatch")
+    start = original.index("#ifdef HAS_ESP_IDF_5\n") + len("#ifdef HAS_ESP_IDF_5\n")
+    end = original.index('\n#else\n\n#include "driver/rmt.h"', start)
+    payload = _read(folder / "esp-idf5.c").rstrip("\n")
+    return original, original[:start] + "\n" + payload + "\n" + original[end:]
+
+
+def apply_to_neopixel_library(library_dir: Path, *, log: Callable[[str], None] = print,
+                              project_dir: Path | None = None) -> bool:
+    """Refuse unknown versions/source drift; keep the original license/IDF4 branch."""
+    metadata = library_dir / "library.properties"
+    if not metadata.is_file():
+        log(f"[FastBee] skip NeoPixel: library.properties missing at {library_dir}")
+        return False
+    versions = [line.split("=", 1)[1].strip() for line in _read(metadata).splitlines()
+                if line.startswith("version=")]
+    if versions != ["1.15.5"]:
+        raise PatchError(f"NeoPixel versions {versions}: checked transport requires exactly 1.15.5")
+    original, patched = _neopixel_patched_source(project_dir)
+    # Check all observed ABI/call-site sources BEFORE any mutation, including
+    # already-patched runs. An upstream metadata-only version match is unsafe.
+    for filename in ("Adafruit_NeoPixel.cpp", "Adafruit_NeoPixel.h"):
+        source = library_dir / filename
+        if not source.is_file() or hashlib.sha256(_read(source).encode("utf-8")).hexdigest() != _NEOPIXEL_UPSTREAM_SHA256[filename]:
+            raise PatchError(f"NeoPixel 1.15.5 {filename}: unsupported source SHA256")
+    path = library_dir / "esp.c"
+    if not path.is_file():
+        raise PatchError("NeoPixel 1.15.5 esp.c missing")
+    current = _read(path)
+    if current == patched:
+        log("[FastBee] NeoPixel 1.15.5: checked transport patch already present")
+        return False
+    if current != original and hashlib.sha256(current.encode("utf-8")).hexdigest() != _NEOPIXEL_PRE_LTO_PATCH_SHA256:
+        raise PatchError("NeoPixel 1.15.5 esp.c: unsupported source SHA256 (including modified patch)")
+    try:
+        _write(path, patched)
+        if _read(path) != patched:
+            raise OSError("patched source verification failed")
+    except (OSError, UnicodeError) as exc:
+        try:
+            _write(path, current)
+        except (OSError, UnicodeError) as rollback:
+            raise PatchError(f"NeoPixel patch failed: {exc}; rollback failed: {rollback}") from exc
+        raise PatchError(f"NeoPixel patch failed: {exc}; original restored") from exc
+    log("[FastBee] NeoPixel 1.15.5: checked transport patch applied")
+    return True
+
+
 def apply_to_library(library_dir: Path, *, log: Callable[[str], None] = print) -> bool:
     metadata_path = library_dir / "library.json"
     if not metadata_path.is_file():
@@ -1487,39 +1830,54 @@ def apply_to_library(library_dir: Path, *, log: Callable[[str], None] = print) -
     if not all(path.is_file() for path in (impl, responses, request_header, request_source)):
         raise PatchError(f"ESPAsyncWebServer v{version}: expected source files are missing")
 
-    original_request_header = _read(request_header)
-    original_request_source = _read(request_source)
+    originals = {path: path.read_bytes() for path in (request_header, request_source, impl, responses)}
+    texts = {path: raw.decode("utf-8").replace("\r\n", "\n") for path, raw in originals.items()}
+    progress_present = ["_fastbeeCheckProgress" in text for text in texts.values()]
+    basic_prefix = texts[impl].split("class AsyncAbstractResponse : public AsyncWebServerResponse {", 1)[0]
+    basic_present = ("_fastbeeCheckProgress" in basic_prefix,
+                     "bool AsyncBasicResponse::_fastbeeCheckProgress(" in texts[responses])
+    if any(basic_present) and not all(basic_present):
+        raise PatchError("finite progress Basic: incomplete two-file upgrade; no files were written")
+    if any(progress_present) and not all(progress_present):
+        raise PatchError("finite progress: incomplete four-file upgrade; no files were written")
+    original_request_header = texts[request_header]
+    original_request_source = texts[request_source]
     patched_request_header, request_header_changed = _patch_web_request_header_text(
         original_request_header
     )
+    patched_request_header, finite_header_changed = _patch_finite_progress_base(patched_request_header)
+    request_header_changed = request_header_changed or finite_header_changed
     patched_request_source, request_source_changed = _patch_web_request_source_text(
         original_request_source
     )
-    if request_header_changed or request_source_changed:
+    patched_request_source, finite_request_changed = _patch_finite_progress_request(patched_request_source)
+    request_source_changed = request_source_changed or finite_request_changed
+    patched_impl, impl_changed = _patch_web_response_impl_text(texts[impl])
+    patched_responses, responses_changed = _patch_web_responses_text(texts[responses])
+    changes = (
+        (request_header, patched_request_header, request_header_changed),
+        (request_source, patched_request_source, request_source_changed),
+        (impl, patched_impl, impl_changed),
+        (responses, patched_responses, responses_changed),
+    )
+    changed = any(did_change for _, _, did_change in changes)
+    if changed:
         try:
-            if request_header_changed:
-                _write(request_header, patched_request_header)
-            if request_source_changed:
-                _write(request_source, patched_request_source)
+            for path, patched, did_change in changes:
+                if did_change:
+                    _write(path, patched)
         except (OSError, UnicodeError) as exc:
             rollback_errors = []
-            for path, original in (
-                (request_header, original_request_header),
-                (request_source, original_request_source),
-            ):
+            for path, original in originals.items():
                 try:
-                    _write(path, original)
+                    path.write_bytes(original)
                 except (OSError, UnicodeError) as rollback_exc:
                     rollback_errors.append(f"{path.name}: {rollback_exc}")
             detail = (
                 f"; rollback failed ({', '.join(rollback_errors)})"
                 if rollback_errors else ""
             )
-            raise PatchError(f"WebRequest patch write failed: {exc}{detail}") from exc
-
-    changed = request_header_changed or request_source_changed
-    changed = _patch_web_response_impl(impl) or changed
-    changed = _patch_web_responses(responses) or changed
+            raise PatchError(f"Web response four-file patch write failed: {exc}{detail}") from exc
     log(
         f"[FastBee] ESPAsyncWebServer v{version}: "
         + ("response recovery patch applied" if changed else "response recovery patch already present")
@@ -1579,6 +1937,7 @@ def main() -> int:
     context = _platformio_context()
     if context:
         project_dir, pio_env, libdeps_dir = context
+        configure_neopixel_include_path(env, project_dir)  # type: ignore[name-defined, F821]
     else:
         project_dir = Path(args.project_dir).resolve()
         if not args.env:
@@ -1590,6 +1949,7 @@ def main() -> int:
         dependency_root = libdeps_dir / pio_env
         apply_to_library(dependency_root / "ESPAsyncWebServer")
         apply_to_async_tcp_library(dependency_root / "AsyncTCP")
+        apply_to_neopixel_library(dependency_root / "Adafruit NeoPixel", project_dir=project_dir)
     except PatchError as exc:
         print(f"[FastBee] ERROR: {exc}")
         return 1
@@ -1603,9 +1963,11 @@ else:
     if _ctx:
         _project_dir, _pio_env, _libdeps_dir = _ctx
         try:
+            configure_neopixel_include_path(env, _project_dir)  # type: ignore[name-defined, F821]
             _dependency_root = _libdeps_dir / _pio_env
             apply_to_library(_dependency_root / "ESPAsyncWebServer")
             apply_to_async_tcp_library(_dependency_root / "AsyncTCP")
+            apply_to_neopixel_library(_dependency_root / "Adafruit NeoPixel", project_dir=_project_dir)
         except PatchError as exc:
             print(f"[FastBee] ERROR: {exc}")
             raise

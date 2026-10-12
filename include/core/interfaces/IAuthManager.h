@@ -16,6 +16,7 @@ struct AuthResult {
     String username;
     String sessionId;
     String errorMessage;
+    uint64_t outputActor = 0; // Internal, boot-local; never sent as a credential.
     
     AuthResult() : success(false) {}
 };

@@ -1,0 +1,97 @@
+#include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"
+#include "core/CheckedAdc.h"
+#include <cassert>
+bool managerBusy=false;
+unsigned managerHeld=0;
+static unsigned reads=0,conversions=0,releases=0;
+static uint16_t values[16]{};
+static bool calibrationWorks=true;
+static FastBee::AdcStatus acquireStatus=FastBee::AdcStatus::Ok,
+    readStatus=FastBee::AdcStatus::Ok,releaseStatus=FastBee::AdcStatus::Ok;
+namespace FastBee {
+AdcStatus acquireAdc(const ResourceConsumerIdentity& owner,uint8_t,uint8_t,uint8_t) {
+    assert(owner.role==ResourceConsumerRole::Peripheral && std::string(owner.id)=="adc");
+    return acquireStatus;
+}
+AdcStatus releaseAdc(const ResourceConsumerIdentity&){++releases;return releaseStatus;}
+AdcStatus readAdcBatch(const ResourceConsumerIdentity&,uint16_t* samples,uint8_t count) {
+    reads+=count;
+    if(readStatus!=AdcStatus::Ok)return readStatus;
+    for(uint8_t i=0;i<count;++i)samples[i]=values[i];
+    return AdcStatus::Ok;
+}
+bool checkedAdcVoltage(uint8_t,uint8_t,uint8_t,uint16_t raw,float& volts) {
+    assert(managerHeld && raw==2238);++conversions;
+    volts=calibrationWorks?1.886f:NAN;return calibrationWorks;
+}
+const char* adcStatusName(AdcStatus status) {
+    return status==AdcStatus::ReleaseFailed?"ADC_RELEASE_FAILED":"ADC_READ_FAILED";
+}
+}
+// @report@
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];
+    PeripheralManager pm;AnalogReadSample sample;
+    using FastBee::AdcStatus;
+    if(mode=="zero") {
+        assert(pm.readAnalogSample("adc",sample) && sample.sampled && sample.raw==0 && sample.value==0);
+        AnalogInputQuality quality;
+        assert(formatAnalogReportValue(pm.config,pm,&quality)=="0" && quality==AnalogInputQuality::VALID);
+    } else if(mode=="failure") {
+        readStatus=AdcStatus::ReadFailed;
+        assert(!pm.readAnalogSample("adc",sample) && !sample.sampled && isnan(sample.value));
+        assert(sample.quality==AnalogInputQuality::READ_FAILED);
+        assert(isnan(pm.readAnalogValueByCStr("adc")));
+        AnalogInputQuality quality=AnalogInputQuality::VALID;
+        assert(formatAnalogReportValue(pm.config,pm,&quality).empty() && quality==AnalogInputQuality::READ_FAILED);
+        assert(pm.runtimeStates["adc"].lastError=="ADC_READ_FAILED");
+    } else if(mode=="filter") {
+        pm.config.params.adc.sampleCount=4;
+        values[0]=40;values[1]=3;values[2]=1;values[3]=7;
+        assert(pm.readAnalogSample("adc",sample) && sample.raw==12 && reads==4);
+        pm.config.params.adc.filterMode=1;
+        assert(pm.readAnalogSample("adc",sample) && sample.raw==7 && reads==8);
+        values[0]=0;values[1]=1;pm.config.params.adc.sampleCount=2;pm.config.params.adc.filterMode=0;
+        assert(pm.readAnalogSample("adc",sample) && sample.raw==0);
+    } else if(mode=="calibration") {
+        auto& adc=pm.config.params.adc;
+        adc.conversionEnabled=true;adc.calibratedVoltage=true;adc.signalMode=3;values[0]=2238;
+        assert(pm.readAnalogSample("adc",sample) && sample.raw==2238 && reads==1 && conversions==1);
+        assert(std::fabs(sample.value-24.3f)<.001f && std::fabs(sample.pinVoltage-1.886f)<.0001f);
+        assert(sample.quality==AnalogInputQuality::VALID && sample.calibratedVoltage && sample.pin==0);
+        calibrationWorks=false;
+        assert(pm.readAnalogSample("adc",sample) && sample.raw==2238 && sample.quality==AnalogInputQuality::READ_FAILED && isnan(sample.value));
+        AnalogInputQuality quality;
+        assert(formatAnalogReportValue(pm.config,pm,&quality).empty() && quality==AnalogInputQuality::READ_FAILED);
+    } else if(mode=="init") {
+        acquireStatus=AdcStatus::CreateFailed;
+        assert(!pm.setupAnalogInput(pm.config) && !reads && !releases);
+        acquireStatus=AdcStatus::Ok;readStatus=AdcStatus::ReadFailed;releaseStatus=AdcStatus::ReleaseFailed;
+        assert(!pm.setupAnalogInput(pm.config) && releases==1 && pm.runtimeStates["adc"].lastError=="ADC_RELEASE_FAILED");
+        assert(!pm.teardownAnalogInput(pm.config));
+        releaseStatus=AdcStatus::Ok;assert(pm.teardownAnalogInput(pm.config));
+    } else if(mode=="unavailable") {
+        managerBusy=true;assert(!pm.readAnalogSample("adc",sample) && !reads);
+        managerBusy=false;pm.config.enabled=false;assert(!pm.readAnalogSample("adc",sample) && !reads);
+        pm.config.enabled=true;pm.reserved=true;assert(!pm.readAnalogSample("adc",sample) && !reads);
+        pm.reserved=false;pm.pinAvailable=false;assert(!pm.setupAnalogInput(pm.config) && !reads);
+    } else if(mode=="gpio_resolution") {
+        pm.config.type=PeripheralType::GPIO_ANALOG_INPUT;
+        for(uint8_t bits=9;bits<=12;++bits) {
+            pm.config.params.adc.resolution=bits;
+            const uint16_t midpoint=uint16_t(1U<<(bits-1));
+            values[0]=midpoint;
+            auto before=reads;
+            assert(pm.readAnalogGpioBranch(pm.config)==GPIOState::STATE_LOW && reads==before+1);
+            values[0]=midpoint+1;
+            assert(pm.readAnalogGpioBranch(pm.config)==GPIOState::STATE_HIGH && reads==before+2);
+        }
+        pm.config.params.adc.resolution=0;values[0]=2048;
+        assert(pm.readAnalogGpioBranch(pm.config)==GPIOState::STATE_LOW);
+        values[0]=2049;assert(pm.readAnalogGpioBranch(pm.config)==GPIOState::STATE_HIGH);
+        readStatus=AdcStatus::ReadFailed;
+        assert(pm.readAnalogGpioBranch(pm.config)==GPIOState::STATE_UNDEFINED);
+    }
+    return 0;
+}

@@ -289,8 +289,7 @@ var PageLoader = {
             var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
             this._cacheModalTemplates(html, '', [
                 'change-password-modal',
-                'peripheral-modal',
-                'config-transfer-modal'
+                'peripheral-modal'
             ]);
             this._loadedPages['modals'] = true;
         });

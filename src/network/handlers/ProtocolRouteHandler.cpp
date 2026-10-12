@@ -1,5 +1,6 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "core/MemoryBudget.h"
+#include "network/FixedJsonField.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -20,6 +21,7 @@
 #include "network/OtaConfigStorage.h"
 #include "protocols/FastBeeOTAProtocol.h"
 #include "protocols/MotorProtocol.h"
+#include "protocols/ModbusRegisterMapping.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
 #include "protocols/RemoteResourceManager.h"
 #endif
@@ -62,7 +64,7 @@ bool validateModbusArrayUpdate(WebHandlerContext* ctx, AsyncWebServerRequest* re
                                bool tasks) {
     if (submitted.isEmpty()) return true;
     JsonDocument incoming;
-    if (deserializeJson(incoming, submitted) || !incoming.is<JsonArray>()) {
+    if (deserializeJson(incoming, submitted.c_str(), submitted.length()) || !incoming.is<JsonArray>()) {
         ctx->sendError(request, 400, "Modbus tasks/devices must be a JSON array");
         return false;
     }
@@ -78,9 +80,20 @@ bool validateModbusArrayUpdate(WebHandlerContext* ctx, AsyncWebServerRequest* re
             return false;
         }
     }
+    if (tasks) for (JsonObjectConst task : next) {
+        if (!FastBee::validModbusTaskMappings(task)) {
+            ctx->sendError(request, 400, "Invalid Modbus mapping type/word order/range/unit");
+            return false;
+        }
+    }
     if (!tasks) for (JsonObjectConst device : next) {
         MotorProtocol profile;
         if (const char* error = loadMotorProtocol(device, profile)) {
+            ctx->sendError(request, 400, error);
+            return false;
+        }
+        MotorTravelDraft draft;
+        if (const char* error = loadMotorTravelDraft(device, draft)) {
             ctx->sendError(request, 400, error);
             return false;
         }
@@ -117,7 +130,7 @@ bool validateModbusArrayUpdate(WebHandlerContext* ctx, AsyncWebServerRequest* re
             conflict |= affectedId(action.targetPeriphId);
             if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) continue;
             JsonDocument value;
-            if (!deserializeJson(value, action.actionValue) && value.is<JsonObject>()) {
+            if (!deserializeJson(value, action.actionValue.c_str(), action.actionValue.length()) && value.is<JsonObject>()) {
                 if (tasks) {
                     for (JsonVariantConst index : value["poll"].as<JsonArrayConst>()) conflict |= affected(index.as<int>());
                 } else {
@@ -157,9 +170,9 @@ void ensureFastBeeOtaTopic(JsonArray topics,
 
         // A complete FastBee template must not receive the product/device
         // prefix again. Preserve enabled=false as the user's OTA opt-out.
-        topic["topic"] = canonicalTopic;
-        topic["autoPrefix"] = false;
-        topic["topicType"] = MQTT_TOPIC_TYPE_OTA_UPGRADE;
+        FastBee::setFixedJsonField(topic, "topic", canonicalTopic);
+        FastBee::setFixedJsonField(topic, "autoPrefix", false);
+        FastBee::setFixedJsonField(topic, "topicType", MQTT_TOPIC_TYPE_OTA_UPGRADE);
         hasCanonical = true;
     }
 
@@ -176,8 +189,8 @@ void ensureFastBeeOtaTopic(JsonArray topics,
 
             // Migrate the former suffix+autoPrefix representation in place so
             // existing enabled/disabled intent and QoS/retain remain intact.
-            topic["topic"] = canonicalTopic;
-            topic["autoPrefix"] = false;
+            FastBee::setFixedJsonField(topic, "topic", canonicalTopic);
+            FastBee::setFixedJsonField(topic, "autoPrefix", false);
             hasCanonical = true;
             break;
         }
@@ -186,12 +199,12 @@ void ensureFastBeeOtaTopic(JsonArray topics,
     if (hasCanonical) return;
 
     JsonObject topic = topics.add<JsonObject>();
-    topic["topic"] = canonicalTopic;
-    topic["qos"] = 0;
-    if (publishTopic) topic["retain"] = false;
-    topic["enabled"] = true;
-    topic["autoPrefix"] = false;
-    topic["topicType"] = MQTT_TOPIC_TYPE_OTA_UPGRADE;
+    FastBee::setFixedJsonField(topic, "topic", canonicalTopic);
+    FastBee::setFixedJsonField(topic, "qos", 0);
+    if (publishTopic) FastBee::setFixedJsonField(topic, "retain", false);
+    FastBee::setFixedJsonField(topic, "enabled", true);
+    FastBee::setFixedJsonField(topic, "autoPrefix", false);
+    FastBee::setFixedJsonField(topic, "topicType", MQTT_TOPIC_TYPE_OTA_UPGRADE);
 }
 
 void ensureFastBeeOtaTopics(JsonObject mqtt) {
@@ -221,7 +234,7 @@ void disableUnsupportedBinaryOtaTopics(JsonObject mqtt) {
         if (topics.isNull()) continue;
         for (JsonObject topic : topics) {
             if ((topic["topicType"] | -1) == MQTT_TOPIC_TYPE_OTA_BINARY) {
-                topic["enabled"] = false;
+                FastBee::setFixedJsonField(topic, "enabled", false);
             }
         }
     }
@@ -236,18 +249,18 @@ void normalizeProtocolConfig(JsonDocument& doc) {
         doc["version"] = PROTOCOL_CONFIG_VERSION;
     }
     if (!doc["modbusRtu"]["enabled"].is<bool>()) {
-        doc["modbusRtu"]["enabled"] = true;
+        FastBee::setFixedJsonField(doc, "modbusRtu", "enabled", true);
     }
     if (!doc["modbusRtu"]["mode"].is<const char*>()) {
-        doc["modbusRtu"]["mode"] = "master";
+        FastBee::setFixedJsonField(doc, "modbusRtu", "mode", "master");
     }
     const int transferType = doc["modbusRtu"]["transferType"] | 0;
     if (transferType != 0 && transferType != 1) {
-        doc["modbusRtu"]["transferType"] = 0;
+        FastBee::setFixedJsonField(doc, "modbusRtu", "transferType", 0);
     }
     doc.as<JsonObject>().remove("modbusTcp");
     if (!doc["mqtt"]["enabled"].is<bool>()) {
-        doc["mqtt"]["enabled"] = true;
+        FastBee::setFixedJsonField(doc, "mqtt", "enabled", true);
     }
     ensureFastBeeOtaTopics(doc["mqtt"].as<JsonObject>());
     disableUnsupportedBinaryOtaTopics(doc["mqtt"].as<JsonObject>());
@@ -295,15 +308,15 @@ void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
     for (JsonObject topicIn : src) {
         const int topicType = topicIn["topicType"] | (publishList ? 0 : 1);
         JsonObject topicOut = dst.add<JsonObject>();
-        topicOut["topic"] = topicIn["topic"] | "";
-        topicOut["qos"] = topicIn["qos"] | 0;
-        topicOut["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+        FastBee::setFixedJsonField(topicOut, "topic", topicIn["topic"] | "");
+        FastBee::setFixedJsonField(topicOut, "qos", topicIn["qos"] | 0);
+        FastBee::setFixedJsonField(topicOut, "enabled", topicType == MQTT_TOPIC_TYPE_OTA_BINARY
             ? false
-            : (topicIn["enabled"] | true);
-        topicOut["autoPrefix"] = topicIn["autoPrefix"] | true;
-        topicOut["topicType"] = topicType;
+            : (topicIn["enabled"] | true));
+        FastBee::setFixedJsonField(topicOut, "autoPrefix", topicIn["autoPrefix"] | true);
+        FastBee::setFixedJsonField(topicOut, "topicType", topicType);
         if (publishList) {
-            topicOut["retain"] = topicIn["retain"] | false;
+            FastBee::setFixedJsonField(topicOut, "retain", topicIn["retain"] | false);
         }
     }
 }
@@ -327,30 +340,30 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
 
     // 运行时检测 PSRAM：有 PSRAM 则 TLS 可用，比编译期 BOARD_HAS_PSRAM 更准确
     // esp32-F4R0 固件部署到带 PSRAM 的板子时也能正确报告 TLS 支持
-    mqttOut["tlsSupported"] = (psramFound() && ESP.getPsramSize() > 0);
-    mqttOut["enabled"] = mqttIn["enabled"] | true;
-    mqttOut["scheme"] = mqttIn["scheme"] | "mqtt";
-    mqttOut["server"] = mqttIn["server"] | "iot.fastbee.cn";
-    mqttOut["otaBaseUrl"] = mqttIn["otaBaseUrl"] | "";
-    mqttOut["port"] = mqttIn["port"] | 1883;
-    mqttOut["clientId"] = mqttIn["clientId"] | "";
-    mqttOut["username"] = mqttIn["username"] | "";
-    mqttOut["password"] = mqttIn["password"] | "";
-    mqttOut["keepAlive"] = mqttIn["keepAlive"] | 60;
-    mqttOut["autoReconnect"] = mqttIn["autoReconnect"] | true;
-    mqttOut["authType"] = mqttIn["authType"] | 0;
-    mqttOut["mqttSecret"] = mqttIn["mqttSecret"] | "";
-    mqttOut["authCode"] = mqttIn["authCode"] | "";
+    FastBee::setFixedJsonField(mqttOut, "tlsSupported", (psramFound() && ESP.getPsramSize() > 0));
+    FastBee::setFixedJsonField(mqttOut, "enabled", mqttIn["enabled"] | true);
+    FastBee::setFixedJsonField(mqttOut, "scheme", mqttIn["scheme"] | "mqtt");
+    FastBee::setFixedJsonField(mqttOut, "server", mqttIn["server"] | "iot.fastbee.cn");
+    FastBee::setFixedJsonField(mqttOut, "otaBaseUrl", mqttIn["otaBaseUrl"] | "");
+    FastBee::setFixedJsonField(mqttOut, "port", mqttIn["port"] | 1883);
+    FastBee::setFixedJsonField(mqttOut, "clientId", mqttIn["clientId"] | "");
+    FastBee::setFixedJsonField(mqttOut, "username", mqttIn["username"] | "");
+    FastBee::setFixedJsonField(mqttOut, "password", mqttIn["password"] | "");
+    FastBee::setFixedJsonField(mqttOut, "keepAlive", mqttIn["keepAlive"] | 60);
+    FastBee::setFixedJsonField(mqttOut, "autoReconnect", mqttIn["autoReconnect"] | true);
+    FastBee::setFixedJsonField(mqttOut, "authType", mqttIn["authType"] | 0);
+    FastBee::setFixedJsonField(mqttOut, "mqttSecret", mqttIn["mqttSecret"] | "");
+    FastBee::setFixedJsonField(mqttOut, "authCode", mqttIn["authCode"] | "");
     FastBee::ProtocolSecret::redactMqttConfig(mqttOut);
-    mqttOut["willTopic"] = mqttIn["willTopic"] | "";
-    mqttOut["willPayload"] = mqttIn["willPayload"] | "";
-    mqttOut["willQos"] = mqttIn["willQos"] | 0;
-    mqttOut["willRetain"] = mqttIn["willRetain"] | false;
-    mqttOut["longitude"] = mqttIn["longitude"] | 0;
-    mqttOut["latitude"] = mqttIn["latitude"] | 0;
-    mqttOut["iccid"] = mqttIn["iccid"] | "";
-    mqttOut["cardPlatformId"] = mqttIn["cardPlatformId"] | 0;
-    mqttOut["summary"] = mqttIn["summary"] | "";
+    FastBee::setFixedJsonField(mqttOut, "willTopic", mqttIn["willTopic"] | "");
+    FastBee::setFixedJsonField(mqttOut, "willPayload", mqttIn["willPayload"] | "");
+    FastBee::setFixedJsonField(mqttOut, "willQos", mqttIn["willQos"] | 0);
+    FastBee::setFixedJsonField(mqttOut, "willRetain", mqttIn["willRetain"] | false);
+    FastBee::setFixedJsonField(mqttOut, "longitude", mqttIn["longitude"] | 0);
+    FastBee::setFixedJsonField(mqttOut, "latitude", mqttIn["latitude"] | 0);
+    FastBee::setFixedJsonField(mqttOut, "iccid", mqttIn["iccid"] | "");
+    FastBee::setFixedJsonField(mqttOut, "cardPlatformId", mqttIn["cardPlatformId"] | 0);
+    FastBee::setFixedJsonField(mqttOut, "summary", mqttIn["summary"] | "");
     copyMqttTopicList(
         mqttOut["publishTopics"].to<JsonArray>(),
         mqttIn["publishTopics"].as<JsonArray>(),
@@ -383,6 +396,7 @@ void sendRedactedProtocolConfigFromFile(AsyncWebServerRequest* request) {
     }
 
     JsonObject config = doc["data"].as<JsonObject>();
+    config["modbusRtu"]["motorTravelDraftSupported"] = true;
     JsonObject mqtt = config["mqtt"].as<JsonObject>();
     if (mqtt.isNull()) {
         mqtt = config["mqtt"].to<JsonObject>();
@@ -395,13 +409,13 @@ void sendRedactedProtocolConfigFromFile(AsyncWebServerRequest* request) {
 }
 
 void copyModbusTaskSummary(JsonObject out, JsonObject in) {
-    out["enabled"] = in["enabled"] | true;
-    out["name"] = in["name"] | "";
-    out["label"] = in["label"] | "";
-    out["slaveAddress"] = in["slaveAddress"] | 1;
-    out["functionCode"] = in["functionCode"] | 3;
-    out["startAddress"] = in["startAddress"] | 0;
-    out["quantity"] = in["quantity"] | 1;
+    FastBee::setFixedJsonField(out, "enabled", in["enabled"] | true);
+    FastBee::setFixedJsonField(out, "name", in["name"] | "");
+    FastBee::setFixedJsonField(out, "label", in["label"] | "");
+    FastBee::setFixedJsonField(out, "slaveAddress", in["slaveAddress"] | 1);
+    FastBee::setFixedJsonField(out, "functionCode", in["functionCode"] | 3);
+    FastBee::setFixedJsonField(out, "startAddress", in["startAddress"] | 0);
+    FastBee::setFixedJsonField(out, "quantity", in["quantity"] | 1);
 
     JsonArray mappingsOut = out["mappings"].to<JsonArray>();
     JsonArray mappingsIn = in["mappings"].as<JsonArray>();
@@ -410,17 +424,21 @@ void copyModbusTaskSummary(JsonObject out, JsonObject in) {
         copyJsonMember(mappingOut, mappingIn, "sensorId");
         copyJsonMember(mappingOut, mappingIn, "unit");
         copyJsonMember(mappingOut, mappingIn, "regOffset");
+        copyJsonMember(mappingOut, mappingIn, "dataType");
+        copyJsonMember(mappingOut, mappingIn, "wordOrder");
+        copyJsonMember(mappingOut, mappingIn, "scaleFactor");
+        copyJsonMember(mappingOut, mappingIn, "decimalPlaces");
     }
 }
 
 void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
-    out["enabled"] = in["enabled"] | true;
-    out["name"] = in["name"] | "";
-    out["sensorId"] = in["sensorId"] | "";
-    out["deviceType"] = in["deviceType"] | "relay";
-    out["slaveAddress"] = in["slaveAddress"] | 1;
-    out["channelCount"] = in["channelCount"] | 2;
-    out["pwmResolution"] = in["pwmResolution"] | 8;
+    FastBee::setFixedJsonField(out, "enabled", in["enabled"] | true);
+    FastBee::setFixedJsonField(out, "name", in["name"] | "");
+    FastBee::setFixedJsonField(out, "sensorId", in["sensorId"] | "");
+    FastBee::setFixedJsonField(out, "deviceType", in["deviceType"] | "relay");
+    FastBee::setFixedJsonField(out, "slaveAddress", in["slaveAddress"] | 1);
+    FastBee::setFixedJsonField(out, "channelCount", in["channelCount"] | 2);
+    FastBee::setFixedJsonField(out, "pwmResolution", in["pwmResolution"] | 8);
     copyJsonMember(out, in, "coilBase");
     copyJsonMember(out, in, "ncMode");
     copyJsonMember(out, in, "controlProtocol");
@@ -431,6 +449,7 @@ void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
     // 电机参数透传
     copyJsonMember(out, in, "motorDecimals");
     copyJsonMember(out, in, "motorProtocol");
+    copyJsonMember(out, in, "motorTravelDraft");
     copyJsonMember(out, in, "motorMinPosition");
     copyJsonMember(out, in, "motorMaxPosition");
     copyJsonMember(out, in, "motorCurrentPosition");
@@ -449,16 +468,17 @@ void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
 }
 
 void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
-    out["enabled"] = in["enabled"] | true;
-    out["transferType"] = in["transferType"] | 0;
+    FastBee::setFixedJsonField(out, "motorTravelDraftSupported", true);
+    FastBee::setFixedJsonField(out, "enabled", in["enabled"] | true);
+    FastBee::setFixedJsonField(out, "transferType", in["transferType"] | 0);
 
     JsonObject masterOut = out["master"].to<JsonObject>();
     JsonObject masterIn = in["master"].as<JsonObject>();
 
     // Master 高级参数使用硬编码常量（不再从 JSON 读取）
-    masterOut["responseTimeout"] = 1000;
-    masterOut["maxRetries"] = 2;
-    masterOut["interPollDelay"] = 100;
+    FastBee::setFixedJsonField(masterOut, "responseTimeout", 1000);
+    FastBee::setFixedJsonField(masterOut, "maxRetries", 2);
+    FastBee::setFixedJsonField(masterOut, "interPollDelay", 100);
 
     JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
     JsonArray tasksIn = masterIn["tasks"].as<JsonArray>();
@@ -477,35 +497,40 @@ void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
 
 #if FASTBEE_ENABLE_MODBUS
 void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool enabled) {
-    out["enabled"] = enabled;
-    out["transferType"] = cfg.transferType;
+    FastBee::setFixedJsonField(out, "motorTravelDraftSupported", true);
+    FastBee::setFixedJsonField(out, "enabled", enabled);
+    FastBee::setFixedJsonField(out, "transferType", cfg.transferType);
 
     JsonObject masterOut = out["master"].to<JsonObject>();
 
     // Master 高级参数透传
-    masterOut["responseTimeout"] = cfg.master.responseTimeout;
-    masterOut["maxRetries"] = cfg.master.maxRetries;
-    masterOut["interPollDelay"] = cfg.master.interPollDelay;
+    FastBee::setFixedJsonField(masterOut, "responseTimeout", cfg.master.responseTimeout);
+    FastBee::setFixedJsonField(masterOut, "maxRetries", cfg.master.maxRetries);
+    FastBee::setFixedJsonField(masterOut, "interPollDelay", cfg.master.interPollDelay);
 
     JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
     for (uint8_t i = 0; i < cfg.master.taskCount && i < Protocols::MODBUS_MAX_POLL_TASKS; ++i) {
         const PollTask& task = cfg.master.tasks[i];
         JsonObject taskOut = tasksOut.add<JsonObject>();
-        taskOut["enabled"] = task.enabled;
-        taskOut["name"] = task.name;
-        taskOut["label"] = task.name;
-        taskOut["slaveAddress"] = task.slaveAddress;
-        taskOut["functionCode"] = task.functionCode;
-        taskOut["startAddress"] = task.startAddress;
-        taskOut["quantity"] = task.quantity;
+        FastBee::setFixedJsonField(taskOut, "enabled", task.enabled);
+        FastBee::setFixedJsonField(taskOut, "name", task.name);
+        FastBee::setFixedJsonField(taskOut, "label", task.name);
+        FastBee::setFixedJsonField(taskOut, "slaveAddress", task.slaveAddress);
+        FastBee::setFixedJsonField(taskOut, "functionCode", task.functionCode);
+        FastBee::setFixedJsonField(taskOut, "startAddress", task.startAddress);
+        FastBee::setFixedJsonField(taskOut, "quantity", task.quantity);
 
         JsonArray mappingsOut = taskOut["mappings"].to<JsonArray>();
         for (uint8_t j = 0; j < task.mappingCount && j < Protocols::MODBUS_MAX_MAPPINGS_PER_TASK; ++j) {
             const RegisterMapping& mapping = task.mappings[j];
             JsonObject mappingOut = mappingsOut.add<JsonObject>();
-            mappingOut["sensorId"] = mapping.sensorId;
-            mappingOut["unit"] = mapping.unit;
-            mappingOut["regOffset"] = mapping.regOffset;
+            FastBee::setFixedJsonField(mappingOut, "sensorId", mapping.sensorId);
+            FastBee::setFixedJsonField(mappingOut, "unit", mapping.unit);
+            FastBee::setFixedJsonField(mappingOut, "regOffset", mapping.regOffset);
+            FastBee::setFixedJsonField(mappingOut, "dataType", mapping.dataType);
+            FastBee::setFixedJsonField(mappingOut, "wordOrder", mapping.wordOrder);
+            FastBee::setFixedJsonField(mappingOut, "scaleFactor", mapping.scaleFactor);
+            FastBee::setFixedJsonField(mappingOut, "decimalPlaces", mapping.decimalPlaces);
         }
     }
 
@@ -513,28 +538,29 @@ void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool e
     for (uint8_t i = 0; i < cfg.master.deviceCount && i < Protocols::MODBUS_MAX_SUB_DEVICES; ++i) {
         const ModbusSubDevice& device = cfg.master.devices[i];
         JsonObject deviceOut = devicesOut.add<JsonObject>();
-        deviceOut["enabled"] = device.enabled;
-        deviceOut["name"] = device.name;
-        deviceOut["sensorId"] = device.sensorId;
-        deviceOut["deviceType"] = device.deviceType;
-        deviceOut["slaveAddress"] = device.slaveAddress;
-        deviceOut["channelCount"] = device.channelCount;
-        deviceOut["pwmResolution"] = device.pwmResolution;
-        deviceOut["coilBase"] = device.coilBase;
-        deviceOut["ncMode"] = device.ncMode;
-        deviceOut["controlProtocol"] = device.controlProtocol;
-        deviceOut["batchRegister"] = device.batchRegister;
-        deviceOut["batchRegType"] = device.batchRegType;
-        deviceOut["pwmRegBase"] = device.pwmRegBase;
-        deviceOut["pidDecimals"] = device.pidDecimals;
+        FastBee::setFixedJsonField(deviceOut, "enabled", device.enabled);
+        FastBee::setFixedJsonField(deviceOut, "name", device.name);
+        FastBee::setFixedJsonField(deviceOut, "sensorId", device.sensorId);
+        FastBee::setFixedJsonField(deviceOut, "deviceType", device.deviceType);
+        FastBee::setFixedJsonField(deviceOut, "slaveAddress", device.slaveAddress);
+        FastBee::setFixedJsonField(deviceOut, "channelCount", device.channelCount);
+        FastBee::setFixedJsonField(deviceOut, "pwmResolution", device.pwmResolution);
+        FastBee::setFixedJsonField(deviceOut, "coilBase", device.coilBase);
+        FastBee::setFixedJsonField(deviceOut, "ncMode", device.ncMode);
+        FastBee::setFixedJsonField(deviceOut, "controlProtocol", device.controlProtocol);
+        FastBee::setFixedJsonField(deviceOut, "batchRegister", device.batchRegister);
+        FastBee::setFixedJsonField(deviceOut, "batchRegType", device.batchRegType);
+        FastBee::setFixedJsonField(deviceOut, "pwmRegBase", device.pwmRegBase);
+        FastBee::setFixedJsonField(deviceOut, "pidDecimals", device.pidDecimals);
         // 电机参数透传
-        deviceOut["motorDecimals"] = device.motorDecimals;
+        FastBee::setFixedJsonField(deviceOut, "motorDecimals", device.motorDecimals);
         saveMotorProtocol(deviceOut, device.motorProtocol);
-        deviceOut["motorMinPosition"] = device.motorMinPosition;
-        deviceOut["motorMaxPosition"] = device.motorMaxPosition;
-        deviceOut["motorCurrentPosition"] = device.motorCurrentPosition;
-        deviceOut["motorMoveStep"] = device.motorMoveStep;
-        deviceOut["motorLastPulse"] = device.motorLastPulse;
+        saveMotorTravelDraft(deviceOut, device.motorTravelDraft);
+        FastBee::setFixedJsonField(deviceOut, "motorMinPosition", device.motorMinPosition);
+        FastBee::setFixedJsonField(deviceOut, "motorMaxPosition", device.motorMaxPosition);
+        FastBee::setFixedJsonField(deviceOut, "motorCurrentPosition", device.motorCurrentPosition);
+        FastBee::setFixedJsonField(deviceOut, "motorMoveStep", device.motorMoveStep);
+        FastBee::setFixedJsonField(deviceOut, "motorLastPulse", device.motorLastPulse);
         JsonArray mrOut = deviceOut["motorRegs"].to<JsonArray>();
         for (uint8_t j = 0; j < 5; j++) mrOut.add(device.motorRegs[j]);
         JsonArray paOut = deviceOut["pidAddrs"].to<JsonArray>();
@@ -560,8 +586,8 @@ void sendCompactPeriphExecConfig(AsyncWebServerRequest* request, ProtocolManager
 #endif
     {
         JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
-        rtuOut["enabled"] = false;
-        rtuOut["transferType"] = 0;
+        FastBee::setFixedJsonField(rtuOut, "enabled", false);
+        FastBee::setFixedJsonField(rtuOut, "transferType", 0);
         JsonObject masterOut = rtuOut["master"].to<JsonObject>();
         masterOut["tasks"].to<JsonArray>();
         masterOut["devices"].to<JsonArray>();
@@ -577,7 +603,7 @@ void sendCompactRuntimeProtocolConfigFromFile(AsyncWebServerRequest* request, bo
     auto doc = FastBee::makeJsonDocument(12288);
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
-    data["compact"] = true;
+    FastBee::setFixedJsonField(data, "compact", true);
 
     JsonObject rtuIn = source["modbusRtu"].as<JsonObject>();
     if (!rtuIn.isNull()) {
@@ -585,8 +611,8 @@ void sendCompactRuntimeProtocolConfigFromFile(AsyncWebServerRequest* request, bo
         copyPeriphExecModbusSummary(rtuOut, rtuIn);
     } else {
         JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
-        rtuOut["enabled"] = false;
-        rtuOut["transferType"] = 0;
+        FastBee::setFixedJsonField(rtuOut, "enabled", false);
+        FastBee::setFixedJsonField(rtuOut, "transferType", 0);
         JsonObject masterOut = rtuOut["master"].to<JsonObject>();
         masterOut["tasks"].to<JsonArray>();
         masterOut["devices"].to<JsonArray>();
@@ -601,7 +627,7 @@ void sendCompactRuntimeProtocolConfig(AsyncWebServerRequest* request,
     auto doc = FastBee::makeJsonDocument(12288);
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
-    data["compact"] = true;
+    FastBee::setFixedJsonField(data, "compact", true);
 
     bool hasRuntimeData = false;
 #if FASTBEE_ENABLE_MODBUS
@@ -803,6 +829,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                            hasProtocolParam(request, "modbusRtu_transferType") ||
                            hasProtocolParam(request, "modbusRtu_master_tasks") ||
                            hasProtocolParam(request, "modbusRtu_master_devices");
+    auto previousModbusRtu = FastBee::makeJsonDocument();
+    if (updateModbusRtu && !previousModbusRtu.set(doc["modbusRtu"])) {
+        ctx->sendError(request, 503, "Insufficient memory to compare Modbus configuration");
+        return;
+    }
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
                       hasProtocolParam(request, "mqtt_scheme") ||
                       hasProtocolParam(request, "mqtt_server") ||
@@ -841,7 +872,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             ctx->sendError(request, 400, otaBaseUrlError);
             return;
         }
-        doc["mqtt"]["otaBaseUrl"] = otaBaseUrl;
+        FastBee::setFixedJsonField(doc, "mqtt", "otaBaseUrl", otaBaseUrl);
     }
     bool clientIdGenerated = false;
     String clientId = doc["mqtt"]["clientId"] | "";
@@ -869,11 +900,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         currentTransferType = requestedTransferType == "1" ? 1 : 0;
     }
 
-    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", currentEnabled ? "true" : "false") == "true";
-    doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", currentPeripheralId);
-    doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", currentMode);
-    doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", String(currentDePin));
-    doc["modbusRtu"]["transferType"] = currentTransferType;
+    FastBee::setFixedJsonField(doc, "modbusRtu", "enabled", GP("modbusRtu_enabled", currentEnabled ? "true" : "false") == "true");
+    FastBee::setFixedJsonField(doc, "modbusRtu", "peripheralId", GP("modbusRtu_peripheralId", currentPeripheralId));
+    FastBee::setFixedJsonField(doc, "modbusRtu", "mode", GP("modbusRtu_mode", currentMode));
+    FastBee::setFixedJsonField(doc, "modbusRtu", "dePin", GPI("modbusRtu_dePin", String(currentDePin)));
+    FastBee::setFixedJsonField(doc, "modbusRtu", "transferType", currentTransferType);
     // workMode 已移除：由轮询任务配置自动推导，不再保存
 
     // Modbus RTU Master 通信参数（responseTimeout/maxRetries/interPollDelay）已从构造函数硬编码，
@@ -887,7 +918,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     JsonArray masterTasks = doc["modbusRtu"]["master"]["tasks"].to<JsonArray>();
     if (masterTasksJson.length() > 2) {
         JsonDocument tasksDoc;
-        DeserializationError tasksErr = deserializeJson(tasksDoc, masterTasksJson);
+        DeserializationError tasksErr = deserializeJson(tasksDoc, masterTasksJson.c_str(), masterTasksJson.length());
         if (!tasksErr && tasksDoc.is<JsonArray>()) {
             JsonArray arr = tasksDoc.as<JsonArray>();
             uint8_t taskCount = 0;
@@ -898,27 +929,28 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                     functionCode = 3;
                 }
                 JsonObject taskObj = masterTasks.add<JsonObject>();
-                taskObj["slaveAddress"] = clampProtocolValue<int>(v["slaveAddress"] | 1, 1, 247);
-                taskObj["functionCode"] = functionCode;
-                taskObj["startAddress"] = clampProtocolValue<int>(v["startAddress"] | 0, 0, 65535);
-                taskObj["quantity"] = clampProtocolValue<int>(v["quantity"] | 10, 1, Protocols::MODBUS_MAX_REGISTERS_PER_READ);
-                taskObj["pollInterval"] = clampProtocolValue<int>(v["pollInterval"] | 30,
+                FastBee::setFixedJsonField(taskObj, "slaveAddress", clampProtocolValue<int>(v["slaveAddress"] | 1, 1, 247));
+                FastBee::setFixedJsonField(taskObj, "functionCode", functionCode);
+                FastBee::setFixedJsonField(taskObj, "startAddress", clampProtocolValue<int>(v["startAddress"] | 0, 0, 65535));
+                FastBee::setFixedJsonField(taskObj, "quantity", clampProtocolValue<int>(v["quantity"] | 10, 1, Protocols::MODBUS_MAX_REGISTERS_PER_READ));
+                FastBee::setFixedJsonField(taskObj, "pollInterval", clampProtocolValue<int>(v["pollInterval"] | 30,
                                                                   PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC,
-                                                                  PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC);
-                taskObj["enabled"] = v["enabled"] | true;
-                taskObj["name"] = v["name"] | "";
+                                                                  PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC));
+                FastBee::setFixedJsonField(taskObj, "enabled", v["enabled"] | true);
+                FastBee::setFixedJsonField(taskObj, "name", v["name"] | "");
                 
                 // 寄存器映射
                 if (v.containsKey("mappings") && v["mappings"].is<JsonArray>()) {
                     JsonArray mappingsArr = taskObj["mappings"].to<JsonArray>();
                     for (JsonVariant mv : v["mappings"].as<JsonArray>()) {
                         JsonObject mo = mappingsArr.add<JsonObject>();
-                        mo["regOffset"] = mv["regOffset"] | 0;
-                        mo["dataType"] = mv["dataType"] | 0;
-                        mo["scaleFactor"] = mv["scaleFactor"] | 1.0;
-                        mo["decimalPlaces"] = mv["decimalPlaces"] | 1;
-                        mo["sensorId"] = mv["sensorId"] | "";
-                        mo["unit"] = mv["unit"] | "";
+                        FastBee::setFixedJsonField(mo, "regOffset", mv["regOffset"] | 0);
+                        FastBee::setFixedJsonField(mo, "dataType", mv["dataType"] | 0);
+                        FastBee::setFixedJsonField(mo, "wordOrder", mv["wordOrder"] | 0);
+                        FastBee::setFixedJsonField(mo, "scaleFactor", mv["scaleFactor"] | 1.0);
+                        FastBee::setFixedJsonField(mo, "decimalPlaces", mv["decimalPlaces"] | 1);
+                        FastBee::setFixedJsonField(mo, "sensorId", mv["sensorId"] | "");
+                        FastBee::setFixedJsonField(mo, "unit", mv["unit"] | "");
                     }
                 }
                 taskCount++;
@@ -935,37 +967,38 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     JsonArray masterDevices = doc["modbusRtu"]["master"]["devices"].to<JsonArray>();
     if (masterDevicesJson.length() > 2) {
         JsonDocument devicesDoc;
-        DeserializationError devErr = deserializeJson(devicesDoc, masterDevicesJson);
+        DeserializationError devErr = deserializeJson(devicesDoc, masterDevicesJson.c_str(), masterDevicesJson.length());
         if (!devErr && devicesDoc.is<JsonArray>()) {
             JsonArray arr = devicesDoc.as<JsonArray>();
             for (JsonVariant dv : arr) {
                 JsonObject devObj = masterDevices.add<JsonObject>();
-                devObj["name"]            = dv["name"] | "Device";
-                devObj["sensorId"]        = dv["sensorId"] | "";
-                devObj["deviceType"]      = dv["deviceType"] | "relay";
-                devObj["slaveAddress"]    = dv["slaveAddress"] | 1;
-                devObj["channelCount"]    = dv["channelCount"] | 2;
-                devObj["coilBase"]        = dv["coilBase"] | 0;
-                devObj["ncMode"]          = dv["ncMode"] | false;
-                devObj["controlProtocol"] = dv["controlProtocol"] | 0;
-                devObj["batchRegister"]   = dv["batchRegister"] | 0;
-                devObj["pwmRegBase"]      = dv["pwmRegBase"] | 0;
-                devObj["pwmResolution"]   = dv["pwmResolution"] | 8;
-                devObj["pidDecimals"]     = dv["pidDecimals"] | 1;
-                devObj["enabled"]         = dv["enabled"] | true;
+                FastBee::setFixedJsonField(devObj, "name", dv["name"] | "Device");
+                FastBee::setFixedJsonField(devObj, "sensorId", dv["sensorId"] | "");
+                FastBee::setFixedJsonField(devObj, "deviceType", dv["deviceType"] | "relay");
+                FastBee::setFixedJsonField(devObj, "slaveAddress", dv["slaveAddress"] | 1);
+                FastBee::setFixedJsonField(devObj, "channelCount", dv["channelCount"] | 2);
+                FastBee::setFixedJsonField(devObj, "coilBase", dv["coilBase"] | 0);
+                FastBee::setFixedJsonField(devObj, "ncMode", dv["ncMode"] | false);
+                FastBee::setFixedJsonField(devObj, "controlProtocol", dv["controlProtocol"] | 0);
+                FastBee::setFixedJsonField(devObj, "batchRegister", dv["batchRegister"] | 0);
+                FastBee::setFixedJsonField(devObj, "pwmRegBase", dv["pwmRegBase"] | 0);
+                FastBee::setFixedJsonField(devObj, "pwmResolution", dv["pwmResolution"] | 8);
+                FastBee::setFixedJsonField(devObj, "pidDecimals", dv["pidDecimals"] | 1);
+                FastBee::setFixedJsonField(devObj, "enabled", dv["enabled"] | true);
                 if (dv.containsKey("pidAddrs") && dv["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = devObj["pidAddrs"].to<JsonArray>();
                     for (JsonVariant pv : dv["pidAddrs"].as<JsonArray>())
                         pa.add(pv.as<int>());
                 }
                 // 电机参数
-                devObj["motorDecimals"] = dv["motorDecimals"] | 0;
+                FastBee::setFixedJsonField(devObj, "motorDecimals", dv["motorDecimals"] | 0);
                 if (dv.containsKey("motorProtocol")) devObj["motorProtocol"].set(dv["motorProtocol"]);
-                devObj["motorMinPosition"] = dv["motorMinPosition"] | 0;
-                devObj["motorMaxPosition"] = dv["motorMaxPosition"] | 0;
-                devObj["motorCurrentPosition"] = dv["motorCurrentPosition"] | 0;
-                devObj["motorMoveStep"] = dv["motorMoveStep"] | 0;
-                devObj["motorLastPulse"] = dv["motorLastPulse"] | 0;
+                if (dv.containsKey("motorTravelDraft")) devObj["motorTravelDraft"].set(dv["motorTravelDraft"]);
+                FastBee::setFixedJsonField(devObj, "motorMinPosition", dv["motorMinPosition"] | 0);
+                FastBee::setFixedJsonField(devObj, "motorMaxPosition", dv["motorMaxPosition"] | 0);
+                FastBee::setFixedJsonField(devObj, "motorCurrentPosition", dv["motorCurrentPosition"] | 0);
+                FastBee::setFixedJsonField(devObj, "motorMoveStep", dv["motorMoveStep"] | 0);
+                FastBee::setFixedJsonField(devObj, "motorLastPulse", dv["motorLastPulse"] | 0);
                 if (dv.containsKey("motorRegs") && dv["motorRegs"].is<JsonArray>()) {
                     JsonArray mr = devObj["motorRegs"].to<JsonArray>();
                     for (JsonVariant mv : dv["motorRegs"].as<JsonArray>())
@@ -979,11 +1012,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     // MQTT
     if (updateMqtt) {
-    doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
+    FastBee::setFixedJsonField(doc, "mqtt", "enabled", GP("mqtt_enabled", "true") == "true");
     String requestedScheme = GP("mqtt_scheme", "mqtt");
-    doc["mqtt"]["scheme"] = requestedScheme;
-    doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
-    doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
+    FastBee::setFixedJsonField(doc, "mqtt", "scheme", requestedScheme);
+    FastBee::setFixedJsonField(doc, "mqtt", "server", GP("mqtt_server", "iot.fastbee.cn"));
+    FastBee::setFixedJsonField(doc, "mqtt", "port", GPI("mqtt_port", "1883"));
 
     // Any successful Web save is an explicit user decision.  Do not leave
     // memory-recovery markers behind, otherwise a later reboot could restore
@@ -1037,59 +1070,59 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         clientId = prefix + "&" + deviceId + "&" + productId + "&" + userId;
     }
 
-    doc["mqtt"]["clientId"] = clientId;
-    doc["mqtt"]["username"] = GP("mqtt_username", "");
+    FastBee::setFixedJsonField(doc, "mqtt", "clientId", clientId);
+    FastBee::setFixedJsonField(doc, "mqtt", "username", GP("mqtt_username", ""));
     String submittedPassword = GP("mqtt_password", "");
     if (FastBee::ProtocolSecret::shouldPersist(
             submittedPassword, hasProtocolParam(request, "mqtt_password"))) {
-        doc["mqtt"]["password"] = submittedPassword;
+        FastBee::setFixedJsonField(doc, "mqtt", "password", submittedPassword);
     }
-    doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
-    doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
+    FastBee::setFixedJsonField(doc, "mqtt", "keepAlive", GPI("mqtt_keepAlive", "60"));
+    FastBee::setFixedJsonField(doc, "mqtt", "autoReconnect", GP("mqtt_autoReconnect", "true") == "true");
     // MQTT 认证配置
-    doc["mqtt"]["authType"] = authType;
+    FastBee::setFixedJsonField(doc, "mqtt", "authType", authType);
     String submittedMqttSecret = GP("mqtt_mqttSecret", "");
     if (FastBee::ProtocolSecret::shouldPersist(
             submittedMqttSecret, hasProtocolParam(request, "mqtt_mqttSecret"))) {
-        doc["mqtt"]["mqttSecret"] = submittedMqttSecret;
+        FastBee::setFixedJsonField(doc, "mqtt", "mqttSecret", submittedMqttSecret);
     }
     String submittedAuthCode = GP("mqtt_authCode", "");
     if (FastBee::ProtocolSecret::shouldPersist(
             submittedAuthCode, hasProtocolParam(request, "mqtt_authCode"))) {
-        doc["mqtt"]["authCode"] = submittedAuthCode;
+        FastBee::setFixedJsonField(doc, "mqtt", "authCode", submittedAuthCode);
     }
     // MQTT 遗嘱消息
-    doc["mqtt"]["willTopic"] = GP("mqtt_willTopic", "");
-    doc["mqtt"]["willPayload"] = GP("mqtt_willPayload", "");
-    doc["mqtt"]["willQos"] = GPI("mqtt_willQos", "0");
-    doc["mqtt"]["willRetain"] = GP("mqtt_willRetain", "false") == "true";
+    FastBee::setFixedJsonField(doc, "mqtt", "willTopic", GP("mqtt_willTopic", ""));
+    FastBee::setFixedJsonField(doc, "mqtt", "willPayload", GP("mqtt_willPayload", ""));
+    FastBee::setFixedJsonField(doc, "mqtt", "willQos", GPI("mqtt_willQos", "0"));
+    FastBee::setFixedJsonField(doc, "mqtt", "willRetain", GP("mqtt_willRetain", "false") == "true");
 
     // Card 高级配置
-    doc["mqtt"]["longitude"] = atof(GP("mqtt_longitude", "0").c_str());
-    doc["mqtt"]["latitude"]  = atof(GP("mqtt_latitude", "0").c_str());
-    doc["mqtt"]["iccid"]     = GP("mqtt_iccid", "");
-    doc["mqtt"]["cardPlatformId"] = GPI("mqtt_cardPlatformId", "0");
-    doc["mqtt"]["summary"]   = GP("mqtt_summary", "");
+    FastBee::setFixedJsonField(doc, "mqtt", "longitude", atof(GP("mqtt_longitude", "0").c_str()));
+    FastBee::setFixedJsonField(doc, "mqtt", "latitude", atof(GP("mqtt_latitude", "0").c_str()));
+    FastBee::setFixedJsonField(doc, "mqtt", "iccid", GP("mqtt_iccid", ""));
+    FastBee::setFixedJsonField(doc, "mqtt", "cardPlatformId", GPI("mqtt_cardPlatformId", "0"));
+    FastBee::setFixedJsonField(doc, "mqtt", "summary", GP("mqtt_summary", ""));
 
     // 发布主题配置（仅在前端实际发送了主题数据时才清空重建，避免覆盖已有配置）
     String publishTopicsJson = GP("mqtt_publishTopics", "[]");
     if (hasProtocolParam(request, "mqtt_publishTopics") && publishTopicsJson.length() > 2) {
         JsonArray publishTopics = doc["mqtt"]["publishTopics"].to<JsonArray>();
         JsonDocument topicsDoc;
-        DeserializationError err = deserializeJson(topicsDoc, publishTopicsJson);
+        DeserializationError err = deserializeJson(topicsDoc, publishTopicsJson.c_str(), publishTopicsJson.length());
         if (!err && topicsDoc.is<JsonArray>()) {
             JsonArray arr = topicsDoc.as<JsonArray>();
             for (JsonVariant v : arr) {
                 const int topicType = v["topicType"] | 0;
                 JsonObject topicObj = publishTopics.add<JsonObject>();
-                topicObj["topic"] = v["topic"] | "";
-                topicObj["qos"] = v["qos"] | 0;
-                topicObj["retain"] = v["retain"] | false;
-                topicObj["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+                FastBee::setFixedJsonField(topicObj, "topic", v["topic"] | "");
+                FastBee::setFixedJsonField(topicObj, "qos", v["qos"] | 0);
+                FastBee::setFixedJsonField(topicObj, "retain", v["retain"] | false);
+                FastBee::setFixedJsonField(topicObj, "enabled", topicType == MQTT_TOPIC_TYPE_OTA_BINARY
                     ? false
-                    : (v["enabled"] | true);
-                topicObj["autoPrefix"] = v["autoPrefix"] | true;
-                topicObj["topicType"] = topicType;
+                    : (v["enabled"] | true));
+                FastBee::setFixedJsonField(topicObj, "autoPrefix", v["autoPrefix"] | true);
+                FastBee::setFixedJsonField(topicObj, "topicType", topicType);
             }
         }
     }
@@ -1103,19 +1136,19 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     if (hasProtocolParam(request, "mqtt_subscribeTopics") && subscribeTopicsJson.length() > 2) {
         JsonArray subscribeTopics = doc["mqtt"]["subscribeTopics"].to<JsonArray>();
         JsonDocument subTopicsDoc;
-        DeserializationError err = deserializeJson(subTopicsDoc, subscribeTopicsJson);
+        DeserializationError err = deserializeJson(subTopicsDoc, subscribeTopicsJson.c_str(), subscribeTopicsJson.length());
         if (!err && subTopicsDoc.is<JsonArray>()) {
             JsonArray arr = subTopicsDoc.as<JsonArray>();
             for (JsonVariant v : arr) {
                 const int topicType = v["topicType"] | 1;
                 JsonObject topicObj = subscribeTopics.add<JsonObject>();
-                topicObj["topic"] = v["topic"] | "";
-                topicObj["qos"] = v["qos"] | 0;
-                topicObj["enabled"] = topicType == MQTT_TOPIC_TYPE_OTA_BINARY
+                FastBee::setFixedJsonField(topicObj, "topic", v["topic"] | "");
+                FastBee::setFixedJsonField(topicObj, "qos", v["qos"] | 0);
+                FastBee::setFixedJsonField(topicObj, "enabled", topicType == MQTT_TOPIC_TYPE_OTA_BINARY
                     ? false
-                    : (v["enabled"] | true);
-                topicObj["autoPrefix"] = v["autoPrefix"] | true;
-                topicObj["topicType"] = topicType;
+                    : (v["enabled"] | true));
+                FastBee::setFixedJsonField(topicObj, "autoPrefix", v["autoPrefix"] | true);
+                FastBee::setFixedJsonField(topicObj, "topicType", topicType);
             }
         }
     }
@@ -1161,6 +1194,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // 确保新配置必定生效且不会在碎片化堆上强行 TLS 握手导致长期不可用
     bool mqttHotRestart = false;
     bool mqttStoppedNow = false;
+    bool mqttStopDeferred = false;
 #if FASTBEE_ENABLE_MQTT
     if (updateMqtt) {
         bool mqttEnabledNow = doc["mqtt"]["enabled"].as<bool>();
@@ -1172,8 +1206,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         if (!mqttEnabledNow) {
             // MQTT 已禁用：立即停止客户端即可，无需重启也无需重建
             if (pm) {
-                pm->stopMQTT();
-                mqttStoppedNow = true;
+                mqttStoppedNow = pm->stopMQTT();
+                mqttStopDeferred = !mqttStoppedNow;
             }
         } else if (pm) {
             // MQTT 启用：置标志由 loopTask 热重建（避免在 async_tcp 小栈里重建 TLS）
@@ -1186,15 +1220,18 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     }
 #endif
 
-    // Modbus 保持运行时重启（不涉及 TLS/网络栈，无内存碎片风险）
+    // Re-saving an identical document must not destroy a motor reference.
+    // Compare with the saved pre-update section, including order-independent objects.
     bool modbusRestarted = false;
 #if FASTBEE_ENABLE_MODBUS
-    if (updateModbusRtu && doc["modbusRtu"]["enabled"].as<bool>()) {
+    const bool modbusChanged = updateModbusRtu &&
+        previousModbusRtu.as<JsonVariantConst>() != doc["modbusRtu"].as<JsonVariantConst>();
+    if (modbusChanged && doc["modbusRtu"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             modbusRestarted = pm->restartModbusDeferred();
         }
-    } else if (updateModbusRtu) {
+    } else if (modbusChanged) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             pm->stopModbus();
@@ -1205,39 +1242,44 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     JsonDocument resp;
     resp["success"] = true;
     resp["message"] = "Protocol configuration saved";
-    resp["data"]["restartRequired"] = false;
-    resp["data"]["modbusRestarted"] = modbusRestarted;
+    FastBee::setFixedJsonField(resp, "data", "restartRequired", false);
+    FastBee::setFixedJsonField(resp, "data", "modbusRestarted", modbusRestarted);
     // MQTT 热重建/断开状态：前端依赖这些字段显示正确的通知
     if (mqttHotRestart) {
-        resp["data"]["mqttHotRestart"] = true;
+        FastBee::setFixedJsonField(resp, "data", "mqttHotRestart", true);
         // requestMqttRestartAsync() only queues work for loopTask.  Return a
         // stable pending/reason envelope so the UI can distinguish an
         // accepted asynchronous restart from an immediate connection failure.
-        resp["data"]["mqttStatusPending"] = true;
-        resp["data"]["mqttStatusReason"] = "MQTT 配置已应用，正在后台连接";
+        FastBee::setFixedJsonField(resp, "data", "mqttStatusPending", true);
+        FastBee::setFixedJsonField(resp, "data", "mqttStatusReason", "MQTT 配置已应用，正在后台连接");
 #if FASTBEE_ENABLE_MQTT
         if (ctx->protocolManager) {
-            MQTTClient* mqtt = ctx->protocolManager->getMQTTClient();
+            auto mqtt = ctx->protocolManager->acquireMQTTClient();
             if (mqtt && mqtt->getLastErrorCode() != 0) {
                 String mqttErrorMessage;
-                resp["data"]["mqttLastErrorCode"] = mqtt->getLastErrorCode();
+                FastBee::setFixedJsonField(resp, "data", "mqttLastErrorCode", mqtt->getLastErrorCode());
                 mqttErrorMessage = mqtt->getLastErrorCode() == -4
                     ? "连接 MQTT Broker 超时，请检查地址和端口"
                     : (mqtt->getLastErrorCode() == -2
                         ? "无法连接 MQTT Broker，请检查 DNS、网络和端口"
                         : "MQTT 连接失败，请查看状态详情");
-                resp["data"]["mqttLastErrorMessage"] = mqttErrorMessage;
-                resp["data"]["mqttStatusReason"] = mqttErrorMessage;
+                FastBee::setFixedJsonField(resp, "data", "mqttLastErrorMessage", mqttErrorMessage);
+                FastBee::setFixedJsonField(resp, "data", "mqttStatusReason", mqttErrorMessage);
             }
         }
 #endif
     }
     if (mqttStoppedNow) {
-        resp["data"]["mqttDisconnected"] = true;
+        FastBee::setFixedJsonField(resp, "data", "mqttDisconnected", true);
+    }
+    if (mqttStopDeferred) {
+        FastBee::setFixedJsonField(resp, "data", "mqttStatusPending", true);
+        FastBee::setFixedJsonField(resp, "data", "mqttStopPending", true);
+        FastBee::setFixedJsonField(resp, "data", "mqttStatusReason", "MQTT 停止已排队，等待在途操作结束");
     }
     // 如果 clientId 是自动生成的，返回给前端
     if (clientIdGenerated) {
-        resp["data"]["mqttClientId"] = clientId;
+        FastBee::setFixedJsonField(resp, "data", "mqttClientId", clientId);
     }
     HandlerUtils::sendJsonStream(request, resp);
 }

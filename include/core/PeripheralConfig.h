@@ -3,10 +3,17 @@
 
 #include <Arduino.h>
 #include "PeripheralTypes.h"
+#include "core/OrdinaryControlPolicy.h"
+#include "core/RadarInputState.h"
 #include "../systems/GpioConfig.h"  // 引用已有的GPIOState定义
 
 // GPIO中断回调函数类型
 using GPIOInterruptCallback = void(*)(uint8_t pin, GPIOState state);
+
+// Persisted RF mode values shared by configuration, output admission and HTTP.
+// Keep these in the public config contract so separate translation units agree.
+constexpr uint8_t RF_MODE_TX = 0;
+constexpr uint8_t RF_MODE_RX = 1;
 
 // 工业模拟量输入的简化信号类型。数值固定写入 JSON，便于旧固件/新固件
 // 之间保持兼容；0 保持原始 ADC 计数，不改变既有配置行为。
@@ -28,7 +35,8 @@ enum class AnalogInputQuality : uint8_t {
     ABOVE_RANGE = 2,
     DISCONNECTED = 3,
     SHORT_CIRCUIT = 4,
-    INVALID_CONFIG = 5
+    INVALID_CONFIG = 5,
+    READ_FAILED = 6
 };
 
 inline const char* analogInputQualityName(AnalogInputQuality quality) {
@@ -38,6 +46,7 @@ inline const char* analogInputQualityName(AnalogInputQuality quality) {
         case AnalogInputQuality::ABOVE_RANGE: return "high";
         case AnalogInputQuality::DISCONNECTED: return "disconnected";
         case AnalogInputQuality::SHORT_CIRCUIT: return "short";
+        case AnalogInputQuality::READ_FAILED: return "read_failed";
         default: return "invalid_config";
     }
 }
@@ -260,15 +269,27 @@ struct PeripheralConfig {
             uint16_t pairDebounceMs;  // 0=200ms, otherwise 20..5000ms
             uint8_t ioSource;         // 0=native GPIO, 1=IO expander channel
             char providerId[41];      // Parent peripheral ID; never an MCU pin
-            uint8_t channel;          // PCF8574 P0..P7
+            uint8_t channel;          // Provider channel; PCF8574 0..7, MCP23017 0..15
         } gpio;
 
         struct {
-            char driver[16];          // First supported model: PCF8574
+            char driver[16];          // PCF8574 or MCP23017
             char busPeripheralId[41]; // Optional reference to an I2C peripheral
-            uint8_t address;          // PCF8574: 0x20..0x27
+            char resetPeripheralId[41]; // MCP23017: dedicated native inactive-HIGH GPIO
+            uint8_t address;          // PCF8574/MCP23017: 0x20..0x27
             uint16_t sampleInterval;  // 20..1000ms; zero uses 20ms
         } ioExpander;
+
+        struct {
+            char busPeripheralId[41]; // Required I2C master reference; no direct pins
+            char oePeripheralId[41];  // Dedicated native inactive-HIGH output
+            uint8_t address;
+            uint16_t channelMask;     // Explicitly declared channels 0..15
+            float pwmHz;              // One frequency shared by every channel
+            float clockHz;            // Oscillator estimate, not measured frequency
+            float minAngle, maxAngle, minPulseUs, maxPulseUs;
+            bool openDrain;
+        } pca9685;
         
         // ADC参数
         struct {
@@ -347,6 +368,8 @@ struct PeripheralConfig {
         struct {
             bool use24Hour;
             uint8_t trickleCharge;    // DS1302TrickleCharge 原始寄存器值，默认 0
+            bool bootSeed;           // Opt-in once per boot, default false
+            int16_t utcOffsetMinutes; // INT16_MIN: RTC fixed offset not declared
         } ds1302;
 
         // LCD1602 + PCF8574 参数。
@@ -387,6 +410,12 @@ struct PeripheralConfig {
             float maxCurrent;        // INA226 expected maximum current, A
             uint16_t conversionTimeUs;
             uint16_t averaging;
+            uint8_t mux;              // ADS1115 MUX 0..7; default AIN0-GND (4)
+            uint8_t scanMask;         // 0=legacy; 1..4 selected MUX bits in 0..7
+            uint16_t fullScaleMv;      // ADC scaling, not an input safety rating
+            uint16_t dataRate;         // ADS1115 samples per second
+            float calibrationGain;
+            float calibrationOffset; // V, applied after conversion scaling
         } sensor;
 
         // 数码管参数（TM1637 等）
@@ -413,8 +442,8 @@ struct PeripheralConfig {
         struct {
             uint8_t mode;             // 0=digital OUT pin
             bool activeHigh;          // true: HIGH means detected
-            uint16_t debounceMs;      // UI/documented debounce hint
-            uint16_t holdMs;          // UI/documented stable hold hint
+            uint16_t debounceMs;      // Sampled stability interval for either edge, 0..5000 ms.
+            uint16_t holdMs;          // Hold after debounced absence, 0..60000 ms.
         } radar;
         
         // Modbus子设备参数
@@ -598,6 +627,8 @@ inline void initializeDs1302Defaults(PeripheralConfig& config) {
     memset(&config.params, 0, sizeof(config.params));
     config.params.ds1302.use24Hour = true;
     config.params.ds1302.trickleCharge = 0;
+    config.params.ds1302.bootSeed = false;
+    config.params.ds1302.utcOffsetMinutes = INT16_MIN;
 }
 
 inline void initializeLcd1602Defaults(PeripheralConfig& config) {
@@ -656,6 +687,11 @@ inline void initializeSensorDefaults(PeripheralConfig& config) {
     config.params.sensor.frequency = 100000;
     config.params.sensor.conversionTimeUs = 1100;
     config.params.sensor.averaging = 16;
+    config.params.sensor.mux = 4;
+    config.params.sensor.scanMask = 0;
+    config.params.sensor.fullScaleMv = 4096;
+    config.params.sensor.dataRate = 128;
+    config.params.sensor.calibrationGain = 1;
 }
 
 struct EncoderReading {
@@ -842,6 +878,15 @@ struct PeripheralRuntimeState {
     // Runtime-only memory protection flag. It is not persisted to
     // peripherals.json, so recovery never overwrites the user's choice.
     bool memorySuspended;
+    bool memoryCleanupPending = false; // Actual failed memory-pressure teardown; not persisted.
+    FastBee::OrdinaryControl::Lease ordinaryControl; // Runtime only, never serialized.
+    uint32_t ordinaryStopFailures = 0;
+    uint64_t ordinaryRetryAfterMs = 0; // Failed SDK cleanup retries are bounded to 1 Hz.
+    bool controlOutputClaimed = false; // Runtime-only H1 ownership, not persisted.
+    bool controlOutputFault = false;   // Local pad state is unconfirmed.
+    bool controlOutputRetiring = false; // Retirement observed by maintenance.
+    uint32_t controlOutputRetirementAttempts = 0;
+    bool controlOutputRetirementFailed = false; // Historical failure, preserved on recovery.
     unsigned long initTime;       // 初始化时间
     unsigned long lastActivity;   // 最后活动时间
     uint32_t errorCount;          // 错误计数
@@ -849,6 +894,7 @@ struct PeripheralRuntimeState {
     
     // 类型特定状态
     union {
+        FastBee::RadarInputState radar;
         struct {
             uint32_t bytesSent;
             uint32_t bytesReceived;

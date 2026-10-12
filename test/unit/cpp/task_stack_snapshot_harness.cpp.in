@@ -1,0 +1,276 @@
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <new>
+#include <string>
+#include <vector>
+#include <Arduino.h>
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
+#include <freertos/task.h>
+#include "systems/TaskStackSnapshot.h"
+#include "network/TaskStackSnapshotJson.h"
+
+using namespace FastBee;
+static uint32_t nowMs = 0, freeBytes = 50000, largestBytes = 20000;
+static int64_t nowUs = 123456789, sdkDurationUs = 230;
+static unsigned beforeCount = 2, afterCount = 2, sdkCount = 2;
+static unsigned countCalls = 0, sdkCalls = 0, currentCalls = 0, scratchOutstanding = 0;
+static bool scratchOom = false, scalarOom = false, reenter = false, allowDefaultBudget = false;
+static uint32_t selfWatermark = 456;
+static std::string ownerMode;
+static unsigned idleCalls=0,timerCalls=0;
+int xTaskGetSchedulerState() { return ownerMode == "not_started" ? taskSCHEDULER_NOT_STARTED : 1; }
+void* xTaskGetIdleTaskHandleForCore(int core) {
+    assert(core >= 0 && core < configNUMBER_OF_CORES); ++idleCalls;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(0x1000 + core));
+}
+void* xTimerGetTimerDaemonTaskHandle() {
+    ++timerCalls; return ownerMode == "null_timer" ? nullptr : reinterpret_cast<void*>(0x2000);
+}
+// These APIs must never be used to interpret snapshot creation numbers.
+unsigned uxTaskGetTaskNumber(void*) { std::abort(); }
+const char* pcTaskGetName(void*) { std::abort(); }
+
+void* operator new[](size_t bytes, const std::nothrow_t&) noexcept {
+    return scalarOom ? nullptr : std::malloc(bytes);
+}
+void operator delete[](void* ptr) noexcept { std::free(ptr); }
+void operator delete[](void* ptr, size_t) noexcept { std::free(ptr); }
+unsigned long millis() { return nowMs; }
+int64_t esp_timer_get_time() { return nowUs; }
+size_t heap_caps_get_free_size(uint32_t caps) { assert(caps == 3); return freeBytes; }
+size_t heap_caps_get_largest_free_block(uint32_t caps) {
+    assert(caps == 3 || (allowDefaultBudget && caps == MALLOC_CAP_DEFAULT)); return largestBytes;
+}
+size_t heap_caps_get_minimum_free_size(uint32_t caps) { assert(caps == MALLOC_CAP_DEFAULT); return 12000; }
+void* heap_caps_calloc(size_t count, size_t width, uint32_t caps) {
+    assert(caps == 3 && count == TaskStackSnapshot::CAPACITY && width == sizeof(TaskStatus_t));
+    if (scratchOom) return nullptr;
+    void* ptr = std::calloc(count, width); if (ptr) ++scratchOutstanding; return ptr;
+}
+void heap_caps_free(void* ptr) { if (ptr) { assert(scratchOutstanding); --scratchOutstanding; std::free(ptr); } }
+unsigned uxTaskGetNumberOfTasks() { return ++countCalls % 2 ? beforeCount : afterCount; }
+unsigned uxTaskGetSystemState(TaskStatus_t* entries, unsigned capacity, unsigned* total) {
+    ++sdkCalls; assert(capacity == 48 && total == nullptr);
+    if (reenter) {
+        auto busy = captureTaskStackSnapshot(false);
+        assert(busy.status == TaskStackCaptureStatus::Busy && !busy.entries && sdkCalls == 1);
+        reenter = false;
+    }
+    for (unsigned i = 0; i < sdkCount && i < capacity; ++i) {
+        // Invalid borrowed pointers model tasks destroyed immediately after SDK capture.
+        entries[i] = {reinterpret_cast<void*>(1), reinterpret_cast<const char*>(1),
+            100 + i, i % 5, i + 2, 0, 0, reinterpret_cast<void*>(1), i ? 800U + i : 0U};
+    }
+    if (ownerMode == "owners" || ownerMode == "null_timer" || ownerMode == "not_started") {
+        entries[0].xHandle = reinterpret_cast<void*>(0x1000);
+        entries[1].xHandle = reinterpret_cast<void*>(0x1001);
+        entries[2].xHandle = reinterpret_cast<void*>(0x2000);
+        entries[3].xHandle = reinterpret_cast<void*>(1); // deleted dynamic TCB
+    }
+    nowUs += sdkDurationUs;
+    return sdkCount;
+}
+unsigned uxTaskGetStackHighWaterMark(void* task) {
+    assert(task == nullptr); ++currentCalls; return selfWatermark;
+}
+
+struct RejectAllocator : ArduinoJson::Allocator {
+    void* allocate(size_t) override { return nullptr; }
+    void deallocate(void*) override {}
+    void* reallocate(void*, size_t) override { return nullptr; }
+};
+static RejectAllocator rejectAllocator;
+static bool jsonOom = false;
+namespace FastBee {
+JsonDocument makeJsonDocument(size_t) { return jsonOom ? JsonDocument(&rejectAllocator) : JsonDocument(); }
+}
+struct SnapshotParameter {
+    std::string key, data;
+    bool file = false;
+    const std::string& name() const { return key; }
+    const std::string& value() const { return data; }
+    bool isFile() const { return file; }
+};
+struct AsyncWebServerRequest {
+    std::vector<SnapshotParameter> fields;
+    size_t params() const { return fields.size(); }
+    const SnapshotParameter* getParam(size_t i) const { return i < fields.size() ? &fields[i] : nullptr; }
+};
+constexpr int HTTP_POST = 2;
+struct AsyncWebServer {
+    std::function<void(AsyncWebServerRequest*)> callback;
+    void on(const char* path, int method, std::function<void(AsyncWebServerRequest*)> fn) {
+        assert(std::strcmp(path, "/api/system/task-stack-snapshot") == 0 && method == HTTP_POST);
+        callback = fn;
+    }
+};
+struct WebHandlerContext {
+    bool auth = true, dev = true;
+    unsigned authCalls = 0, devCalls = 0;
+    bool requireAuth(AsyncWebServerRequest*) { ++authCalls; return auth; }
+    bool requireDeveloperMode(AsyncWebServerRequest*) { ++devCalls; return dev; }
+    void sendError(AsyncWebServerRequest*, int code, const char*) { assert(code == 400); }
+};
+// @stack_info@
+struct HealthMonitor {
+    bool severe = false;
+    bool isMemorySevere() const { return severe; }
+    void logTaskStackWatermarks();
+    size_t getTaskStackInfo(TaskStackInfo*, size_t) const;
+};
+struct FastBeeFramework {
+    HealthMonitor monitor;
+    bool available = true;
+    static FastBeeFramework* getInstance() { static FastBeeFramework instance; return &instance; }
+    HealthMonitor* getHealthMonitor() { return available ? &monitor : nullptr; }
+};
+static std::string response;
+static unsigned errorResponses = 0, successResponses = 0;
+namespace HandlerUtils {
+void sendJsonError(AsyncWebServerRequest*, int code, const char*, int retry) {
+    assert(code == 503 && retry == 30); ++errorResponses;
+}
+void sendJsonStream(AsyncWebServerRequest*, JsonDocument& doc) {
+    assert(!doc.overflowed()); ++successResponses; response.clear(); serializeJson(doc, response);
+}
+}
+namespace FastBee {
+// @route@
+}
+static std::vector<std::string> logs;
+struct LoggerMock { void warning(const char* line) { logs.emplace_back(line); } } LOGGER;
+#define LOG_DEBUG(line) logs.emplace_back(line)
+#define LOG_ERROR(line) logs.emplace_back(line)
+// @health@
+// @restart_type@
+constexpr uint32_t SNAPSHOT_MAGIC = 0xFBD1A600;
+struct RestartDiagnostics { static void collectCurrentState(PreRestartSnapshot&); };
+struct EspMock { uint32_t getFreeHeap() { return freeBytes; } } ESP;
+constexpr int WL_CONNECTED = 3;
+struct WifiMock { int status() { return WL_CONNECTED; } int RSSI() { return -50; } } WiFi;
+uint8_t calculateHeapFragmentationPercent(uint32_t, size_t) { return 10; }
+// @restart@
+
+static void expectUnknown(const TaskStackSnapshot& sample, TaskStackCaptureStatus status) {
+    assert(sample.status == status && !sample.entries && sample.count == 0 && !scratchOutstanding);
+    JsonDocument doc; writeTaskStackSnapshotJson(doc.to<JsonObject>(), sample);
+    assert(doc["status"] == "unknown" && doc["tasks"].isNull());
+    assert(doc["observedCount"].isNull() && doc["completeAtCapture"] == false);
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode = argv[1];
+    if (mode == "unavailable") {
+        expectUnknown(captureTaskStackSnapshot(false), TaskStackCaptureStatus::Unavailable);
+        assert(!sdkCalls && !countCalls);
+        return 0;
+    }
+    if (mode == "legacy") {
+        HealthMonitor monitor; TaskStackInfo rows[2]{};
+        assert(monitor.getTaskStackInfo(nullptr, 4) == 0);
+        assert(monitor.getTaskStackInfo(rows, 0) == 0 && !currentCalls);
+        assert(monitor.getTaskStackInfo(rows, 2) == 1);
+        assert(std::strcmp(rows[0].name, "current-task") == 0);
+#if defined(ESP_PLATFORM)
+        assert(rows[0].observed && rows[0].highWaterMark == 456 && currentCalls == 1);
+        selfWatermark = 0;
+        assert(monitor.getTaskStackInfo(rows, 2) == 1 && rows[0].observed && rows[0].highWaterMark == 0);
+#else
+        assert(!rows[0].observed && rows[0].highWaterMark == UINT32_MAX && !currentCalls);
+#endif
+        monitor.logTaskStackWatermarks(); assert(!logs.empty());
+        allowDefaultBudget = true; PreRestartSnapshot restart;
+        RestartDiagnostics::collectCurrentState(restart);
+        assert(restart.loopTaskWatermark == UINT16_MAX && restart.asyncTcpWatermark == UINT16_MAX &&
+            restart.mqttReconnWatermark == UINT16_MAX && restart.freeHeap == freeBytes);
+        assert(!sdkCalls && !countCalls);
+        return 0;
+    }
+    if (mode == "auth" || mode == "route" || mode == "no_monitor" || mode == "json_oom") {
+        AsyncWebServer server; WebHandlerContext context; AsyncWebServerRequest request;
+        setupTaskStackSnapshotRoute(&server, &context); assert(server.callback);
+        if (mode == "auth") {
+            context.auth = false; server.callback(&request);
+            assert(context.authCalls == 1 && context.devCalls == 0 && !sdkCalls && !countCalls);
+            context.auth = true; context.dev = false; server.callback(&request);
+            assert(context.devCalls == 1 && !sdkCalls && !countCalls && !successResponses);
+        } else if (mode == "no_monitor") {
+            FastBeeFramework::getInstance()->available = false; server.callback(&request);
+            assert(!sdkCalls && !countCalls && successResponses == 1);
+            assert(response.find("INTERNAL_MEMORY_BUDGET") != std::string::npos);
+        } else if (mode == "json_oom") {
+            jsonOom = true; server.callback(&request);
+            assert(sdkCalls == 1 && errorResponses == 1 && !successResponses && !scratchOutstanding);
+        } else {
+            server.callback(&request); assert(sdkCalls == 1 && successResponses == 1);
+            JsonDocument doc; assert(!deserializeJson(doc, response)); assert(doc["success"] == true);
+            assert(doc["data"]["tasks"].size() == 2 && doc["data"]["tasks"][0]["name"].isNull());
+            server.callback(&request); assert(sdkCalls == 1 && successResponses == 2);
+            assert(response.find("CAPTURE_COOLDOWN") != std::string::npos);
+        }
+        return 0;
+    }
+    if (mode == "capacity") beforeCount = afterCount = sdkCount = 48;
+    if (mode == "too_many") beforeCount = 49;
+    if (mode == "sdk_zero") { beforeCount = 48; afterCount = 49; sdkCount = 0; }
+    if (mode == "sdk_over") sdkCount = 49;
+    if (mode == "changed") { beforeCount = 1; afterCount = 3; }
+    if (mode == "busy") reenter = true;
+    if (mode == "wrap") nowMs = UINT32_MAX - 15000;
+    if (mode == "low_free") freeBytes = TaskStackSnapshot::MIN_FREE_INTERNAL8 - 1;
+    if (mode == "small_block") largestBytes = TaskStackSnapshot::MIN_LARGEST_INTERNAL8 - 1;
+    if (mode == "scratch_oom") scratchOom = true;
+    if (mode == "scalar_oom") scalarOom = true;
+    if (mode == "clock_negative") nowUs = -1;
+    if (mode == "clock_reverse") sdkDurationUs = -100;
+    if (mode == "duration") sdkDurationUs = 2500000;
+    ownerMode = mode;
+    if (mode == "owners" || mode == "null_timer" || mode == "not_started") beforeCount = afterCount = sdkCount = 4;
+    auto sample = captureTaskStackSnapshot(mode == "severe");
+    if (mode == "too_many" || mode == "sdk_over") {
+        expectUnknown(sample, TaskStackCaptureStatus::CapacityExceeded);
+        assert(sdkCalls == (mode == "too_many" ? 0U : 1U));
+    } else if (mode == "sdk_zero") expectUnknown(sample, TaskStackCaptureStatus::SdkFailed);
+    else if (mode == "low_free" || mode == "small_block" || mode == "severe") {
+        expectUnknown(sample, TaskStackCaptureStatus::MemoryPressure); assert(!sdkCalls && !countCalls);
+    } else if (mode == "scratch_oom" || mode == "scalar_oom") {
+        expectUnknown(sample, TaskStackCaptureStatus::AllocationFailed); assert(!sdkCalls);
+    } else if (mode == "clock_negative" || mode == "clock_reverse") {
+        expectUnknown(sample, TaskStackCaptureStatus::ClockUnavailable);
+        assert(sdkCalls == (mode == "clock_negative" ? 0U : 1U));
+    } else {
+        assert(sample.status == TaskStackCaptureStatus::Observed && sample.count == sdkCount);
+        assert(sample.entries[0].taskNumber == 100 && sample.entries[0].highWaterBytes == 0);
+        assert(sample.entries[1].priority == 3 && sample.entries[1].highWaterBytes == 801);
+        assert(sample.scratchBytes == sizeof(TaskStatus_t) * 48 && !scratchOutstanding && sdkCalls == 1);
+        assert(sample.captureDurationUs == static_cast<uint64_t>(sdkDurationUs));
+        JsonDocument doc; writeTaskStackSnapshotJson(doc.to<JsonObject>(), sample);
+        assert(!doc.overflowed() && measureJson(doc) < 8192);
+        assert(doc["nameStatus"] == "unavailable" && doc["tasks"][0]["name"].isNull());
+        assert(doc["hardDeadlineEnforced"] == false && doc["atomicSnapshot"] == false);
+        if (mode == "owners" || mode == "null_timer" || mode == "not_started") {
+            assert(sample.entries[0].taskNumber == 100 && sample.entries[2].taskNumber == 102);
+            const bool active = mode != "not_started";
+            assert(sample.entries[0].permanentOwner == (active && !CONFIG_FREERTOS_SMP ? TaskStackPermanentOwner::IdleCore0 : TaskStackPermanentOwner::Unavailable));
+            assert(sample.entries[1].permanentOwner == (active && !CONFIG_FREERTOS_SMP && configNUMBER_OF_CORES > 1 ? TaskStackPermanentOwner::IdleCore1 : TaskStackPermanentOwner::Unavailable));
+            assert(sample.entries[2].permanentOwner == (active && mode != "null_timer" ? TaskStackPermanentOwner::TimerDaemon : TaskStackPermanentOwner::Unavailable));
+            assert(sample.entries[3].permanentOwner == TaskStackPermanentOwner::Unavailable && doc["tasks"][3]["sdkOwner"].isNull());
+            assert(timerCalls == (active ? 1U : 0U));
+            assert(idleCalls == (active && !CONFIG_FREERTOS_SMP ? static_cast<unsigned>(configNUMBER_OF_CORES) : 0U));
+            if (active && !CONFIG_FREERTOS_SMP) assert(doc["tasks"][0]["sdkOwner"] == "idle-core0");
+        } else {
+            for (unsigned i=0; i<sample.count; ++i) assert(sample.entries[i].permanentOwner == TaskStackPermanentOwner::Unavailable);
+        }
+        assert(doc["countChangedAroundCapture"].as<bool>() == (mode == "changed"));
+        if (mode == "cooldown" || mode == "wrap" || mode == "busy") {
+            if (mode == "wrap") nowMs = 10000;
+            expectUnknown(captureTaskStackSnapshot(false), TaskStackCaptureStatus::Cooldown);
+            assert(sdkCalls == 1);
+            nowMs += mode == "wrap" ? 5000 : 30000;
+            assert(captureTaskStackSnapshot(false).status == TaskStackCaptureStatus::Observed && sdkCalls == 2);
+        }
+    }
+    return 0;
+}

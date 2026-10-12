@@ -1,289 +1,245 @@
-/**
- * @file EthernetAdapter.cpp
- * @brief 以太网适配器实现 (W5500 SPI)
- * @author kerwincui
- * @date 2026-06-02
- *
- * 使用 ESP-IDF 底层 ethernet 驱动 API 初始化 W5500，
- * 兼容 Arduino-ESP32 Core 2.x / 3.x。
- */
-
+/** W5500 lifecycle on the project's pinned Arduino core with checked ETH handles. */
 #include "network/EthernetAdapter.h"
 
 #if FASTBEE_ENABLE_ETHERNET
-
+#include "core/ChipConfig.h"
+#include "core/SpiBusInitializer.h"
+#include "core/FeatureInstanceRegistry.h"
 #include "systems/LoggerSystem.h"
-#include <SPI.h>
-#include <ETH.h>
-#include <WiFi.h>
+#include <driver/gpio.h>
+#include <new>
 
-// ESP-IDF 底层以太网驱动 API（Core 2.x 回退路径需要）
-#if !defined(ETH_SPI_SUPPORTS_CUSTOM)
-#include "esp_eth.h"
-#include "esp_eth_mac.h"
-#include "esp_eth_phy.h"
-#include "esp_event.h"
-#include "driver/spi_master.h"
-#endif
+namespace {
+// This transport/token outlives adapters: failed cleanup cannot dangle a lease.
+struct EthernetTransport {
+    SPIClass* spi = nullptr;
+    bool leased = false;
+    bool attempted = false;
+    wifi_event_id_t eventId = 0;
+    std::atomic<bool> acceptingEvents{false};
+    std::atomic<bool> initialized{false};
+    EthernetConfig pins;
+    String addressKey;
+} transport;
 
-// 兼容 Arduino-ESP32 Core 2.x 和 3.x 的 SPI Host 定义
-#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C6)
-  #ifndef SPI2_HOST
-    #define SPI2_HOST FSPI
-  #endif
-#else  // ESP32 classic / C3
-  #ifndef SPI2_HOST
-    #define SPI2_HOST HSPI
-  #endif
-#endif
-
-// 静态实例指针（用于事件回调）
-EthernetAdapter* EthernetAdapter::_instance = nullptr;
-
-EthernetAdapter::EthernetAdapter() {
-    _instance = this;
+#if defined(ETH_SPI_SUPPORTS_CUSTOM) && ETH_SPI_SUPPORTS_CUSTOM
+bool samePins(const EthernetConfig& a, const EthernetConfig& b) {
+    return a.spiSck == b.spiSck && a.spiMiso == b.spiMiso && a.spiMosi == b.spiMosi &&
+           a.csPin == b.csPin && a.rstPin == b.rstPin && a.intPin == b.intPin;
 }
 
-EthernetAdapter::~EthernetAdapter() {
-    // 必须在 SPI 销毁之前调用 disconnect()，因为 disconnect() 会调用 ETH.end()
-    // ETH.end() 停止以太网驱动任务，否则任务会继续访问已销毁的 SPI 总线导致崩溃
-    disconnect();
-    if (_spi) {
-        delay(100);  // 等待以太网驱动任务完全退出
-        _spi->end();
-        delete _spi;
-        _spi = nullptr;
-    }
-    _instance = nullptr;
-}
-
-bool EthernetAdapter::begin(const WiFiConfig& config) {
-    if (_initialized) {
-        LOG_WARNING("EthernetAdapter: Already initialized");
-        return true;
-    }
-
-    _pinConfig = config.ethernet;
-
-    LOG_INFO("EthernetAdapter: Initializing W5500 SPI Ethernet...");
-    LOGGER.infof("EthernetAdapter: SPI pins - SCK:%d, MOSI:%d, MISO:%d",
-                 _pinConfig.spiSck, _pinConfig.spiMosi, _pinConfig.spiMiso);
-    LOGGER.infof("EthernetAdapter: Control pins - CS:%d, RST:%d, INT:%d",
-                 _pinConfig.csPin, _pinConfig.rstPin, _pinConfig.intPin);
-
-    // 注册以太网事件回调（保存 ID 以便 disconnect 时注销）
-    _ethEventId = WiFi.onEvent(onEthEvent);
-
-    // 初始化 SPI
-    _spi = new SPIClass(SPI2_HOST);
-    _spi->begin(_pinConfig.spiSck, _pinConfig.spiMiso, _pinConfig.spiMosi, _pinConfig.csPin);
-
-    // 硬件复位 W5500
-    if (_pinConfig.rstPin >= 0) {
-        pinMode(_pinConfig.rstPin, OUTPUT);
-        digitalWrite(_pinConfig.rstPin, LOW);
-        delay(50);
-        digitalWrite(_pinConfig.rstPin, HIGH);
-        delay(200);
-    }
-
-    // 使用 ETH.begin() - 兼容不同版本的 Arduino Core
-#if defined(ETH_SPI_SUPPORTS_CUSTOM)
-    // Arduino-ESP32 Core 3.x+ (pioarduino)
-    if (!ETH.begin(ETH_PHY_W5500, 0, _pinConfig.csPin, _pinConfig.intPin, _pinConfig.rstPin, *_spi)) {
-        LOG_ERROR("EthernetAdapter: ETH.begin() failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-#else
-    // Arduino-ESP32 Core 2.x - 使用 ESP-IDF 底层 API
-    // 初始化 SPI 总线
-    spi_bus_config_t buscfg = {};
-    buscfg.mosi_io_num = _pinConfig.spiMosi;
-    buscfg.miso_io_num = _pinConfig.spiMiso;
-    buscfg.sclk_io_num = _pinConfig.spiSck;
-    buscfg.quadwp_io_num = -1;
-    buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = 4096;
-
-    // 初始化 SPI 总线（如果已被 Arduino SPIClass 初始化则可能返回 ESP_ERR_INVALID_STATE）
-    esp_err_t ret = spi_bus_initialize((spi_host_device_t)SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        LOG_ERROR("EthernetAdapter: SPI bus init failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-
-    // 添加 SPI 设备
-    spi_device_interface_config_t devcfg = {};
-    devcfg.command_bits = 16;   // W5500 地址段
-    devcfg.address_bits = 8;    // W5500 控制段
-    devcfg.mode = 0;
-    devcfg.clock_speed_hz = 20000000; // 20 MHz
-    devcfg.spics_io_num = _pinConfig.csPin;
-    devcfg.queue_size = 20;
-
-    spi_device_handle_t spi_handle = NULL;
-    ret = spi_bus_add_device((spi_host_device_t)SPI2_HOST, &devcfg, &spi_handle);
-    if (ret != ESP_OK) {
-        LOG_ERROR("EthernetAdapter: SPI add device failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-
-    // 配置 W5500 MAC
-    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
-    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
-    phy_config.reset_gpio_num = _pinConfig.rstPin;
-
-    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
-    w5500_config.int_gpio_num = _pinConfig.intPin;
-
-    esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
-    if (!mac) {
-        LOG_ERROR("EthernetAdapter: esp_eth_mac_new_w5500 failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-
-    esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_config);
-    if (!phy) {
-        LOG_ERROR("EthernetAdapter: esp_eth_phy_new_w5500 failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-
-    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
-    esp_eth_handle_t eth_handle = NULL;
-    if (esp_eth_driver_install(&eth_config, &eth_handle) != ESP_OK) {
-        LOG_ERROR("EthernetAdapter: esp_eth_driver_install failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-
-    // 将 eth_handle 附加到 TCP/IP 层 (netif)
-    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
-    esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
-    esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(eth_handle);
-    esp_netif_attach(eth_netif, glue);
-
-    if (esp_eth_start(eth_handle) != ESP_OK) {
-        LOG_ERROR("EthernetAdapter: esp_eth_start failed");
-        delete _spi;
-        _spi = nullptr;
-        return false;
-    }
-#endif
-
-    // 配置 IP（DHCP 或静态）
-    if (config.ipConfigType == IPConfigType::STATIC &&
-        !config.staticIP.isEmpty() && !config.gateway.isEmpty() && !config.subnet.isEmpty()) {
-        IPAddress ip, gw, sn, dns1, dns2;
-        if (ip.fromString(config.staticIP) && gw.fromString(config.gateway) && sn.fromString(config.subnet)) {
-            dns1.fromString(config.dns1.isEmpty() ? "8.8.8.8" : config.dns1);
-            dns2.fromString(config.dns2.isEmpty() ? "8.8.4.4" : config.dns2);
-            ETH.config(ip, gw, sn, dns1, dns2);
-            LOG_INFO("EthernetAdapter: Static IP configured: " + config.staticIP);
+bool validatePins(const EthernetConfig& pins, String& error) {
+    const int8_t values[]{pins.spiSck, pins.spiMiso, pins.spiMosi, pins.csPin, pins.rstPin, pins.intPin};
+    for (size_t i = 0; i < 6; ++i) {
+        if (i >= 4 && values[i] == -1) continue;
+        const bool output = i == 0 || i == 2 || i == 3 || i == 4;
+        if (values[i] < 0 || !GPIO_IS_VALID_GPIO(values[i]) ||
+            chipIsAbsoluteForbiddenPin(static_cast<uint8_t>(values[i])) ||
+            (output && !GPIO_IS_VALID_OUTPUT_GPIO(values[i]))) {
+            error = "ETH_PINS_INVALID: invalid or reserved GPIO"; return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (values[j] == values[i]) {
+                error = "ETH_PINS_INVALID: signal/control pins overlap"; return false;
+            }
         }
     }
-
-    _initialized = true;
-    LOG_INFO("EthernetAdapter: Initialized successfully, waiting for link...");
     return true;
 }
 
+// Caller holds SpiBusOperation. ETH workers use the SPIClass transaction lock,
+// not this outer lifecycle lock, so stopping them does not invert its order.
+bool stopTransport(String& error) {
+    transport.acceptingEvents = false;
+    transport.initialized = false;
+    if (transport.eventId) {
+        WiFi.removeEvent(transport.eventId);
+        transport.eventId = 0;
+    }
+    if (transport.attempted) {
+        ETH.end();
+        // end() is void and may return early. A delay does not prove cleanup.
+        if (ETH.handle() != nullptr || ETH.netif() != nullptr) {
+            error = "ETH_STOP_PENDING: driver resources retained; retry stop"; return false;
+        }
+        transport.attempted = false;
+    }
+#if CHIP_ETHERNET_DEDICATED_SPI
+    if (transport.spi) {
+        transport.spi->end();
+        delete transport.spi;
+    }
+#endif
+    transport.spi = nullptr;
+    if (transport.leased && !FastBee::SpiBusInitializer::instance().releaseNetwork(&transport, error)) return false;
+    transport.leased = false;
+    transport.addressKey = "";
+    error = "";
+    return true;
+}
+#endif
+} // namespace
+
+std::atomic<EthernetAdapter*> EthernetAdapter::_instance{nullptr};
+EthernetAdapter::EthernetAdapter() {
+    static const FastBee::FeatureInstanceObserver observer{"ethernet", [](const void*) {
+        using namespace FastBee;
+        SpiBusObservation guard;
+        if (guard.unused()) return FeatureInstanceSnapshot{FeatureInstanceState::NotInitialized, 0};
+        if (!guard.locked()) return FeatureInstanceSnapshot{FeatureInstanceState::Busy, 0};
+        if (transport.initialized && transport.spi && transport.spi->bus())
+            return FeatureInstanceSnapshot{FeatureInstanceState::Initialized, 1};
+        return FeatureInstanceSnapshot{transport.leased || transport.attempted
+            ? FeatureInstanceState::CleanupPending : FeatureInstanceState::NotInitialized, 0};
+    }, nullptr};
+    static const bool registered = FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
+    (void)registered;
+}
+EthernetAdapter::~EthernetAdapter() {
+    disconnect();
+    auto* expected = this;
+    _instance.compare_exchange_strong(expected, nullptr);
+    // Failed cleanup stays in the static transport, never in a freed adapter.
+}
+
+bool EthernetAdapter::begin(const WiFiConfig& config) {
+#if !defined(ETH_SPI_SUPPORTS_CUSTOM) || !ETH_SPI_SUPPORTS_CUSTOM
+    (void)config;
+    _lastError = "ETH_CORE_UNSUPPORTED: use the project's pinned custom-SPI Arduino core";
+    LOG_ERROR(_lastError);
+    return false;
+#else
+    // ETH workers transact outside SpiBusOperation, so the underlying Arduino
+    // SPIClass transaction mutex is required even on a dedicated controller.
+#if CONFIG_DISABLE_HAL_LOCKS
+    _lastError = "ETH_LOCKS_DISABLED: Arduino SPI transaction locks are required";
+    return false;
+#endif
+    FastBee::SpiBusOperation operation;
+    if (!operation.locked()) { _lastError = "SPI_BUSY: Ethernet startup deferred"; return false; }
+    auto* owner = _instance.load();
+    if (owner && owner != this) { _lastError = "ETH_IN_USE: another adapter owns Ethernet"; return false; }
+    if (!validatePins(config.ethernet, _lastError)) return false;
+    IPAddress ip, gateway, subnet, dns1, dns2;
+    const bool staticAddress = config.ipConfigType == IPConfigType::STATIC;
+    if (config.ipConfigType != IPConfigType::DHCP && !staticAddress) {
+        _lastError = "ETH_IP_INVALID: unknown address mode"; return false;
+    }
+    if (staticAddress && (!ip.fromString(config.staticIP) || !gateway.fromString(config.gateway) ||
+        !subnet.fromString(config.subnet) ||
+        !dns1.fromString(config.dns1.isEmpty() ? "8.8.8.8" : config.dns1) ||
+        !dns2.fromString(config.dns2.isEmpty() ? "8.8.4.4" : config.dns2))) {
+        _lastError = "ETH_IP_INVALID: explicit valid IPv4 settings required"; return false;
+    }
+    const String addressKey = staticAddress
+        ? config.staticIP + "/" + config.gateway + "/" + config.subnet + "/" + config.dns1 + "/" + config.dns2
+        : String("DHCP");
+    if (transport.initialized && owner == this) {
+        if (!samePins(transport.pins, config.ethernet) || transport.addressKey != addressKey) {
+            _lastError = "ETH_CONFIG_CHANGED: stop before reconfiguration"; return false;
+        }
+        const auto& p = config.ethernet;
+        return FastBee::SpiBusInitializer::instance().acquireNetwork(&transport,
+            CHIP_ETHERNET_DEDICATED_SPI, p.spiSck, p.spiMiso, p.spiMosi,
+            p.csPin, p.rstPin, p.intPin, _lastError);
+    }
+    if ((transport.leased || transport.attempted) && !stopTransport(_lastError)) return false;
+    if (ETH.handle() || ETH.netif()) {
+        _lastError = "ETH_UNMANAGED: existing Ethernet driver is not owned here"; return false;
+    }
+    _instance = this;
+    transport.pins = config.ethernet;
+    const auto& p = transport.pins;
+    if (!FastBee::SpiBusInitializer::instance().acquireNetwork(&transport,
+        CHIP_ETHERNET_DEDICATED_SPI, p.spiSck, p.spiMiso, p.spiMosi,
+        p.csPin, p.rstPin, p.intPin, _lastError)) { _instance = nullptr; return false; }
+    transport.leased = true;
+    auto failed = [&](const char* reason) {
+        String cleanupError;
+        const bool stopped = stopTransport(cleanupError);
+        _lastError = reason;
+        if (!stopped) _lastError += String("; ") + cleanupError;
+        LOG_ERROR(_lastError);
+        return false;
+    };
+#if CHIP_ETHERNET_DEDICATED_SPI
+    transport.spi = new (std::nothrow) SPIClass(HSPI);
+    if (!transport.spi || !transport.spi->begin(p.spiSck, p.spiMiso, p.spiMosi, p.csPin))
+        return failed("ETH_SPI_INIT_FAILED");
+#else
+    transport.spi = &SPI;
+#endif
+    transport.eventId = WiFi.onEvent(onEthEvent);
+    if (!transport.eventId) return failed("ETH_EVENT_REGISTER_FAILED");
+    transport.acceptingEvents = true;
+    transport.attempted = true;
+    if (!ETH.begin(ETH_PHY_W5500, 0, p.csPin, p.intPin, p.rstPin, *transport.spi))
+        return failed("ETH_BEGIN_FAILED");
+    if (staticAddress && !ETH.config(ip, gateway, subnet, dns1, dns2))
+        return failed("ETH_IP_CONFIG_FAILED");
+    transport.addressKey = addressKey;
+    transport.initialized = true;
+    _lastError = "";
+    LOG_INFO("EthernetAdapter: Initialized, waiting for link");
+    return true;
+#endif
+}
+
 bool EthernetAdapter::waitForConnection(uint32_t timeoutMs) {
-    if (!_initialized) return false;
-
-    unsigned long start = millis();
-    while (!_connected && (millis() - start < timeoutMs)) {
-        delay(100);
-    }
-
-    if (_connected) {
-        LOGGER.infof("EthernetAdapter: Connected! IP: %s", localIP().toString().c_str());
-    } else {
-        LOG_WARNING("EthernetAdapter: Connection timeout");
-    }
-    return _connected;
+    if (_instance.load() != this || !transport.initialized) return false;
+    const unsigned long started = millis();
+    while (!isConnected() && millis() - started < timeoutMs) delay(100);
+    return isConnected();
 }
 
 bool EthernetAdapter::isConnected() const {
-    return _connected;
+#if defined(ETH_SPI_SUPPORTS_CUSTOM) && ETH_SPI_SUPPORTS_CUSTOM
+    FastBee::SpiBusOperation operation(0);
+    return operation.locked() && _instance.load() == this && transport.initialized && ETH.linkUp() && ETH.hasIP();
+#else
+    return false;
+#endif
 }
-
 IPAddress EthernetAdapter::localIP() const {
-    return ETH.localIP();
+    FastBee::SpiBusOperation operation(0);
+    return operation.locked() && isConnected() ? ETH.localIP() : IPAddress();
 }
-
 String EthernetAdapter::macAddress() const {
-    return ETH.macAddress();
+    FastBee::SpiBusOperation operation(0);
+    return operation.locked() && _instance.load() == this && transport.initialized ? ETH.macAddress() : String();
 }
 
+bool EthernetAdapter::stop(String& error) {
+    FastBee::SpiBusOperation operation;
+    if (!operation.locked()) { error = _lastError = "SPI_BUSY: Ethernet transport retained"; return false; }
+    if (_instance.load() != this) { error = ""; return true; }
+    _ethClient.stop();
+#if defined(ETH_SPI_SUPPORTS_CUSTOM) && ETH_SPI_SUPPORTS_CUSTOM
+    if (!stopTransport(error)) { _lastError = error; return false; }
+#endif
+    _instance = nullptr;
+    error = _lastError = "";
+    return true;
+}
 void EthernetAdapter::disconnect() {
-    if (!_initialized && !_connected) {
-        // 已经断开，避免重复调用 ETH.end()（虽然 ETH.end() 本身是幂等的）
-        return;
-    }
-    _connected = false;
-    _initialized = false;
-
-    // 注销以太网事件回调，防止销毁后触发回调
-    if (_ethEventId > 0) {
-        WiFi.removeEvent(_ethEventId);
-        _ethEventId = 0;
-    }
-
-    // 关键修复：必须在 SPI 销毁之前调用 ETH.end()
-    // ETH.end() 会停止以太网 MAC 任务、卸载驱动、销毁 netif
-    // 如果不调用，以太网驱动任务会继续访问已销毁的 SPI 总线
-    // → xQueueSemaphoreTake assert failed (pxQueue->uxItemSize == 0)
-    ETH.end();
-    LOG_INFO("EthernetAdapter: ETH.end() called, driver stopped");
+    String error;
+    if (!stop(error)) LOG_ERROR(error);
 }
-
-Client* EthernetAdapter::getClient() {
-    return &_ethClient;
-}
-
-void EthernetAdapter::update() {
-    // ETH 事件由回调驱动
-}
-
+Client* EthernetAdapter::getClient() { return &_ethClient; }
+void EthernetAdapter::update() {}
 String EthernetAdapter::getStatusString() const {
-    if (!_initialized) return "uninitialized";
-    if (!_connected) return "disconnected";
-    return "connected";
+    FastBee::SpiBusOperation operation(0);
+    if (!operation.locked()) return "SPI_BUSY: Ethernet status unavailable";
+    if (!_lastError.isEmpty()) return _lastError;
+    if (_instance.load() != this || !transport.initialized) return "uninitialized";
+    return isConnected() ? "connected" : "disconnected";
 }
-
 void EthernetAdapter::onEthEvent(arduino_event_id_t event, arduino_event_info_t info) {
-    if (!_instance) return;
-
-    switch (event) {
-        case ARDUINO_EVENT_ETH_START:
-            LOG_INFO("EthernetAdapter: ETH Started");
-            break;
-        case ARDUINO_EVENT_ETH_CONNECTED:
-            LOG_INFO("EthernetAdapter: ETH Link Up");
-            break;
-        case ARDUINO_EVENT_ETH_GOT_IP:
-            _instance->_connected = true;
-            LOGGER.infof("EthernetAdapter: Got IP - %s",
-                         ETH.localIP().toString().c_str());
-            break;
-        case ARDUINO_EVENT_ETH_DISCONNECTED:
-            _instance->_connected = false;
-            LOG_WARNING("EthernetAdapter: ETH Disconnected (was connected, link lost or DHCP lease expired)");
-            break;
-        default:
-            break;
-    }
+    (void)info;
+    if (!transport.acceptingEvents) return;
+    // Read connection status from ETH, not delayed events. Never dereference an
+    // adapter from this event task, including a callback queued before removal.
+    if (event == ARDUINO_EVENT_ETH_GOT_IP) LOG_INFO("EthernetAdapter: IP event received");
+    else if (event == ARDUINO_EVENT_ETH_DISCONNECTED) LOG_WARNING("EthernetAdapter: Link disconnected");
 }
-
 #endif // FASTBEE_ENABLE_ETHERNET

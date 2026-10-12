@@ -99,6 +99,16 @@ class MenuFeatureContractTests(unittest.TestCase):
         self.assertIn("states[key] === 'active'", STATE)
         self.assertIn("Object.keys(states).forEach(function(key)", STATE)
 
+    def test_compact_panel_intent_requires_explicit_boolean_fields(self):
+        start = STATE.index("const panelIntent = res.data.featureIntent")
+        end = STATE.index("return featureGetter('/api/features/status')", start)
+        compact = STATE[start:end]
+        self.assertIn("typeof panelIntent.compiled === 'boolean'", compact)
+        self.assertIn("typeof panelIntent.userEnabled === 'boolean'", compact)
+        self.assertIn("active.screenPanel = panelIntent.compiled && panelIntent.userEnabled;", compact)
+        self.assertIn("applyMenuState(active);", compact)
+        self.assertIn("return res;", compact)
+
     def test_user_disabled_features_are_not_reported_as_no_memory(self):
         start = SYSTEM_ROUTES.index("功能运行时状态")
         end = SYSTEM_ROUTES.index("if (ctx->networkManager)", start)

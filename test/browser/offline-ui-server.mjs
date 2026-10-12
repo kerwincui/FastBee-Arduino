@@ -906,12 +906,34 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/periph-exec/preflight' && method === 'POST') {
     const body = await readPayload(request);
     const rule = body.rule && typeof body.rule === 'object' ? body.rule : body;
+    const issues = [];
+    const actions = Array.isArray(rule.actions) ? rule.actions : [];
+    const actionContracts = actions.slice(0, 4).map((action, index) => {
+      const target = peripherals.find(item => item.id === action.targetPeriphId);
+      const contract = { index, actionType: action.actionType, coverage: 'unknown', schema: 'unknown',
+        result: 'unknown', idempotence: 'unknown', replay: 'unknown', timeoutScope: 'unknown',
+        timeoutBudgetMs: null, fault: 'unknown', physicalVerified: false, runtimeAdmitted: false };
+      if (target?.enabled === false) issues.push({code: 'ACTION_TARGET_DISABLED', severity: 'warning',
+        path: `rule.actions[${index}].targetPeriphId`, message: 'Target peripheral is currently disabled'});
+      if ([6, 7, 9].includes(action.actionType)) issues.push({code: 'DANGEROUS_SYSTEM_ACTION', severity: 'warning',
+        path: `rule.actions[${index}]`, message: 'Restart, reset or OTA requires explicit confirmation'});
+      // The fixture describes only this known native GPIO path. Other driver
+      // combinations remain unknown; no fabricated capability/physical claim.
+      if ([0, 1, 13, 14, 30].includes(action.actionType) && target?.type === 12 && !target.params?.passive &&
+          ![1, 'expander'].includes(target.params?.ioSource)) Object.assign(contract, {
+        coverage: 'described', schema: 'gpio.level', result: 'local_acceptance_only',
+        idempotence: action.actionType === 30 ? 'non_idempotent' : 'absolute_command_same_config',
+        replay: 'no_automatic_replay', fault: 'no_automatic_safe_state',
+      });
+      return contract;
+    });
     sendJson(response, 200, {
       success: true,
       allowed: true,
       data: {
         operation: body.operation || 'add', allowed: true,
-        requiresConfirmation: false, riskLevel: 'low', issues: [], candidate: rule,
+        requiresConfirmation: issues.length > 0, riskLevel: issues.length ? 'medium' : 'low', issues, candidate: rule,
+        actionContractsVersion: 1, actionContractsTruncated: actions.length > 4, actionContracts,
       },
     }, method);
     return;

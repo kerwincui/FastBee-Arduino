@@ -1,0 +1,423 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
+#include "utils/ConsumedStringJsonReader.h"
+#include "utils/SharedJsonDeserializer.h"
+#include "core/ModbusOrdinaryControl.h"
+#include <initializer_list>
+#include <vector>
+#define CHECK(c) do { if (!(c)) { fprintf(stderr, "%d: %s\n", __LINE__, #c); std::exit(86); } } while (false)
+inline void convertToJson(const String& value, JsonVariant output) { output.set(std::string(value)); }
+inline void convertFromJson(JsonVariantConst value, String& output) { output = value.as<std::string>(); }
+// @result_types@
+struct Param {
+    String key, text; bool post = true, file = false;
+    String name() const { return key; } String value() const { return text; }
+    bool isPost() const { return post; } bool isFile() const { return file; }
+};
+struct AsyncWebServerRequest {
+    std::vector<Param> parameters; int status = 0; String response;
+    ~AsyncWebServerRequest() {
+        std::printf("HTTP %d %zu\n", status, response.length());
+        std::fwrite(response.c_str(), 1, response.length(), stdout);
+        std::fputc('\n', stdout);
+    }
+    size_t params() const { return parameters.size(); }
+    Param* getParam(size_t i) { return i < parameters.size() ? &parameters[i] : nullptr; }
+    Param* getParam(const char* key, bool post = false) {
+        for (auto& value : parameters) if (value.key == key && value.post == post) return &value;
+        return nullptr;
+    }
+    bool hasParam(const char* key, bool post = false) { return getParam(key, post) != nullptr; }
+    void set(const char* key, const String& value) {
+        if (auto* old = getParam(key, true)) old->text = value;
+        else parameters.push_back({key, value, true, false});
+    }
+    void send(int code, const char*, const String& body) { status = code; response = body; }
+};
+struct WebHandlerContext {
+    bool auth = true, session = true;
+    bool requireAuth(AsyncWebServerRequest* request) { if (!auth) request->status = 401; return auth; }
+    struct Auth { bool success; uint64_t outputActor; };
+    Auth authenticateRequest(AsyncWebServerRequest*) { return {session, session ? 77U : 0U}; }
+    void sendError(AsyncWebServerRequest* request, int code, const String& reason) {
+        JsonDocument doc; doc["success"] = false; doc["error"] = reason; sendJsonResponse(request, code, doc);
+    }
+    void sendBadRequest(AsyncWebServerRequest* request, const String& error) { sendError(request, 400, error); }
+    void sendJsonResponse(AsyncWebServerRequest* request, int code, JsonDocument& doc) {
+        std::string text; serializeJson(doc, text); request->status = code; request->response = text;
+    }
+    String getParamValue(AsyncWebServerRequest* request, const char* key, const String& fallback) {
+        const auto* value = request->getParam(key, true); return value ? value->text : fallback;
+    }
+};
+namespace HandlerUtils {
+static void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
+    std::string text; serializeJson(doc, text); request->status = 200; request->response = text;
+}
+}
+namespace FastBee {
+static void writeOrdinaryControlJson(JsonObject out, const OrdinaryControlResult& result) {
+    out["reason"] = result.reason; out["operationId"] = result.operation;
+    out["accepted"] = result.accepted; out["outputAttempted"] = result.attempted;
+}
+}
+struct ModbusSubDevice {
+    char sensorId[32] = "saved_relay"; uint8_t channelCount = 4, delayMode = 0;
+    bool ncMode = false;
+};
+struct Call {
+    FastBee::ModbusOutputFrame frame; FastBee::ModbusControlTarget target;
+    FastBee::OrdinaryControlContext context; bool toggle = false;
+};
+struct ModbusHandler {
+    FastBee::ModbusControlTarget mapping; ModbusSubDevice device;
+    bool mappingOk = true, frameMappingOk = true, changeAfterWrite = false;
+    bool readOk = false; uint16_t readCount = 4, readValues[32]{};
+    unsigned endpointSnapshots = 0, reads = 0; uint8_t readFunction = 0; uint16_t readAddress = 0, readQuantity = 0;
+    bool scheduleOk = true, hardwareWindowOk = true;
+    unsigned schedules = 0, hardwareWindows = 0;
+    uint8_t scheduledSlave = 0; uint16_t scheduledAddress = 0;
+    unsigned long scheduledMs = 0; bool scheduledValue = false, scheduledRegister = false;
+    ModbusDelayReceipt scheduledReceipt; FastBee::OrdinaryControlContext scheduledContext;
+    ModbusHandler() {
+        mapping.instance = 11; mapping.configuration = 22; mapping.slave = 2; mapping.index = 3;
+        mapping.function = 5; mapping.first = 100; mapping.count = 4;
+    }
+    bool snapshotOrdinaryRelayEndpoint(uint8_t slave, uint8_t function, uint16_t address,
+        ModbusSubDevice& outputDevice, FastBee::ModbusControlTarget& target) {
+        ++endpointSnapshots; outputDevice = device; target = mapping;
+        return mappingOk && mapping.valid() && slave == mapping.slave && function == mapping.function &&
+            address >= mapping.first && uint32_t(address) < uint32_t(mapping.first) + mapping.count;
+    }
+    bool snapshotOrdinaryFrame(const FastBee::ModbusOutputFrame& frame, FastBee::ModbusControlTarget& target) {
+        target = mapping; target.kind = FastBee::ModbusControlTarget::Kind::Frame;
+        target.frameSlave = frame.bytes[0]; target.frameQuantity = frame.quantity();
+        target.frameAccess = frame.access; target.frameTransform = frame.transform;
+        return frameMappingOk && frame.valid();
+    }
+    OneShotResult readRegistersOnce(uint8_t slave, uint8_t function, uint16_t address, uint16_t count, bool control) {
+        CHECK(slave == 2 && control); ++reads; readFunction = function; readAddress = address; readQuantity = count;
+        OneShotResult answer; answer.error = readOk ? ONESHOT_SUCCESS : ONESHOT_TIMEOUT;
+        answer.count = readOk ? readCount : 0;
+        for (unsigned i = 0; i < 32; ++i) answer.data[i] = readValues[i];
+        return answer;
+    }
+    bool addOrdinaryCoilDelayTask(uint8_t slave, uint16_t address, unsigned long delayMs,
+        bool value, bool registerMode, const ModbusDelayReceipt& receipt,
+        const FastBee::OrdinaryControlContext& context, uint64_t* operation = nullptr) {
+        ++schedules; CHECK(receipt.writeSequence && receipt.instance == 11 && receipt.configuration == 22);
+        CHECK(context.request.operation == 9001 && context.request.actor.source == FastBee::OrdinaryControl::Source::Http &&
+            context.request.actor.identity == 77);
+        scheduledSlave = slave; scheduledAddress = address; scheduledMs = delayMs;
+        scheduledValue = value; scheduledRegister = registerMode; scheduledReceipt = receipt; scheduledContext = context;
+        if (operation) *operation = scheduleOk ? hardwareWindows ? 5002 : 5001 : 0;
+        return scheduleOk;
+    }
+    bool retainOrdinaryHardwareDelay(uint8_t slave, unsigned long delayMs, const ModbusDelayReceipt& receipt,
+        const FastBee::OrdinaryControlContext& context, uint64_t* operation = nullptr) {
+        ++hardwareWindows; CHECK(receipt.writeSequence && receipt.instance == 11 && receipt.configuration == 22);
+        CHECK(context.request.operation == 9001 && context.request.actor.source == FastBee::OrdinaryControl::Source::Http &&
+            context.request.actor.identity == 77);
+        scheduledSlave = slave; scheduledMs = delayMs; scheduledReceipt = receipt; scheduledContext = context;
+        if (operation) *operation = hardwareWindowOk ? 5002 : 0;
+        return hardwareWindowOk;
+    }
+};
+static ModbusHandler* activeBus = nullptr;
+struct Lease { ModbusHandler* bus; ModbusHandler* get() const { return bus; } };
+static Lease getModbusMaster(WebHandlerContext*, AsyncWebServerRequest* request) {
+    if (!activeBus) request->status = 503;
+    return {activeBus};
+}
+static bool pressure = false;
+static bool rejectModbusHeavyRequest(AsyncWebServerRequest* request, const char*, size_t) {
+    if (pressure) request->status = 503;
+    return pressure;
+}
+static void addModbusDebug(JsonDocument&, ModbusHandler*) {}
+struct Publication { String sensorId, value; uint8_t index; uint16_t channel; };
+static std::vector<Publication> publications;
+static void publishFrozenModbusReport(WebHandlerContext*, const ModbusSubDevice& device,
+    uint8_t index, uint16_t channel, const String& value, const char* remark) {
+    CHECK(String(remark) == "modbus_command_acknowledged");
+    publications.push_back({device.sensorId, value, index, channel});
+}
+struct PeriphExecManager {
+    std::vector<String> ids, data;
+    static PeriphExecManager& getInstance() { static PeriphExecManager value; return value; }
+    void triggerEventById(const String& id, const String& payload) { ids.push_back(id); data.push_back(payload); }
+};
+struct PeripheralManager {
+    bool admitted = true; int failAt = -1, noReceiptAt = -1; bool failureAttempted = true;
+    unsigned begun = 0, finished = 0; std::vector<Call> calls;
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    bool beginOrdinaryModbusMaintenance(uint64_t, uint32_t, FastBee::OrdinaryControlContext&) {
+        CHECK(false && "batch/delay must never mint maintenance authority"); return false;
+    }
+    bool beginOrdinaryControl(FastBee::OrdinaryControl::Source source, uint64_t actor, uint32_t hold,
+        bool overrideConfirmed, uint64_t reviewed, const String& target, uint32_t epoch,
+        const FastBee::UartEventOrigin& uart, FastBee::OrdinaryControlContext& context) {
+        CHECK(source == FastBee::OrdinaryControl::Source::Http && actor == 77 && !overrideConfirmed &&
+            !reviewed && target.isEmpty() && uart.unbound());
+        ++begun; if (!admitted) return false;
+        context.request.actor = {source, actor}; context.request.operation = 9001;
+        context.request.holdMs = hold; context.configEpoch = epoch; return true;
+    }
+    void finishOrdinaryControl(const FastBee::OrdinaryControlContext& context, bool = false) {
+        CHECK(context.request.operation == 9001); ++finished;
+    }
+    OneShotResult submit(ModbusHandler& bus, const FastBee::ModbusControlTarget& target,
+        FastBee::ModbusOutputFrame frame, const FastBee::OrdinaryControlContext& context,
+        FastBee::OrdinaryControlResult& control, bool toggle) {
+        CHECK(context.request.actor.source == FastBee::OrdinaryControl::Source::Http && context.request.actor.identity == 77);
+        CHECK(frame.valid()); const size_t step = calls.size(); calls.push_back({frame, target, context, toggle});
+        OneShotResult result; control.evaluated = true; control.operation = context.request.operation;
+        if (target.configuration != bus.mapping.configuration || static_cast<int>(step) == failAt) {
+            result.outputAttempted = failureAttempted; result.error = failureAttempted ? ONESHOT_TIMEOUT : ONESHOT_CONTROL_REJECTED;
+            result.controlReason = "CONTROL_RESULT_UNKNOWN"; control.attempted = result.outputAttempted; control.reason = result.controlReason;
+            return result;
+        }
+        result.error = ONESHOT_SUCCESS; result.outputAttempted = true;
+        control.accepted = true; control.attempted = true; control.reason = "CONTROL_ACKNOWLEDGED_TRANSPORT_ONLY";
+        for (unsigned i = 0; i < 6; ++i) result.data[i] = frame.bytes[i];
+        if (frame.transform == FastBee::ModbusFrameTransform::RelayBatchToggle) { result.data[4] = 0; result.data[5] = 10; }
+        if (toggle) { result.data[4] = 0; result.data[5] = frame.address() % 2; }
+        result.delayReceipt = {target.instance, target.configuration, step + 1, target.slave, frame.bytes[1], frame.address()};
+        if (static_cast<int>(step) == noReceiptAt) result.delayReceipt = {};
+        if (bus.changeAfterWrite) { ++bus.mapping.configuration; strcpy(bus.device.sensorId, "foreign_relay"); }
+        return result;
+    }
+    OneShotResult submitOrdinaryModbusFrame(ModbusHandler& bus, const FastBee::ModbusControlTarget& target,
+        const FastBee::ModbusOutputFrame& frame, const FastBee::OrdinaryControlContext& context,
+        FastBee::OrdinaryControlResult& result) { return submit(bus, target, frame, context, result, false); }
+    OneShotResult submitOrdinaryModbusRelay(ModbusHandler& bus, const FastBee::ModbusControlTarget& target,
+        uint8_t function, uint16_t address, uint16_t value, const FastBee::OrdinaryControlContext& context,
+        FastBee::OrdinaryControlResult& result, uint16_t timeout = 0, bool toggle = false) {
+        CHECK(timeout == 0); FastBee::ModbusOutputFrame frame; CHECK(frame.single(target.slave, function, address, value));
+        return submit(bus, target, frame, context, result, toggle);
+    }
+};
+// @output_helper@
+class ModbusRouteHandler {
+public:
+    explicit ModbusRouteHandler(WebHandlerContext* value) : ctx(value) {}
+    WebHandlerContext* ctx;
+    void handleModbusCoilBatch(AsyncWebServerRequest*);
+    void handleModbusCoilDelay(AsyncWebServerRequest*);
+};
+// @route_methods@
+static int runDelay(const String& mode, ModbusHandler& bus, WebHandlerContext& context,
+    ModbusRouteHandler& route, AsyncWebServerRequest& request) {
+    auto& pm = PeripheralManager::getInstance();
+    request.set("slaveAddress", "2"); request.set("channel", "1"); request.set("coilBase", "100");
+    request.set("delayUnits", "50"); request.set("delayMode", "1"); request.set("mode", "coil");
+    const bool hardwareRegister = mode.startsWith("delay_hardware_register");
+    const bool hardwareCoil = mode.startsWith("delay_hardware_coil");
+    const bool hardware = hardwareRegister || hardwareCoil;
+    const bool reg = hardwareRegister || mode.startsWith("delay_software_register");
+    const bool nc = mode.endsWith("_nc") || mode == "delay_hardware_register_nc_unscheduled";
+    if (reg) { bus.mapping.function = 6; request.set("mode", "register"); }
+    if (nc) { bus.device.ncMode = true; bus.mapping.nc = true; }
+    if (hardwareRegister) { bus.device.delayMode = 2; request.set("delayMode", "2"); }
+    if (hardwareCoil) request.set("delayMode", "0");
+    if (mode == "delay_hardware_register_saved") request.set("delayMode", "0");
+    if (mode == "delay_saved_software") { bus.device.delayMode = 1; request.set("delayMode", "0"); }
+    if (mode == "delay_hardware_coil_255") request.set("delayUnits", "255");
+    if (mode == "delay_hardware_register_second_failure") pm.failAt = 1;
+    if (mode == "delay_hardware_register_mapping_changed") bus.changeAfterWrite = true;
+    if (mode == "delay_hardware_coil_initial_failure") pm.failAt = 0;
+    if (mode == "delay_hardware_register_no_receipt") pm.noReceiptAt = 1;
+    if (mode == "delay_software_no_receipt") pm.noReceiptAt = 0;
+    if (mode == "delay_software_unscheduled" || mode == "delay_hardware_register_nc_unscheduled") bus.scheduleOk = false;
+    if (mode == "delay_hardware_coil_untracked") bus.hardwareWindowOk = false;
+    if (mode == "delay_hold_equal") request.set("holdMs", "5000");
+    if (mode == "delay_hold_short") request.set("holdMs", "4999");
+    if (mode == "delay_source_rejected") pm.admitted = false;
+    if (mode == "delay_mapping_rejected") bus.mappingOk = false;
+    if (mode == "delay_nc_mismatch") request.set("ncMode", "true");
+    if (mode == "delay_nc_invalid") request.set("ncMode", "yes");
+    if (mode == "delay_mode_invalid") request.set("mode", "registerx");
+    if (mode == "delay_profile_rejected") request.set("delayMode", "2");
+    if (mode == "delay_auth") context.auth = false;
+    if (mode == "delay_session") context.session = false;
+    if (mode == "delay_spoofed_operation") request.set("operationId", "9001");
+    if (mode == "delay_parameters") {
+        for (const char* value : {"-1", "50x", "0", "256", "4294967296", "1.5"}) {
+            request.set("delayUnits", value); route.handleModbusCoilDelay(&request); CHECK(request.status == 400 && pm.calls.empty());
+        }
+        request.set("delayUnits", "50"); request.set("coilBase", "65535"); route.handleModbusCoilDelay(&request);
+        CHECK(request.status == 400 && pm.calls.empty());
+        request.set("coilBase", "100"); request.set("channel", "33"); route.handleModbusCoilDelay(&request);
+        CHECK(request.status == 400 && pm.calls.empty());
+        request.set("channel", "1"); request.set("delayMode", "3"); route.handleModbusCoilDelay(&request);
+        CHECK(request.status == 400 && pm.calls.empty()); return 0;
+    }
+    route.handleModbusCoilDelay(&request);
+    const bool denied = mode == "delay_hold_equal" || mode == "delay_hold_short" || mode == "delay_source_rejected" ||
+        mode == "delay_mapping_rejected" || mode == "delay_nc_mismatch" || mode == "delay_nc_invalid" ||
+        mode == "delay_mode_invalid" || mode == "delay_profile_rejected" || mode == "delay_auth" ||
+        mode == "delay_session" || mode == "delay_spoofed_operation";
+    if (denied) {
+        const int expected = mode == "delay_auth" || mode == "delay_session" ? 401 :
+            mode == "delay_source_rejected" || mode == "delay_mapping_rejected" || mode == "delay_nc_mismatch" ||
+            mode == "delay_profile_rejected" ? 409 : 400;
+        CHECK(request.status == expected && pm.calls.empty() && bus.schedules == 0 && bus.hardwareWindows == 0);
+        if (mode == "delay_hold_equal" || mode == "delay_hold_short") CHECK(pm.begun == 1 && pm.finished == 1);
+        return 0;
+    }
+    JsonDocument doc; CHECK(!deserializeJson(doc, request.response)); JsonObject data = doc["data"];
+    CHECK(pm.begun == 1 && pm.finished == 1 && data["physicalOutputVerified"] == false);
+    CHECK(data["finalCommandAcknowledged"] == false && data["control"]["canConfirmOverride"] == false);
+    CHECK(publications.empty() && PeriphExecManager::getInstance().ids.empty());
+    if (mode == "delay_hardware_register_mapping_changed") {
+        CHECK(request.status == 502 && doc["success"] == false && pm.calls.size() == 1);
+        CHECK(data["acknowledgedCommandCount"] == 1 && data["acknowledgedSteps"].size() == 1);
+        CHECK(data["acknowledgedSteps"][0]["address"] == 101 && data["acknowledgedSteps"][0]["value"] == 1);
+        CHECK(data["resultUnknown"] == false && data["manualReviewRequired"] == true);
+        CHECK(data["hardwareWindowTracked"] == false && data["finalScheduled"] == false);
+        CHECK(bus.hardwareWindows == 0 && bus.schedules == 0); return 0;
+    }
+    const bool partial = pm.failAt >= 0 || pm.noReceiptAt >= 0 || !bus.scheduleOk || !bus.hardwareWindowOk;
+    CHECK(request.status == (partial ? 502 : 200) && doc["success"] == !partial);
+    const unsigned expectedCalls = hardware && pm.failAt != 0 ? 2 : 1;
+    const unsigned acknowledged = pm.failAt < 0 ? expectedCalls : static_cast<unsigned>(pm.failAt);
+    CHECK(pm.calls.size() == expectedCalls && data["acknowledgedCommandCount"] == acknowledged);
+    CHECK(data["acknowledgedSteps"].size() == acknowledged);
+    CHECK(data["initialCommandAcknowledged"] == (acknowledged != 0));
+    const auto& initial = pm.calls.front().frame;
+    CHECK(initial.bytes[1] == (reg ? 6 : 5) && initial.address() == 101 && initial.word() == (nc ? 0 : reg ? 1 : 0xff00));
+    CHECK(initial.hardwareWindowMs == 0);
+    if (expectedCalls == 2) {
+        const auto& second = pm.calls[1].frame;
+        CHECK(second.bytes[1] == (reg ? 6 : 5));
+        const unsigned units = mode == "delay_hardware_coil_255" ? 255 : 50;
+        CHECK(second.address() == (reg ? 101 : 513) && second.word() == (reg ? units * 10 + 1 : units << 8));
+        CHECK(second.hardwareWindowMs == units * 100);
+        CHECK(second.access == (reg ? FastBee::ModbusFrameAccess::Standard : FastBee::ModbusFrameAccess::RelayVendor));
+    }
+    if (pm.failAt >= 0 || pm.noReceiptAt >= 0) {
+        CHECK(bus.schedules == 0 && bus.hardwareWindows == 0 && data["finalScheduled"] == false);
+        CHECK(data["manualReviewRequired"] == true && data["operationId"].isNull());
+        return 0;
+    }
+    CHECK(bus.hardwareWindows == (hardware ? 1U : 0U));
+    const bool finalExpected = !hardware || (hardwareRegister && nc);
+    const unsigned expectedScheduleCalls = finalExpected && bus.hardwareWindowOk ? 1 : 0;
+    CHECK(bus.schedules == expectedScheduleCalls);
+    CHECK(data["finalScheduled"] == (expectedScheduleCalls && bus.scheduleOk));
+    CHECK(data["hardwareWindowTracked"] == (hardware && bus.hardwareWindowOk));
+    CHECK(bus.scheduledContext.request.operation == 9001 && bus.scheduledContext.request.actor.identity == 77);
+    CHECK(bus.scheduledReceipt.writeSequence == expectedCalls && bus.scheduledReceipt.address == (hardwareCoil ? 513 : 101));
+    if (expectedScheduleCalls) {
+        CHECK(bus.scheduledSlave == 2 && bus.scheduledAddress == 101 && bus.scheduledValue == nc && bus.scheduledRegister == reg);
+        CHECK(bus.scheduledMs == (hardwareRegister && nc ? 5500 : 5000));
+    }
+    const bool operationRetained = (hardware && bus.hardwareWindowOk) || (finalExpected && bus.scheduleOk);
+    if (operationRetained) {
+        CHECK(data["operationId"] == (hardware ? "5002" : "5001"));
+        CHECK(data["handlerInstance"] == 11 && data["configuration"] == 22);
+    } else CHECK(data["operationId"].isNull());
+    puts(mode.c_str()); return 0;
+}
+int main(int argc, char** argv) {
+    CHECK(argc == 2); const String mode = argv[1];
+    ModbusHandler bus; activeBus = &bus; WebHandlerContext context; ModbusRouteHandler route(&context);
+    AsyncWebServerRequest request; auto& pm = PeripheralManager::getInstance();
+    if (mode.startsWith("delay_")) return runDelay(mode, bus, context, route, request);
+    request.set("slaveAddress", "2"); request.set("channelCount", "4"); request.set("coilBase", "100");
+    request.set("action", "allOn"); request.set("mode", "coil");
+    if (mode == "batch_coils_off") request.set("action", "allOff");
+    if (mode == "batch_coils_padding") { bus.mapping.count = 9; bus.device.channelCount = 9; request.set("channelCount", "9"); }
+    const bool bitmap = mode.startsWith("batch_bitmap");
+    const bool command = mode.startsWith("batch_command");
+    const bool reg = bitmap || command || mode.startsWith("batch_register") || mode == "batch_partial_ack";
+    if (reg) { bus.mapping.function = 6; request.set("mode", "register"); }
+    if (bitmap || command) { bus.mapping.batch = 500; bus.mapping.batchType = command ? 1 : 0; }
+    if (mode == "batch_bitmap_16") { bus.mapping.count = 16; bus.device.channelCount = 16; request.set("channelCount", "16"); }
+    if (mode.endsWith("_toggle") || mode.startsWith("batch_vendor_toggle")) request.set("action", "allToggle");
+    if (mode.endsWith("_off")) request.set("action", "allOff");
+    if (mode == "batch_vendor_toggle_readback") {
+        bus.readOk = true; bus.readValues[0] = 1; bus.readValues[2] = 1;
+    }
+    if (mode == "batch_bitmap_readback") { bus.readOk = true; bus.readCount = 1; bus.readValues[0] = 5; }
+    if (mode == "batch_register_readback") { bus.readOk = true; bus.readValues[0] = 1; bus.readValues[2] = 1; }
+    if (mode == "batch_partial_ack") pm.failAt = 1;
+    if (mode == "batch_source_rejected") pm.admitted = false;
+    if (mode == "batch_mapping_rejected") bus.mappingOk = false;
+    if (mode == "batch_mapping_changes" || mode == "batch_nc_frozen_report") bus.changeAfterWrite = true;
+    if (mode == "batch_short_readback") { bus.readOk = true; bus.readCount = 3; }
+    if (mode == "batch_nc_frozen_report") { bus.device.ncMode = true; bus.mapping.nc = true; }
+    if (mode == "batch_auth") context.auth = false;
+    if (mode == "batch_session") context.session = false;
+    if (mode == "batch_duplicate") request.parameters.push_back({"action", "allOff", true, false});
+    if (mode == "batch_spoofed_source") request.set("source", "rule");
+    if (mode == "batch_subset_mapping") { bus.mapping.batch = 500; bus.mapping.function = 6; request.set("mode", "register"); request.set("channelCount", "3"); }
+    if (mode == "batch_pressure") pressure = true;
+    if (mode == "batch_parameters") {
+        for (const char* value : {"-1", "4x", "0", "33", "4294967296", "4.0"}) {
+            request.set("channelCount", value); route.handleModbusCoilBatch(&request); CHECK(request.status == 400 && pm.calls.empty());
+        }
+        request.set("channelCount", "4"); request.set("coilBase", "65534"); route.handleModbusCoilBatch(&request);
+        CHECK(request.status == 400 && pm.calls.empty()); return 0;
+    }
+    route.handleModbusCoilBatch(&request);
+    const bool denied = mode == "batch_auth" || mode == "batch_session" || mode == "batch_duplicate" ||
+        mode == "batch_spoofed_source" || mode == "batch_mapping_rejected" || mode == "batch_source_rejected" ||
+        mode == "batch_subset_mapping" || mode == "batch_pressure";
+    if (denied) {
+        const int expected = mode == "batch_auth" || mode == "batch_session" ? 401 : mode == "batch_pressure" ? 503 :
+            mode == "batch_duplicate" || mode == "batch_spoofed_source" ? 400 : 409;
+        CHECK(request.status == expected && pm.calls.empty() && publications.empty()); return 0;
+    }
+    JsonDocument doc; CHECK(!deserializeJson(doc, request.response)); JsonObject data = doc["data"];
+    CHECK(pm.begun == 1 && pm.finished == 1 && data["physicalOutputVerified"] == false);
+    CHECK(data["control"]["canConfirmOverride"] == false);
+    if (mode == "batch_partial_ack") {
+        CHECK(request.status == 502 && doc["success"] == false && pm.calls.size() == 2);
+        CHECK(data["acknowledgedCommandCount"] == 1 && data["acknowledgedSteps"].size() == 1);
+        CHECK(data["acknowledgedSteps"][0]["address"] == 100 && data["acknowledgedSteps"][0]["value"] == 1);
+        CHECK(data["manualReviewRequired"] == true && publications.empty()); return 0;
+    }
+    CHECK(request.status == 200 && doc["success"] == true);
+    const size_t expectedCalls = reg && !bitmap && (!command || mode == "batch_command_toggle") ? 4 : 1;
+    CHECK(pm.calls.size() == expectedCalls && data["acknowledgedCommandCount"] == expectedCalls);
+    const auto& first = pm.calls.front().frame;
+    if (bitmap || (command && mode != "batch_command_toggle")) {
+        CHECK(first.bytes[1] == 6 && first.address() == 500);
+        CHECK(first.word() == (mode.endsWith("_off") ? 0 : bitmap ? mode == "batch_bitmap_16" ? 65535 : 15 : 1));
+        CHECK((first.transform == FastBee::ModbusFrameTransform::RelayBatchToggle) == (mode == "batch_bitmap_toggle"));
+    } else if (reg) {
+        for (size_t i = 0; i < pm.calls.size(); ++i) {
+            CHECK(pm.calls[i].frame.bytes[1] == 6 && pm.calls[i].frame.address() == 100 + i);
+            CHECK(pm.calls[i].toggle == mode.endsWith("_toggle"));
+        }
+    } else if (mode.startsWith("batch_vendor_toggle")) {
+        CHECK(first.bytes[1] == 5 && first.address() == 100 && first.word() == 0x5a00);
+        CHECK(first.access == FastBee::ModbusFrameAccess::RelayVendor && publications.empty());
+        CHECK(PeriphExecManager::getInstance().ids.empty());
+    } else {
+        CHECK(first.bytes[1] == 15 && first.address() == 100 && first.quantity() == bus.mapping.count);
+        CHECK(first.bytes[7] == (mode == "batch_coils_off" ? 0 : bus.mapping.count == 9 ? 255 : 15));
+        if (bus.mapping.count == 9) CHECK(first.bytes[8] == 1);
+    }
+    const bool readback = mode == "batch_vendor_toggle_readback" || mode == "batch_bitmap_readback" || mode == "batch_register_readback";
+    CHECK(data["readbackAvailable"] == readback && data["states"].size() == bus.mapping.count);
+    for (unsigned i = 0; i < bus.mapping.count; ++i) {
+        if (readback) CHECK(data["states"][i] == (i % 2 == 0));
+        else CHECK(data["states"][i].isNull());
+    }
+    if (mode == "batch_mapping_changes" || mode == "batch_nc_frozen_report") CHECK(bus.reads == 0);
+    if (bitmap) CHECK(bus.readFunction == 3 && bus.readAddress == 500 && bus.readQuantity == 1);
+    if (!mode.startsWith("batch_vendor_toggle")) {
+        CHECK(publications.size() == bus.mapping.count);
+        for (unsigned i = 0; i < bus.mapping.count; ++i) {
+            CHECK(publications[i].sensorId == "saved_relay" && publications[i].channel == i && publications[i].index == 3);
+            bool physical = !mode.endsWith("_off");
+            if (mode.endsWith("_toggle")) physical = i % 2 != 0;
+            const bool logical = mode == "batch_nc_frozen_report" ? !physical : physical;
+            CHECK(publications[i].value == String(logical ? 1 : 0));
+        }
+    }
+    puts(argv[1]);
+}

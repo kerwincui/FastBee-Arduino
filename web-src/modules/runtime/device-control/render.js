@@ -48,6 +48,11 @@
             return (Math.round(num * 10) / 10) + '%';
         },
 
+        _formatDcModbusWarning: function(message) {
+            return message === 'Many polling tasks are enabled; watch bus load and Web response time.' ?
+                '轮询任务较多，请留意总线负载和页面响应速度。' : String(message || '');
+        },
+
         _renderModbusHealthBanner: function() {
             var health = this._modbusStatus && this._modbusStatus.health;
             if (!this._shouldShowModbusHealthBanner(health)) return '';
@@ -68,7 +73,7 @@
             if (warnings.length > 0) {
                 var warnHtml = '<div class="dc-risk-warnings">';
                 for (var wi = 0; wi < warnings.length; wi++) {
-                    warnHtml += '<div class="dc-risk-warning"><span>' + escapeHtml(warnings[wi] || '') + '</span></div>';
+                    warnHtml += '<div class="dc-risk-warning"><span>' + escapeHtml(this._formatDcModbusWarning(warnings[wi])) + '</span></div>';
                 }
                 html += warnHtml + '</div>';
             }
@@ -94,12 +99,15 @@
                 if (rule.sensors && rule.sensors.length > 0) {
                     for (var j = 0; j < rule.sensors.length; j++) {
                         var s = rule.sensors[j];
+                        if (typeof s._dcSampleReceivedAt !== 'number') s._dcSampleReceivedAt = this._dcSampleNow();
                         var cardKey = s.key;
                         if (seenSensorKeys[cardKey]) {
                             // 同键卡片已存在：若新条目带有真实值而旧条目仍为占位 '--'，则刷新数值
                             var existingCard = seenSensorKeys[cardKey];
                             if (this._dcMonitorValue(existingCard) === '--' && this._dcMonitorValue(s) !== '--') {
-                                Object.assign(existingCard, {value: s.value, valid: s.valid, valueValid: s.valueValid, quality: s.quality});
+                                Object.assign(existingCard, {value: s.value, valid: s.valid, valueValid: s.valueValid,
+                                    quality: s.quality, unit: typeof s.unit === 'string' ? s.unit : '',
+                                    ageMs: s.ageMs, maxAgeMs: s.maxAgeMs, _dcSampleReceivedAt: s._dcSampleReceivedAt});
                             }
                             continue;
                         }
@@ -107,7 +115,9 @@
                             id: s.key,
                             name: s.label || s.key,
                             value: s.value, valid: s.valid, valueValid: s.valueValid, quality: s.quality,
-                            unit: s.unit || this._getMonitorUnit(s.label || '')
+                            unit: typeof s.unit === 'string' ? s.unit : this._getMonitorUnit(s.label || ''),
+                            ageMs: s.ageMs, maxAgeMs: s.maxAgeMs,
+                            _dcSampleReceivedAt: s._dcSampleReceivedAt
                         };
                         seenSensorKeys[cardKey] = card;
                         sensorCards.push(card);
@@ -131,7 +141,22 @@
             return html;
         },
 
+        _dcSampleNow: function() {
+            return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+        },
+
+        _dcSampleRemaining: function(sample) {
+            if (!sample || (sample.ageMs === undefined && sample.maxAgeMs === undefined)) return null;
+            if (!Number.isSafeInteger(sample.ageMs) || sample.ageMs < 0 ||
+                !Number.isSafeInteger(sample.maxAgeMs) || sample.maxAgeMs <= 0) return 0;
+            var now = this._dcSampleNow();
+            var received = typeof sample._dcSampleReceivedAt === 'number' ? sample._dcSampleReceivedAt : now;
+            if (!Number.isFinite(received) || !Number.isFinite(now) || now < received) return 0;
+            return Math.max(0, sample.maxAgeMs - sample.ageMs - (now - received));
+        },
+
         _dcMonitorValue: function(sample) {
+            if (this._dcSampleRemaining(sample) === 0) return '--';
             if (!sample || sample.valid === false || sample.valueValid === false ||
                 (sample.quality && !['valid', 'good', 'ok'].includes(String(sample.quality).toLowerCase()))) return '--';
             var value = sample.value;
@@ -145,7 +170,7 @@
             var soilHumidity = id === 'ai_soil_humidity_soil_humidity' || id === 'ai_soil_humidity';
             return {value: !valid && soilHumidity ? '0' : measured, valid: valid,
                 placeholder: !valid && soilHumidity,
-                quality: sample.quality || (valid ? 'valid' : 'unavailable')};
+                quality: this._dcSampleRemaining(sample) === 0 ? 'stale' : sample.quality || (valid ? 'valid' : 'unavailable')};
         },
 
         _dcUpdateMonitorCard: function(card, sample) {
@@ -155,6 +180,10 @@
             card.dataset.measurementValid = String(presentation.valid);
             card.dataset.valuePlaceholder = String(presentation.placeholder);
             card.dataset.quality = presentation.quality;
+            var remaining = this._dcSampleRemaining(sample);
+            if (remaining !== null) card.dataset.sampleExpiresAt = String(this._dcSampleNow() + remaining);
+            else delete card.dataset.sampleExpiresAt;
+            card.title = remaining === null ? '' : presentation.valid ? '显示已有采样，超过有效时限后失效' : '采样已失效，等待新数据';
             var status = card.querySelector('.dc-monitor-status');
             if (status) status.hidden = !presentation.placeholder;
         },
@@ -167,27 +196,7 @@
             var cache = task.cachedData;
             if (!cache || cache.valid === false || task.status && task.status !== 'ok' ||
                 Number(task.lastError || cache.lastError || 0) !== 0) return '--';
-            var words = cache.values, offset = Number(mapping.regOffset ?? 0), type = Number(mapping.dataType ?? 0);
-            var count = type >= 2 && type <= 4 ? 2 : 1;
-            if (!Array.isArray(words) || !Number.isInteger(offset) || offset < 0 || !Number.isInteger(type) || type < 0 || type > 4 ||
-                offset + count > words.length) return '--';
-            var raw = words[offset];
-            if (!Number.isInteger(raw) || raw < 0 || raw > 65535) return '--';
-            if (type === 1 && raw > 32767) raw -= 65536;
-            if (count === 2) {
-                var low = words[offset + 1];
-                if (!Number.isInteger(low) || low < 0 || low > 65535) return '--';
-                raw = raw * 65536 + low;
-                if (type === 3 && raw > 2147483647) raw -= 4294967296;
-                if (type === 4) {
-                    var view = new DataView(new ArrayBuffer(4));
-                    view.setUint32(0, raw); raw = view.getFloat32(0);
-                }
-            }
-            var scale = mapping.scaleFactor === undefined ? 1 : mapping.scaleFactor;
-            if (scale === null || scale === '' || !Number.isFinite(Number(scale))) return '--';
-            var value = raw * Number(scale);
-            return Number.isFinite(value) ? value.toFixed(Math.max(0, Math.min(6, Number(mapping.decimalPlaces) || 0))) : '--';
+            return window.formatModbusMapping(cache.values, mapping);
         },
 
         _buildMonitorGroupsFromModbus: function() {
@@ -218,7 +227,9 @@
             var unit = escapeHtml(item.unit || '');
             var toneClass = this._getMonitorToneClass(item.name || '');
             var icon = this._getMonitorIcon(item.name || '');
-            var html = '<div class="dc-monitor-card" data-id="' + escapeHtml(item.id) + '" data-measurement-valid="' + presentation.valid + '" data-value-placeholder="' + presentation.placeholder + '" data-quality="' + escapeHtml(presentation.quality) + '">';
+            var remaining = this._dcSampleRemaining(item);
+            var expiry = remaining === null ? '' : ' data-sample-expires-at="' + (this._dcSampleNow() + remaining) + '"';
+            var html = '<div class="dc-monitor-card" data-id="' + escapeHtml(item.id) + '" data-measurement-valid="' + presentation.valid + '" data-value-placeholder="' + presentation.placeholder + '" data-quality="' + escapeHtml(presentation.quality) + '"' + expiry + '>';
             html += '<div class="dc-monitor-top"><span class="dc-monitor-label">' + name + '</span><span class="dc-monitor-icon ' + toneClass + '">' + icon + '</span></div>';
             if (deviceLabel) html += '<div class="dc-monitor-device">' + escapeHtml(deviceLabel) + '</div>';
             html += '<div class="dc-monitor-val-row"><span class="dc-monitor-value">' + value + '</span>';
@@ -323,35 +334,7 @@
             return html;
         },
 
-        _renderSystemGroup: function(items) {
-            var title = '系统操作';
-            var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="system">';
-            html += this._renderDcCardHeader('dc-card-badge--system', 'SYS', title);
-            html += '<div class="dc-sys-grid">';
-            for (var i = 0; i < items.length; i++) {
-                var item = items[i];
-                var setAttr = item && item.hasSetMode ? ' data-has-set-mode="true"' : '';
-                html += '<button class="dc-ctrl-btn dc-sys-card" data-id="' + escapeHtml(item.id) + '" data-system="true" data-name="' + escapeHtml(item.name) + '"' + setAttr + '><div class="dc-sys-card-name">' + escapeHtml(item.name) + '</div></button>';
-            }
-            html += '</div><div class="dc-resize-handle" title="\u62d6\u62fd\u8c03\u6574\u5927\u5c0f"></div></div>';
-            return html;
-        },
 
-        _renderGpioGroup: function(items) {
-            var title = 'GPIO 控制';
-            var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="gpio">';
-            html += this._renderDcCardHeader('dc-card-badge--gpio', 'GPIO', title);
-            html += '<div class="dc-gpio-list">';
-            for (var i = 0; i < items.length; i++) {
-                var item = items[i];
-                var setAttr = item && item.hasSetMode ? ' data-has-set-mode="true"' : '';
-                html += '<div class="dc-gpio-row"><span class="dc-gpio-name">' + escapeHtml(item.name) + '</span>';
-                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"' + setAttr + '>执行</button>';
-                html += '</div>';
-            }
-            html += '</div><div class="dc-resize-handle" title="\u62d6\u62fd\u8c03\u6574\u5927\u5c0f"></div></div>';
-            return html;
-        },
 
         _renderModbusDevicePanels: function(deviceList) {
             var html = '';
@@ -387,25 +370,6 @@
             return html;
         },
 
-        _buildPlatformIds: function(dev) {
-            var sid = dev.sensorId;
-            if (!sid) return [];
-            var dt = dev.deviceType || 'relay';
-            var ids = [];
-            if (dt === 'relay' || dt === 'pwm') {
-                var cc = dev.channelCount || 1;
-                if (cc <= 1) ids.push(sid);
-                else { for (var ch = 0; ch < cc; ch++) ids.push(sid + '_ch' + ch); }
-                ids.push(sid + '_all');
-            } else if (dt === 'motor') {
-                ['fwd', 'rev', 'stop', 'spd', 'pls'].forEach(function(s) { ids.push(sid + '_' + s); });
-            } else if (dt === 'pid') {
-                ['sv', 'p', 'i', 'd'].forEach(function(s) { ids.push(sid + '_' + s); });
-                ids.push(sid + '_pv (R/O)');
-                ids.push(sid + '_out (R/O)');
-            }
-            return ids;
-        },
 
         _renderSingleModbusPanel: function(devIdx, dev) {
             var dt = dev.deviceType || 'relay';
@@ -523,6 +487,7 @@
             html += '<div class="motor-status-item"><span class="motor-status-label">设定速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span></div>';
             html += '<div class="motor-status-item"><span class="motor-status-label">单次脉冲</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
             html += '<div class="motor-status-item"><span class="motor-status-label">最近指令</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">本页最近控制报告</span><span class="motor-status-value" id="dc-motor-report-' + devIdx + '" role="status">报告状态未确认；平台接收未确认</span></div>';
             html += '</div></div>';
             return html;
         },
@@ -580,19 +545,6 @@
         },
 
         // GPIO actionType 对应的物模型值说明
-        _getGpioActionDesc: function(actionType) {
-            switch (actionType) {
-                case 0: return '1=\u9ad8\u7535\u5e73';
-                case 1: return '0=\u4f4e\u7535\u5e73';
-                case 2: return '\u95ea\u70c1';
-                case 3: return '\u547c\u5438\u706f';
-                case 4: return '0~255';
-                case 5: return '0~255';
-                case 13: return '1=\u9ad8\u7535\u5e73(\u53cd)';
-                case 14: return '0=\u4f4e\u7535\u5e73(\u53cd)';
-                default: return '';
-            }
-        },
 
         // System actionType 对应的物模型值说明
         _getSystemActionDesc: function(actionType) {

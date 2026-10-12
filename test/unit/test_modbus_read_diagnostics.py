@@ -30,7 +30,8 @@ class ModbusReadDiagnosticsTests(unittest.TestCase):
                 '-Wno-unused-parameter', '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0',
                 '-DARDUINOJSON_ENABLE_STD_STRING=1', '-I' + str(temp),
                 '-I' + str(SOURCE / 'include'), '-I' + str(json_header.parent),
-                str(ROOT / 'test/helpers/modbus_read_route_harness.cpp'), '-o', str(binary)],
+                str(ROOT / 'test/helpers/modbus_read_route_harness.cpp'),
+                str(SOURCE / 'src/network/FixedJsonField.cpp'), '-o', str(binary)],
                 capture_output=True, text=True, encoding='utf8', env=env, timeout=60)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             ran = subprocess.run([str(binary)], capture_output=True, text=True, env=env, timeout=10)

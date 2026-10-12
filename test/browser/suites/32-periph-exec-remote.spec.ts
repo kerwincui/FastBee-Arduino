@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures/base.fixture';
+const { MAPPING: privateNames } = require('../../../scripts/web-private-properties');
 
 test.describe('PeriphExec weather and retired remote actions', () => {
   test('WEB-PANEL-005: new rules offer only current weather and serialize action 34', async ({ authPage, navigateTo }) => {
@@ -17,10 +18,11 @@ test.describe('PeriphExec weather and retired remote actions', () => {
       expect(await modal.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBeTruthy();
       await modal.screenshot({ path: `test-results/ui/periph-rule-options-${width}.png` });
     }
-    await authPage.evaluate(() => {
+    await authPage.evaluate(names => {
       const app = (window as any).AppState;
-      app._featureActive.screenPanel = true; app._updatePeriphExecPanelOptions();
-    });
+      const key = names._updatePeriphExecPanelOptions in app ? names._updatePeriphExecPanelOptions : '_updatePeriphExecPanelOptions';
+      app._featureActive.screenPanel = true; app[key]();
+    }, privateNames);
     const popupPromise = authPage.waitForEvent('popup');
     await modal.locator('#periph-exec-history-settings-link').click();
     const popup = await popupPromise;
@@ -55,11 +57,12 @@ test.describe('PeriphExec weather and retired remote actions', () => {
     const modal = authPage.locator('#periph-exec-modal');
     await expect(modal).toBeVisible();
     await expect(modal.locator('#periph-exec-actions')).toBeVisible();
-    await authPage.evaluate(() => {
+    await authPage.evaluate(names => {
       const app = (window as any).AppState;
+      const key = names._createPeriphExecActionElement in app ? names._createPeriphExecActionElement : '_createPeriphExecActionElement';
       document.getElementById('periph-exec-actions')!.innerHTML = '';
-      app._createPeriphExecActionElement({ actionType: 33, targetPeriphId: 'old-channel', actionValue: 'on' }, 0);
-    });
+      app[key]({ actionType: 33, targetPeriphId: 'old-channel', actionValue: 'on' }, 0);
+    }, privateNames);
     const block = modal.locator('#periph-exec-actions .periph-exec-config-item').first();
     await expect(block.locator('.pe-action-type option[value="33"]')).toBeDisabled();
     await expect(block.locator('.pe-action-type')).toContainText('远程通道已停用');

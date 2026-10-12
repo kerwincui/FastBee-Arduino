@@ -6,7 +6,10 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const root = path.resolve(__dirname, '..');
 const outputArg = process.argv.find(arg => arg.startsWith('--output='));
-const output = outputArg ? path.resolve(root, outputArg.slice(9)) : path.join(root, 'artifacts', 'web-configuration-20260929');
+const runId = new Date().toISOString().replace(/[:.]/g, '-') + '-' + process.pid;
+const output = outputArg ? path.resolve(root, outputArg.slice(9)) : path.join(root, 'artifacts', 'web-configuration-' + runId);
+// A recovery run must not replace the original build log or failed summary.
+if (fs.existsSync(output)) throw new Error('Fresh Web configuration evidence directory required: ' + output);
 fs.mkdirSync(output, { recursive: true });
 const stage = fs.mkdtempSync(path.join(output, 'build-'));
 for (const item of ['scripts', 'web-src', 'include', 'platformio.ini']) {

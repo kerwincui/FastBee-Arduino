@@ -1,0 +1,285 @@
+#include <Arduino.h>
+#include "core/FeatureInstanceRegistry.h"
+#include "core/NeoPixelResourceSnapshot.h"
+#include "peripherals/NeoPixelTransport.h"
+#include <cassert>
+#include <new>
+#include <mutex>
+#include <thread>
+
+#define FASTBEE_ENABLE_NEOPIXEL 1
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+constexpr int NEO_GRB = 1, NEO_KHZ800 = 2, MALLOC_CAP_8BIT = 1, MALLOC_CAP_INTERNAL = 2;
+constexpr uint16_t NEOPIXEL_DEFAULT_COUNT = 1, NEOPIXEL_MAX_COUNT = 300;
+constexpr uint8_t NEOPIXEL_DEFAULT_BRIGHTNESS = 64;
+static unsigned transportWrites = 0, objectDeletes = 0, mutationReached = 0;
+static unsigned backendQueries = 0;
+static int retainedPin = -1;
+static FastBeeNeoPixelResult writeResult = FASTBEE_NEO_OK, releaseResult = FASTBEE_NEO_OK;
+struct Logger { template<class... Args> void warningf(const char*, Args...) {} } LOGGER;
+uint32_t heap_caps_get_free_size(int) { return 65536; }
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager v; return v; }
+    bool shouldEnable(const char*) { return true; }
+};
+struct FeatureBudgetRegistry {
+    static FeatureBudgetRegistry& instance() { static FeatureBudgetRegistry v; return v; }
+    bool isDenied(const char*) { return false; }
+};
+}
+struct Adafruit_NeoPixel {
+    uint8_t pixels[900]{};
+    uint16_t count;
+    explicit Adafruit_NeoPixel(uint16_t n, uint8_t, int) : count(n) {}
+    ~Adafruit_NeoPixel() { assert(retainedPin < 0); ++objectDeletes; }
+    bool begin() { return true; }
+    uint8_t* getPixels() { return pixels; }
+    uint16_t numPixels() { return count; }
+    void setPixelColor(uint16_t index, uint32_t color) {
+        assert(index < count); pixels[index * 3] = color >> 16;
+        pixels[index * 3 + 1] = color >> 8; pixels[index * 3 + 2] = color;
+    }
+    uint32_t Color(uint8_t r, uint8_t g, uint8_t b) { return (uint32_t(r) << 16) | (uint32_t(g) << 8) | b; }
+    void setBrightness(uint8_t) {}
+};
+FastBeeNeoPixelResult fastbeeNeoPixelWrite(uint8_t pin, const uint8_t*, uint32_t, bool) {
+    ++transportWrites;
+    if (writeResult >= FASTBEE_NEO_QUARANTINED) retainedPin = pin;
+    return writeResult;
+}
+FastBeeNeoPixelResult fastbeeNeoPixelRelease(uint8_t pin) {
+    if (releaseResult >= FASTBEE_NEO_QUARANTINED) retainedPin = pin;
+    return releaseResult;
+}
+bool fastbeeNeoPixelPinRetained(uint8_t pin) { ++backendQueries; return retainedPin == pin; }
+// @helpers@
+// @owner@
+// @solid@
+
+enum class PeripheralType { NEO_PIXEL, GPIO_DIGITAL_OUTPUT, IO_EXPANDER, PCA9685_PWM, SCREEN_DISPLAY };
+enum class PeripheralStatus { PERIPHERAL_RUNNING, PERIPHERAL_ERROR, PERIPHERAL_DISABLED, PERIPHERAL_ENABLED };
+struct PeripheralConfig {
+    String id = "rgb", name = "RGB";
+    PeripheralType type = PeripheralType::NEO_PIXEL;
+    bool enabled = true;
+    uint8_t pins[4]{4}, pinCount = 1;
+    struct Params {
+        struct { uint16_t count = 3; uint8_t brightness = 64; } neopixel;
+        struct { char providerId[20]{}; } gpio;
+        struct { char oePeripheralId[20]{}; } pca9685;
+    } params;
+    bool isExpanderChannel() const { return false; }
+    bool isModbusPeripheral() const { return false; }
+    uint8_t configuredPinCount() const { return pinCount; }
+    uint8_t configuredPinAt(uint8_t i) const { return pins[i]; }
+    bool usesPin(uint8_t pin) const { for (unsigned i = 0; i < pinCount; ++i) if (pins[i] == pin) return true; return false; }
+};
+struct PeripheralRuntimeState {
+    String id, lastError;
+    bool memorySuspended = false, memoryCleanupPending = false;
+    PeripheralStatus status = PeripheralStatus::PERIPHERAL_ENABLED;
+    unsigned lastActivity = 0, errorCount = 0;
+};
+struct RecursiveMutexGuard {
+    std::recursive_mutex* mutex;
+    bool acquired;
+    explicit RecursiveMutexGuard(std::recursive_mutex* value, unsigned timeout=~0U)
+        :mutex(value),acquired(value && (timeout ? (value->lock(),true) : value->try_lock())){}
+    ~RecursiveMutexGuard(){if(acquired)mutex->unlock();}
+    bool isLocked()const{return acquired;}
+};
+bool fixedIdEquals(const char* a, const String& b) { return b == a; }
+bool managedI2cReferenceEquals(const PeripheralConfig&, const String&) { return false; }
+bool ioResetReferenceEquals(const PeripheralConfig&, const String&) { return false; }
+bool isMcp23017(const PeripheralConfig&) { return false; }
+struct PeripheralManager {
+    std::recursive_mutex mutex;
+    std::recursive_mutex* _mutex = &mutex;
+    bool managedConflict = false;
+    size_t _memorySuspendedCount = 0;
+    String _memoryRestoringDisplayId;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, PeripheralRuntimeState> runtimeStates;
+    std::map<String, uint8_t> neopixelRainbowIndex;
+    std::map<String, int> providers;
+    auto& ioProviders() { return providers; }
+    bool controlOutputIsClaimed(const String&) const { return false; }
+    bool managedPinConflict(const PeripheralConfig&) const { return managedConflict; }
+    bool isReservedPin(uint8_t pin) const { return pin > 40; }
+    bool isInputOnlyPin(uint8_t) const { return false; }
+    bool hasPeripheral(const String& id) { return peripherals.count(id); }
+    PeripheralConfig* getPeripheral(const String& id) { auto it = peripherals.find(id); return it == peripherals.end() ? nullptr : &it->second; }
+    void rebuildPinMapping() {}
+    void invalidateSensorConfigurationLocked() {}
+    void updatePinMapping(const String&, const PeripheralConfig&) {}
+    bool initHardware(const String& id) { return setupHardware(peripherals.at(id)); }
+    bool deinitHardware(const String& id) {
+        const bool result = teardownHardware(peripherals.at(id));
+        runtimeStates[id].status = result ? PeripheralStatus::PERIPHERAL_DISABLED : PeripheralStatus::PERIPHERAL_ERROR;
+        return result;
+    }
+    bool controlNeoPixel(const String&, const String&, const String&);
+    bool removePeripheral(const String&);
+    bool checkPinConflict(uint8_t, const String&) const;
+    void snapshotNeoPixelResources(FastBee::NeoPixelResourceSnapshot&) const;
+    bool setupHardware(const PeripheralConfig& config) { // @setup@ }
+    bool teardownHardware(const PeripheralConfig& config) { // @teardown@ }
+    bool addAfterValidation(const PeripheralConfig& config, String& errorMsg) { // @add-tail@ }
+    bool updateAfterValidation(const String& id, String& errorMsg) {
+        const PeripheralConfig oldConfig = peripherals.at(id);
+        PeripheralRuntimeState oldState = runtimeStates.at(id); bool hadOldState = true;
+        // @update-stop@
+        ++mutationReached; return true;
+    }
+    bool rollbackCurrent(const String& resultId, String& errorMsg) {
+        struct { String id = "rgb"; } snapshot;
+        // @rollback-current@
+        ++mutationReached; return true;
+    }
+};
+// @control@
+// @remove@
+// @conflict@
+// @snapshot@
+
+static void animate(const String& action) {
+    PeripheralManager manager; PeripheralConfig config;
+    manager.peripherals[config.id] = config; manager.runtimeStates[config.id] = {};
+    assert(getNeoPixelInstance(4, 3, "rgb"));
+    manager.neopixelRainbowIndex[config.id] = 7;
+    writeResult = FASTBEE_NEO_WRITE_FAILED;
+    assert(!manager.controlNeoPixel(config.id, action, ""));
+    assert(manager.neopixelRainbowIndex[config.id] == 7);
+    assert(manager.runtimeStates[config.id].status == PeripheralStatus::PERIPHERAL_ERROR);
+    assert(manager.runtimeStates[config.id].errorCount == 1 && retainedPin == 4);
+    FastBee::NeoPixelResourceSnapshot snapshot;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.objectAllocated && snapshot.backendPinRetained && snapshot.writeAttempted &&
+           snapshot.lastWriteResult==FASTBEE_NEO_WRITE_FAILED &&
+           snapshot.lifecycle==FastBee::FeatureInstanceState::CleanupPending);
+    const auto writes = transportWrites;
+    writeResult = FASTBEE_NEO_OK;
+    assert(!manager.controlNeoPixel(config.id, action, ""));
+    assert(transportWrites == writes && objectDeletes == 0);
+}
+static void failedAddRollback(FastBeeNeoPixelResult fault = FASTBEE_NEO_INIT_FAILED) {
+    PeripheralManager manager; PeripheralConfig config; String error;
+    writeResult = fault;
+    assert(!manager.addAfterValidation(config, error));
+    assert(manager.peripherals.count(config.id) && manager.runtimeStates.count(config.id));
+    assert(manager.runtimeStates[config.id].status == PeripheralStatus::PERIPHERAL_ERROR);
+    assert(error == "NEOPIXEL_CLEANUP_PENDING_RESTART_REQUIRED");
+    assert(fastbeeNeoPixelProjectPinRetained(4) && objectDeletes == 0);
+    if (fault == FASTBEE_NEO_NO_MEMORY || fault == FASTBEE_NEO_BUSY) assert(retainedPin == -1);
+    // Even unrelated configuration replacement cannot erase the reservation.
+    manager.peripherals.clear(); manager.runtimeStates.clear();
+    FastBee::NeoPixelResourceSnapshot snapshot;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.objectAllocated && std::string(snapshot.consumer.id)=="rgb" && snapshot.pin==4 && snapshot.ledCount==3);
+    assert(snapshot.lifecycle==FastBee::FeatureInstanceState::CleanupPending && snapshot.writeAttempted);
+    if (fault == FASTBEE_NEO_NO_MEMORY || fault == FASTBEE_NEO_BUSY)
+        assert(snapshot.projectPinRetained && !snapshot.backendPinRetained && snapshot.lastWriteResult==fault);
+    assert(manager.checkPinConflict(4, "rgb"));
+    PeripheralConfig replacement; replacement.id = "relay"; replacement.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    assert(!manager.setupHardware(replacement)); // No actual GPIO setup may follow.
+    assert(manager.runtimeStates[replacement.id].lastError == "NEOPIXEL_RETAINED_PIN_RESTART_REQUIRED");
+    const auto writes = transportWrites; writeResult = FASTBEE_NEO_OK;
+    assert(!getNeoPixelInstance(5, 3, "replacement") && transportWrites == writes && objectDeletes == 0);
+}
+static void failedRemoveAndUpdate() {
+    PeripheralManager manager; PeripheralConfig config; String error;
+    assert(manager.addAfterValidation(config, error));
+    releaseResult = FASTBEE_NEO_RELEASE_FAILED;
+    assert(!manager.removePeripheral(config.id));
+    assert(manager.peripherals.count(config.id) && manager.runtimeStates.count(config.id));
+    assert(manager.peripherals.at(config.id).enabled && objectDeletes == 0 && retainedPin == 4);
+    FastBee::NeoPixelResourceSnapshot snapshot;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.objectAllocated && snapshot.releaseAttempted && snapshot.lastReleaseResult==FASTBEE_NEO_RELEASE_FAILED);
+    assert(snapshot.projectPinRetained && snapshot.backendPinRetained);
+    releaseResult = FASTBEE_NEO_OK;
+    assert(!manager.updateAfterValidation(config.id, error));
+    assert(mutationReached == 0 && manager.peripherals.at(config.id).pins[0] == 4);
+    assert(error == "NEOPIXEL_CLEANUP_PENDING_RESTART_REQUIRED");
+    assert(!manager.rollbackCurrent(config.id, error));
+    assert(manager.peripherals.count(config.id) && mutationReached == 0 && objectDeletes == 0);
+}
+static void success() {
+    PeripheralManager manager; PeripheralConfig config; String error;
+    assert(manager.addAfterValidation(config, error));
+    assert(manager.controlNeoPixel(config.id, "rainbow", ""));
+    assert(manager.neopixelRainbowIndex[config.id] == 1);
+    assert(manager.removePeripheral(config.id));
+    assert(manager.peripherals.empty() && objectDeletes == 1);
+}
+static void snapshotLifecycle() {
+    PeripheralManager manager;
+    FastBee::NeoPixelResourceSnapshot snapshot;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.status==FastBee::ResourceObservation::Observed && snapshot.supported && snapshot.managerInitialized);
+    assert(!snapshot.objectAllocated && !snapshot.consumer.specified() && snapshot.pin==255 && !snapshot.ledCount);
+    assert(!snapshot.writeAttempted && !snapshot.releaseAttempted && !transportWrites && !objectDeletes);
+    char ownerId[]="real-rgb";
+    assert(getNeoPixelInstance(4,3,ownerId));
+    ownerId[0]='x';
+    const auto writes=transportWrites;
+    const auto queries=backendQueries;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.objectAllocated && snapshot.consumer.role==FastBee::ResourceConsumerRole::Peripheral);
+    assert(std::string(snapshot.consumer.id)=="real-rgb" && snapshot.pin==4 && snapshot.ledCount==3);
+    assert(snapshot.lifecycle==FastBee::FeatureInstanceState::Allocated && snapshot.writeAttempted);
+    assert(snapshot.lastWriteResult==FASTBEE_NEO_OK && !snapshot.releaseAttempted);
+    assert(!snapshot.projectPinRetained && !snapshot.backendPinRetained && transportWrites==writes && backendQueries==queries);
+    assert(!getNeoPixelInstance(4,3,"different-rgb") && transportWrites==writes);
+    writeResult=FASTBEE_NEO_NO_MEMORY;
+    assert(!showNeoPixelChecked(g_neopixelInstance));
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.objectAllocated && snapshot.lifecycle==FastBee::FeatureInstanceState::Allocated);
+    assert(snapshot.writeAttempted && snapshot.lastWriteResult==FASTBEE_NEO_NO_MEMORY && !snapshot.backendPinRetained);
+    writeResult=FASTBEE_NEO_OK;
+    assert(releaseNeoPixelInstance(4));
+    const auto afterRelease=transportWrites;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(!snapshot.objectAllocated && !snapshot.consumer.specified() && snapshot.pin==255 && !snapshot.ledCount);
+    assert(snapshot.lifecycle==FastBee::FeatureInstanceState::Stopped && !snapshot.writeAttempted && !snapshot.releaseAttempted);
+    assert(transportWrites==afterRelease && objectDeletes==1);
+}
+static void snapshotBusy() {
+    PeripheralManager manager;
+    FastBee::NeoPixelResourceSnapshot snapshot;
+    snapshot.objectAllocated=true;snapshot.pin=4;snapshot.ledCount=3;
+    snapshot.consumer.assign(FastBee::ResourceConsumerRole::Peripheral,"stale");
+    std::atomic<bool> entered{false}, done{false};
+    std::thread writer([&]{std::lock_guard<std::recursive_mutex> lock(manager.mutex);entered=true;while(!done)std::this_thread::yield();});
+    while(!entered)std::this_thread::yield();
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.status==FastBee::ResourceObservation::Busy && snapshot.managerInitialized);
+    assert(!snapshot.objectAllocated && !snapshot.consumer.specified() && snapshot.pin==255 && !transportWrites && !objectDeletes);
+    done=true;writer.join();
+    manager._mutex=nullptr;
+    manager.snapshotNeoPixelResources(snapshot);
+    assert(snapshot.status==FastBee::ResourceObservation::Busy && !snapshot.managerInitialized && !snapshot.objectAllocated);
+    assert(!transportWrites && !objectDeletes);
+}
+static void managedConflict() {
+    PeripheralManager manager;PeripheralConfig config;
+    manager.managedConflict=true;
+    assert(!manager.setupHardware(config) && !transportWrites && !g_neopixelInstance);
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); String mode(argv[1]);
+    if (mode.startsWith("animation:")) animate(mode.substring(10));
+    else if (mode == "rollback") failedAddRollback();
+    else if (mode == "rollback_oom") failedAddRollback(FASTBEE_NEO_NO_MEMORY);
+    else if (mode == "rollback_busy") failedAddRollback(FASTBEE_NEO_BUSY);
+    else if (mode == "remove") failedRemoveAndUpdate();
+    else if (mode == "success") success();
+    else if (mode == "snapshot") snapshotLifecycle();
+    else if (mode == "snapshot_busy") snapshotBusy();
+    else if (mode == "managed_conflict") managedConflict();
+    else assert(false);
+}

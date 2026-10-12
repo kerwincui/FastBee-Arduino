@@ -1,0 +1,141 @@
+#include <Arduino.h>
+#include "peripherals/BoundedStreamRead.h"
+#include "core/UartReceiveFault.h"
+#include <functional>
+#include <cassert>
+#include <limits>
+static bool mutexBusy=false;
+static unsigned lockDepth=0;
+struct RecursiveMutexGuard {
+    bool held;
+    explicit RecursiveMutexGuard(void*,unsigned=0):held(!mutexBusy) {if(held)++lockDepth;}
+    ~RecursiveMutexGuard(){if(held)--lockDepth;}
+    bool isLocked()const{return held;}
+};
+#define LOG_WARNINGF(...) do {} while(0)
+enum class PeripheralType {UART,I2C};
+struct PeripheralConfig {
+    PeripheralType type=PeripheralType::UART;
+    bool enabled=true;
+    bool isCommunicationPeripheral()const{return true;}
+};
+struct PeripheralRuntimeState {
+    bool memorySuspended=false;
+    uint32_t lastActivity=123;
+    String lastError;
+    struct {struct {bool isConnected=true;uint16_t rxAvailable=0;uint32_t bytesSent=0,bytesReceived=0;}comm;}state;
+};
+struct HardwareSerial {
+    std::vector<int> bytes;
+    size_t position=0,accept=SIZE_MAX;
+    unsigned writes=0,reads=0;
+    std::function<void()> readHook;
+    int available(){return static_cast<int>(bytes.size()-position);}
+    int read(){assert(lockDepth>0);++reads;if(readHook)readHook();return position<bytes.size()?bytes[position++]:-1;}
+    size_t write(const uint8_t*,size_t size){assert(lockDepth>0);++writes;return accept==SIZE_MAX?size:accept;}
+};
+class PeripheralManager {
+public:
+    void* _mutex=reinterpret_cast<void*>(1);
+    bool found=true,owned=true,loseSnapshot=false;
+    unsigned snapshots=0;
+    uint32_t version=1;
+    PeripheralConfig config;
+    HardwareSerial serial;
+    std::map<String,PeripheralRuntimeState> runtimeStates;
+    PeripheralManager(){runtimeStates["uart"]={};FastBee::UartReceiveFault::arm(1,1);}
+    uint32_t getUartReceiveGeneration(const String&)const{return owned&&FastBee::UartReceiveFault::healthy(1,1)?1:0;}
+    void* getMutex(){return _mutex;}
+    PeripheralConfig* getPeripheral(const String&){assert(lockDepth>0);return found?&config:nullptr;}
+    HardwareSerial* getUartSerial(const String&){assert(lockDepth>0);return owned?&serial:nullptr;}
+    bool getPeripheralSnapshot(const String&,PeripheralConfig& result,uint32_t* generation){
+        assert(lockDepth>0);result=config;*generation=version;return found;
+    }
+    bool getRuntimeStateSnapshot(const String& id,PeripheralRuntimeState& result){
+        assert(lockDepth>0);++snapshots;
+        const auto it=runtimeStates.find(id);
+        if(it==runtimeStates.end()||(loseSnapshot&&snapshots>1))return false;
+        result=it->second;result.state.comm.isConnected=owned;return true;
+    }
+    bool writeData(const String&,const uint8_t*,size_t);
+    bool readData(const String&,uint8_t*,size_t&);
+};
+// @manager@
+static const char* routeRead(PeripheralManager& pm,size_t& size,bool& ok) {
+    const String id="uart";PeripheralConfig config;
+    const uint32_t sensorConfigVersion=1;
+    constexpr size_t UART_API_MAX_BYTES=128;
+    // @read@
+    size=len;ok=readOk;return readError;
+}
+static const char* routeWrite(PeripheralManager& pm,bool& ok) {
+    const String id="uart";PeripheralConfig config;
+    const uint32_t writeConfigVersion=1;
+    const char* uartWriteError=nullptr;
+    // @write@
+    const uint8_t bytes[]={1,2,3};ok=writeCommunication(bytes,sizeof(bytes));return uartWriteError;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];PeripheralManager manager;
+    const uint8_t bytes[]={1,2,3};uint8_t received[8]={0xaa};size_t size=sizeof(received);bool ok=false;
+    auto& runtime=manager.runtimeStates["uart"];
+    if(mode=="write_full"||mode=="write_partial"||mode=="write_zero"||mode=="write_saturate"||mode=="write_overclaim") {
+        if(mode=="write_partial")manager.serial.accept=2;
+        if(mode=="write_zero")manager.serial.accept=0;
+        if(mode=="write_saturate")runtime.state.comm.bytesSent=UINT32_MAX-1;
+        if(mode=="write_overclaim")manager.serial.accept=99;
+        ok=manager.writeData("uart",bytes,sizeof(bytes));
+        assert(ok==(mode=="write_full"||mode=="write_saturate"));assert(manager.serial.writes==1);
+        const uint32_t expected=mode=="write_partial"?2:mode=="write_zero"?0:mode=="write_saturate"?UINT32_MAX:3;
+        assert(runtime.state.comm.bytesSent==expected);
+        if(mode=="write_zero")assert(runtime.lastActivity==123);
+        if(!ok)assert(runtime.lastError=="UART_WRITE_INCOMPLETE");
+    } else if(mode=="read_empty"||mode=="read_bytes"||mode=="read_partial") {
+        if(mode!="read_empty")manager.serial.bytes={1,mode=="read_partial"?-1:2};
+        ok=manager.readData("uart",received,size);
+        assert(ok==(mode!="read_partial"));
+        if(mode=="read_bytes"){assert(size==2&&received[0]==1&&runtime.state.comm.bytesReceived==2);}
+        else {assert(size==0&&received[0]==0xaa&&runtime.lastActivity==123&&runtime.state.comm.bytesReceived==0);}
+        if(mode=="read_partial")assert(runtime.lastError=="UART_READ_FAILED"&&manager.serial.reads==2);
+    } else if(mode=="read_fault_before"||mode=="read_fault_inside"||mode=="route_fault_inside") {
+        manager.serial.bytes={1,2,3};
+        const auto fault=[] {FastBee::UartReceiveFault::observe(1,1,FastBee::UartReceiveFault::Error::Frame);};
+        if(mode=="read_fault_before")fault();else manager.serial.readHook=fault;
+        if(mode=="route_fault_inside")assert(routeRead(manager,size,ok)!=nullptr&&!ok);
+        else assert(!manager.readData("uart",received,size));
+        assert(size==0&&received[0]==0xaa&&runtime.state.comm.bytesReceived==0&&runtime.lastActivity==123);
+        assert(!runtime.state.comm.isConnected&&runtime.lastError=="UART_RX_FAULT_LATCHED: explicit UART restart required");
+        const unsigned consumed=manager.serial.reads;
+        assert(consumed==(mode=="read_fault_before"?0U:3U));
+        size=sizeof(received);assert(!manager.readData("uart",received,size));
+        assert(size==0&&manager.serial.reads==consumed); // Latch persists without a new explicit generation.
+        assert(FastBee::UartTextDiagnostics::snapshot().values[FastBee::UartTextDiagnostics::HardwareFrameFault]==1);
+    } else if(mode=="io_busy"||mode=="io_suspended"||mode=="io_lost"||mode=="io_no_state") {
+        if(mode=="io_busy")mutexBusy=true;
+        if(mode=="io_suspended")runtime.memorySuspended=true;
+        if(mode=="io_lost")manager.owned=false;
+        if(mode=="io_no_state")manager.runtimeStates.clear();
+        assert(!manager.writeData("uart",bytes,3));assert(!manager.readData("uart",received,size));
+        assert(size==0&&received[0]==0xaa&&manager.serial.reads==0&&manager.serial.writes==0);
+    } else if(mode=="route_busy"||mode=="route_changed"||mode=="route_type"||mode=="route_disabled"||mode=="route_lost"||mode=="route_suspended") {
+        if(mode=="route_busy")mutexBusy=true;
+        if(mode=="route_changed")manager.version=2;
+        if(mode=="route_type")manager.config.type=PeripheralType::I2C;
+        if(mode=="route_disabled")manager.config.enabled=false;
+        if(mode=="route_lost")manager.owned=false;
+        if(mode=="route_suspended")runtime.memorySuspended=true;
+        assert(routeRead(manager,size,ok)!=nullptr&&!ok);assert(routeWrite(manager,ok)!=nullptr&&!ok);
+        assert(manager.serial.reads==0&&manager.serial.writes==0);
+    } else if(mode=="route_read_error"||mode=="route_empty"||mode=="route_snapshot_lost") {
+        if(mode=="route_read_error")manager.serial.bytes={1,-1};
+        if(mode=="route_snapshot_lost"){manager.serial.bytes={1,2};manager.loseSnapshot=true;}
+        const char* error=routeRead(manager,size,ok);
+        if(mode=="route_empty")assert(!error&&ok&&size==0);
+        else assert(error&&std::string(error).find("may have been consumed")!=std::string::npos);
+        assert(manager.serial.writes==0);
+    } else if(mode=="route_write_partial") {
+        manager.serial.accept=1;assert(routeWrite(manager,ok)==nullptr&&!ok);
+        assert(manager.serial.writes==1&&runtime.state.comm.bytesSent==1);
+    } else assert(false);
+    assert(lockDepth==0);std::printf("%s PASS\n",mode.c_str());
+}

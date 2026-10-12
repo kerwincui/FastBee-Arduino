@@ -27,6 +27,7 @@ class FeatureBootSnapshotTests(unittest.TestCase):
             "void RuntimeFeatureManager::latchBootFeatures()",
             "bool RuntimeFeatureManager::loadConfig()",
             "bool RuntimeFeatureManager::shouldEnable(",
+            "const char* RuntimeFeatureManager::admissionState(",
             "bool RuntimeFeatureManager::isUserEnabled(",
             "bool RuntimeFeatureManager::setUserEnabled(",
             "bool RuntimeFeatureManager::resetToDefaults()",
@@ -37,6 +38,7 @@ class FeatureBootSnapshotTests(unittest.TestCase):
             "void RuntimeFeatureManager::buildConfigDoc(",
             "bool RuntimeFeatureManager::saveCurrentConfig()",
             "bool RuntimeFeatureManager::getFeatureStatusJson(",
+            "void RuntimeFeatureManager::getStatusSummaryJson(",
             "void RuntimeFeatureManager::setRuntimeDisabled(",
             "void RuntimeFeatureManager::clearRuntimeDisabled(",
         )
@@ -49,7 +51,8 @@ class FeatureBootSnapshotTests(unittest.TestCase):
                        "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0", "-DARDUINOJSON_ENABLE_STD_STRING=1",
                        f"-I{temporary}", f"-I{ROOT / 'test/mocks'}", f"-I{ROOT / 'include'}",
                        f"-I{json_headers[0].parent}",
-                       str(ROOT / "test/unit/cpp/feature_boot_snapshot_harness.cpp"), "-o", str(executable)]
+                       str(ROOT / "test/unit/cpp/feature_boot_snapshot_harness.cpp"),
+                       str(ROOT / "src/network/FixedJsonField.cpp"), "-o", str(executable)]
             result = subprocess.run(command, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

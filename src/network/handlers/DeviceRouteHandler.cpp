@@ -6,6 +6,9 @@
 #include "systems/ConfigStorage.h"
 #include "systems/LoggerSystem.h"
 #include "utils/TimeUtils.h"
+#include "utils/SystemTimeZone.h"
+#include "network/SystemTimeStatus.h"
+#include "network/FixedJsonField.h"
 #include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -46,7 +49,6 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) {
         if (!ctx->requireAuth(request)) return;
         JsonDocument doc;
-        time_t now = TimeUtils::getTimestamp();
             
         // 检查网络状态
         bool internetAvailable = false;
@@ -57,24 +59,17 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
             internetAvailable = netInfo.internetAvailable;
         }
             
-        // 时间有效：时间戳大于 2020-01-01 (1577836800)
-        bool timeValid = (now > 1577836800);
-        bool synced = timeValid && internetAvailable;
-            
-        doc["success"] = true;
-        doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-        doc["data"]["timestamp"] = (long)now;
-        doc["data"]["synced"] = synced;
-        doc["data"]["timeValid"] = timeValid;
-        doc["data"]["internetAvailable"] = internetAvailable;
-        doc["data"]["uptime"] = millis();
-        doc["data"]["timezone"] = "CST-8";
+        FastBee::setFixedJsonField(doc, "success", true);
+        FastBee::appendSystemTimeStatus(doc["data"].to<JsonObject>());
+        FastBee::setFixedJsonField(doc, "data", "internetAvailable", internetAvailable);
+        FastBee::setFixedJsonField(doc, "data", "uptime", millis());
+        FastBee::setFixedJsonField(doc, "data", "timezone", "CST-8");
         if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
             File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
             if (f) {
                 JsonDocument cfg;
                 if (deserializeJson(cfg, f) == DeserializationError::Ok) {
-                    if (cfg["timezone"].is<String>()) doc["data"]["timezone"] = cfg["timezone"].as<String>();
+                    if (cfg["timezone"].is<String>()) FastBee::setFixedJsonField(doc, "data", "timezone", cfg["timezone"].as<String>());
                 }
                 f.close();
             }
@@ -99,14 +94,12 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 如果网络不可用，直接返回失败
         if (!internetAvailable) {
             JsonDocument doc;
-            time_t now = TimeUtils::getTimestamp();
-            doc["success"] = false;
-            doc["error"] = "No internet connection";
-            doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-            doc["data"]["timestamp"] = (long)now;
-            doc["data"]["synced"] = false;
-            doc["data"]["internetAvailable"] = false;
-            doc["data"]["uptime"] = millis();
+            FastBee::setFixedJsonField(doc, "success", false);
+            FastBee::setFixedJsonField(doc, "error", "No internet connection");
+            FastBee::appendSystemTimeStatus(doc["data"].to<JsonObject>());
+            FastBee::setFixedJsonField(doc, "data", "syncRequestSucceeded", false);
+            FastBee::setFixedJsonField(doc, "data", "internetAvailable", false);
+            FastBee::setFixedJsonField(doc, "data", "uptime", millis());
             HandlerUtils::sendJsonStream(request, doc);
             return;
         }
@@ -124,25 +117,23 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
                 f.close();
             }
         }
-        setenv("TZ", tz.c_str(), 1);
-        tzset();
         bool synced = false;
         if (ntpServer1.startsWith("http://") || ntpServer1.startsWith("https://")) {
             long long ts = 0;
-            synced = TimeUtils::syncNTPFromHTTPWithTimestamp(ntpServer1, ts, 5000);
-            if (synced) tzset();
+            synced = FastBee::SystemTimeZone::setPosix(tz.c_str()) &&
+                TimeUtils::syncNTPFromHTTPWithTimestamp(ntpServer1, ts, 5000);
         } else {
-            configTzTime(tz.c_str(), ntpServer1.c_str(), "time.nist.gov");
-            synced = TimeUtils::syncNTP(5000);
+            FastBee::SystemTimeQuality::installSntpObserver();
+            const uint32_t beforeSync = FastBee::SystemTimeQuality::sequence();
+            synced = FastBee::SystemTimeZone::startSntp(tz.c_str(), ntpServer1.c_str(), "time.nist.gov") &&
+                TimeUtils::syncNTP(5000, beforeSync);
         }
         JsonDocument doc;
-        time_t now = TimeUtils::getTimestamp();
-        doc["success"] = true;
-        doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-        doc["data"]["timestamp"] = (long)now;
-        doc["data"]["synced"] = synced;
-        doc["data"]["internetAvailable"] = internetAvailable;
-        doc["data"]["uptime"] = millis();
+        FastBee::setFixedJsonField(doc, "success", true);
+        FastBee::appendSystemTimeStatus(doc["data"].to<JsonObject>());
+        FastBee::setFixedJsonField(doc, "data", "syncRequestSucceeded", synced);
+        FastBee::setFixedJsonField(doc, "data", "internetAvailable", internetAvailable);
+        FastBee::setFixedJsonField(doc, "data", "uptime", millis());
         if (synced) {
             LOGGER.info("NTP sync triggered via web");
         }
@@ -170,7 +161,7 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
         }
     }
     // Update fields from JSON body
-    if (obj["deviceName"].is<String>()) doc["deviceName"] = obj["deviceName"].as<String>();
+    if (obj["deviceName"].is<String>()) FastBee::setFixedJsonField(doc, "deviceName", obj["deviceName"].as<String>());
     if (obj["deviceId"].is<String>()) {
         String devId = obj["deviceId"].as<String>();
         devId.trim();
@@ -191,29 +182,29 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
             LOGGER.infof("[DeviceConfig] deviceId empty in request, regenerated by default rule: %s",
                          devId.c_str());
         }
-        doc["deviceId"] = devId;
+        FastBee::setFixedJsonField(doc, "deviceId", devId);
     }
-    if (obj["productNumber"].is<int>() || obj["productNumber"].is<String>()) doc["productNumber"] = obj["productNumber"].as<int>();
-    if (obj["userId"].is<String>()) doc["userId"] = obj["userId"].as<String>();
-    if (obj["description"].is<String>()) doc["description"] = obj["description"].as<String>();
-    if (obj["ntpServer1"].is<String>()) doc["ntpServer1"] = obj["ntpServer1"].as<String>();
-    if (obj["ntpServer2"].is<String>()) doc["ntpServer2"] = obj["ntpServer2"].as<String>();
-    if (obj["timezone"].is<String>()) doc["timezone"] = obj["timezone"].as<String>();
+    if (obj["productNumber"].is<int>() || obj["productNumber"].is<String>()) FastBee::setFixedJsonField(doc, "productNumber", obj["productNumber"].as<int>());
+    if (obj["userId"].is<String>()) FastBee::setFixedJsonField(doc, "userId", obj["userId"].as<String>());
+    if (obj["description"].is<String>()) FastBee::setFixedJsonField(doc, "description", obj["description"].as<String>());
+    if (obj["ntpServer1"].is<String>()) FastBee::setFixedJsonField(doc, "ntpServer1", obj["ntpServer1"].as<String>());
+    if (obj["ntpServer2"].is<String>()) FastBee::setFixedJsonField(doc, "ntpServer2", obj["ntpServer2"].as<String>());
+    if (obj["timezone"].is<String>()) FastBee::setFixedJsonField(doc, "timezone", obj["timezone"].as<String>());
     if (obj["enableNTP"].is<String>() || obj["enableNTP"].is<bool>()) {
         String v = obj["enableNTP"].as<String>();
-        doc["enableNTP"] = (v == "1" || v == "true");
+        FastBee::setFixedJsonField(doc, "enableNTP", (v == "1" || v == "true"));
     }
-    if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) doc["syncInterval"] = obj["syncInterval"].as<int>();
+    if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) FastBee::setFixedJsonField(doc, "syncInterval", obj["syncInterval"].as<int>());
     if (obj["logLevel"].is<String>()) {
         String lv = obj["logLevel"].as<String>();
-        doc["logLevel"] = lv;
+        FastBee::setFixedJsonField(doc, "logLevel", lv);
     }
     if (obj["cacheDuration"].is<int>() || obj["cacheDuration"].is<String>()) {
         int cd = obj["cacheDuration"].as<int>();
-        doc["cacheDuration"] = cd;
+        FastBee::setFixedJsonField(doc, "cacheDuration", cd);
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
-        doc["developerModeEnabled"] = false;
+        FastBee::setFixedJsonField(doc, "developerModeEnabled", false);
     }
 
     // 安全策略字段：转发到 UserManager 持久化到 users.json
@@ -270,9 +261,9 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
     
     // 构建响应，包含生成的 deviceId
     JsonDocument resp;
-    resp["success"] = true;
-    resp["message"] = "Device configuration saved";
-    resp["data"]["deviceId"] = doc["deviceId"];
+    FastBee::setFixedJsonField(resp, "success", true);
+    FastBee::setFixedJsonField(resp, "message", "Device configuration saved");
+    FastBee::setFixedJsonField(resp, "data", "deviceId", doc["deviceId"]);
     HandlerUtils::sendJsonStream(request, resp);
 }
 
@@ -287,7 +278,7 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
             f.close();
             if (!err) {
                 if (!fileCfg["developerModeEnabled"].is<bool>()) {
-                    fileCfg["developerModeEnabled"] = false;
+                    FastBee::setFixedJsonField(fileCfg, "developerModeEnabled", false);
                 }
                 // 从 users.json 读取安全策略配置（4个UI可配置字段）
                 if (LittleFS.exists("/config/users.json")) {
@@ -297,18 +288,18 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
                         if (deserializeJson(usersDoc, uf) == DeserializationError::Ok) {
                             JsonObject sec = usersDoc["security"];
                             if (!sec.isNull()) {
-                                fileCfg["maxLoginAttempts"]       = sec["maxLoginAttempts"] | 5;
-                                fileCfg["loginLockoutTime"]       = sec["loginLockoutTime"] | 300000UL;
-                                fileCfg["minPasswordLength"]      = sec["minPasswordLength"] | 6;
-                                fileCfg["requireStrongPasswords"] = sec["requireStrongPasswords"] | false;
+                                FastBee::setFixedJsonField(fileCfg, "maxLoginAttempts", sec["maxLoginAttempts"] | 5);
+                                FastBee::setFixedJsonField(fileCfg, "loginLockoutTime", sec["loginLockoutTime"] | 300000UL);
+                                FastBee::setFixedJsonField(fileCfg, "minPasswordLength", sec["minPasswordLength"] | 6);
+                                FastBee::setFixedJsonField(fileCfg, "requireStrongPasswords", sec["requireStrongPasswords"] | false);
                             }
                         }
                         uf.close();
                     }
                 }
                 JsonDocument doc;
-                doc["success"] = true;
-                doc["data"] = fileCfg;
+                FastBee::setFixedJsonField(doc, "success", true);
+                FastBee::setFixedJsonField(doc, "data", fileCfg);
                 HandlerUtils::sendJsonStream(request, doc);
                 return;
             }
@@ -316,20 +307,20 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     }
 
     JsonDocument doc;
-    doc["success"] = true;
-    doc["data"]["deviceName"] = "FastBee-ESP32";
-    doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    doc["data"]["developerModeEnabled"] = false;
-    doc["data"]["logLevel"] = "INFO";
-    doc["data"]["enableNTP"] = true;
-    doc["data"]["ntpServer1"] = "http://iot.fastbee.cn/prod-api/iot/tool/ntp";
-    doc["data"]["ntpServer2"] = "cn.pool.ntp.org";
-    doc["data"]["timezone"] = "CST-8";
-    doc["data"]["syncInterval"] = 3600;
-    doc["data"]["maxLoginAttempts"]       = 5;
-    doc["data"]["loginLockoutTime"]       = 300000;
-    doc["data"]["minPasswordLength"]      = 6;
-    doc["data"]["requireStrongPasswords"] = false;
+    FastBee::setFixedJsonField(doc, "success", true);
+    FastBee::setFixedJsonField(doc, "data", "deviceName", "FastBee-ESP32");
+    FastBee::setFixedJsonField(doc, "data", "deviceId", String((uint32_t)ESP.getEfuseMac(), HEX));
+    FastBee::setFixedJsonField(doc, "data", "developerModeEnabled", false);
+    FastBee::setFixedJsonField(doc, "data", "logLevel", "INFO");
+    FastBee::setFixedJsonField(doc, "data", "enableNTP", true);
+    FastBee::setFixedJsonField(doc, "data", "ntpServer1", "http://iot.fastbee.cn/prod-api/iot/tool/ntp");
+    FastBee::setFixedJsonField(doc, "data", "ntpServer2", "cn.pool.ntp.org");
+    FastBee::setFixedJsonField(doc, "data", "timezone", "CST-8");
+    FastBee::setFixedJsonField(doc, "data", "syncInterval", 3600);
+    FastBee::setFixedJsonField(doc, "data", "maxLoginAttempts", 5);
+    FastBee::setFixedJsonField(doc, "data", "loginLockoutTime", 300000);
+    FastBee::setFixedJsonField(doc, "data", "minPasswordLength", 6);
+    FastBee::setFixedJsonField(doc, "data", "requireStrongPasswords", false);
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -352,9 +343,9 @@ void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) 
         }
     }
 
-    if (!doc["deviceName"].is<String>()) doc["deviceName"] = "FastBee-ESP32";
-    if (!doc["deviceId"].is<String>()) doc["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    doc["developerModeEnabled"] = enabled;
+    if (!doc["deviceName"].is<String>()) FastBee::setFixedJsonField(doc, "deviceName", "FastBee-ESP32");
+    if (!doc["deviceId"].is<String>()) FastBee::setFixedJsonField(doc, "deviceId", String((uint32_t)ESP.getEfuseMac(), HEX));
+    FastBee::setFixedJsonField(doc, "developerModeEnabled", enabled);
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) {
@@ -368,9 +359,9 @@ void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) 
     ctx->devModeCacheValid = false;
 
     JsonDocument resp;
-    resp["success"] = true;
-    resp["message"] = enabled ? "Developer mode enabled" : "Developer mode disabled";
-    resp["data"]["developerModeEnabled"] = enabled;
+    FastBee::setFixedJsonField(resp, "success", true);
+    FastBee::setFixedJsonField(resp, "message", enabled ? "Developer mode enabled" : "Developer mode disabled");
+    FastBee::setFixedJsonField(resp, "data", "developerModeEnabled", enabled);
     HandlerUtils::sendJsonStream(request, resp);
 }
 
@@ -393,11 +384,11 @@ void DeviceRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
     JsonDocument doc;
 
     // ESP32 芯片信息
-    doc["data"]["chip"]["model"] = ESP.getChipModel();
-    doc["data"]["chip"]["revision"] = ESP.getChipRevision();
-    doc["data"]["chip"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    doc["data"]["chip"]["sdkVersion"] = ESP.getSdkVersion();
-    doc["data"]["chip"]["macAddress"] = WiFi.macAddress();
+    FastBee::setFixedJsonField(doc, "data", "chip", "model", ESP.getChipModel());
+    FastBee::setFixedJsonField(doc, "data", "chip", "revision", ESP.getChipRevision());
+    FastBee::setFixedJsonField(doc, "data", "chip", "cpuFreqMHz", ESP.getCpuFreqMHz());
+    FastBee::setFixedJsonField(doc, "data", "chip", "sdkVersion", ESP.getSdkVersion());
+    FastBee::setFixedJsonField(doc, "data", "chip", "macAddress", WiFi.macAddress());
 
     // 从 device.json 读取设备配置
     if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
@@ -405,12 +396,12 @@ void DeviceRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
         if (f) {
             JsonDocument cfg;
             if (deserializeJson(cfg, f) == DeserializationError::Ok) {
-                if (cfg["deviceName"].is<String>()) doc["data"]["deviceName"] = cfg["deviceName"].as<String>();
-                if (cfg["deviceId"].is<String>()) doc["data"]["deviceId"] = cfg["deviceId"].as<String>();
-                if (cfg["description"].is<String>()) doc["data"]["description"] = cfg["description"].as<String>();
-                if (cfg["productNumber"].is<int>()) doc["data"]["productNumber"] = cfg["productNumber"].as<int>();
-                if (cfg["userId"].is<String>()) doc["data"]["userId"] = cfg["userId"].as<String>();
-                if (cfg["location"].is<String>()) doc["data"]["location"] = cfg["location"].as<String>();
+                if (cfg["deviceName"].is<String>()) FastBee::setFixedJsonField(doc, "data", "deviceName", cfg["deviceName"].as<String>());
+                if (cfg["deviceId"].is<String>()) FastBee::setFixedJsonField(doc, "data", "deviceId", cfg["deviceId"].as<String>());
+                if (cfg["description"].is<String>()) FastBee::setFixedJsonField(doc, "data", "description", cfg["description"].as<String>());
+                if (cfg["productNumber"].is<int>()) FastBee::setFixedJsonField(doc, "data", "productNumber", cfg["productNumber"].as<int>());
+                if (cfg["userId"].is<String>()) FastBee::setFixedJsonField(doc, "data", "userId", cfg["userId"].as<String>());
+                if (cfg["location"].is<String>()) FastBee::setFixedJsonField(doc, "data", "location", cfg["location"].as<String>());
             }
             f.close();
         }
@@ -418,12 +409,12 @@ void DeviceRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
 
     // 设置默认值
     if (!doc["data"]["deviceName"].is<String>()) {
-        doc["data"]["deviceName"] = "FastBee-ESP32";
+        FastBee::setFixedJsonField(doc, "data", "deviceName", "FastBee-ESP32");
     }
     if (!doc["data"]["deviceId"].is<String>()) {
-        doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+        FastBee::setFixedJsonField(doc, "data", "deviceId", String((uint32_t)ESP.getEfuseMac(), HEX));
     }
 
-    doc["success"] = true;
+    FastBee::setFixedJsonField(doc, "success", true);
     HandlerUtils::sendJsonStream(request, doc);
 }

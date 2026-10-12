@@ -1,0 +1,151 @@
+// Keep Arduino mock allocation macros out of the real JSON dependency headers.
+#include <ArduinoJson.h>
+#include <Arduino.h>
+#include "core/OrdinaryControlPolicy.h"
+#include "core/PeripheralTypes.h"
+#include "core/RadarInputState.h"
+#include <cassert>
+#define LOG_INFOF(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+enum class GPIOState { STATE_UNDEFINED, STATE_LOW, STATE_HIGH };
+// @state@
+struct PeripheralConfig {
+    String id="owner",name="original";
+    PeripheralType type=PeripheralType::STEPPER_MOTOR;
+    bool enabled=true;
+    uint8_t pinCount=1,pins[2]{4,255};
+    struct { struct { char providerId[16]{}; } gpio; } params;
+    bool isExpanderChannel() const { return false; }
+    bool isModbusPeripheral() const { return false; }
+    uint8_t configuredPinCount() const { return pinCount; }
+    uint8_t configuredPinAt(uint8_t index) const { return pins[index]; }
+};
+struct RecursiveMutexGuard { explicit RecursiveMutexGuard(bool) {} };
+static bool isMcp23017(const PeripheralConfig&) { return false; }
+static bool isMemoryOptionalPeripheralType(PeripheralType) { return true; }
+struct PeripheralManager {
+    bool _mutex=true,initSucceeds=true,cleanupSucceeds=true;
+    String _memoryRestoringDisplayId,lastEnableError;
+    size_t _memorySuspendedCount=0;
+    unsigned initCalls=0,cleanupCalls=0,clock=100;
+    std::map<String,PeripheralConfig> peripherals;
+    std::map<String,PeripheralRuntimeState> runtimeStates;
+    std::map<String,unsigned> liveOwners,pinOwners;
+    std::map<String,int> providers;
+    struct MutationSnapshot {
+        String id="owner";bool existed=true,hadRuntimeState=true;
+        PeripheralConfig config;PeripheralRuntimeState runtimeState;size_t memorySuspendedCount=0;
+    };
+    bool controlOutputIsClaimed(const String&) const { return false; }
+    bool ordinaryDigitalClaimedLocked(const String&) const { return false; } // No active native commands in lifecycle fixture.
+    bool validateConfig(const PeripheralConfig&,String&) const { return true; }
+    bool validateIoDependencies(const PeripheralConfig&,const String&,String&) const { return true; }
+    bool validateUartCapacity(const PeripheralConfig&,const String&,String&) const { return true; }
+    bool checkPinConflict(uint8_t,const String&) const { return false; }
+    bool canShareI2cPin(const PeripheralConfig&,uint8_t,const String&) const { return false; }
+    auto& ioProviders() { return providers; }
+    PeripheralConfig* getPeripheral(const String& id) {
+        auto it=peripherals.find(id);return it==peripherals.end()?nullptr:&it->second;
+    }
+    void invalidateSensorConfigurationLocked() {}
+    void removePinMapping(const String& id) { pinOwners.erase(id); }
+    void updatePinMapping(const String& id,const PeripheralConfig& config) { if(config.enabled)pinOwners[id]=config.pins[0]; }
+    void rebuildPinMapping() { pinOwners.clear();for(const auto& item:peripherals)updatePinMapping(item.first,item.second); }
+    bool initHardware(const String& id) {
+        ++initCalls;assert(peripherals.at(id).enabled);liveOwners[id]=peripherals.at(id).pins[0];
+        auto& state=runtimeStates[id];state.id=id;
+        state.status=initSucceeds?PeripheralStatus::PERIPHERAL_INITIALIZED:PeripheralStatus::PERIPHERAL_ERROR;
+        if(initSucceeds)state.initTime=++clock;
+        state.lastError=initSucceeds?"":"INIT_FAILED";return initSucceeds;
+    }
+    bool teardownHardware(const PeripheralConfig& config) {
+        ++cleanupCalls;
+        if(cleanupSucceeds)liveOwners.erase(config.id);
+        else runtimeStates[config.id].lastError="CLEANUP_FAILED";
+        return cleanupSucceeds;
+    }
+    bool deinitHardware(const String&);
+    bool enablePeripheral(const String&);
+    size_t suspendOptionalForMemory();
+    bool restoreMutationSnapshot(const MutationSnapshot&,const String&,String&);
+    bool updateAfterValidation(const String& id,const PeripheralConfig& config,String& errorMsg) {
+        auto oldIt=peripherals.find(id);assert(oldIt!=peripherals.end());const String targetId=config.id;
+        // @update@
+    MutationSnapshot snapshot() {
+        MutationSnapshot result;result.config=peripherals.at("owner");result.runtimeState=runtimeStates.at("owner");
+        result.memorySuspendedCount=_memorySuspendedCount;return result;
+    }
+    void seed(bool suspended=false,bool pending=false) {
+        PeripheralConfig config;config.enabled=!suspended;peripherals[config.id]=config;
+        auto& state=runtimeStates[config.id];state.id=config.id;state.memorySuspended=suspended;
+        state.memoryCleanupPending=pending;state.initTime=1;
+        state.status=suspended?PeripheralStatus::PERIPHERAL_DISABLED:PeripheralStatus::PERIPHERAL_ERROR;
+        state.lastError=suspended?"memory_pressure_suspended":"INITIAL_ERROR";
+        if(pending) { state.status=PeripheralStatus::PERIPHERAL_ERROR;state.lastError="CLEANUP_FAILED";liveOwners[config.id]=4; }
+        _memorySuspendedCount=suspended?1:0;rebuildPinMapping();
+    }
+};
+// @methods@
+int main(int argc,char** argv) {
+    assert(argc==2);const String mode(argv[1]);PeripheralManager pm;String error;
+    if(mode=="metadata" || mode=="suspended_metadata") {
+        pm.seed(mode=="suspended_metadata");const auto snapshot=pm.snapshot();
+        auto config=snapshot.config;config.name="renamed";
+        assert(pm.updateAfterValidation("owner",config,error));
+        assert(pm.restoreMutationSnapshot(snapshot,"owner",error));
+        assert(pm.cleanupCalls==0 && pm.initCalls==0 && pm.peripherals.at("owner").name=="original");
+        assert(pm._memorySuspendedCount==snapshot.memorySuspendedCount);
+    } else if(mode=="error_enable_rollback" || mode=="error_enable_cleanup_failure") {
+        pm.seed();const auto snapshot=pm.snapshot();assert(pm.enablePeripheral("owner"));
+        pm.cleanupSucceeds=mode!="error_enable_cleanup_failure";
+        const bool restored=pm.restoreMutationSnapshot(snapshot,"owner",error);
+        assert(pm.cleanupCalls==1 && restored==pm.cleanupSucceeds);
+        if(!restored)assert(pm.runtimeStates.at("owner").status==PeripheralStatus::PERIPHERAL_ERROR && pm.liveOwners.count("owner"));
+        else assert(pm.initCalls==2 && pm.runtimeStates.at("owner").status==PeripheralStatus::PERIPHERAL_INITIALIZED);
+    } else if(mode=="state_change_rollback") {
+        pm.seed();const auto snapshot=pm.snapshot();pm.runtimeStates.at("owner").state.gpio.toggleCount=4;
+        assert(pm.restoreMutationSnapshot(snapshot,"owner",error));assert(pm.cleanupCalls==1);
+    } else if(mode=="ordinary_disabled_error") {
+        pm.seed();pm.peripherals.at("owner").enabled=false;
+        auto config=pm.peripherals.at("owner");config.id="other";config.pins[0]=8;
+        assert(pm.updateAfterValidation("owner",config,error));
+        assert(pm.cleanupCalls==0 && pm.initCalls==0 && !pm.peripherals.count("owner"));
+    } else if(mode=="suspension_failure") {
+        pm.seed();pm.liveOwners["owner"]=4;pm.cleanupSucceeds=false;
+        assert(pm.suspendOptionalForMemory()==1);
+        assert(!pm.peripherals.at("owner").enabled && pm._memorySuspendedCount==1);
+        assert(pm.runtimeStates.at("owner").memoryCleanupPending && pm.runtimeStates.at("owner").lastError=="CLEANUP_FAILED");
+        auto config=pm.peripherals.at("owner");config.id="replacement";config.pins[0]=8;
+        assert(!pm.updateAfterValidation("owner",config,error));
+        assert(pm.peripherals.count("owner") && !pm.peripherals.count("replacement") && pm.liveOwners.at("owner")==4);
+    } else if(mode=="pending_enable") {
+        pm.seed(true,true);pm.cleanupSucceeds=false;assert(!pm.enablePeripheral("owner"));
+        assert(pm.initCalls==0 && pm.cleanupCalls==1 && pm._memorySuspendedCount==1);
+        pm.cleanupSucceeds=true;assert(pm.enablePeripheral("owner"));
+        assert(pm.initCalls==1 && pm._memorySuspendedCount==0 && !pm.runtimeStates.at("owner").memoryCleanupPending);
+    } else {
+        const bool pending=mode=="suspended_old_cleanup_failure" || mode=="suspended_old_cleanup_success";
+        pm.seed(true,pending);const auto snapshot=pm.snapshot();auto config=snapshot.config;
+        config.enabled=true;config.pins[0]=8;config.id="replacement";
+        pm.initSucceeds=mode!="suspended_update_restore" && mode!="suspended_new_cleanup_failure";
+        pm.cleanupSucceeds=mode!="suspended_new_cleanup_failure" && mode!="suspended_old_cleanup_failure";
+        const bool ok=pm.updateAfterValidation("owner",config,error);
+        if(mode=="suspended_old_cleanup_failure") {
+            assert(!ok && pm.cleanupCalls==1 && pm.initCalls==0 && pm._memorySuspendedCount==1);
+            assert(pm.runtimeStates.at("owner").memoryCleanupPending && pm.peripherals.at("owner").pins[0]==4);
+        } else if(mode=="suspended_update_restore") {
+            assert(!ok && pm._memorySuspendedCount==1 && pm.initCalls==1);
+            assert(pm.peripherals.count("owner") && !pm.peripherals.count("replacement"));
+            assert(pm.runtimeStates.at("owner").memorySuspended && !pm.peripherals.at("owner").enabled);
+        } else {
+            assert(ok==pm.initSucceeds && pm._memorySuspendedCount==0 && pm.peripherals.count("replacement"));
+            assert(!pm.runtimeStates.at("replacement").memorySuspended && !pm.runtimeStates.at("replacement").memoryCleanupPending);
+            if(!ok)assert(pm.liveOwners.count("replacement") && pm.runtimeStates.at("replacement").status==PeripheralStatus::PERIPHERAL_ERROR);
+            if(mode=="suspended_save_rollback") {
+                assert(pm.restoreMutationSnapshot(snapshot,"replacement",error));
+                assert(pm._memorySuspendedCount==1 && pm.runtimeStates.at("owner").memorySuspended && !pm.liveOwners.count("replacement"));
+            }
+        }
+    }
+}

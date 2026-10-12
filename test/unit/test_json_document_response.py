@@ -33,7 +33,8 @@ public:
             environment["PATH"] = str(pathlib.Path(compiler).parent) + os.pathsep + environment.get("PATH", "")
             build = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                 f"-I{temporary}", f"-I{ROOT / 'include'}", f"-I{candidates[0].parent}",
-                str(ROOT / "test/unit/cpp/json_document_response_harness.cpp"), "-o", str(executable)],
+                str(ROOT / "test/unit/cpp/json_document_response_harness.cpp"),
+                str(ROOT / "src/utils/SharedJsonSerializer.cpp"), "-o", str(executable)],
                 capture_output=True, text=True, timeout=60, env=environment)
             self.assertEqual(0, build.returncode, build.stdout + build.stderr)
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=20, env=environment)

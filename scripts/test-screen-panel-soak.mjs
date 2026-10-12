@@ -7,14 +7,57 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as reportPublishDelay } from 'node:timers/promises';
+
+// Windows readers may briefly deny replacement. Keep the old report intact;
+// retry only the atomic rename, with an independent wall-time I/O delay.
+export async function publishSoakReport(out, report, io = {}) {
+  const write = io.writeFile || fs.writeFile, rename = io.rename || fs.rename;
+  const wait = io.wait || reportPublishDelay, platform = io.platform || process.platform;
+  const pending = path.join(out, 'report.pending'), target = path.join(out, 'report.json');
+  report.reportPublishRetries ??= 0;
+  report.reportPublishFailures ??= 0;
+  report.reportPublishErrorCounts ??= {};
+  await write(pending, JSON.stringify(report, null, 2));
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(pending, target); return; }
+    catch (error) {
+      const code = error.code || 'UNKNOWN';
+      report.reportPublishErrorCounts[code] = (report.reportPublishErrorCounts[code] || 0) + 1;
+      const retry = platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(code) && attempt < 3;
+      if (retry) report.reportPublishRetries++;
+      else { report.reportPublishFailures++; report.status = 'FAIL'; }
+      // Preserve the counters in the pending report even if replacement fails permanently.
+      await write(pending, JSON.stringify(report, null, 2));
+      if (!retry) throw error;
+      await wait(50);
+    }
+  }
+}
 
 const arg = (key, fallback) => process.argv.find(value => value.startsWith('--' + key + '='))?.slice(key.length + 3) ?? fallback;
 export const normalizeMac = value => String(value || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
+function requireMemoryMetric(condition, label) {
+  if (!condition) {
+    const error = new Error('Missing or invalid ' + label + ' metrics');
+    error.kind = 'MEMORY_METRICS_INVALID';
+    throw error;
+  }
+}
+export function internalDramSample(memory) {
+  requireMemoryMetric(memory && typeof memory === 'object', 'internal DRAM');
+  const result = {};
+  for (const field of ['dram8Free', 'dram8Largest']) {
+    requireMemoryMetric(Number.isSafeInteger(memory[field]) && memory[field] >= 0, 'internal DRAM');
+    result[field] = memory[field];
+  }
+  return result;
+}
 export const allowedGet = route => {
   if (typeof route !== 'string' || !route.startsWith('/api/') || route.includes('\\')) return false;
   try {
     const url = new URL(route, 'http://device');
-    return url.origin === 'http://device' && ['/api/network/status', '/api/health', '/api/system/info', '/api/screen-panel/config', '/api/screen-panel/state', '/api/screen-panel/weather/refresh', '/api/periph-exec/history'].includes(url.pathname);
+    return url.origin === 'http://device' && ['/api/network/status', '/api/health', '/api/system/info', '/api/system/status', '/api/screen-panel/config', '/api/screen-panel/state', '/api/screen-panel/weather/refresh', '/api/periph-exec/history'].includes(url.pathname);
   } catch { return false; }
 };
 export const hasFreshIdentity = (neighbors, ip, mac) => Array.isArray(neighbors) && neighbors.some(row =>
@@ -49,7 +92,7 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
   const expectedMac = normalizeMac(options.expectedMac);
   assert.equal(expectedMac.length, 12, 'Provide --expected-mac');
   const seconds = Number(options.seconds ?? 86400), interval = Number(options.interval ?? 60);
-  assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 172800);
+  assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 604800);
   assert(Number.isInteger(interval) && interval >= 10 && interval <= 300);
   const out = path.resolve(options.out);
   const fetch = dependencies.fetch || globalThis.fetch;
@@ -64,13 +107,16 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
   const sha = value => createHash('sha256').update(value).digest('hex');
   const deploymentDigest = sha(deploymentBytes);
   const deployment = JSON.parse(deploymentBytes);
-  assert(deployment.written === true && deployment.verified === true, 'Verified deployment required');
+  assert(deployment && typeof deployment === 'object' && !Array.isArray(deployment) &&
+    deployment.written === true && deployment.verified === true && deployment.applicationWritten === true &&
+    ['firmwareSha256', 'webSha256'].every(key => typeof deployment[key] === 'string' && /^[\da-f]{64}$/i.test(deployment[key])),
+  'Verified deployment required: applicationWritten and firmware/Web SHA256 must be present');
   let plan;
   try { plan = JSON.parse(await fs.readFile(options.plan || path.join(path.dirname(deploymentPath), 'soak-observation-plan.json'), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT' || options.plan) throw error; }
   await fs.mkdir(out, { recursive: false });
   let token = '', trusted = false, stage = 'preflight', previousUptime, previousTick, weatherStamp, firstHeap, lastHeap;
-  let sampleStart, deadline, baselineRevision, baselineConfigHash;
+  let sampleStart, deadline, baselineRevision, baselineConfigHash, firstSampleTick, lastSampleTick;
   const username = options.credentials?.username || process.env.FASTBEE_USERNAME || 'admin';
   const password = options.credentials?.password || process.env.FASTBEE_PASSWORD || 'admin123';
   const secrets = new Set([username, password]);
@@ -84,18 +130,21 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
   const median = values => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
   const start = monotonic();
   const report = { status: 'RUNNING', stabilityStatus: 'RUNNING', acceptanceStatus: 'INCOMPLETE', pid: process.pid,
-    startedAt: timestamp(), plannedEndAt: null, continuous24hStatus: 'NOT_RUN',
+    startedAt: timestamp(), plannedEndAt: null,
+    continuous24hStatus: seconds >= 86400 ? 'RUNNING' : 'NOT_RUN',
+    continuous7dStatus: seconds >= 604800 ? 'RUNNING' : 'NOT_RUN',
+    durationComplete: false, coveragePassed: false,
     requestedSeconds: seconds, intervalSeconds: interval, firmwareSha256: deployment.firmwareSha256,
+    observerSha256: sha(await fs.readFile(new URL(import.meta.url))),
     deploymentReportSha256: deploymentDigest, preflightFailures: 0, initializationFailures: 0,
     identityFailures: 0, touchFailures: 0, configChanges: 0, deploymentChanges: 0,
     webSha256: deployment.webSha256, expectedMac, samples: 0, transportErrors: 0, http429Count: 0,
-    restarts: 0, samplingGaps: 0, runtimeFailures: 0, degradedSamples: 0, staleWeatherSamples: 0,
+    restarts: 0, samplingGaps: 0, runtimeFailures: 0, degradedSamples: 0, memoryMetricErrors: 0, staleWeatherSamples: 0,
     weatherUpdates: 0, historyUpdates: {}, missingHistorySamples: 0, staleHistorySamples: 0, dataStatus: 'INCOMPLETE', errors: [], requestFailures: [],
     unverified: ['physical-touch', 'physical-swipe', 'physical-brightness', 'physical-buzzer', 'physical-motor-response', 'physical-relay-load', 'optical-display-integrity'] };
   const save = async () => {
     report.updatedAt = timestamp(); report.elapsedSeconds = Math.round((monotonic() - start) / 1000);
-    const temp = path.join(out, 'report.pending');
-    await fs.writeFile(temp, JSON.stringify(report, null, 2)); await fs.rename(temp, path.join(out, 'report.json'));
+    await publishSoakReport(out, report);
   };
   const note = (kind, message) => { if (report.errors.length < 30) report.errors.push({ at: timestamp(), kind, message: redact(message) }); };
   const fatal = (counter, message) => { ++report[counter]; const error = new Error(message); error.fatal = true; throw error; };
@@ -164,10 +213,14 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
         elapsedMs: Math.round(monotonic() - requestStarted),
         headersMs: headersReceived === undefined ? undefined : Math.round(headersReceived - requestStarted),
         contentLength: response?.headers?.get('content-length'),
-        causeCode: redact(error.cause?.code || error.code || ''), message: redact(error.message),
+        causeCode: redact(error?.cause?.code ?? error?.code ?? ''), message: redact(error?.message ?? error),
       });
-      error.message = endpoint + ' [' + phase + ']: ' + error.message;
-      throw error;
+      // Fetch timeouts can be DOMExceptions with a read-only message. Keep the
+      // original exception as the cause instead of mutating it during reporting.
+      const contextualError = new Error(endpoint + ' [' + phase + ']: ' + redact(error?.message ?? error), { cause: error });
+      if (error?.fatal === true) contextualError.fatal = true;
+      if (typeof error?.kind === 'string') contextualError.kind = error.kind;
+      throw contextualError;
     }
   }
   try {
@@ -203,15 +256,26 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
         assert(Number.isFinite(uptime), 'Missing uptime');
         if (previousUptime !== undefined && uptime < previousUptime) ++report.restarts;
         previousUptime = uptime; report.initialUptime ??= uptime; report.finalUptime = uptime;
-        const heap = health.memory?.heapFree, largest = health.memory?.heapMaxAlloc;
-        assert(Number.isFinite(heap) && heap >= 0 && Number.isFinite(largest) && largest >= 0, 'Missing or invalid heap metrics');
+        requireMemoryMetric(Number.isSafeInteger(health.memory?.heapFree) && health.memory.heapFree >= 0 &&
+          Number.isSafeInteger(health.memory?.heapMaxAlloc) && health.memory.heapMaxAlloc >= 0, 'aggregate heap');
+        const systemStatus = await get('/api/system/status');
+        if (normalizeMac(systemStatus.macAddress) !== expectedMac) {
+          trusted = false; token = ''; fatal('identityFailures', 'Device identity changed during memory sampling');
+        }
+        row.internalMemory = internalDramSample(systemStatus.memory);
+        const heap = row.internalMemory.dram8Free, largest = row.internalMemory.dram8Largest;
+        report.heapMetricsScope = 'internal-dram-only';
+        report.memoryMetricsSource = '/api/system/status:memory.dram8Free,dram8Largest';
+        report.minimumDramFree = Math.min(report.minimumDramFree ?? heap, heap);
+        report.minimumDramLargestBlock = Math.min(report.minimumDramLargestBlock ?? largest, largest);
         if (Number.isFinite(heap)) {
           firstHeap ??= heap; lastHeap = heap; report.minHeap = Math.min(report.minHeap ?? heap, heap);
           if (report.samples >= 10 && initialHeaps.length < 10) initialHeaps.push(heap);
           recentHeaps.push(heap); if (recentHeaps.length > 10) recentHeaps.shift();
         }
         if (Number.isFinite(largest)) report.minLargestBlock = Math.min(report.minLargestBlock ?? largest, largest);
-        if (health.degraded || health.memory?.critical || health.memory?.degraded) ++report.degradedSamples;
+        if (health.degraded || health.memory?.critical || health.memory?.degraded || health.memoryDegradation?.active) ++report.degradedSamples;
+        row.memoryDegradation = health.memoryDegradation || {};
         const state = await get('/api/screen-panel/state');
         row.uptime = uptime; row.memory = health.memory; row.runtime = state.application?.runtime;
         row.touchReady = state.capabilities?.touchReady === true; row.touchError = redact(state.capabilities?.touchError || '');
@@ -246,29 +310,40 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
           }
         }
         ++report.samples;
+        if (firstSampleTick === undefined) {
+          firstSampleTick = tick; sampleStart = tick; deadline = tick + seconds * 1000;
+          report.samplingStartedAt = row.at;
+          report.plannedEndAt = new Date(now() + Math.max(0, deadline - monotonic())).toISOString();
+        }
+        lastSampleTick = tick;
         report.firstActualSampleAt ??= row.at; report.lastActualSampleAt = row.at;
       } catch (error) {
         row.error = redact(error.message);
         if (error.fatal) { await fs.appendFile(path.join(out, 'samples.jsonl'), JSON.stringify(row) + '\n'); throw error; }
-        ++report.transportErrors; note('sample', error.message);
+        if (error.kind === 'MEMORY_METRICS_INVALID') ++report.memoryMetricErrors;
+        else ++report.transportErrors;
+        note('sample', error.message);
       }
       await fs.appendFile(path.join(out, 'samples.jsonl'), JSON.stringify(row) + '\n');
       await save();
       if (monotonic() >= deadline || stopping()) break;
       await sleep(Math.max(0, Math.min(Math.max(0, interval * 1000 - (monotonic() - tick)), deadline - monotonic())));
     } while (!stopping());
+    // Freeze timing at the end of sampling; cleanup cannot fill a short window.
+    report.durationComplete = sampleStart !== undefined && monotonic() >= deadline;
     await checkDeployment();
     if (!stopping()) inspectConfig(await get('/api/screen-panel/config'));
     report.heapChangeBytes = lastHeap - firstHeap;
     report.heapTrend = { baselineMedian: median(initialHeaps), finalMedian: median(recentHeaps) };
     report.sustainedHeapDecline = report.samples >= 60 && report.heapTrend.baselineMedian - report.heapTrend.finalMedian > 8192 && report.heapTrend.finalMedian < report.heapTrend.baselineMedian * .75;
-    report.actualSampleSpanSeconds = report.samples > 1 ? (Date.parse(report.lastActualSampleAt) - Date.parse(report.firstActualSampleAt)) / 1000 : 0;
-    const covered = !stopping() && monotonic() >= deadline && report.samples >= Math.max(2, Math.ceil(seconds / interval * .9)) && report.actualSampleSpanSeconds >= seconds * .9;
-    const stable = covered && !['transportErrors', 'http429Count', 'restarts', 'samplingGaps', 'runtimeFailures', 'touchFailures', 'configChanges', 'deploymentChanges', 'degradedSamples', 'sustainedHeapDecline'].some(key => report[key]);
+    report.actualSampleSpanSeconds = report.samples > 1 ? (lastSampleTick - firstSampleTick) / 1000 : 0;
+    const covered = !stopping() && report.durationComplete && report.samples >= Math.max(2, Math.ceil(seconds / interval * .9)) && report.actualSampleSpanSeconds >= seconds;
+    report.coveragePassed = covered && !report.samplingGaps;
+    const stable = covered && !['transportErrors', 'http429Count', 'restarts', 'samplingGaps', 'runtimeFailures', 'touchFailures', 'configChanges', 'deploymentChanges', 'degradedSamples', 'memoryMetricErrors', 'sustainedHeapDecline'].some(key => report[key]);
     report.stabilityStatus = stable ? 'PASS' : covered ? 'FAIL' : 'INCOMPLETE';
     report.dataStatus = !covered ? 'INCOMPLETE' : report.staleWeatherSamples || report.missingHistorySamples || report.staleHistorySamples ||
       (seconds >= 7200 && (weatherId && !report.weatherUpdates || historySources.some(ref => !report.historyUpdates[ref]))) ? 'FAIL' : 'PASS';
-    report.status = stable && report.dataStatus === 'PASS' ? 'PASS' : covered ? 'FAIL' : 'INCOMPLETE';
+    report.status = report.reportPublishFailures ? 'FAIL' : stable && report.dataStatus === 'PASS' ? 'PASS' : covered ? 'FAIL' : 'INCOMPLETE';
   } catch (error) {
     if (stage === 'preflight') ++report.preflightFailures;
     else if (stage === 'initialization') ++report.initializationFailures;
@@ -278,7 +353,13 @@ export async function runScreenPanelSoak(options, dependencies = {}) {
       await response.arrayBuffer(); if (!response.ok) throw new Error('Logout: HTTP ' + response.status);
     }).catch(error => { ++report.transportErrors; note('cleanup', error.message); report.status = 'FAIL'; report.stabilityStatus = 'FAIL'; });
     token = '';
-    report.actualSampleSpanSeconds = report.samples > 1 ? (Date.parse(report.lastActualSampleAt) - Date.parse(report.firstActualSampleAt)) / 1000 : 0;
+    report.actualSampleSpanSeconds = report.samples > 1 ? (lastSampleTick - firstSampleTick) / 1000 : 0;
+    // These technical window results never close the separate physical checks.
+    for (const [key, threshold] of [['continuous24hStatus', 86400], ['continuous7dStatus', 604800]]) {
+      report[key] = seconds < threshold ? 'NOT_RUN' :
+        report.status === 'FAIL' ? 'FAIL' :
+        report.status === 'PASS' && report.coveragePassed && report.actualSampleSpanSeconds >= threshold ? 'PASS' : 'INCOMPLETE';
+    }
     report.completedAt = timestamp(); await save();
   }
   return report;

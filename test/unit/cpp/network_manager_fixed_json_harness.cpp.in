@@ -1,0 +1,241 @@
+// Two complete resident NetworkManager methods. SDK scan, NVS/config file and
+// millis/delay are explicit seams; actual types, RSSI conversion and JSON run.
+#include "document_json_probe.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "network/FixedJsonField.h"
+#include "core/SystemConstants.h"
+#include <climits>
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <type_traits>
+@NETWORK_TYPES@
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string value = "object{";
+        for (JsonPairConst field : object) {
+            value += std::string(field.key().c_str(), field.key().size());
+            value += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            value += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return value + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string value = "array[";
+        for (JsonVariantConst item : array) value += ArduinoJson::detail::accept(item, *this) + ";";
+        return value + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        assert(false); return "unsupported";
+    }
+};
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflow = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflow == other.overflow;
+    }
+};
+static Snapshot capture(const JsonDocument& doc) {
+    Shape shape;
+    return {documentBytes(doc), ArduinoJson::detail::accept(doc.as<JsonVariantConst>(), shape), doc.overflowed()};
+}
+
+struct Result {
+    bool returned = false;
+    std::string text;
+    std::vector<Snapshot> documents;
+    std::vector<std::string> effects;
+    std::vector<DocumentProbeAllocator::Event> events;
+    size_t allocations = 0, failures = 0;
+    bool operator==(const Result& other) const {
+        return returned == other.returned && text == other.text &&
+            documents == other.documents && effects == other.effects &&
+            events == other.events && allocations == other.allocations &&
+            failures == other.failures;
+    }
+};
+static Result* activeResult;
+static DocumentProbeAllocator* activeAllocator;
+static std::function<void()> overwriteInputs;
+static bool storageOk = true;
+static unsigned long fakeMs;
+static void record(const std::string& value) { activeResult->effects.push_back(value); }
+static void log(const String& value) { record("log:" + std::string(value)); }
+static unsigned long clockMillis() { record("millis"); return fakeMs; }
+static void clockDelay(unsigned long duration) { record("delay:" + std::to_string(duration)); fakeMs += duration; }
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { assert(activeAllocator); }
+    ~TrackedDocument() {
+        const auto snapshot = capture(*this);
+        overwriteInputs();
+        assert(capture(*this) == snapshot);
+        activeResult->documents.push_back(snapshot);
+    }
+};
+template<size_t Capacity> struct TrackedStaticDocument : TrackedDocument {};
+
+struct ConfigStorage {
+    static ConfigStorage& getInstance() { static ConfigStorage instance; return instance; }
+    bool saveJSONConfig(const char* path, JsonDocument& document) {
+        record(std::string("save:") + path);
+        activeResult->documents.push_back(capture(document));
+        return storageOk && !document.overflowed();
+    }
+};
+struct Preferences {
+    void putString(const char* key, const String& value) { record(std::string("str:") + key + "=" + std::string(value)); }
+    void putUInt(const char* key, unsigned int value) { record(std::string("uint:") + key + "=" + std::to_string(value)); }
+    void putULong(const char* key, unsigned long value) { record(std::string("ulong:") + key + "=" + std::to_string(value)); }
+    void putUShort(const char* key, unsigned short value) { record(std::string("ushort:") + key + "=" + std::to_string(value)); }
+    void putUChar(const char* key, unsigned char value) { record(std::string("uchar:") + key + "=" + std::to_string(value)); }
+    void putBool(const char* key, bool value) { record(std::string("bool:") + key + "=" + std::to_string(value)); }
+};
+enum wifi_auth_mode_t { WIFI_AUTH_OPEN, WIFI_AUTH_WEP, WIFI_AUTH_WPA_PSK,
+    WIFI_AUTH_WPA2_PSK, WIFI_AUTH_WPA_WPA2_PSK, TEST_WPA3, TEST_WPA2_WPA3, TEST_UNKNOWN };
+#define WIFI_AUTH_WPA3_PSK TEST_WPA3
+#define WIFI_AUTH_WPA2_WPA3_PSK TEST_WPA2_WPA3
+constexpr int WIFI_SCAN_RUNNING = -1, WIFI_SCAN_FAILED = -2;
+struct ScanRow { String ssid, bssid; int32_t rssi; int32_t channel; wifi_auth_mode_t auth; };
+struct WiFiFixture {
+    std::vector<ScanRow> rows;
+    int startResult = WIFI_SCAN_RUNNING, remaining = 2;
+    bool timedOut = false;
+    int scanNetworks(bool async) { assert(async); record("scan:true"); return startResult; }
+    int scanComplete() {
+        record("complete");
+        if (timedOut) return WIFI_SCAN_FAILED;
+        if (remaining-- > 0) return WIFI_SCAN_RUNNING;
+        return static_cast<int>(rows.size());
+    }
+    void scanDelete() {
+        record("delete");
+        for (auto& row : rows) { row.ssid = "scan released"; row.bssid = "scan released"; }
+    }
+    String SSID(int index) { record("ssid:" + std::to_string(index)); return rows.at(index).ssid; }
+    int32_t RSSI(int index) { record("rssi:" + std::to_string(index)); return rows.at(index).rssi; }
+    int32_t channel(int index) { record("channel:" + std::to_string(index)); return rows.at(index).channel; }
+    wifi_auth_mode_t encryptionType(int index) { record("auth:" + std::to_string(index)); return rows.at(index).auth; }
+    String BSSIDstr(int index) { record("bssid:" + std::to_string(index)); return rows.at(index).bssid; }
+} WiFi;
+struct NetworkUtils { static uint8_t rssiToPercentage(int32_t rssi); };
+@RSSI_FUNCTION@
+static const char* NETWORK_CONFIG_FILE = "/config/network.json";
+struct NetworkFixture { WiFiConfig wifiConfig; Preferences preferences; };
+#define DECLARE_NETWORK(Name) struct Name : NetworkFixture { \
+    bool saveNetworkConfig(); String scanNetworks(); \
+};
+DECLARE_NETWORK(NetworkOracle)
+DECLARE_NETWORK(NetworkCurrent)
+DECLARE_NETWORK(NetworkDraft)
+#undef DECLARE_NETWORK
+#define JsonDocument TrackedDocument
+#define StaticJsonDocument TrackedStaticDocument
+#define LOG_INFO(value) log(value)
+#define LOG_WARNING(value) log(value)
+#define millis clockMillis
+#define delay clockDelay
+@NETWORK_WRITERS@
+#undef delay
+#undef millis
+#undef LOG_WARNING
+#undef LOG_INFO
+#undef StaticJsonDocument
+#undef JsonDocument
+
+enum class Kind { Save, Scan };
+template<class Writer> static void populate(Writer& writer, unsigned scenario) {
+    WiFi = WiFiFixture(); fakeMs = 100;
+    auto& c = writer.wifiConfig;
+    const String text(scenario == 0 ? "" : scenario == 3 ? std::string(240, 'x') : "网络 \"quote\" \\ line\n\t旧");
+    c.mode = static_cast<NetworkMode>(scenario);
+    c.networkType = static_cast<NetworkType>(scenario);
+    c.ipConfigType = static_cast<IPConfigType>(scenario);
+    c.conflictDetection = static_cast<IPConflictMode>(scenario);
+    c.failoverStrategy = static_cast<IPFailoverStrategy>(scenario);
+    c.apSSID = c.apPassword = c.staSSID = c.staPassword = c.customDomain = text;
+    c.apIP = "192.0.2.2"; c.staticIP = "192.0.2.3"; c.gateway = "192.0.2.1";
+    c.subnet = "255.255.255.0"; c.dns1 = "198.51.100.1"; c.dns2 = "";
+    c.apHidden = c.enableMDNS = c.autoFailover = c.fallbackToDHCP = scenario % 2;
+    c.apChannel = c.apMaxConnections = c.maxReconnectAttempts = c.maxFailoverAttempts =
+        c.conflictThreshold = scenario == 3 ? UINT8_MAX : 0;
+    c.connectTimeout = c.reconnectInterval = c.cellular.baudRate = scenario == 3 ? UINT32_MAX : 0;
+    c.conflictCheckInterval = scenario == 3 ? UINT16_MAX : 0;
+    c.ethernet.spiMosi = c.ethernet.spiSck = c.ethernet.rstPin = INT8_MIN;
+    c.ethernet.spiMiso = c.ethernet.csPin = c.ethernet.intPin = INT8_MAX;
+    c.cellular.txPin = -1; c.cellular.rxPin = INT8_MAX; c.cellular.pwrPin = INT8_MIN;
+    c.cellular.apn = text;
+    if (scenario) c.backupIPs = {"192.0.2.4", text, ""};
+    const unsigned count = scenario == 0 ? 0 : scenario == 3 ? 20 : 8;
+    for (unsigned i = 0; i < count; ++i)
+        WiFi.rows.push_back({text + static_cast<unsigned>(i), "02:00:00:00:00:01",
+            i % 3 == 0 ? INT32_MIN : i % 3 == 1 ? INT32_MAX : -73,
+            i % 2 ? 14 : 255, static_cast<wifi_auth_mode_t>(i % 8)});
+    WiFi.startResult = scenario == 1 ? WIFI_SCAN_FAILED : scenario == 2 ? 0 : WIFI_SCAN_RUNNING;
+    WiFi.timedOut = scenario == 4;
+}
+template<class Writer> static Result run(Kind kind, unsigned scenario, bool storageFailure,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    Result result;
+    DocumentProbeAllocator allocator(failAt, persistent);
+    activeResult = &result; activeAllocator = &allocator; storageOk = !storageFailure;
+    {
+        Writer writer; populate(writer, scenario);
+        overwriteInputs = [&] {
+            writer.wifiConfig = WiFiConfig();
+        };
+        if (kind == Kind::Save) result.returned = writer.saveNetworkConfig();
+        if (kind == Kind::Scan) result.text = std::string(writer.scanNetworks());
+        if (kind == Kind::Save) {
+            assert(result.documents.size() == 2);
+            assert(result.returned == (!storageFailure && !result.documents.front().overflow));
+            unsigned nvsWrites = 0;
+            for (const auto& effect : result.effects)
+                if (effect.find("str:") == 0 || effect.find("uint:") == 0 || effect.find("bool:") == 0 ||
+                    effect.find("ulong:") == 0 || effect.find("ushort:") == 0 || effect.find("uchar:") == 0)
+                    ++nvsWrites;
+            assert((nvsWrites > 0) == result.returned);
+        }
+        if (kind == Kind::Scan) {
+            assert(result.text.size() <= 2047);
+            assert(std::count(result.effects.begin(), result.effects.end(), "delete") == 1);
+        }
+    }
+    assert(allocator.blocks.empty());
+    result.events = allocator.events; result.allocations = allocator.eligible; result.failures = allocator.failures;
+    overwriteInputs = {}; activeResult = nullptr; activeAllocator = nullptr;
+    return result;
+}
+static Result compare(Kind kind, unsigned scenario, bool storageFailure,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    const auto before = run<NetworkOracle>(kind, scenario, storageFailure, failAt, persistent);
+    assert(run<NetworkCurrent>(kind, scenario, storageFailure, failAt, persistent) == before);
+    assert(run<NetworkDraft>(kind, scenario, storageFailure, failAt, persistent) == before);
+    return before;
+}
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode(argv[1]);
+    const Kind kind = mode.find("save-") == 0 ? Kind::Save : Kind::Scan;
+    if (mode.find("-values") != std::string::npos) {
+        for (unsigned scenario = 0; scenario < 5; ++scenario)
+            for (bool failure : {false, true}) compare(kind, scenario, failure);
+    } else if (mode.find("-oom") != std::string::npos) {
+        for (unsigned scenario : {1u, 3u}) {
+            const auto baseline = compare(kind, scenario, false);
+            assert(baseline.allocations > 0);
+            for (bool persistent : {false, true}) for (size_t fault = 0; fault < baseline.allocations; ++fault) {
+                const auto failed = compare(kind, scenario, false, fault, persistent);
+                assert(failed.failures > 0);
+            }
+        }
+    } else { assert(false); }
+    std::cout << "PASS " << mode << '\n';
+}
+

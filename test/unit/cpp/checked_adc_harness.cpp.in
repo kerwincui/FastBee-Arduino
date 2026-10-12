@@ -1,0 +1,396 @@
+#include "checked_adc_sdk.h"
+#include "core/CheckedAdc.h"
+#include "core/AnalogInputCalibration.h"
+#include <cassert>
+#include <atomic>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <thread>
+
+bool adcTestMutexFails = false;
+bool adcTestForeignPin = false;
+unsigned adcTestMutexCreates = 0;
+static unsigned creates = 0, deletes = 0, configs = 0, reads = 0, calCreates = 0, calDeletes = 0;
+static bool failNew = false, failConfig = false, failDelete = false,
+    failCalCreate = false, failCalDelete = false, failCalConvert = false;
+static bool partialUnit = false, nullUnit = false, partialCalibration = false, nullCalibration = false;
+static unsigned failReadAt = 0;
+static int sampleRaw = 0, lastCalibrationRaw = -1;
+static UnitHandle* liveUnits[ADC_TEST_UNITS]{};
+static std::mutex waitMutex;
+static std::condition_variable waitCv;
+static bool blockRead = false, readEntered = false, readContinue = false;
+
+int adc_oneshot_io_to_channel(int pin, int* unit, int* channel) {
+    if (pin >= 0 && pin < SOC_ADC_CHANNEL_NUM(0)) { *unit = 0; *channel = pin; return ESP_OK; }
+    if (ADC_TEST_UNITS > 1 && pin >= 20 && pin < 20 + SOC_ADC_CHANNEL_NUM(1)) {
+        *unit = 1; *channel = pin - 20; return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+int adc_oneshot_new_unit(const adc_oneshot_unit_init_cfg_t* config, UnitHandle** handle) {
+    ++creates;
+    if (failNew || liveUnits[config->unit_id]) return ESP_ERR_NOT_FOUND;
+    if (nullUnit) return ESP_OK;
+    *handle = new UnitHandle{config->unit_id, {}};
+    liveUnits[config->unit_id] = *handle;
+    return partialUnit ? ESP_ERR_INVALID_STATE : ESP_OK;
+}
+int adc_oneshot_config_channel(UnitHandle* handle, int channel, const adc_oneshot_chan_cfg_t* config) {
+    ++configs;
+    assert(config->bitwidth == ADC_BITWIDTH_12);
+    if (failConfig) return ESP_ERR_INVALID_ARG;
+    handle->attenuation[channel] = config->atten;
+    return ESP_OK;
+}
+int adc_oneshot_read(UnitHandle*, int, int* raw) {
+    ++reads;
+    if (blockRead) {
+        std::unique_lock<std::mutex> lock(waitMutex);
+        readEntered = true; waitCv.notify_all();
+        waitCv.wait(lock, [] { return readContinue; });
+    }
+    if (failReadAt && reads == failReadAt) return ESP_ERR_TIMEOUT;
+    *raw = sampleRaw;
+    return ESP_OK;
+}
+int adc_oneshot_del_unit(UnitHandle* handle) {
+    ++deletes;
+    if (failDelete) return ESP_ERR_NOT_FOUND;
+    liveUnits[handle->unit] = nullptr;
+    delete handle;
+    return ESP_OK;
+}
+int adc_cali_create_scheme_curve_fitting(const adc_cali_curve_fitting_config_t* config, CalibrationHandle** handle) {
+    if (failCalCreate) return ESP_ERR_NOT_SUPPORTED;
+    if (nullCalibration) return ESP_OK;
+    assert(config->bitwidth == ADC_BITWIDTH_12);
+    ++calCreates; *handle = new CalibrationHandle{config->unit_id, config->chan, config->atten};
+    return partialCalibration ? ESP_ERR_INVALID_STATE : ESP_OK;
+}
+int adc_cali_create_scheme_line_fitting(const adc_cali_line_fitting_config_t* config, CalibrationHandle** handle) {
+    const adc_cali_curve_fitting_config_t normalized{config->unit_id, 0, config->atten, config->bitwidth};
+    return adc_cali_create_scheme_curve_fitting(&normalized, handle);
+}
+int adc_cali_delete_scheme_curve_fitting(CalibrationHandle* handle) {
+    if (failCalDelete) return ESP_ERR_INVALID_ARG;
+    ++calDeletes; delete handle; return ESP_OK;
+}
+int adc_cali_delete_scheme_line_fitting(CalibrationHandle* handle) {
+    return adc_cali_delete_scheme_curve_fitting(handle);
+}
+int adc_cali_raw_to_voltage(CalibrationHandle*, int raw, int* mv) {
+    lastCalibrationRaw = raw;
+    if (failCalConvert) return ESP_ERR_INVALID_ARG;
+    *mv = 1886; return ESP_OK;
+}
+using namespace FastBee;
+ResourceConsumerIdentity owner(const char* name) {
+    ResourceConsumerIdentity value;
+    assert(value.assign(ResourceConsumerRole::Peripheral, name));
+    return value;
+}
+void dirtySnapshot(AdcResourceSnapshot& snapshot) {
+    snapshot.observed = snapshot.initialized = true;
+    snapshot.unitCount = snapshot.channelCount = snapshot.consumerCount = 1;
+    snapshot.calibrationCount = snapshot.calibrationCleanupPending = 1;
+    for (auto& unit : snapshot.units) { unit.unit = 1; unit.retained = unit.cleanupFailed = true; unit.lastError = 99; }
+    for (auto& channel : snapshot.channels) {
+        channel.unit = channel.channel = channel.pin = channel.attenuation = 1; channel.configurationKnown = true;
+    }
+    for (auto& consumer : snapshot.consumers) {
+        consumer.identity = owner("stale"); consumer.pin = consumer.unit = consumer.channel = 1;
+        consumer.attenuation = 3; consumer.resolution = 9;
+        consumer.transient = consumer.retiring = true; consumer.lastError = 99;
+    }
+}
+void expectReset(const AdcResourceSnapshot& snapshot) {
+    assert(!snapshot.initialized && !snapshot.unitCount && !snapshot.channelCount && !snapshot.consumerCount);
+    assert(!snapshot.calibrationCount && !snapshot.calibrationCleanupPending);
+    for (const auto& unit : snapshot.units) assert(!unit.unit && !unit.retained && !unit.cleanupFailed && !unit.lastError);
+    for (const auto& channel : snapshot.channels)
+        assert(!channel.unit && !channel.channel && channel.pin == 255 && !channel.attenuation && !channel.configurationKnown);
+    for (const auto& consumer : snapshot.consumers)
+        assert(!consumer.identity.specified() && consumer.pin == 255 && !consumer.unit && !consumer.channel &&
+               !consumer.attenuation && consumer.resolution == 12 && !consumer.transient && !consumer.retiring && !consumer.lastError);
+}
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    auto a = owner("analog-a"), b = owner("analog-b");
+    AdcResourceSnapshot snapshot;
+    uint16_t samples[32]{};
+    if (mode == "cold") {
+        assert(!adcPinUnavailable(0));
+        dirtySnapshot(snapshot);
+        snapshotAdcResources(snapshot);
+        expectReset(snapshot);
+        assert(snapshot.observed && !snapshot.initialized && !snapshot.consumerCount && !adcTestMutexCreates && !creates && !reads);
+        assert(!adcTestTableAttempts && !adcTestTableStorage);
+        return 0;
+    }
+    if (mode == "table_oom") {
+        adcTestTableFails = true;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::NoMemory);
+        assert(adcTestTableAttempts == 1 && !adcTestTableAllocations && !adcTestTableStorage && !creates && !configs);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.observed && !snapshot.consumerCount && !snapshot.unitCount);
+        assert(readTransientAdcBatch(0, samples, 1) == AdcStatus::NoMemory && !reads && !creates);
+        adcTestTableFails = false;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+        void* storage = adcTestTableStorage;
+        const auto attempts = adcTestTableAttempts;
+        adcTestTableFails = true;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+        assert(acquireAdc(b, 1, 3, 12) == AdcStatus::Ok);
+        assert(adcTestTableStorage == storage && adcTestTableAttempts == attempts);
+        assert(releaseAdc(a) == AdcStatus::Ok && adcTestTableStorage == storage);
+        assert(releaseAdc(b) == AdcStatus::Ok && !adcTestTableStorage);
+        assert(adcTestTableAllocations == 1 && adcTestTableFrees == 1);
+        return 0;
+    }
+    if (mode == "table_lifecycle") {
+        for (unsigned cycle = 0; cycle < 100; ++cycle) {
+            assert(!adcTestTableStorage && !adcTestTableBytes);
+            assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+            void* storage = adcTestTableStorage;
+            assert(storage && adcTestTableBytes && adcTestTableAllocations == cycle + 1);
+            assert(acquireAdc(b, 1, 3, 12) == AdcStatus::Ok);
+            assert(adcTestTableStorage == storage && adcTestTableAttempts == cycle + 1);
+            assert(readAdcBatch(a, samples, 1) == AdcStatus::Ok);
+            float volts = 0;
+            const bool calibrated = calibratedAdcVoltage(0, 3, 12, 1000, volts);
+            assert(calibrated == static_cast<bool>(ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED || ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED));
+            assert(releaseAdc(a) == AdcStatus::Ok && adcTestTableStorage == storage);
+            assert(releaseAdc(b) == AdcStatus::Ok && !adcTestTableStorage && !adcTestTableBytes);
+            assert(adcTestTableFrees == cycle + 1 && creates == deletes);
+            snapshotAdcResources(snapshot);
+            assert(!snapshot.consumerCount && !snapshot.unitCount && !snapshot.calibrationCount);
+        }
+        return 0;
+    }
+    if (mode == "table_observer") {
+        for (unsigned cycle = 0; cycle < 100; ++cycle) {
+            snapshotAdcResources(snapshot);
+            assert(snapshot.observed && !snapshot.consumerCount && !adcPinUnavailable(0));
+            assert(readAdcBatch(a, samples, 1) == AdcStatus::NotOwned);
+            assert(releaseAdc(a) == AdcStatus::Ok);
+        }
+        assert(!adcTestTableAttempts && !adcTestTableStorage && !creates);
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+        assert(releaseAdc(a) == AdcStatus::Ok);
+        const auto attempts = adcTestTableAttempts;
+        for (unsigned cycle = 0; cycle < 100; ++cycle) {
+            snapshotAdcResources(snapshot);
+            assert(snapshot.observed && !snapshot.consumerCount && !adcPinUnavailable(0));
+            assert(readAdcBatch(a, samples, 1) == AdcStatus::NotOwned);
+            assert(releaseAdc(a) == AdcStatus::Ok);
+        }
+        assert(adcTestTableAttempts == attempts && !adcTestTableStorage);
+        return 0;
+    }
+    if (mode == "table_transient_lifecycle") {
+        for (unsigned cycle = 0; cycle < 100; ++cycle) {
+            assert(readTransientAdcBatch(0, samples, 2) == AdcStatus::Ok);
+            assert(!adcTestTableStorage && !adcTestTableBytes);
+            assert(adcTestTableAllocations == cycle + 1 && adcTestTableFrees == cycle + 1);
+            snapshotAdcResources(snapshot);
+            assert(!snapshot.consumerCount && !snapshot.unitCount && !adcPinUnavailable(0));
+        }
+        return 0;
+    }
+    if (mode == "table_units") {
+#if ADC_TEST_UNITS > 1
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+        void* storage = adcTestTableStorage;
+        assert(acquireAdc(b, 20, 3, 12) == AdcStatus::Ok && creates == 2);
+        assert(releaseAdc(a) == AdcStatus::Ok && deletes == 1);
+        assert(adcTestTableStorage == storage && !adcTestTableFrees);
+        failDelete = true;
+        assert(releaseAdc(b) == AdcStatus::ReleaseFailed);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.consumerCount == 1 && snapshot.consumers[0].identity.equals(b));
+        assert(snapshot.units[0].unit == 1 && snapshot.units[0].cleanupFailed);
+        assert(adcTestTableStorage == storage && !adcTestTableFrees);
+        failDelete = false;
+        assert(releaseAdc(b) == AdcStatus::Ok && !adcTestTableStorage && adcTestTableFrees == 1);
+#endif
+        return 0;
+    }
+    if (mode == "partial_unit" || mode == "null_unit") {
+        partialUnit = mode == "partial_unit"; nullUnit = !partialUnit; failDelete = true;
+        assert(acquireAdc(a, 0, 3, 12) == (partialUnit ? AdcStatus::ReleaseFailed : AdcStatus::CreateFailed));
+        snapshotAdcResources(snapshot);
+        assert(snapshot.consumerCount == (partialUnit ? 1 : 0));
+        if (partialUnit) {
+            assert(snapshot.units[0].cleanupFailed && adcPinUnavailable(0));
+            assert(readAdcBatch(a, samples, 1) == AdcStatus::ReleaseFailed && !reads);
+            failDelete = false; assert(releaseAdc(a) == AdcStatus::Ok);
+        }
+        return 0;
+    }
+    if (mode == "mutex") {
+        adcTestMutexFails = true;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::NoMemory && !creates);
+        adcTestMutexFails = false;
+    }
+    if (mode == "invalid") {
+        assert(acquireAdc(a, 99, 3, 12) == AdcStatus::Invalid);
+        assert(acquireAdc(a, 0, 4, 12) == AdcStatus::Invalid);
+        assert(acquireAdc(a, 0, 3, 8) == AdcStatus::Invalid);
+        auto bad = a; memset(bad.id, 'x', sizeof(bad.id));
+        assert(acquireAdc(bad, 0, 3, 12) == AdcStatus::Invalid && !creates);
+        assert(!adcTestTableAttempts);
+        return 0;
+    }
+    if (mode == "foreign_pin") {
+        adcTestForeignPin = true;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::NotOwned && !creates && !configs);
+        assert(!adcTestTableAttempts);
+        adcTestForeignPin = false;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+        adcTestForeignPin = true;
+        assert(readAdcBatch(a, samples, 1) == AdcStatus::ConfigureFailed && !reads);
+        assert(releaseAdc(a) == AdcStatus::ReleaseFailed && !deletes);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.units[0].cleanupFailed && snapshot.consumers[0].retiring && adcPinUnavailable(0));
+        adcTestForeignPin = false;
+        assert(releaseAdc(a) == AdcStatus::Ok);
+        return 0;
+    }
+    if (mode == "create_failure") {
+        failNew = true;
+        assert(acquireAdc(a, 0, 3, 12) == AdcStatus::CreateFailed && !deletes && !configs);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.observed && !snapshot.unitCount && !snapshot.consumerCount);
+        assert(!adcTestTableStorage && adcTestTableAllocations == adcTestTableFrees);
+        failNew = false;
+    }
+    if (mode == "configure_failure" || mode == "configure_cleanup_failure") {
+        failConfig = true; failDelete = mode == "configure_cleanup_failure";
+        assert(acquireAdc(a, 0, 3, 12) == (failDelete ? AdcStatus::ReleaseFailed : AdcStatus::ConfigureFailed));
+        snapshotAdcResources(snapshot);
+        assert(snapshot.unitCount == (failDelete ? 1 : 0));
+        assert(snapshot.consumerCount == (failDelete ? 1 : 0));
+        if (failDelete) assert(snapshot.consumers[0].retiring && snapshot.units[0].cleanupFailed && adcTestTableStorage && !adcTestTableFrees);
+        failDelete = false; failConfig = false;
+        assert(releaseAdc(a) == AdcStatus::Ok);
+        assert(!adcTestTableStorage && adcTestTableAllocations == adcTestTableFrees);
+    }
+    if (mode == "transient" || mode == "transient_retained") {
+        failDelete = mode == "transient_retained";
+        assert(readTransientAdcBatch(0, samples, 10) == (failDelete ? AdcStatus::ReleaseFailed : AdcStatus::Ok));
+        snapshotAdcResources(snapshot);
+        assert(snapshot.consumerCount == (failDelete ? 1 : 0));
+        if (failDelete) {
+            assert(snapshot.consumers[0].transient && snapshot.consumers[0].retiring);
+            assert(adcTestTableStorage && !adcTestTableFrees);
+            const unsigned previousReads = reads;
+            assert(readTransientAdcBatch(0, samples, 1) == AdcStatus::ReleaseFailed && reads == previousReads);
+        } else {
+            assert(!adcTestTableStorage && adcTestTableAllocations == adcTestTableFrees);
+        }
+        return 0;
+    }
+    assert(acquireAdc(a, 0, 3, 12) == AdcStatus::Ok);
+    if (mode == "zero" || mode == "sample_failure") {
+        assert(readAdcBatch(a, samples, 1) == AdcStatus::Ok && samples[0] == 0);
+        sampleRaw = 1200; failReadAt = reads + 3;
+        assert(readAdcBatch(a, samples, 8) == AdcStatus::ReadFailed);
+        failReadAt = 0; sampleRaw = 4096;
+        assert(readAdcBatch(a, samples, 1) == AdcStatus::ReadFailed);
+        snapshotAdcResources(snapshot); assert(snapshot.consumers[0].lastError != ESP_OK);
+    } else if (mode == "sharing") {
+        assert(acquireAdc(b, 1, 1, 10) == AdcStatus::Ok && creates == 1);
+        sampleRaw = 4095;
+        assert(readAdcBatch(b, samples, 1) == AdcStatus::Ok && samples[0] == 1023);
+        assert(releaseAdc(a) == AdcStatus::Ok && !deletes);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.unitCount == 1 && snapshot.channelCount == 2 && snapshot.consumerCount == 1);
+        assert(adcPinUnavailable(0) && adcPinUnavailable(1));
+        assert(releaseAdc(b) == AdcStatus::Ok && deletes == 1);
+        assert(!adcPinUnavailable(0) && !adcPinUnavailable(1));
+    } else if (mode == "same_channel") {
+        assert(acquireAdc(b, 0, 1, 9) == AdcStatus::Ok);
+        assert(readAdcBatch(a, samples, 4) == AdcStatus::Ok && liveUnits[0]->attenuation[0] == 3);
+        assert(readAdcBatch(b, samples, 4) == AdcStatus::Ok && liveUnits[0]->attenuation[0] == 1);
+    } else if (mode == "retained") {
+        void* storage = adcTestTableStorage;
+        failDelete = true;
+        assert(releaseAdc(a) == AdcStatus::ReleaseFailed);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.consumers[0].retiring && snapshot.units[0].cleanupFailed);
+        assert(snapshot.consumers[0].identity.equals(a) && adcTestTableStorage == storage && !adcTestTableFrees);
+        assert(readAdcBatch(a, samples, 1) == AdcStatus::ReleaseFailed);
+        assert(acquireAdc(b, 1, 3, 12) == AdcStatus::ReleaseFailed);
+        assert(adcTestTableStorage == storage && adcTestTableAllocations == 1);
+        failDelete = false;
+        assert(releaseAdc(a) == AdcStatus::Ok);
+        snapshotAdcResources(snapshot); assert(!snapshot.unitCount && !snapshot.consumerCount);
+        assert(!adcTestTableStorage && adcTestTableFrees == 1);
+    } else if (mode == "capacity") {
+        for (unsigned i = 1; i < AdcResourceSnapshot::CONSUMER_CAPACITY; ++i) {
+            char name[20]; std::snprintf(name, sizeof(name), "consumer-%u", i);
+            assert(acquireAdc(owner(name), 0, 3, 12) == AdcStatus::Ok);
+        }
+        const auto before = configs;
+        assert(acquireAdc(b, 1, 3, 12) == AdcStatus::Full && configs == before && creates == 1);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.consumerCount == AdcResourceSnapshot::CONSUMER_CAPACITY);
+        assert(adcTestTableAllocations == 1 && !adcTestTableFrees);
+        assert(std::strcmp(snapshot.consumers[1].identity.id, "consumer-1") == 0);
+    } else if (mode == "busy") {
+        blockRead = true;
+        std::thread reader([&] { uint16_t values[4]; assert(readAdcBatch(a, values, 4) == AdcStatus::Ok); });
+        { std::unique_lock<std::mutex> lock(waitMutex); waitCv.wait(lock, [] { return readEntered; }); }
+        dirtySnapshot(snapshot);
+        snapshotAdcResources(snapshot); assert(!snapshot.observed);
+        expectReset(snapshot);
+        assert(adcPinUnavailable(0));
+        assert(readAdcBatch(a, samples, 1) == AdcStatus::Busy);
+        { std::lock_guard<std::mutex> lock(waitMutex); readContinue = true; }
+        waitCv.notify_all(); reader.join();
+    } else if (mode == "partial_calibration" || mode == "null_calibration") {
+        float volts = 0;
+        partialCalibration = mode == "partial_calibration"; nullCalibration = !partialCalibration; failCalDelete = true;
+        assert(!calibratedAdcVoltage(0, 3, 12, 1000, volts) && std::isnan(volts));
+        snapshotAdcResources(snapshot);
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED || ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        assert(snapshot.calibrationCount == (partialCalibration ? 1 : 0));
+        if (partialCalibration) {
+            assert(snapshot.calibrationCleanupPending == 1);
+            assert(!calibratedAdcVoltage(0, 3, 12, 1000, volts) && calCreates == 1);
+            failCalDelete = false; assert(releaseAdc(a) == AdcStatus::Ok);
+            snapshotAdcResources(snapshot); assert(!snapshot.calibrationCount);
+        }
+#else
+        assert(!snapshot.calibrationCount);
+#endif
+    } else if (mode == "calibration") {
+        float volts = 0;
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED || ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        assert(calibratedAdcVoltage(0, 3, 10, 559, volts));
+        assert(lastCalibrationRaw == 2236 && std::fabs(volts - 1.886f) < .0001f && !reads);
+        assert(calibratedAdcVoltage(1, 3, 12, 1000, volts));
+        assert(calCreates == (SOC_ADC_CALIB_CHAN_COMPENS_SUPPORTED ? 2U : 1U));
+        failCalConvert = true;
+        assert(!calibratedAdcVoltage(0, 3, 12, 1000, volts) && std::isnan(volts));
+        snapshotAdcResources(snapshot); assert(snapshot.units[0].lastError == ESP_ERR_INVALID_ARG);
+        failCalConvert = false; failCalDelete = true;
+        assert(releaseAdc(a) == AdcStatus::ReleaseFailed);
+        snapshotAdcResources(snapshot);
+        assert(snapshot.calibrationCount && snapshot.calibrationCleanupPending && snapshot.consumerCount == 1);
+        assert(adcTestTableStorage && !adcTestTableFrees);
+        failCalDelete = false;
+        assert(releaseAdc(a) == AdcStatus::Ok);
+        snapshotAdcResources(snapshot); assert(!snapshot.calibrationCount && !snapshot.consumerCount);
+        assert(!adcTestTableStorage && adcTestTableFrees == 1);
+#else
+        assert(!calibratedAdcVoltage(0, 3, 12, 1000, volts) && std::isnan(volts) && !calCreates);
+#endif
+    }
+    return 0;
+}

@@ -270,7 +270,10 @@ test.describe('Suite-26: deviceControl lifecycle', () => {
       await expect(forward).toBeVisible();
       await forward.click();
       await expect.poll(() => actions.filter(action => action === 'forward').length).toBe(index + 1);
-      await expect(authPage.locator('#dc-motor-run-0')).toHaveText('运行状态未确认');
+      // A command acknowledgement is not physical motion feedback. Keep the
+      // shared motor widget's explicit unconfirmed label and neutral state.
+      await expect(authPage.locator('#dc-motor-run-0')).toHaveText('运动未确认');
+      await expect(authPage.locator('#dc-motor-run-0')).toHaveClass('motor-run-badge motor-run-idle');
       if (index < 2) await authPage.evaluate(() => (window as any).AppState.changePage('dashboard'));
     }
     await authPage.locator('#dc-motor-speed-in-0').fill('25');

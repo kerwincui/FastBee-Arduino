@@ -1,0 +1,35 @@
+{
+  "sources": [
+    {
+      "file": "src/network/handlers/PeripheralRouteHandler.cpp",
+      "rawSha256": "8001a6f8a5844200440111782dfe7aef3b0230b6bc0de0cef7cc1ee99cab7329",
+      "normalizedSha256": "8001a6f8a5844200440111782dfe7aef3b0230b6bc0de0cef7cc1ee99cab7329"
+    },
+    {
+      "file": "src/network/handlers/PeripheralCatalogRoutes.cpp",
+      "rawSha256": "f63e06d2520f94259ccccc2451a6e3a3f6bfda5f371a77d26daecbeba9acdf47",
+      "normalizedSha256": "f63e06d2520f94259ccccc2451a6e3a3f6bfda5f371a77d26daecbeba9acdf47"
+    }
+  ],
+  "sharedNames": [
+    "addDigitalInputParams",
+    "addAnalogInputParams",
+    "addServoParams",
+    "addUartParams",
+    "addEncoderParams",
+    "addGenericPeripheralFields",
+    "addP1PeripheralParams",
+    "addDisplayParams",
+    "addPeripheralDiagnosticCapability"
+  ],
+  "identity": "doc[\"id\"] = config.id;\ndoc[\"name\"] = config.name;\ndoc[\"type\"] = static_cast<int>(config.type);\ndoc[\"typeName\"] = getPeripheralTypeName(config.type);\ndoc[\"category\"] = getCategoryName(getPeripheralCategory(config.type));\ndoc[\"enabled\"] = config.enabled;",
+  "paramBlock": "if (config.type == PeripheralType::UART) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    addUartParams(params, config);\n} else if (config.type == PeripheralType::ENCODER) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    addEncoderParams(params, config);\n} else if (isAnalogInputPeripheral(config.type)) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    // 列表只带常用字段；详细接口再返回校准参数，控制响应体大小。\n    addAnalogInputParams(params, config, false);\n} else if (isDigitalInputPeripheral(config.type)) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    addDigitalInputParams(params, config);\n} else if (config.type == PeripheralType::PWM_SERVO) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    addServoParams(params, config);\n} else if (config.type == PeripheralType::SENSOR_GENERIC ||\n           config.type == PeripheralType::SDIO ||\n           config.type == PeripheralType::DS1302_RTC ||\n           config.type == PeripheralType::LCD1602 ||\n           config.type == PeripheralType::RFID_MFRC522) {\n    JsonObject params = doc[\"params\"].to<JsonObject>();\n    addP1PeripheralParams(params, config);\n}",
+  "secondParams": "if (config.type == PeripheralType::UART) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addUartParams(params, config);\n} else if (config.type == PeripheralType::ENCODER) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addEncoderParams(params, config);\n} else if (isAnalogInputPeripheral(config.type)) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addAnalogInputParams(params, config, false);\n} else if (isDigitalInputPeripheral(config.type)) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addDigitalInputParams(params, config);\n} else if (config.type == PeripheralType::PWM_SERVO) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addServoParams(params, config);\n} else if (config.type == PeripheralType::SENSOR_GENERIC ||\n           config.type == PeripheralType::SDIO ||\n           config.type == PeripheralType::DS1302_RTC ||\n           config.type == PeripheralType::LCD1602 ||\n           config.type == PeripheralType::RFID_MFRC522) {\n    JsonObject params = itemDoc[\"params\"].to<JsonObject>();\n    addP1PeripheralParams(params, config);\n}",
+  "listingSha256": "613e311bfc54ceca267f38a249e047ac95dd810e2c1e35c2464527a58cec9485",
+  "catalogOracleSha256": "34bb0ac13807551c5ddb44a8ebbaf3544e749440a86302a48284bb9c11338f8c",
+  "addedHelpers": {
+    "identity": "#if defined(__clang__)\n__attribute__((noinline))\n#elif defined(__GNUC__)\n__attribute__((noinline, noclone))\n#endif\nvoid addPeripheralListIdentity(JsonDocument& doc, const PeripheralConfig& config) {\n    FastBee::setFixedJsonField(doc, \"id\", config.id);\n    FastBee::setFixedJsonField(doc, \"name\", config.name);\n    FastBee::setFixedJsonField(doc, \"type\", static_cast<int>(config.type));\n    FastBee::setFixedJsonField(doc, \"typeName\", getPeripheralTypeName(config.type));\n    FastBee::setFixedJsonField(doc, \"category\", getCategoryName(getPeripheralCategory(config.type)));\n    FastBee::setFixedJsonField(doc, \"enabled\", config.enabled);\n}",
+    "params": "#if defined(__clang__)\n__attribute__((noinline))\n#elif defined(__GNUC__)\n__attribute__((noinline, noclone))\n#endif\nvoid addPeripheralListParams(JsonDocument& doc, const PeripheralConfig& config) {\n    if (config.type == PeripheralType::UART) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        addUartParams(params, config);\n    } else if (config.type == PeripheralType::ENCODER) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        addEncoderParams(params, config);\n    } else if (isAnalogInputPeripheral(config.type)) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        // 列表只带常用字段；详细接口再返回校准参数，控制响应体大小。\n        addAnalogInputParams(params, config, false);\n    } else if (isDigitalInputPeripheral(config.type)) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        addDigitalInputParams(params, config);\n    } else if (config.type == PeripheralType::PWM_SERVO) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        addServoParams(params, config);\n    } else if (config.type == PeripheralType::SENSOR_GENERIC ||\n               config.type == PeripheralType::SDIO ||\n               config.type == PeripheralType::DS1302_RTC ||\n               config.type == PeripheralType::LCD1602 ||\n               config.type == PeripheralType::RFID_MFRC522) {\n        JsonObject params = doc[\"params\"].to<JsonObject>();\n        addP1PeripheralParams(params, config);\n    }\n}",
+    "copied": "#if defined(__clang__)\n__attribute__((noinline))\n#elif defined(__GNUC__)\n__attribute__((noinline, noclone))\n#endif\nvoid appendCatalogCopiedValues(JsonArray target, std::initializer_list<const char*> values) {\n    // Pointer values intentionally keep the original copied-string policy.\n    for (const char* value : values) target.add(value);\n}"
+  }
+}

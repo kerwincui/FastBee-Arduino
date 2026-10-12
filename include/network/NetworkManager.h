@@ -19,6 +19,7 @@
 #include "core/FeatureFlags.h"
 #include "network/WiFiManager.h"
 #include "network/WiFiRetryPolicy.h"
+#include "network/NetworkTransitionGuard.h"
 #include "network/IPManager.h"
 #include "network/DNSManager.h"
 #if FASTBEE_ENABLE_ETHERNET
@@ -31,7 +32,7 @@
 // 事件回调类型
 typedef std::function<void(NetworkStatus, const String&)> NetworkEventCallback;
 // 网络切换前回调：在销毁网络适配器之前调用，用于停止依赖适配器 Client 的协议（如 MQTT）
-typedef std::function<void()> PreNetworkSwitchCallback;
+using PreNetworkSwitchCallback = FastBee::NetworkProtocolAdmission;
 
 class AsyncWebServer;
 
@@ -87,7 +88,8 @@ public:
      * @param saveToStorage 是否保存到存储
      * @return 更新是否成功
      */
-    bool updateConfig(const WiFiConfig& newConfig, bool saveToStorage = true);
+    bool updateConfig(const WiFiConfig& newConfig, bool saveToStorage = true,
+                      String* resourceError = nullptr);
     
     /**
      * @brief 清除待处理的网络重启标志
@@ -124,7 +126,13 @@ public:
      * @brief 重启网络
      * @return 重启是否成功
      */
-    bool restartNetwork();
+    bool restartNetwork() override;
+    bool networkTransitionAvailable() const { return _networkTransitionLifetime.available(); }
+    // Nonblocking lifetime admission. A held read keeps adapter destruction
+    // and baseline replacement from overlapping worker stack allocation.
+    FastBee::MqttClientLifetime::Read acquireWorkerBudgetBaselineRead() {
+        return FastBee::MqttClientLifetime::Read(_networkTransitionLifetime);
+    }
     
     /**
      * @brief 检查互联网连接
@@ -153,7 +161,7 @@ public:
     /**
      * @brief 设置网络切换前回调
      * @details 在 restartNetwork() 销毁网络适配器之前调用，
-     *          用于停止依赖适配器 Client 指针的协议（如 MQTT），防止 use-after-free
+     *          返回独占租约并持续持有至网络重建结束；空租约延期，禁止销毁适配器。
      * @param callback 回调函数
      */
     void setPreNetworkSwitchCallback(PreNetworkSwitchCallback callback) { _preNetworkSwitchCb = callback; }
@@ -349,8 +357,10 @@ private:
     NetworkEventCallback disconnectionCallback;
     NetworkEventCallback ipConflictCallback;
     PreNetworkSwitchCallback _preNetworkSwitchCb;  // 网络切换前回调（停止 MQTT 等依赖适配器的协议）
+    FastBee::MqttClientLifetime _networkTransitionLifetime;
     
     // 私有方法
+    bool restartNetwork(bool* deferred);
     bool initializeFileSystem();
     bool loadNetworkConfig();
     bool saveNetworkConfig();

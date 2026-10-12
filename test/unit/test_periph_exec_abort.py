@@ -30,6 +30,9 @@ const sandbox = {
   setTimeout,
   clearTimeout,
 };
+sandbox.window = sandbox;
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), sandbox,
+  {filename: process.argv[2]});
 vm.runInNewContext(source, sandbox, { filename: sourcePath });
 
 if (!registeredModule || typeof registeredModule._isPeriphExecEditRetryable !== 'function') {
@@ -56,12 +59,13 @@ class PeriphExecAbortClassificationTests(unittest.TestCase):
 
     def run_classifier(self):
         result = subprocess.run(
-            ["node", "-e", NODE_PROBE, str(MODULE)],
+            ["node", "-e", NODE_PROBE, str(MODULE), str(ROOT / 'web-src/js/utils.js')],
             cwd=ROOT,
-            check=True,
             capture_output=True,
             text=True,
+            timeout=20,
         )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
     def test_generic_abort_error_is_not_retryable(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import importlib.util
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,91 @@ PATCH_SPEC.loader.exec_module(PATCH_MODULE)
 
 
 class LibdepsPatchContractTests(unittest.TestCase):
+    def test_validator_requires_complete_four_file_finite_progress_contract(self):
+        # Local import avoids a cycle: the extraction helper shares PATCH_MODULE.
+        from test.unit.zero_progress_support import copy_web_members, verify_old_fixture
+
+        with tempfile.TemporaryDirectory(prefix="fastbee-finite-validator-") as directory:
+            library = pathlib.Path(directory) / "library"
+            copy_web_members(verify_old_fixture(), library)
+            self.assertTrue(PATCH_MODULE.apply_to_library(library, log=lambda _: None))
+            members = ("ESPAsyncWebServer.h", "WebResponseImpl.h", "WebResponses.cpp", "WebRequest.cpp")
+            complete = [(library / "src" / name).read_text(encoding="utf-8") for name in members]
+            variants = [complete]
+            mutations = [
+                (0, PATCH_MODULE._FINITE_PROGRESS_BASE,
+                    PATCH_MODULE._FINITE_PROGRESS_BASE.replace("    (void)request;\n", "")),
+                (0, PATCH_MODULE._FINITE_PROGRESS_BASE,
+                    PATCH_MODULE._FINITE_PROGRESS_BASE.replace("    return true;\n", "    return false;\n")),
+                (1, "  bool _fastbeeProgressInitialized{false};\n", ""),
+                (1, "  uint32_t _fastbeeLastProgressMs{0};\n", ""),
+                (1, "  size_t _fastbeeObservedWritten{0};\n", ""),
+                (1, "  size_t _fastbeeDrainedHighWater{0};\n", ""),
+                (1, PATCH_MODULE._FINITE_PROGRESS_DECLARATION, ""),
+                (2, "drained > _fastbeeDrainedHighWater", "tcpSpace > 0"),
+                (2, ">= 10000U", ">= 20000U"),
+                (2, "  if (!_fastbeeCheckProgress(request)) return 0;\n", ""),
+                (2, "      if (pcb_written) _fastbeeCheckProgress(request);\n", ""),
+                (2, "    if (payloadlen) _fastbeeCheckProgress(request);\n", ""),
+                (3, PATCH_MODULE._FINITE_REQUEST_CHECK, ""),
+                (3, PATCH_MODULE._FINITE_REQUEST_CHECK,
+                    PATCH_MODULE._FINITE_REQUEST_CHECK.replace("    _client->close();\n", "")),
+                (3, "  std::shared_ptr<AsyncWebServerRequest> self = _this;\n" + PATCH_MODULE._FINITE_REQUEST_CHECK,
+                    PATCH_MODULE._FINITE_REQUEST_CHECK + "  std::shared_ptr<AsyncWebServerRequest> self = _this;\n"),
+            ]
+            for index, before, after in mutations:
+                self.assertIn(before, complete[index])
+                damaged = list(complete)
+                # Basic has the same fields and deadline: retain independent
+                # negative coverage of the existing Abstract contract.
+                marker = {1: 'class AsyncAbstractResponse : public AsyncWebServerResponse',
+                    2: 'bool AsyncAbstractResponse::_fastbeeCheckProgress('}.get(index)
+                start = damaged[index].index(marker) if marker else 0
+                damaged[index] = damaged[index][:start] + damaged[index][start:].replace(before, after, 1)
+                variants.append(damaged)
+                if index in (1, 2) and before in complete[index][:start]:
+                    damaged = list(complete)
+                    damaged[index] = damaged[index][:start].replace(before, after, 1) + damaged[index][start:]
+                    variants.append(damaged)
+            for before in (
+                '    if (pcb_written) _fastbeeCheckProgress(request);\n',
+                'bool AsyncBasicResponse::_fastbeeCheckProgress(AsyncWebServerRequest *request)',
+            ):
+                self.assertIn(before, complete[2])
+                damaged = list(complete)
+                damaged[2] = damaged[2].replace(before, before.replace('_fastbeeCheckProgress', '_removedBasicProgress'), 1)
+                variants.append(damaged)
+            # Every individual old/new file mixture must be rejected as well.
+            fixture = verify_old_fixture()
+            for index, member in enumerate(members):
+                damaged = list(complete)
+                damaged[index] = (fixture / "src" / member).read_text(encoding="utf-8")
+                variants.append(damaged)
+            # Ensure the second callback independently gates timeout recovery.
+            damaged = list(complete)
+            timeout = damaged[3].index("void AsyncWebServerRequest::_onTimeout(uint32_t time)")
+            damaged[3] = damaged[3][:timeout] + damaged[3][timeout:].replace(PATCH_MODULE._FINITE_REQUEST_CHECK, "", 1)
+            variants.append(damaged)
+            javascript = """
+const fs = require('fs');
+const {hasFiniteProgressContract} = require(process.argv[1]);
+const variants = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(variants.map(parts => hasFiniteProgressContract(...parts))));
+"""
+            result = subprocess.run(
+                ["node", "-e", javascript, str(ROOT / "scripts/validate-libdeps-patches.js")],
+                input=json.dumps(variants), capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertEqual([True] + [False] * (len(variants) - 1), json.loads(result.stdout))
+
+    def test_validator_installed_sources_require_finite_progress_gate(self):
+        self.assertIn(
+            "!hasFiniteProgressContract(requestHeaderText, headerText, sourceText, requestSourceText)",
+            VALIDATOR_SCRIPT,
+        )
+        self.assertIn("if (require.main === module) main();", VALIDATOR_SCRIPT)
+
     def test_patch_hook_is_registered_before_build(self):
         self.assertIn("pre:scripts/apply-libdeps-patches.py", PLATFORMIO)
 

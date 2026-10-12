@@ -1,0 +1,468 @@
+// Full production recent-results route. HTTP/auth/history are fixture boundaries.
+// Real AJ7 Arduino String adapter, control serializer, result types and shared sink.
+#include <Arduino.h>
+#undef malloc
+#undef free
+#include <ArduinoJson.h>
+#include "core/PeripheralExecution.h"
+#include "core/NativeOutputControl.h"
+#include "utils/SharedJsonSerializer.h"
+#include "network/JsonFragmentsResponse.h"
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <vector>
+#define F(value) value
+class __FlashStringHelper;
+static const char* activeCase = "";
+#define CHECK(value) do { if (!(value)) { std::cerr << activeCase << ":" << __LINE__ \
+    << ": " << #value << "\n"; std::exit(86); } } while (0)
+
+@PRODUCTION_TYPES@
+
+class RouteAllocator : public ArduinoJson::Allocator {
+public:
+    size_t calls = 0, failures = 0;
+    long failAt = -1;
+    bool persistent = false;
+    std::map<void*, size_t> blocks;
+    bool fail() {
+        const size_t index = calls++;
+        const bool rejected = failAt >= 0 &&
+            (index == static_cast<size_t>(failAt) ||
+             (persistent && index > static_cast<size_t>(failAt)));
+        if (rejected) ++failures;
+        return rejected;
+    }
+    void reset(long at = -1, bool persist = false) {
+        CHECK(blocks.empty()); calls = failures = 0; failAt = at; persistent = persist;
+    }
+    void* allocate(size_t bytes) override {
+        if (fail()) return nullptr;
+        void* result = std::malloc(bytes); CHECK(result);
+        blocks[result] = bytes; return result;
+    }
+    void deallocate(void* pointer) override {
+        if (!pointer) return;
+        CHECK(blocks.erase(pointer) == 1); std::free(pointer);
+    }
+    void* reallocate(void* pointer, size_t bytes) override {
+        auto found = blocks.find(pointer);
+        if (pointer) {
+            CHECK(found != blocks.end());
+            // AJ StringBuilder requires shrinking realloc to succeed.
+            if (bytes <= found->second) return pointer;
+        }
+        if (fail()) return nullptr;
+        void* result = std::realloc(pointer, bytes); CHECK(result);
+        if (pointer) blocks.erase(found);
+        blocks[result] = bytes; return result;
+    }
+} routeAllocator;
+
+namespace FastBee {
+namespace OC = OrdinaryControl;
+@CONTROL_SERIALIZER@
+}
+
+@ROUTE_DEPENDENCIES@
+
+struct FakeParameter {
+    String text;
+    const String& value() const { return text; }
+};
+struct AsyncWebServerRequest {
+    std::map<std::string, FakeParameter> parameters;
+    int status = 0;
+    unsigned sends = 0;
+    std::string type, body;
+    std::string legacyInput;
+    size_t declaredLength = 0, bytesAtSend = 0, errorLiveStringBytes = 0;
+    std::unique_ptr<AsyncAbstractResponse> response;
+    bool hasParam(const char* key) const { return parameters.count(key) != 0; }
+    FakeParameter* getParam(const char* key) { return &parameters.at(key); }
+    void send(int code, const char* contentType, const String& content) {
+        legacyInput.assign(content.c_str(), content.length());
+        recentBodyCopyActive = true;
+        auto* copied = new (std::nothrow) AsyncBasicResponse(code, contentType, content.c_str());
+        recentBodyCopyActive = false;
+        CHECK(copied);
+        send(copied);
+    }
+    void send(AsyncAbstractResponse* owned) {
+        CHECK(owned && !response && owned->_sourceValid());
+        response.reset(owned); status = owned->_code;
+        type.assign(owned->_contentType.c_str(), owned->_contentType.length());
+        declaredLength = owned->_contentLength;
+        bytesAtSend = recentLiveStringBytes(); ++sends;
+    }
+    void drain(size_t chunk = 37) {
+        if (!response) return;
+        uint8_t buffer[137];
+        CHECK(chunk > 0 && chunk <= sizeof(buffer));
+        CHECK(response->_fillBuffer(buffer, 0) == 0);
+        while (body.size() < declaredLength) {
+            const size_t count = response->_fillBuffer(buffer, chunk);
+            CHECK(count > 0 && count <= chunk && body.size() + count <= declaredLength);
+            body.append(reinterpret_cast<char*>(buffer), count);
+            response->_sentLength += count;
+        }
+        CHECK(response->_fillBuffer(buffer, chunk) == 0);
+        response.reset();
+    }
+};
+namespace HandlerUtils {
+void sendWithClose(AsyncWebServerRequest* request, AsyncWebServerResponse* response) {
+    response->addHeader("Connection", "close"); request->send(response);
+}
+}
+struct Context {
+    bool authorized = true;
+    bool requireAuth(AsyncWebServerRequest* request) {
+        if (authorized) return true;
+        sendError(request, 401, "unauthorized"); return false;
+    }
+    void sendError(AsyncWebServerRequest* request, int status, const char* reason) {
+        CHECK(recentLiveArrays == 0 && recentLiveResponses == 0);
+        request->errorLiveStringBytes = recentLiveStringBytes();
+        request->status = status; request->type = "fixture/error";
+        request->body = reason; ++request->sends;
+    }
+};
+class PeriphExecManager {
+public:
+    unsigned reads = 0;
+    std::vector<AsyncExecResult> history;
+    static PeriphExecManager& getInstance() { static PeriphExecManager manager; return manager; }
+    std::vector<AsyncExecResult> getRecentResults() { ++reads; return history; }
+};
+class ActualRoute {
+public:
+    Context* ctx;
+    void handleGetRecentResults(AsyncWebServerRequest*);
+};
+class BeforeRoute {
+public:
+    Context* ctx;
+    void handleGetRecentResults(AsyncWebServerRequest*);
+};
+class ReferenceRoute {
+public:
+    Context* ctx;
+    void handleGetRecentResults(AsyncWebServerRequest*);
+};
+// Reference only: preserve the old complete route, replacing the single broken
+// adapter call with a temporary std::string append. Production does not allocate it.
+void referenceControlAppend(const JsonDocument& control, String& items) {
+    std::string fragment;
+    serializeJson(control, fragment);
+    CHECK(items.concat(fragment.c_str(), static_cast<unsigned int>(fragment.size())));
+}
+
+@PRODUCTION_ROUTES@
+
+void setHistory(unsigned count = 3) {
+    recentTextFault.reset();
+    routeAllocator.reset();
+    auto& manager = PeriphExecManager::getInstance();
+    manager.history.clear(); manager.reads = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        AsyncExecResult result;
+        result.operationId = 101 + i * 101;
+        result.ruleId = String("rule-") + String(i);
+        const char name[] = {'n','a','m','e','"', '\\','\n','\t','\0',1,'Z'};
+        result.ruleName = String(name, sizeof(name));
+        result.status = static_cast<AsyncExecStatus>(i % 7);
+        result.errorCode = static_cast<AsyncExecError>(i % 9);
+        result.queuedAt = 10 + i; result.startTime = 20 + i;
+        result.endTime = i % 2 ? 100 + i : 0;
+        result.deadlineAt = 300 + i;
+        result.peripheralConfigEpoch = 400 + i;
+        result.queuePosition = static_cast<uint8_t>(i);
+        result.asyncExecution = i % 2 != 0;
+        result.reportCount = static_cast<uint8_t>(i + 1);
+        result.actionCount = 4;
+        result.actionTraceCount = static_cast<uint8_t>(i == 2 ? ASYNC_EXEC_ACTION_TRACE_LIMIT + 1 : 2);
+        result.actionTraceTruncated = i == 2;
+        for (size_t a = 0; a < ASYNC_EXEC_ACTION_TRACE_LIMIT; ++a) {
+            auto& action = result.actionTraces[a];
+            action.index = static_cast<uint8_t>(a);
+            action.actionType = static_cast<uint8_t>(a + 10);
+            action.success = a % 2 == 0;
+            action.durationMs = 50 + a;
+            action.detailCount = static_cast<uint8_t>(a + 1);
+            std::snprintf(action.targetPeriphId, sizeof(action.targetPeriphId), "target-%u-%u", i, static_cast<unsigned>(a));
+            std::strcpy(action.valueSummary, "quote\"slash\\line\nvalue");
+            std::strcpy(action.remark, "remark\t\x01");
+        }
+        auto& control = result.ordinaryControlResult;
+        std::snprintf(control.targetId, sizeof(control.targetId), "control-%u", i);
+        control.evaluated = i % 2 == 0;
+        control.reason = "CONTROL_FIXTURE";
+        control.operation = 9007199254740993ULL + i;
+        control.generation = 18446744073709551610ULL + i;
+        control.actor.source = FastBee::OrdinaryControl::Source::Rule;
+        control.phase = FastBee::OrdinaryControl::Phase::Held;
+        control.decision = FastBee::OrdinaryControl::Decision::Conflict;
+        control.holdRemainingMs = 5000 + i;
+        control.attemptKnown = i != 1;
+        control.attempted = false;
+        control.backendOperationId = 600 + i;
+        control.acknowledgedSteps = static_cast<uint16_t>(i);
+        control.accepted = i % 2 == 0;
+        control.cleanupConfirmed = i == 2;
+        manager.history.push_back(result);
+    }
+}
+
+using Parameters = std::map<std::string, std::string>;
+template<class Route>
+AsyncWebServerRequest run(const Parameters& parameters = {}, bool authorized = true, bool deferred = false) {
+    Context context; context.authorized = authorized;
+    AsyncWebServerRequest request;
+    for (const auto& parameter : parameters)
+        request.parameters[parameter.first].text = parameter.second.c_str();
+    Route route{&context};
+    route.handleGetRecentResults(&request);
+    CHECK(routeAllocator.blocks.empty());
+    if (!deferred) request.drain();
+    return request;
+}
+JsonDocument parsed(const AsyncWebServerRequest& response) {
+    JsonDocument document;
+    const auto error = deserializeJson(document, response.body);
+    CHECK(!error);
+    return document;
+}
+void assertUnavailable(const AsyncWebServerRequest& response) {
+    CHECK(response.sends == 1 && response.status == 503);
+    CHECK(response.body == "CONTROL_RESULT_UNAVAILABLE");
+}
+void adapterCase() {
+    static_assert(ARDUINOJSON_ENABLE_ARDUINO_STRING == 1, "real Arduino String adapter required");
+    JsonDocument doc; doc["field"] = 7;
+    String text("prefix-must-not-survive-native-adapter");
+    serializeJson(doc, text);
+    CHECK(text == "{\"field\":7}");
+}
+void beforeReproCase() {
+    setHistory();
+    const auto response = run<BeforeRoute>({{"includeActions", "true"}});
+    CHECK(response.status == 200 && response.sends == 1);
+    JsonDocument document;
+    CHECK(deserializeJson(document, response.body));
+    CHECK(response.body.find("\"operationId\":303") == std::string::npos);
+    CHECK(response.body.find("\"operationId\":202") == std::string::npos);
+    CHECK(response.body.find("\"operationId\":101") == std::string::npos);
+    const auto fixed = run<ActualRoute>({{"includeActions", "true"}});
+    CHECK(fixed.status == 200 && parsed(fixed)["data"].size() == 3);
+}
+void valuesCase() {
+    setHistory(8);
+    const std::vector<Parameters> scenarios = {
+        {}, {{"includeActions","true"}}, {{"includeActions","false"}},
+        {{"operationId","303"}}, {{"operationId","303"},{"includeActions","false"}},
+        {{"operationId","9999"}}, {{"operationId","0"}}, {{"operationId","garbage"}},
+        {{"limit","0"}}, {{"limit","2"}}, {{"limit","99"}},
+        {{"limit","garbage"}}, {{"limit","-9"}}
+    };
+    for (const auto& scenario : scenarios) {
+        const auto expected = run<ReferenceRoute>(scenario);
+        const auto actual = run<ActualRoute>(scenario);
+        CHECK(actual.sends == 1 && actual.status == 200 && actual.type == "application/json");
+        CHECK(actual.body == expected.body);
+        const auto doc = parsed(actual);
+        CHECK(doc["success"] == true && doc["total"] == 8);
+    }
+    setHistory(23);
+    CHECK(parsed(run<ActualRoute>({{"limit","99"}}))["data"].size() == 20);
+    setHistory();
+    const auto response = run<ActualRoute>({{"includeActions","true"}});
+    const auto doc = parsed(response);
+    CHECK(doc["data"].size() == 3);
+    CHECK(doc["data"][0]["operationId"] == 303 && doc["data"][1]["operationId"] == 202 &&
+          doc["data"][2]["operationId"] == 101);
+    CHECK(doc["data"][0]["control"]["targetId"] == "control-2");
+    CHECK(doc["data"][1]["control"]["targetId"] == "control-1");
+    CHECK(doc["data"][0]["control"]["operation"] == "9007199254740995");
+    CHECK(doc["data"][0]["control"]["generation"] == "18446744073709551612");
+    CHECK(doc["data"][1]["control"]["attempted"].isNull());
+    CHECK(doc["data"][0]["control"]["physicalVerified"] == false);
+    CHECK(doc["data"][0]["actions"].size() == ASYNC_EXEC_ACTION_TRACE_LIMIT);
+    CHECK(doc["data"][2]["actions"][0]["value"] == "quote\"slash\\line\nvalue");
+    CHECK(response.body.find("\\u0000\\u0001Z") != std::string::npos);
+    const auto defaultResponse = parsed(run<ActualRoute>());
+    CHECK(defaultResponse["data"][0]["actions"].isNull());
+    const auto selected = parsed(run<ActualRoute>({{"operationId","202"}}));
+    CHECK(selected["data"].size() == 1 && selected["data"][0]["operationId"] == 202);
+    CHECK(selected["data"][0]["actions"].size() == 2);
+    setHistory(0);
+    const auto empty = run<ActualRoute>();
+    CHECK(empty.status == 200 && empty.body == "{\"success\":true,\"total\":0,\"data\":[]}");
+}
+void stringFaultCase() {
+    setHistory();
+    recentTextFault.reset();
+    CHECK(run<ActualRoute>({{"includeActions","true"}}).status == 200);
+    const size_t calls = recentTextFault.calls;
+    CHECK(calls > 100);
+    for (bool persistent : {false, true}) {
+        for (int behavior = 0; behavior < 3; ++behavior) {
+            for (size_t index = 0; index < calls; ++index) {
+                recentTextFault.reset(static_cast<long>(index), persistent,
+                                      behavior > 0, behavior == 2);
+                const auto result = run<ActualRoute>({{"includeActions","true"}});
+                CHECK(recentTextFault.failures > 0);
+                assertUnavailable(result);
+            }
+        }
+    }
+    recentTextFault.reset();
+    CHECK(run<ActualRoute>({{"includeActions","true"}}).status == 200);
+}
+void jsonFaultCase() {
+    setHistory();
+    CHECK(run<ActualRoute>({{"includeActions","true"}}).status == 200);
+    const size_t calls = routeAllocator.calls;
+    CHECK(calls > 3);
+    for (bool persistent : {false, true}) {
+        for (size_t index = 0; index < calls; ++index) {
+            routeAllocator.reset(static_cast<long>(index), persistent);
+            const auto response = run<ActualRoute>({{"includeActions","true"}});
+            CHECK(routeAllocator.failures > 0);
+            assertUnavailable(response);
+        }
+    }
+    routeAllocator.reset();
+    CHECK(run<ActualRoute>().status == 200);
+}
+void authCase() {
+    setHistory();
+    const auto denied = run<ActualRoute>({}, false);
+    CHECK(denied.status == 401 && denied.sends == 1);
+    CHECK(PeriphExecManager::getInstance().reads == 0);
+    CHECK(recentTextFault.calls == 0 && routeAllocator.calls == 0);
+}
+void sendCopyFailureCase() {
+    setHistory();
+    const auto expected = run<ReferenceRoute>({{"includeActions", "true"}}).body;
+    CHECK(!expected.empty());
+    recentBodyCopyFailure = true;
+    const auto broken = run<ReferenceRoute>({{"includeActions", "true"}});
+    CHECK(broken.legacyInput == expected && broken.status == 200 && broken.body.empty());
+    CHECK(broken.declaredLength == 0 && recentBodyCopyFailures > 0);
+    JsonDocument source;
+    CHECK(!deserializeJson(source, broken.legacyInput));
+    CHECK(source["data"].size() == 3);
+    const auto copies = recentBodyCopies;
+    auto fixed = run<ActualRoute>({{"includeActions", "true"}}, true, true);
+    CHECK(fixed.status == 200 && fixed.response && fixed.body.empty());
+    CHECK(fixed.legacyInput.empty() && recentBodyCopies == copies);
+    // The original handler stack and its result snapshot are already gone.
+    PeriphExecManager::getInstance().history.clear();
+    fixed.drain(7);
+    CHECK(fixed.body == expected && fixed.declaredLength == expected.size());
+    recentBodyCopyFailure = false;
+    CHECK(recentLiveArrays == 0 && recentLiveResponses == 0);
+}
+void ownedLifetimeCase() {
+    for (unsigned count : {0u, 3u}) {
+        for (bool cancel : {false, true}) {
+            setHistory(count);
+            const auto expected = run<ReferenceRoute>({{"includeActions", "true"}}).body;
+            auto response = run<ActualRoute>({{"includeActions", "true"}}, true, true);
+            CHECK(response.status == 200 && response.body.empty() && response.response);
+            CHECK(response.declaredLength == expected.size() && response.declaredLength > 0);
+            CHECK(recentLiveArrays == 1 && recentLiveResponses == 1);
+            PeriphExecManager::getInstance().history.clear();
+            response.parameters.clear();
+            CHECK(recentLiveStringBytes() == expected.size() + std::strlen("application/json"));
+            if (cancel) {
+                uint8_t prefix[7];
+                CHECK(response.response->_fillBuffer(prefix, sizeof(prefix)) == sizeof(prefix));
+                CHECK(std::memcmp(prefix, expected.data(), sizeof(prefix)) == 0);
+                response.response.reset();
+            } else {
+                response.drain(1);
+                CHECK(response.body == expected);
+            }
+            CHECK(recentLiveArrays == 0 && recentLiveResponses == 0 && recentLiveStringBytes() == 0);
+        }
+    }
+}
+void responseFaultCase() {
+    for (unsigned count : {0u, 3u}) {
+        for (int fault = 0; fault < 3; ++fault) {
+            setHistory(count);
+            const size_t historyBytes = recentLiveStringBytes();
+            recentResponseFailure = fault == 0;
+            recentArrayFailure = fault == 1;
+            recentFooterFailure = fault == 2;
+            const auto response = run<ActualRoute>({{"includeActions", "true"}});
+            assertUnavailable(response);
+            CHECK(!response.response && recentLiveArrays == 0 && recentLiveResponses == 0);
+            CHECK(response.errorLiveStringBytes == historyBytes + std::strlen("true"));
+            recentResponseFailure = recentArrayFailure = recentFooterFailure = false;
+        }
+        // Fault only one ownership transfer, including after earlier slots moved.
+        for (long index = 0; index < (count ? 3 : 2); ++index) {
+            setHistory(count); recentMoveCalls = 0; recentMoveFailAt = index;
+            const size_t historyBytes = recentLiveStringBytes();
+            const auto response = run<ActualRoute>({{"includeActions", "true"}});
+            assertUnavailable(response);
+            CHECK(response.errorLiveStringBytes == historyBytes + std::strlen("true"));
+            recentMoveFailAt = -1;
+            CHECK(recentLiveArrays == 0 && recentLiveResponses == 0);
+        }
+        CHECK(run<ActualRoute>().status == 200);
+    }
+}
+void ownedFragmentContractCase() {
+    using Response = FastBee::JsonFragmentsResponse;
+    {
+        Response automatic(1);
+        String source("owned");
+        CHECK(!automatic.set(0, std::move(source)) && source == "owned");
+    }
+    {
+        Response response(2, Response::Storage::OwnedStrings);
+        String empty, first("[1"), duplicate("duplicate"), last("]"), beyond("outside");
+        CHECK(!response.set(0, std::move(empty)) && !response._sourceValid());
+        CHECK(!response.set(2, std::move(beyond)) && beyond == "outside");
+        CHECK(response.set(0, std::move(first)) && first.isEmpty());
+        CHECK(!response._sourceValid() && !response.set(0, std::move(duplicate)));
+        CHECK(duplicate == "duplicate");
+        CHECK(response.set(1, std::move(last)) && last.isEmpty() && response._sourceValid());
+        uint8_t bytes[4];
+        CHECK(response._contentLength == 3 && response._fillBuffer(bytes, 4) == 3);
+        CHECK(std::memcmp(bytes, "[1]", 3) == 0 && response._fillBuffer(bytes, 4) == 0);
+    }
+    {
+        Response response(1, Response::Storage::OwnedStrings);
+        response._contentLength = std::numeric_limits<size_t>::max();
+        String value("x");
+        CHECK(!response.set(0, std::move(value)) && value == "x" && !response._sourceValid());
+    }
+    CHECK(recentLiveArrays == 0 && recentLiveResponses == 0);
+}
+int main(int argc, char** argv) {
+    CHECK(argc == 2); activeCase = argv[1];
+    const std::string mode = argv[1];
+    if (mode == "adapter") adapterCase();
+    else if (mode == "before-repro") beforeReproCase();
+    else if (mode == "values") valuesCase();
+    else if (mode == "string-faults") stringFaultCase();
+    else if (mode == "json-faults") jsonFaultCase();
+    else if (mode == "auth") authCase();
+    else if (mode == "send-copy-failure") sendCopyFailureCase();
+    else if (mode == "owned-lifetime") ownedLifetimeCase();
+    else if (mode == "response-faults") responseFaultCase();
+    else if (mode == "owned-fragment-contract") ownedFragmentContractCase();
+    else CHECK(false);
+    std::cout << "PASS " << mode << "\n";
+}

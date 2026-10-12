@@ -485,6 +485,37 @@ test('GENERIC-012: MCU pull and interrupt types cannot select an expander', asyn
   }
 });
 
+test('GENERIC-H1-001: IO form and save use the current firmware interval descriptor', async ({ page }) => {
+  await page.evaluate(() => {
+    const app = (window as any).AppState;
+    const meta = app._periphTypeCatalog.find((type: any) => type.value === 55).driverDescriptors[0];
+    const interval = meta.configFields.find((field: any) => field.key === 'sampleInterval');
+    interval.default = 25; interval.max = 30;
+  });
+  await openType(page, 55);
+  await page.locator('#io-expander-bus-id').selectOption('offline_i2c');
+  await expect(page.locator('#io-expander-interval')).toHaveValue('25');
+  await expect(page.locator('#io-expander-interval')).toHaveAttribute('max', '30');
+  await page.locator('#io-expander-interval').fill('31');
+  await page.locator('#save-peripheral-btn').click();
+  await expect(page.locator('#peripheral-error')).toContainText('采样间隔');
+  expect(await page.evaluate(() => (window as any).__writes.length)).toBe(0);
+});
+
+test('GENERIC-H1-002: missing IO schema preserves input and blocks a write', async ({ page }) => {
+  await openType(page, 55);
+  await page.locator('#io-expander-bus-id').selectOption('offline_i2c');
+  await page.locator('#io-expander-interval').fill('27');
+  await page.evaluate(() => {
+    const app = (window as any).AppState;
+    delete app._periphTypeCatalog.find((type: any) => type.value === 55).driverDescriptors[0].configSchemaVersion;
+  });
+  await page.locator('#save-peripheral-btn').click();
+  await expect(page.locator('#peripheral-error')).toContainText('参数描述');
+  await expect(page.locator('#io-expander-interval')).toHaveValue('27');
+  expect(await page.evaluate(() => (window as any).__writes.length)).toBe(0);
+});
+
 test('GENERIC-007: logical expander outputs exclude PWM and breathing actions', async ({ page }) => {
   await page.evaluate(() => {
     const app = (window as any).AppState;

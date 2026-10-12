@@ -461,8 +461,8 @@ function testAbandonedOwnerRecovery(worker, projectRoot, tempRoot) {
     ]);
 }
 
-function testConfigDryRunRestoration(tempRoot) {
-    const projectRoot = path.join(tempRoot, 'config-dry-run-project');
+function testConfigDryRunRestoration(tempRoot, withoutHashCommand = false) {
+    const projectRoot = path.join(tempRoot, withoutHashCommand ? 'config-dry-run-no-filehash-project' : 'config-dry-run-project');
     const scriptsDir = path.join(projectRoot, 'scripts');
     const configDir = path.join(projectRoot, 'data', 'config');
     fs.mkdirSync(scriptsDir, { recursive: true });
@@ -475,16 +475,26 @@ function testConfigDryRunRestoration(tempRoot) {
     delete env.FASTBEE_STA_SSID;
     delete env.FASTBEE_STA_PASSWORD;
     delete env.PSModulePath;
+    let entrypoint = path.join(scriptsDir, 'deploy-config-bundle.ps1');
+    if (withoutHashCommand) {
+        const wrapper = path.join(projectRoot, 'without-filehash.ps1');
+        fs.writeFileSync(wrapper, [
+            "function global:Get-FileHash { throw 'Get-FileHash deliberately unavailable' }",
+            "& '" + entrypoint.replace(/'/g, "''") + "' @args",
+            'exit $LASTEXITCODE'
+        ].join('\n'), 'utf8');
+        entrypoint = wrapper;
+    }
     const result = spawnSync(POWERSHELL, [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(scriptsDir, 'deploy-config-bundle.ps1'),
+        '-File', entrypoint,
         '-Env', 'esp32c3-F4R0',
         '-Port', 'COM99',
-        '-BundlePath', path.join(ROOT, 'docs', 'esp32c3-deployment-config.json'),
+        '-BundlePath', path.join(ROOT, 'docs', 'device-test-configs', 'com4-esp32c3-f4r0', 'config'),
         '-DryRun'
     ], { cwd: projectRoot, env, windowsHide: true, encoding: 'utf8', timeout: PROCESS_TIMEOUT_MS });
-    assertSuccess(result, 'configuration dry-run restoration');
+    assertSuccess(result, withoutHashCommand ? 'configuration dry-run without Get-FileHash' : 'configuration dry-run restoration');
     assert.deepEqual(snapshotDirectory(configDir), before,
         'configuration dry-run must restore the exact original file set and bytes');
     assert.ok(!fs.existsSync(path.join(projectRoot, '.pio', 'locks', 'firmware-build.owner.json')),
@@ -524,6 +534,7 @@ async function main() {
         testAbandonedOwnerRecovery(worker, projectRoot, tempRoot);
         await testLiveOwnerTimeout(worker, projectRoot, tempRoot);
         testConfigDryRunRestoration(tempRoot);
+        testConfigDryRunRestoration(tempRoot, true);
         testCommandWrapper(tempRoot);
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });

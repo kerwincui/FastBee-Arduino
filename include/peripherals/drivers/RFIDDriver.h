@@ -15,18 +15,23 @@
  *   - 检测到新卡时触发 EVENT_RFID_CARD_DETECTED 事件
  *   - 卡片移除时触发 EVENT_RFID_CARD_REMOVED 事件
  * 
- * 接线（ESP32-S3 默认 SPI）：
- *   - SDA/SS: 可配置（默认 GPIO5）
- *   - SCK:    GPIO18
- *   - MOSI:   GPIO23
- *   - MISO:   GPIO19
- *   - RST:    可配置（默认 GPIO27）
+ * 接线必须按实际板卡预检；未显式填写的总线脚使用编译板型的
+ * SCK/MOSI/MISO 常量，不代表所有 ESP32/S3 载板有通用接线。
  * 
  * 编译条件：FASTBEE_ENABLE_RFID=1
  */
 class RFIDDriver {
 public:
     static RFIDDriver& getInstance();
+    struct Status {
+        bool initialized = false;
+        bool cardPresent = false;
+        String uid;
+        String cardType;
+        String lastError;
+    };
+    // Nonblocking coherent snapshot; failure leaves the supplied snapshot intact.
+    bool getStatus(Status& status, String& errorMsg) const;
 
     /**
      * @brief 初始化 RFID 读卡器
@@ -48,14 +53,14 @@ public:
      * @brief 获取最近检测到的卡片 UID（十六进制字符串）
      * @return UID 字符串（如 "A1B2C3D4"），无卡时返回空串
      */
-    String getLastUID() const { return _lastUID; }
-    String getLastCardType() const { return _lastCardType; }
-    String getLastError() const { return _lastError; }
+    String getLastUID() const;
+    String getLastCardType() const;
+    String getLastError() const;
 
     /**
      * @brief 卡片是否当前在感应范围内
      */
-    bool isCardPresent() const { return _cardPresent; }
+    bool isCardPresent() const;
 
     bool scanNow(String& uid, String& cardType, String& errorMsg);
     bool readBlock(uint8_t block, const uint8_t key[6], uint8_t data[16],
@@ -66,9 +71,10 @@ public:
     /**
      * @brief 停止 RFID 驱动
      */
-    void stop();
+    // Failure leaves the reader/lease intact; caller must not release its pins.
+    bool stop(String* errorMsg = nullptr);
 
-    bool isInitialized() const { return _initialized; }
+    bool isInitialized() const;
 
 private:
     RFIDDriver() = default;
@@ -85,12 +91,16 @@ private:
     uint8_t _sckPin = 255;
     uint8_t _mosiPin = 255;
     uint8_t _misoPin = 255;
+    uint8_t _ssPin = 255;
+    uint8_t _rstPin = 255;
     unsigned long _lastCheckTime = 0;
     unsigned long _cardDetectedTime = 0;
 
     static constexpr unsigned long CHECK_INTERVAL_MS = 200;        // 轮询间隔
     static constexpr unsigned long CARD_TIMEOUT_MS = 1000;         // 卡片超时（认为移除）
 
+    // All mutable state and hardware operations use SpiBusOperation. Private
+    // helpers require that lock; rule callbacks must run after it is released.
     bool selectCard(String& errorMsg);
     bool authenticateBlock(uint8_t block, const uint8_t key[6], String& errorMsg);
     void finishCardOperation();

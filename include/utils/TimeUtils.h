@@ -57,9 +57,10 @@ public:
     /**
      * @brief 同步NTP时间
      * @param timeout 超时时间（毫秒）
-     * @return 同步是否成功
+     * @param afterSequence 本次配置 SNTP 前捕获的时间来源序号
+     * @return 是否观察到新的、尚未失鲜的同步；已有合理时间不算新同步
      */
-    static bool syncNTP(unsigned long timeout = 10000);
+    static bool syncNTP(unsigned long timeout = 10000, uint32_t afterSequence = UINT32_MAX);
     
     /**
      * @brief 通过 HTTP 接口同步时间（支持 FastBee NTP HTTP 接口）
@@ -73,7 +74,7 @@ public:
     /**
      * @brief 通过 HTTP 接口同步时间并返回计算后的毫秒时间戳
      * @param url HTTP/HTTPS NTP 服务器 URL
-     * @param outTimestampMs 输出：计算后的服务器时间（毫秒，Unix时间戳）
+     * @param outTimestampMs 输出：系统设时成功后的估算 Unix 毫秒；失败清零
      * @param timeout 超时时间（毫秒）
      * @return 同步是否成功
      */
@@ -89,7 +90,7 @@ public:
      * @brief 获取当前时间戳（毫秒）
      * @return 毫秒时间戳
      */
-    static unsigned long getTimestampMs();
+    static uint64_t getTimestampMs();
     
     /**
      * @brief 获取系统运行时间（毫秒）
@@ -116,7 +117,8 @@ public:
      * @brief 解析时间字符串
      * @param timeString 时间字符串
      * @param format 时间格式
-     * @return 时间戳
+     * @return 时间戳；格式/日期/转换无效返回 0。ISO8601 只接受 UTC Z，
+     *         HUMAN_READABLE 接受完整本地日期时间；RFC822 暂不提供解析。
      */
     static time_t parseTime(const String& timeString, TimeFormat format = ISO8601);
     
@@ -136,7 +138,7 @@ public:
     
     /**
      * @brief 获取当前时区
-     * @return 时区配置
+     * @return 当前有效分钟偏移快照（含当时夏令时的影响，dst=false）；name 保留 TZ 描述，非完整季节规则
      */
     static TimeZone getCurrentTimeZone();
     

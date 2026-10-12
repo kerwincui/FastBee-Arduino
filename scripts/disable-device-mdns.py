@@ -236,7 +236,7 @@ def main():
                   firmwareSha256=expected_sha, filesystemOffset=FS_OFFSET,
                   filesystemBytes=FS_BYTES, resetRequested=False, sourceHashes=inputs)
     esp = None
-    sys.path.insert(0, 'C:/Users/kerwin/.platformio/packages/tool-esptoolpy')
+    sys.path.insert(0, str(Path.home() / '.platformio/packages/tool-esptoolpy'))
     try:
         from esptool.cmds import detect_chip, attach_flash, write_flash
         esp = detect_chip(port=args.port)

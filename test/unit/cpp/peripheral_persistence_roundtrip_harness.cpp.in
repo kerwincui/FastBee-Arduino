@@ -1,0 +1,558 @@
+// Actual serializer/parser/save/load bodies. No device, output, driver or SDK I/O.
+#include <Arduino.h>
+#undef malloc
+#undef free
+#include <ArduinoJson.h>
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include <LittleFS.h>
+#include "core/PeripheralConfig.h"
+#include "core/ResourceProfile.h"
+#include "core/H1ParameterContract.h"
+#include "core/RtcBootSeedConfig.h"
+#include "network/FixedJsonField.h"
+#include "PeripheralManagerConfigHelpers.h"
+#include <cassert>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+static std::string activeCase;
+#define CHECK(expression) do { if (!(expression)) { \
+    std::cerr << activeCase << ":" << __LINE__ << ": " << #expression << '\n'; \
+    std::exit(1); } } while (0)
+using namespace FastBee::PeripheralManagerConfigDetail;
+inline void convertToJson(const String& value, JsonVariant out) { out.set(std::string(value)); }
+inline void convertFromJson(JsonVariantConst value, String& out) { out = value.as<std::string>(); }
+template <class... Values> void discardLog(const Values&...) {}
+#define LOG_WARNINGF(...) discardLog(__VA_ARGS__)
+#define LOG_ERRORF(...) discardLog(__VA_ARGS__)
+#define LOG_DEBUGF(...) discardLog(__VA_ARGS__)
+#define LOG_INFOF(...) discardLog(__VA_ARGS__)
+#define LOG_ERROR(...) discardLog(__VA_ARGS__)
+#define LOG_WARNING(...) discardLog(__VA_ARGS__)
+#define LOG_INFO(...) discardLog(__VA_ARGS__)
+struct { void warning(const char*) {} } LOGGER;
+
+// The proposed scalar patch does not change these delegated serializers.
+// Fail closed if the matrix accidentally enters an untested delegate.
+namespace FastBee {
+void serializeSensorConfig(JsonObject, const PeripheralConfig&) { CHECK(false); }
+bool parseSensorConfig(JsonObjectConst, PeripheralConfig&, String&) { CHECK(false); return false; }
+void serializePca9685Config(JsonObject, const PeripheralConfig&) { CHECK(false); }
+bool parsePca9685Config(JsonObjectConst, PeripheralConfig&, String&) { CHECK(false); return false; }
+}
+
+struct TraceAllocator : ArduinoJson::Allocator {
+    static constexpr size_t never = std::numeric_limits<size_t>::max();
+    std::map<void*, size_t> blocks;
+    std::vector<std::string> events;
+    size_t growthCalls = 0, failures = 0, failAt = never;
+    bool transient = false;
+    void configure(size_t point = never, bool oneFailure = false) {
+        CHECK(blocks.empty());
+        events.clear(); growthCalls = failures = 0; failAt = point; transient = oneFailure;
+    }
+    bool reject(const char* kind, size_t bytes) {
+        const size_t call = growthCalls++;
+        const bool fail = transient ? call == failAt : call >= failAt;
+        events.push_back(std::string(kind) + std::to_string(bytes) + (fail ? ":fail" : ":ok"));
+        failures += fail ? 1 : 0;
+        return fail;
+    }
+    void* allocate(size_t bytes) override {
+        if (reject("allocate:", bytes)) return nullptr;
+        void* result = std::malloc(bytes);
+        CHECK(result != nullptr);
+        blocks[result] = bytes;
+        return result;
+    }
+    void deallocate(void* pointer) override {
+        if (!pointer) return;
+        auto found = blocks.find(pointer); CHECK(found != blocks.end());
+        events.push_back("free:" + std::to_string(found->second));
+        blocks.erase(found); std::free(pointer);
+    }
+    void* reallocate(void* pointer, size_t bytes) override {
+        auto found = blocks.find(pointer);
+        if (pointer) CHECK(found != blocks.end());
+        // ArduinoJson shrinkToFit assumes shrinking realloc succeeds. Retain
+        // valid physical storage instead of injecting an invalid shrink fault.
+        if (pointer && bytes <= found->second) {
+            events.push_back("shrink:" + std::to_string(bytes));
+            return pointer;
+        }
+        if (reject("reallocate:", bytes)) return nullptr;
+        if (pointer) blocks.erase(found);
+        void* result = std::realloc(pointer, bytes);
+        CHECK(result != nullptr);
+        blocks[result] = bytes;
+        return result;
+    }
+};
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string result = "object{";
+        for (JsonPairConst field : object) {
+            result += std::string(field.key().c_str(), field.key().size());
+            result += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            result += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return result + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string result = "array[";
+        for (JsonVariantConst value : array) result += ArduinoJson::detail::accept(value, *this) + ";";
+        return result + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template <class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        CHECK(false); return "unsupported";
+    }
+};
+
+namespace {
+@SERIALIZERS_AND_PARSER@
+}
+
+static TraceAllocator persistenceAllocator;
+static bool lastDocumentOverflow = false;
+static size_t documentsCreated = 0;
+struct PersistenceDocument : JsonDocument {
+    PersistenceDocument() : JsonDocument(&persistenceAllocator) { ++documentsCreated; }
+    ~PersistenceDocument() { lastDocumentOverflow = overflowed(); }
+};
+// Same JsonDocument implementation; only its allocator is controlled. This
+// macro is defined after production headers, immediately before copied bodies.
+#define FastBeeJsonDocLarge PersistenceDocument
+
+static bool lockAvailable = true, failCommit = false;
+struct RecursiveMutexGuard {
+    explicit RecursiveMutexGuard(int, unsigned = 0) {}
+    bool isLocked() const { return lockAvailable; }
+};
+#ifndef pdMS_TO_TICKS
+#define pdMS_TO_TICKS(value) (value)
+#endif
+static constexpr const char* PERIPHERAL_CONFIG_FILE = "/config/peripherals.json";
+static const std::string temporaryPath = std::string(PERIPHERAL_CONFIG_FILE) + ".tmp";
+struct FileUtils {
+    static inline size_t opens = 0, commits = 0;
+    static File openAtomicWrite(const String& path) {
+        ++opens;
+        return LittleFS.open(path + ".tmp", "w");
+    }
+    static bool commitAtomicWrite(const String& from, const String& to) {
+        ++commits;
+        if (failCommit) return false;
+        auto source = LittleFS.files.find(std::string(from));
+        if (source == LittleFS.files.end()) return false;
+        LittleFS.files[std::string(to)] = source->second;
+        LittleFS.files.erase(source);
+        return true;
+    }
+};
+
+// The real JSON and manager control flow run; hardware validation and graph
+// publication are observable seams. No driver initialization is linked.
+struct ManagerState {
+    int _mutex = 0;
+    bool _configurationImportPending = false;
+    bool outputClaimed = false, ordinaryClaimed = false;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, PeripheralRuntimeState> runtimeStates;
+    std::map<uint8_t, String> pinToPeripheral;
+    std::map<String, int> actionTickers;
+    size_t validations = 0, dependencies = 0, invalidations = 0, mappings = 0, rebuilds = 0;
+    bool controlOutputIsClaimed() const { return outputClaimed; }
+    bool ordinaryDigitalClaimedLocked(const String&) const { return ordinaryClaimed; }
+    void invalidateSensorConfigurationLocked() { ++invalidations; }
+    bool validateConfig(const PeripheralConfig&, String& error) { ++validations; error = ""; return true; }
+    bool validateIoDependencies(const PeripheralConfig&, const String&, String& error) {
+        ++dependencies; error = ""; return true;
+    }
+    void updatePinMapping(const String&, const PeripheralConfig&) { ++mappings; }
+    void rebuildPinMapping() { ++rebuilds; }
+};
+struct PeripheralManager : ManagerState { bool saveConfiguration(); bool loadConfiguration(); };
+struct OracleManager : ManagerState { bool saveConfiguration(); bool loadConfiguration(); };
+struct DraftManager : ManagerState { bool saveConfiguration(); bool loadConfiguration(); };
+
+@PRODUCTION_SAVE_LOAD_METHODS@
+#undef FastBeeJsonDocLarge
+
+using Serializer = void (*)(JsonObject, const PeripheralConfig&);
+struct ConfigurationCase { std::string name; PeripheralConfig config; };
+static std::vector<ConfigurationCase> cases() {
+    std::vector<ConfigurationCase> result;
+    auto add = [&](const char* name, PeripheralType type) -> PeripheralConfig& {
+        ConfigurationCase item; item.name = name; item.config.type = type;
+        item.config.id = String(std::string("p-") + name);
+        item.config.name = String(std::string("name-\"\\\n-") + std::string(24, 'x') + name);
+        item.config.enabled = true; item.config.pinCount = 2;
+        item.config.pins[0] = 4; item.config.pins[1] = 7;
+        result.push_back(item); return result.back().config;
+    };
+    { auto& c = add("uart-default", PeripheralType::UART); initializeUartDefaults(c); }
+    { auto& c = add("uart-unsigned", PeripheralType::UART); initializeUartDefaults(c);
+      c.params.uart.baudRate = 0xffffffffU; c.params.uart.dataBits = 7;
+      c.params.uart.stopBits = 2; c.params.uart.parity = 2; }
+    { auto& c = add("encoder", PeripheralType::ENCODER); initializeEncoderDefaults(c);
+      c.params.encoder.resolution = 4096; c.params.encoder.useInterrupt = false; }
+    { auto& c = add("i2c", PeripheralType::I2C); c.params.i2c.frequency = 400000;
+      c.params.i2c.address = 35; c.params.i2c.isMaster = false; }
+    { auto& c = add("spi", PeripheralType::SPI); c.params.spi.frequency = 32000000;
+      c.params.spi.mode = 3; c.params.spi.msbFirst = false; }
+    { auto& c = add("servo-default", PeripheralType::PWM_SERVO); initializeServoDefaults(c); }
+    { auto& c = add("servo-signed", PeripheralType::PWM_SERVO); initializeServoDefaults(c);
+      c.params.servo.frequency = 60; c.params.servo.minPulse = 600; c.params.servo.maxPulse = 2300;
+      c.params.servo.minAngle = -80; c.params.servo.maxAngle = 100; c.params.servo.initialAngle = -30;
+      c.params.servo.pwmChannel = 3; c.params.servo.pwmResolution = 12;
+      c.params.servo.inverted = true; c.params.servo.releaseAfterMove = true; }
+    { auto& c = add("gpio-default", PeripheralType::GPIO_DIGITAL_OUTPUT); c.enabled = false; }
+    { auto& c = add("gpio-ao", PeripheralType::GPIO_ANALOG_OUTPUT);
+      c.params.gpio.initialState = GPIOState::STATE_HIGH; c.params.gpio.pwmChannel = 2;
+      c.params.gpio.pwmFrequency = 45000; c.params.gpio.pwmResolution = 12;
+      c.params.gpio.defaultDuty = 2345; c.params.gpio.passive = true;
+      c.params.gpio.aoMode = true; c.params.gpio.aoMinPct = 5; c.params.gpio.aoMaxPct = 95; }
+    { auto& c = add("gpio-di", PeripheralType::GPIO_DIGITAL_INPUT_PULLUP);
+      c.params.gpio.inputMode = static_cast<uint8_t>(DigitalInputMode::PULL_UP);
+      c.params.gpio.invertLogic = true; c.params.gpio.debounceMs = 65;
+      c.params.gpio.reportMode = static_cast<uint8_t>(DigitalReportMode::EVENT_ONLY);
+      copyPeripheralConfigText(c.params.gpio.pairedInputId, "peer-long-configuration-reference");
+      c.params.gpio.pairDebounceMs = 250; }
+    { auto& c = add("gpio-expander", PeripheralType::GPIO_DIGITAL_OUTPUT); c.pinCount = 0;
+      c.params.gpio.ioSource = 1; c.params.gpio.channel = 7; c.params.gpio.invertLogic = true;
+      copyPeripheralConfigText(c.params.gpio.providerId, "provider-long-reference"); }
+    { auto& c = add("io-expander", PeripheralType::IO_EXPANDER); c.pinCount = 0;
+      copyPeripheralConfigText(c.params.ioExpander.driver, "MCP23017");
+      copyPeripheralConfigText(c.params.ioExpander.busPeripheralId, "shared-bus-long-reference");
+      copyPeripheralConfigText(c.params.ioExpander.resetPeripheralId, "reset-long-reference");
+      c.params.ioExpander.address = 38; c.params.ioExpander.sampleInterval = 75; }
+    { auto& c = add("adc-default", PeripheralType::ADC); initializeAdcDefaults(c); }
+    { auto& c = add("adc-calibrated", PeripheralType::GPIO_ANALOG_INPUT); initializeAdcDefaults(c);
+      auto& a = c.params.adc; a.attenuation = 2; a.resolution = 11; a.sampleRate = 550;
+      a.sampleCount = 8; a.filterMode = 1; a.signalMode = static_cast<uint8_t>(AnalogSignalMode::CUSTOM);
+      a.conversionEnabled = a.clampEnabled = a.calibratedVoltage = true; a.decimalPlaces = 4;
+      a.inputMin = -0.25f; a.inputMax = 3.5f; a.engineeringMin = -32.0f; a.engineeringMax = 123.5f;
+      a.engineeringOffset = 1.25f; a.vRef = 3.25f; a.voltageRatio = 2.5f;
+      a.shuntResistance = 150.0f; a.inputGain = 1.5f; a.inputOffset = -0.5f;
+      a.rawMin = 13; a.rawMax = 2000; }
+    { auto& c = add("dac", PeripheralType::DAC); c.params.dac.channel = 2; }
+    { auto& c = add("stepper", PeripheralType::STEPPER_MOTOR);
+      c.params.stepper.stepsPerRevolution = 3200; c.params.stepper.speed = 18; }
+    { auto& c = add("sd", PeripheralType::SDIO); initializeSdCardDefaults(c);
+      c.params.sdcard.interface = 0; c.params.sdcard.frequency = 16000000; }
+    { auto& c = add("rtc", PeripheralType::DS1302_RTC); initializeDs1302Defaults(c);
+      c.params.ds1302.use24Hour = false; c.params.ds1302.trickleCharge = 0xa5; }
+    { auto& c = add("rtc-boot", PeripheralType::DS1302_RTC); initializeDs1302Defaults(c);
+      c.params.ds1302.bootSeed = true; c.params.ds1302.utcOffsetMinutes = 480; }
+    { auto& c = add("rtc-offset", PeripheralType::DS1302_RTC); initializeDs1302Defaults(c);
+      c.params.ds1302.utcOffsetMinutes = -840; }
+    { auto& c = add("lcd1602", PeripheralType::LCD1602); initializeLcd1602Defaults(c);
+      c.params.lcd1602.cols = 20; c.params.lcd1602.rows = 4; c.params.lcd1602.address = 39;
+      c.params.lcd1602.backlight = false; }
+    { auto& c = add("rfid", PeripheralType::RFID_MFRC522); initializeRfidDefaults(c);
+      c.params.rfid.frequency = 2000000; }
+    { auto& c = add("lcd", PeripheralType::LCD); c.params.lcd.width = 128;
+      c.params.lcd.height = 64; c.params.lcd.interface = 2; c.params.lcd.contrast = 83; }
+    { auto& c = add("display", PeripheralType::SCREEN_DISPLAY); initializeDisplayDefaults(c); c.pinCount = 0;
+      auto& d = c.params.display; copyPeripheralConfigText(d.backend, "rgb");
+      copyPeripheralConfigText(d.driver, "st7701"); copyPeripheralConfigText(d.touchBackend, "gt911");
+      copyPeripheralConfigText(d.controlBackend, "ch32v003"); d.width = 480; d.height = 480;
+      d.rotation = 3; d.colorDepth = 16; d.bufferLines = 40; d.brightness = 129;
+      d.backlightChannel = 2; d.backlightActiveHigh = false; d.spiFrequency = 30000000;
+      d.i2cFrequency = 100000; d.rgbFrequency = 12000000; d.hsyncFrontPorch = 8;
+      d.hsyncPulseWidth = 4; d.hsyncBackPorch = 12; d.vsyncFrontPorch = 6;
+      d.vsyncPulseWidth = 2; d.vsyncBackPorch = 9; d.hsyncIdleLow = true;
+      d.vsyncIdleLow = true; d.pclkActiveNeg = true; d.controlAddress = 34;
+      d.controlResetMask = 1; d.controlBacklightMask = 2; d.controlEnableMask = 4;
+      d.controlBuzzerMask = 8; d.touchBuzzerDurationMs = 60; d.controlInactiveMask = 16;
+      d.controlTouchIntMask = 32; d.mosi = 11; d.sclk = 12; d.cs = -1; d.dc = 9;
+      d.rst = 10; d.backlight = -1; d.touchSda = 4; d.touchScl = 5;
+      d.touchInt = -1; d.touchRst = -1; d.rgbDe = 38; d.rgbVsync = 39;
+      d.rgbHsync = 40; d.rgbPclk = 41; d.controlSda = 4; d.controlScl = 5;
+      for (int i = 0; i < 16; ++i) d.rgbDataPins[i] = static_cast<int8_t>(i + 16); }
+    { auto& c = add("segment", PeripheralType::SEVEN_SEGMENT_TM1637); c.params.segment.brightness = 7; }
+    { auto& c = add("neopixel", PeripheralType::NEO_PIXEL); c.params.neopixel.count = 3;
+      c.params.neopixel.brightness = 123; }
+    { auto& c = add("rf", PeripheralType::RF_MODULE); c.params.rf.mode = RF_MODE_RX;
+      c.params.rf.pulseWidth = 750; c.params.rf.repeat = 11; c.params.rf.bitLength = 32;
+      c.params.rf.activeHigh = false; }
+    { auto& c = add("radar", PeripheralType::RADAR_SENSOR); c.params.radar.mode = RADAR_MODE_DIGITAL;
+      c.params.radar.activeHigh = false; c.params.radar.debounceMs = 105; c.params.radar.holdMs = 7654; }
+    for (const auto& item : result) {
+        CHECK(item.config.id.length() <= FastBee::ResourceProfile::MAX_PERIPHERAL_ID_LEN);
+        CHECK(item.config.name.length() <= FastBee::ResourceProfile::MAX_PERIPHERAL_NAME_LEN);
+    }
+    return result;
+}
+
+struct SerializationResult {
+    std::string bytes, shape;
+    bool overflow = false;
+    size_t growthCalls = 0, failures = 0;
+    std::vector<std::string> events;
+    bool operator==(const SerializationResult& other) const {
+        return bytes == other.bytes && shape == other.shape && overflow == other.overflow &&
+               growthCalls == other.growthCalls && failures == other.failures && events == other.events;
+    }
+};
+static SerializationResult serializeProbe(Serializer serializer, const PeripheralConfig& config,
+        int seed = 0, size_t failAt = TraceAllocator::never, bool transient = false) {
+    TraceAllocator allocator; allocator.configure(failAt, transient);
+    SerializationResult result;
+    {
+        JsonDocument document(&allocator);
+        JsonObject object = seed == 2 ? JsonObject() : document.to<JsonObject>();
+        if (seed == 1) {
+            object["prior"] = 17; object["id"] = "old-id-to-overwrite";
+            object["params"]["old"] = "old-value-to-clear";
+        }
+        serializer(object, config);
+        serializeJson(document, result.bytes);
+        Shape shape; result.shape = ArduinoJson::detail::accept(document.as<JsonVariantConst>(), shape);
+        result.overflow = document.overflowed();
+    }
+    CHECK(allocator.blocks.empty());
+    result.growthCalls = allocator.growthCalls; result.failures = allocator.failures;
+    result.events = allocator.events;
+    return result;
+}
+static void compareSerializers(bool failures) {
+    for (const auto& item : cases()) {
+        for (int seed = 0; seed < 3; ++seed) {
+            activeCase = item.name + ":seed=" + std::to_string(seed);
+            const auto baseline = serializeProbe(serializePersistedPeripheralOracle, item.config, seed);
+            CHECK(!baseline.overflow);
+            CHECK(serializeProbe(serializePersistedPeripheral, item.config, seed) == baseline);
+            CHECK(serializeProbe(serializePersistedPeripheralDraft, item.config, seed) == baseline);
+            if (!failures) continue;
+            for (bool transient : {false, true}) for (size_t limit = 0; limit < baseline.growthCalls; ++limit) {
+                activeCase = item.name + ":oom=" + std::to_string(limit) + ":seed=" + std::to_string(seed);
+                const auto expected = serializeProbe(serializePersistedPeripheralOracle, item.config, seed, limit, transient);
+                CHECK(expected.failures > 0);
+                CHECK(serializeProbe(serializePersistedPeripheral, item.config, seed, limit, transient) == expected);
+                CHECK(serializeProbe(serializePersistedPeripheralDraft, item.config, seed, limit, transient) == expected);
+            }
+        }
+    }
+}
+
+static const std::string originalBytes = "{\"previousConfiguration\":\"preserve-me\"}";
+static void resetStorage(size_t failAt = TraceAllocator::never, bool transient = false) {
+    CHECK(persistenceAllocator.blocks.empty());
+    persistenceAllocator.configure(failAt, transient);
+    LittleFS = HistoryFileSystem{};
+    LittleFS.files[PERIPHERAL_CONFIG_FILE] = originalBytes;
+    FileUtils::opens = FileUtils::commits = documentsCreated = 0;
+    lastDocumentOverflow = false; lockAvailable = true; failCommit = false;
+    ESP.setFreeHeap(1024 * 1024);
+}
+template <class Manager> static void populate(Manager& manager, const PeripheralConfig& config) {
+    manager.peripherals[config.id] = config;
+    PeripheralConfig modbus; modbus.id = "must-not-persist-modbus";
+    modbus.name = "protocol.json-owned"; modbus.type = PeripheralType::MODBUS_DEVICE;
+    manager.peripherals[modbus.id] = modbus;
+    CHECK(!manager._configurationImportPending);
+}
+static std::string oracleFile(const PeripheralConfig& config) {
+    JsonDocument document;
+    auto object = document["peripherals"].to<JsonArray>().add<JsonObject>();
+    serializePersistedPeripheralOracle(object, config);
+    CHECK(!document.overflowed());
+    std::string bytes; serializeJson(document, bytes); return bytes;
+}
+template <class Manager> static void saveLoadOne(const ConfigurationCase& item, Serializer serializer) {
+    activeCase = item.name + ":non-pending-save-load";
+    resetStorage(); Manager writer; populate(writer, item.config);
+    const auto before = serializeProbe(serializePersistedPeripheralOracle, item.config);
+    CHECK(writer.saveConfiguration());
+    CHECK(documentsCreated == 1 && persistenceAllocator.growthCalls > 0 && !lastDocumentOverflow);
+    CHECK(FileUtils::opens == 1 && LittleFS.writeOpens == 1 && FileUtils::commits == 1);
+    CHECK(!writer._configurationImportPending);
+    CHECK(LittleFS.files.at(PERIPHERAL_CONFIG_FILE) == oracleFile(item.config));
+    CHECK(LittleFS.files.count(temporaryPath) == 0);
+    CHECK(writer.peripherals.size() == 2);
+    JsonDocument stored;
+    CHECK(!deserializeJson(stored, LittleFS.files.at(PERIPHERAL_CONFIG_FILE)));
+    CHECK(stored["peripherals"].size() == 1);
+    auto entry = stored["peripherals"][0].as<JsonObject>();
+    CHECK(entry["id"].is<const char*>() && entry["enabled"].is<bool>() && entry["type"].is<int>());
+    PeripheralConfig parsed; String error;
+    CHECK(parsePersistedPeripheral(entry, parsed, error) && error.isEmpty());
+    const auto parsedResult = serializeProbe(serializer, parsed);
+    CHECK(parsedResult.bytes == before.bytes && parsedResult.shape == before.shape);
+    persistenceAllocator.configure();
+    Manager reader;
+    CHECK(reader.loadConfiguration());
+    CHECK(reader.peripherals.size() == 1 && reader.runtimeStates.size() == 1);
+    CHECK(reader.validations == 1 && reader.dependencies == 1 && reader.invalidations == 1);
+    CHECK(reader.mappings == 1 && reader.rebuilds == 1);
+    CHECK(reader.peripherals.count(item.config.id) == 1);
+    CHECK(reader.runtimeStates.at(item.config.id).lastError.isEmpty());
+    CHECK(reader.runtimeStates.at(item.config.id).status == (item.config.enabled ?
+          PeripheralStatus::PERIPHERAL_ENABLED : PeripheralStatus::PERIPHERAL_DISABLED));
+    const auto loaded = serializeProbe(serializer, reader.peripherals.at(item.config.id));
+    CHECK(loaded.bytes == before.bytes && loaded.shape == before.shape);
+    CHECK(FileUtils::opens == 1 && FileUtils::commits == 1);
+    CHECK(persistenceAllocator.blocks.empty());
+}
+static void saveLoad() {
+    for (const auto& item : cases()) {
+        saveLoadOne<OracleManager>(item, serializePersistedPeripheralOracle);
+        saveLoadOne<PeripheralManager>(item, serializePersistedPeripheral);
+        saveLoadOne<DraftManager>(item, serializePersistedPeripheralDraft);
+    }
+}
+
+struct SaveResult {
+    bool ok = false, overflow = false;
+    size_t opens = 0, writes = 0, commits = 0, growthCalls = 0, failures = 0;
+    std::string permanent, temporary;
+    bool temporaryExists = false;
+    std::vector<std::string> events;
+    bool operator==(const SaveResult& other) const {
+        return ok == other.ok && overflow == other.overflow && opens == other.opens && writes == other.writes &&
+               commits == other.commits && growthCalls == other.growthCalls && failures == other.failures &&
+               permanent == other.permanent && temporary == other.temporary && temporaryExists == other.temporaryExists &&
+               events == other.events;
+    }
+};
+template <class Manager> static SaveResult saveProbe(const PeripheralConfig& config, const std::string& fault,
+        size_t failAt = TraceAllocator::never, bool transient = false) {
+    resetStorage(failAt, transient); Manager manager; populate(manager, config);
+    if (fault == "open") LittleFS.failOpenWrite = temporaryPath;
+    if (fault == "short") LittleFS.writeLimit = 19;
+    if (fault == "commit") failCommit = true;
+    if (fault == "pending") manager._configurationImportPending = true;
+    if (fault == "lock") lockAvailable = false;
+    const auto before = serializeProbe(serializePersistedPeripheralOracle, config);
+    SaveResult result; result.ok = manager.saveConfiguration();
+    result.overflow = lastDocumentOverflow; result.opens = FileUtils::opens;
+    result.writes = LittleFS.writeOpens; result.commits = FileUtils::commits;
+    result.growthCalls = persistenceAllocator.growthCalls; result.failures = persistenceAllocator.failures;
+    result.permanent = LittleFS.files.at(PERIPHERAL_CONFIG_FILE);
+    result.temporaryExists = LittleFS.files.count(temporaryPath) != 0;
+    if (result.temporaryExists) result.temporary = LittleFS.files.at(temporaryPath);
+    result.events = persistenceAllocator.events;
+    CHECK(manager.peripherals.size() == 2);
+    CHECK(serializeProbe(serializePersistedPeripheralOracle, manager.peripherals.at(config.id)) == before);
+    CHECK(persistenceAllocator.blocks.empty());
+    if (!result.ok) CHECK(result.permanent == originalBytes);
+    return result;
+}
+static void saveFaults() {
+    const auto matrix = cases();
+    const auto found = std::find_if(matrix.begin(), matrix.end(), [](const ConfigurationCase& item) {
+        return item.config.type == PeripheralType::SCREEN_DISPLAY;
+    });
+    CHECK(found != matrix.end());
+    const auto& display = found->config;
+    for (const std::string fault : {"open", "short", "commit", "pending", "lock"}) {
+        activeCase = "save-fault:" + fault;
+        const auto expected = saveProbe<OracleManager>(display, fault);
+        CHECK(!expected.ok);
+        CHECK(saveProbe<PeripheralManager>(display, fault) == expected);
+        CHECK(saveProbe<DraftManager>(display, fault) == expected);
+        if (fault == "pending" || fault == "lock") CHECK(expected.opens == 0 && expected.growthCalls == 0);
+        else CHECK(expected.growthCalls > 0 && expected.opens == 1 && !expected.overflow);
+        if (fault == "short") CHECK(expected.writes == 1 && expected.commits == 0 && !expected.temporaryExists);
+        if (fault == "commit") CHECK(expected.writes == 1 && expected.commits == 1 && expected.temporaryExists);
+    }
+}
+static void saveOom() {
+    for (const auto& item : cases()) {
+        activeCase = item.name + ":save-oom-baseline";
+        const auto complete = saveProbe<OracleManager>(item.config, "");
+        CHECK(complete.ok && complete.growthCalls > 0 && complete.opens == 1 && complete.commits == 1);
+        for (bool transient : {false, true}) for (size_t limit = 0; limit < complete.growthCalls; ++limit) {
+            activeCase = item.name + ":save-oom=" + std::to_string(limit);
+            const auto expected = saveProbe<OracleManager>(item.config, "", limit, transient);
+            CHECK(expected.failures > 0 && expected.overflow && !expected.ok);
+            CHECK(expected.opens == 0 && expected.writes == 0 && expected.commits == 0);
+            CHECK(expected.permanent == originalBytes && !expected.temporaryExists);
+            CHECK(saveProbe<PeripheralManager>(item.config, "", limit, transient) == expected);
+            CHECK(saveProbe<DraftManager>(item.config, "", limit, transient) == expected);
+        }
+    }
+}
+
+template <class Manager> static void rejectLoad(const ConfigurationCase& item, const std::string& fault) {
+    activeCase = "load-fault:" + fault;
+    resetStorage(fault == "oom" ? 0 : TraceAllocator::never);
+    LittleFS.files[PERIPHERAL_CONFIG_FILE] = fault == "malformed" ? "{broken" : oracleFile(item.config);
+    const auto stored = LittleFS.files.at(PERIPHERAL_CONFIG_FILE);
+    Manager reader; PeripheralConfig sentinel; sentinel.id = "active-state"; sentinel.name = "must-remain";
+    reader.peripherals[sentinel.id] = sentinel; reader.runtimeStates[sentinel.id] = PeripheralRuntimeState{};
+    reader.pinToPeripheral[4] = sentinel.id;
+    if (fault == "heap") ESP.setFreeHeap(32);
+    if (fault == "pending") reader._configurationImportPending = true;
+    if (fault == "lock") lockAvailable = false;
+    if (fault == "claimed") reader.outputClaimed = true;
+    if (fault == "ticker") reader.actionTickers[sentinel.id] = 1;
+    if (fault == "ordinary") reader.ordinaryClaimed = true;
+    CHECK(!reader.loadConfiguration());
+    CHECK(reader.peripherals.size() == 1 && reader.peripherals.count(sentinel.id) == 1);
+    CHECK(reader.runtimeStates.size() == 1 && reader.pinToPeripheral.size() == 1);
+    CHECK(reader.invalidations == 0 && reader.validations == 0 && reader.rebuilds == 0);
+    CHECK(LittleFS.files.at(PERIPHERAL_CONFIG_FILE) == stored);
+    CHECK(FileUtils::opens == 0 && FileUtils::commits == 0);
+    CHECK(persistenceAllocator.blocks.empty());
+    if (fault == "oom") CHECK(persistenceAllocator.failures > 0);
+}
+static void loadFaults() {
+    const auto item = cases().front();
+    for (const std::string fault : {"malformed", "oom", "heap", "pending", "lock", "claimed", "ticker", "ordinary"}) {
+        rejectLoad<OracleManager>(item, fault);
+        rejectLoad<PeripheralManager>(item, fault);
+        rejectLoad<DraftManager>(item, fault);
+    }
+}
+static void rtcBootParser() {
+    JsonDocument doc;
+    auto object = doc.to<JsonObject>();
+    object["id"] = "rtc"; object["name"] = "RTC"; object["type"] = 50; object["enabled"] = false;
+    auto params = object["params"].to<JsonObject>();
+    PeripheralConfig config; String error;
+    CHECK(parsePersistedPeripheral(object, config, error));
+    CHECK(!config.params.ds1302.bootSeed && config.params.ds1302.utcOffsetMinutes == INT16_MIN);
+    for (const char* text : {"null", "1", "\"true\"", "[]", "{}"}) {
+        JsonDocument field; CHECK(!deserializeJson(field, text)); params["bootSeed"].set(field.as<JsonVariantConst>());
+        error = ""; CHECK(!parsePersistedPeripheral(object, config, error) && !error.isEmpty());
+    }
+    params["bootSeed"] = true;
+    error = ""; CHECK(!parsePersistedPeripheral(object, config, error));
+    for (const char* text : {"null", "true", "480.5", "\"480\"", "841", "-841", "1e100", "[]", "{}"}) {
+        JsonDocument field; CHECK(!deserializeJson(field, text)); params["utcOffsetMinutes"].set(field.as<JsonVariantConst>());
+        error = ""; CHECK(!parsePersistedPeripheral(object, config, error) && !error.isEmpty());
+    }
+    for (int offset : {-840, 0, 480, 840}) {
+        params["utcOffsetMinutes"] = offset; error = "";
+        CHECK(parsePersistedPeripheral(object, config, error) && error.isEmpty());
+        CHECK(config.params.ds1302.bootSeed && config.params.ds1302.utcOffsetMinutes == offset);
+        JsonDocument saved; serializePersistedPeripheral(saved.to<JsonObject>(), config);
+        PeripheralConfig parsed; CHECK(parsePersistedPeripheral(saved.as<JsonObject>(), parsed, error));
+        CHECK(parsed.params.ds1302.bootSeed && parsed.params.ds1302.utcOffsetMinutes == offset);
+    }
+}
+int main(int argc, char** argv) {
+    CHECK(argc == 2); const std::string mode(argv[1]);
+    if (mode == "serializer-values") compareSerializers(false);
+    else if (mode == "serializer-oom") compareSerializers(true);
+    else if (mode == "save-load") saveLoad();
+    else if (mode == "save-faults") saveFaults();
+    else if (mode == "save-oom") saveOom();
+    else if (mode == "load-faults") loadFaults();
+    else if (mode == "rtc-boot-parser") rtcBootParser();
+    else { CHECK(false); }
+    std::cout << "PASS " << mode << ": " << cases().size() << " configuration cases; no hardware\n";
+}

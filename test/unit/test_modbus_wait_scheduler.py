@@ -16,7 +16,10 @@ class ModbusWaitSchedulerTests(unittest.TestCase):
         source = (ROOT / 'src/protocols/ModbusHandler.cpp').read_text(encoding='utf8')
         start = source.index('for (uint8_t attempt = 0; attempt <= maxRetries; attempt++) {',
                              source.index('OneShotError ModbusHandler::_executeModbusTransactionRaw'))
-        end = source.index('// 清空接收缓冲区', start)
+        # This fixture executes the retry scheduling prologue. The following
+        # ticket admission/receipt code now has its own PM-to-RTU integration
+        # suite; it is not part of the background retry scheduling slice.
+        end = source.index('// Consume the ordinary permit', start)
         code = r'''
 #include <cstdint>
 #define LOG_INFOF(...) ((void)0)

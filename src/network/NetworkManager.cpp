@@ -6,6 +6,11 @@
  */
 
 #include "network/NetworkManager.h"
+#include "network/FixedJsonField.h"
+#include "network/NetworkResourceConfig.h"
+#include "network/NetworkResourcePins.h"
+#include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "systems/RestartDiagnostics.h"
@@ -147,6 +152,9 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
     
     wifiConfig = WiFiConfig();
     statusInfo = NetworkStatusInfo();
+    if (!_networkTransitionLifetime.available()) {
+        LOG_ERROR("Network transition admission storage unavailable; manager recreation/restart required");
+    }
     
     // 初始化子模块
     wifiManager.reset(new WiFiManager());
@@ -830,7 +838,7 @@ void FBNetworkManager::update() {
                 {
                     auto* fw = FastBeeFramework::getInstance();
                     auto* pm = fw ? fw->getProtocolManager() : nullptr;
-                    MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                    auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
                     if (mqtt) {
                         mqtt->resetErrorCounters();
                         LOG_INFO("[NET] MQTT reconnect triggered after Ethernet reconnection");
@@ -854,7 +862,7 @@ void FBNetworkManager::update() {
                 {
                     auto* fw = FastBeeFramework::getInstance();
                     auto* pm = fw ? fw->getProtocolManager() : nullptr;
-                    MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                    auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
                     if (mqtt) {
                         mqtt->resetErrorCounters();
                         LOG_INFO("[NET] MQTT reconnect triggered after 4G reconnection");
@@ -939,7 +947,12 @@ void FBNetworkManager::update() {
             ethReconnectAttempts++;
             LOG_INFO("NetworkManager: Attempting Ethernet auto-reconnect...");
             // 使用 restartNetwork 重新初始化以太网适配器
-            restartNetwork();
+            bool deferred = false;
+            restartNetwork(&deferred);
+            if (deferred) {
+                --ethReconnectAttempts; // Waiting for a lease is not a failed connection.
+                return; // pendingRestart owns the bounded retry.
+            }
             // restartNetwork 是同步的，检查结果
             if (ethernetAdapter && ethernetAdapter->isConnected()) {
                 LOG_INFO("NetworkManager: Ethernet auto-reconnect succeeded");
@@ -975,7 +988,12 @@ void FBNetworkManager::update() {
                 cellOk = cellularAdapter->reconnect();
             } else {
                 LOG_INFO("NetworkManager: Recreating 4G adapter for full reconnect");
-                restartNetwork();
+                bool deferred = false;
+                restartNetwork(&deferred);
+                if (deferred) {
+                    --cellReconnectAttempts;
+                    return; // pendingRestart owns the bounded retry.
+                }
                 cellOk = (wifiConfig.networkType == NetworkType::NET_4G &&
                           cellularAdapter && cellularAdapter->isConnected());
             }
@@ -1606,55 +1624,55 @@ bool FBNetworkManager::loadNetworkConfig() {
 bool FBNetworkManager::saveNetworkConfig() {
     // 构建 JSON内容共用
     JsonDocument doc;
-    doc["version"] = 1;
-    doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
+    FastBee::setFixedJsonField(doc, "version", 1);
+    FastBee::setFixedJsonField(doc, "mode", static_cast<uint8_t>(wifiConfig.mode));
     // deviceName 已移至设备配置(device.json)，不再保存到 network.json
-    doc["apSSID"] = wifiConfig.apSSID;
-    doc["apPassword"] = wifiConfig.apPassword;
-    doc["apIP"] = wifiConfig.apIP;
-    doc["apChannel"] = wifiConfig.apChannel;
-    doc["apHidden"] = wifiConfig.apHidden;
-    doc["apMaxConnections"] = wifiConfig.apMaxConnections;
-    doc["staSSID"] = wifiConfig.staSSID;
-    doc["staPassword"] = wifiConfig.staPassword;
-    doc["ipConfigType"] = static_cast<uint8_t>(wifiConfig.ipConfigType);
-    doc["staticIP"] = wifiConfig.staticIP;
-    doc["gateway"] = wifiConfig.gateway;
-    doc["subnet"] = wifiConfig.subnet;
-    doc["dns1"] = wifiConfig.dns1;
-    doc["dns2"] = wifiConfig.dns2;
-    doc["connectTimeout"] = wifiConfig.connectTimeout;
-    doc["reconnectInterval"] = wifiConfig.reconnectInterval;
-    doc["maxReconnectAttempts"] = wifiConfig.maxReconnectAttempts;
-    doc["customDomain"] = wifiConfig.customDomain;
-    doc["enableMDNS"] = wifiConfig.enableMDNS;
-    doc["conflictDetection"] = static_cast<uint8_t>(wifiConfig.conflictDetection);
-    doc["failoverStrategy"] = static_cast<uint8_t>(wifiConfig.failoverStrategy);
-    doc["autoFailover"] = wifiConfig.autoFailover;
-    doc["conflictCheckInterval"] = wifiConfig.conflictCheckInterval;
-    doc["maxFailoverAttempts"] = wifiConfig.maxFailoverAttempts;
-    doc["conflictThreshold"] = wifiConfig.conflictThreshold;
-    doc["fallbackToDHCP"] = wifiConfig.fallbackToDHCP;
+    FastBee::setFixedJsonField(doc, "apSSID", wifiConfig.apSSID);
+    FastBee::setFixedJsonField(doc, "apPassword", wifiConfig.apPassword);
+    FastBee::setFixedJsonField(doc, "apIP", wifiConfig.apIP);
+    FastBee::setFixedJsonField(doc, "apChannel", wifiConfig.apChannel);
+    FastBee::setFixedJsonField(doc, "apHidden", wifiConfig.apHidden);
+    FastBee::setFixedJsonField(doc, "apMaxConnections", wifiConfig.apMaxConnections);
+    FastBee::setFixedJsonField(doc, "staSSID", wifiConfig.staSSID);
+    FastBee::setFixedJsonField(doc, "staPassword", wifiConfig.staPassword);
+    FastBee::setFixedJsonField(doc, "ipConfigType", static_cast<uint8_t>(wifiConfig.ipConfigType));
+    FastBee::setFixedJsonField(doc, "staticIP", wifiConfig.staticIP);
+    FastBee::setFixedJsonField(doc, "gateway", wifiConfig.gateway);
+    FastBee::setFixedJsonField(doc, "subnet", wifiConfig.subnet);
+    FastBee::setFixedJsonField(doc, "dns1", wifiConfig.dns1);
+    FastBee::setFixedJsonField(doc, "dns2", wifiConfig.dns2);
+    FastBee::setFixedJsonField(doc, "connectTimeout", wifiConfig.connectTimeout);
+    FastBee::setFixedJsonField(doc, "reconnectInterval", wifiConfig.reconnectInterval);
+    FastBee::setFixedJsonField(doc, "maxReconnectAttempts", wifiConfig.maxReconnectAttempts);
+    FastBee::setFixedJsonField(doc, "customDomain", wifiConfig.customDomain);
+    FastBee::setFixedJsonField(doc, "enableMDNS", wifiConfig.enableMDNS);
+    FastBee::setFixedJsonField(doc, "conflictDetection", static_cast<uint8_t>(wifiConfig.conflictDetection));
+    FastBee::setFixedJsonField(doc, "failoverStrategy", static_cast<uint8_t>(wifiConfig.failoverStrategy));
+    FastBee::setFixedJsonField(doc, "autoFailover", wifiConfig.autoFailover);
+    FastBee::setFixedJsonField(doc, "conflictCheckInterval", wifiConfig.conflictCheckInterval);
+    FastBee::setFixedJsonField(doc, "maxFailoverAttempts", wifiConfig.maxFailoverAttempts);
+    FastBee::setFixedJsonField(doc, "conflictThreshold", wifiConfig.conflictThreshold);
+    FastBee::setFixedJsonField(doc, "fallbackToDHCP", wifiConfig.fallbackToDHCP);
 
     // 联网方式
-    doc["networkType"] = static_cast<uint8_t>(wifiConfig.networkType);
+    FastBee::setFixedJsonField(doc, "networkType", static_cast<uint8_t>(wifiConfig.networkType));
 
     // 以太网配置
     JsonObject ethObj = doc["ethernet"].to<JsonObject>();
-    ethObj["spiMosi"] = wifiConfig.ethernet.spiMosi;
-    ethObj["spiMiso"] = wifiConfig.ethernet.spiMiso;
-    ethObj["spiSck"]  = wifiConfig.ethernet.spiSck;
-    ethObj["csPin"]   = wifiConfig.ethernet.csPin;
-    ethObj["rstPin"]  = wifiConfig.ethernet.rstPin;
-    ethObj["intPin"]  = wifiConfig.ethernet.intPin;
+    FastBee::setFixedJsonField(ethObj, "spiMosi", wifiConfig.ethernet.spiMosi);
+    FastBee::setFixedJsonField(ethObj, "spiMiso", wifiConfig.ethernet.spiMiso);
+    FastBee::setFixedJsonField(ethObj, "spiSck", wifiConfig.ethernet.spiSck);
+    FastBee::setFixedJsonField(ethObj, "csPin", wifiConfig.ethernet.csPin);
+    FastBee::setFixedJsonField(ethObj, "rstPin", wifiConfig.ethernet.rstPin);
+    FastBee::setFixedJsonField(ethObj, "intPin", wifiConfig.ethernet.intPin);
 
     // 4G 蜂窝配置
     JsonObject cellObj = doc["cellular"].to<JsonObject>();
-    cellObj["txPin"]    = wifiConfig.cellular.txPin;
-    cellObj["rxPin"]    = wifiConfig.cellular.rxPin;
-    cellObj["pwrPin"]   = wifiConfig.cellular.pwrPin;
-    cellObj["baudRate"] = wifiConfig.cellular.baudRate;
-    cellObj["apn"]      = wifiConfig.cellular.apn;
+    FastBee::setFixedJsonField(cellObj, "txPin", wifiConfig.cellular.txPin);
+    FastBee::setFixedJsonField(cellObj, "rxPin", wifiConfig.cellular.rxPin);
+    FastBee::setFixedJsonField(cellObj, "pwrPin", wifiConfig.cellular.pwrPin);
+    FastBee::setFixedJsonField(cellObj, "baudRate", wifiConfig.cellular.baudRate);
+    FastBee::setFixedJsonField(cellObj, "apn", wifiConfig.cellular.apn);
 
     // ===== 写入 /config/network.json =====
     const bool jsonSaved = ConfigStorage::getInstance().saveJSONConfig(NETWORK_CONFIG_FILE, doc);
@@ -2391,7 +2409,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
             {
                 auto* fw = FastBeeFramework::getInstance();
                 auto* pm = fw ? fw->getProtocolManager() : nullptr;
-                MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
                 if (mqtt) {
                     mqtt->resetErrorCounters();
                     LOG_INFO("[WiFi-AP] MQTT reconnect triggered after WiFi recovery from AP mode");
@@ -2518,10 +2536,10 @@ String FBNetworkManager::scanNetworks() {
     
     for (int i = 0; i < numNetworks; i++) {
         JsonObject network = networks.createNestedObject();
-        network["ssid"] = WiFi.SSID(i);
-        network["rssi"] = WiFi.RSSI(i);
-        network["strength"] = NetworkUtils::rssiToPercentage(WiFi.RSSI(i));
-        network["channel"] = WiFi.channel(i);
+        FastBee::setFixedJsonField(network, "ssid", WiFi.SSID(i));
+        FastBee::setFixedJsonField(network, "rssi", WiFi.RSSI(i));
+        FastBee::setFixedJsonField(network, "strength", NetworkUtils::rssiToPercentage(WiFi.RSSI(i)));
+        FastBee::setFixedJsonField(network, "channel", WiFi.channel(i));
         // 返回具体加密类型，便于前端自动匹配安全类型下拉选项
         wifi_auth_mode_t authMode = WiFi.encryptionType(i);
         const char* enc;
@@ -2537,8 +2555,8 @@ String FBNetworkManager::scanNetworks() {
 #endif
             default:                         enc = "wpa2"; break;
         }
-        network["encryption"] = enc;
-        network["bssid"] = WiFi.BSSIDstr(i);
+        FastBee::setFixedJsonField(network, "encryption", enc);
+        FastBee::setFixedJsonField(network, "bssid", WiFi.BSSIDstr(i));
     }
     WiFi.scanDelete();  // 释放扫描结果内存
     
@@ -2570,6 +2588,26 @@ void FBNetworkManager::disconnectNetwork() {
 }
 
 bool FBNetworkManager::restartNetwork() {
+    return restartNetwork(nullptr);
+}
+
+bool FBNetworkManager::restartNetwork(bool* deferred) {
+    if (deferred) *deferred = false;
+    FastBee::NetworkTransitionGuard transition(_networkTransitionLifetime, _preNetworkSwitchCb);
+    if (!transition) {
+        if (transition.storageUnavailable()) {
+            // Neither this storage nor the dependent protocol's storage can
+            // recover by polling. Preserve adapters and stop scheduling retries.
+            pendingRestart = false;
+            return false;
+        }
+        // Preserve the requested restart; no mode/DNS/adapter mutation yet.
+        // update() retries after 1500ms, including for direct API callers.
+        pendingRestart = true;
+        pendingRestartTime = millis();
+        if (deferred) *deferred = true;
+        return false;
+    }
     char modeBuf[64];
     snprintf(modeBuf, sizeof(modeBuf), "NetworkManager: Restarting network (mode: %d)...", (int)wifiConfig.mode);
     LOG_INFO(modeBuf);
@@ -2616,13 +2654,6 @@ bool FBNetworkManager::restartNetwork() {
     if (wifiConfig.networkType != NetworkType::NET_WIFI) {
         LOG_INFO("NetworkManager: Non-WiFi network restart, keeping AP as safety net...");
         
-        // 网络切换前回调：停止依赖适配器 Client 指针的协议（如 MQTT），防止 use-after-free
-        // 必须在销毁适配器之前调用，因为适配器的 Client 对象会被析构
-        if (_preNetworkSwitchCb) {
-            LOG_INFO("NetworkManager: Pre-network-switch callback invoked (stopping dependent protocols)");
-            _preNetworkSwitchCb();
-        }
-
         // 仅断开非AP接口（保持AP热点作为配置回退入口）
         dnsManager->stopMDNS();
         // 关键：mDNS 停止后需要短暂等待，确保其 UDP socket 和 FreeRTOS 任务完全清理
@@ -2747,7 +2778,7 @@ bool FBNetworkManager::restartNetwork() {
                 {
                     auto* fw2 = FastBeeFramework::getInstance();
                     auto* pm2 = fw2 ? fw2->getProtocolManager() : nullptr;
-                    MQTTClient* mqtt = pm2 ? pm2->getMQTTClient() : nullptr;
+                    auto mqtt = pm2 ? pm2->acquireMQTTClient() : FastBee::MqttClientLease{};
                     if (mqtt) {
                         mqtt->resetErrorCounters();
                         LOG_INFO("[NET] MQTT reconnect triggered after 4G re-init");
@@ -2884,9 +2915,30 @@ String FBNetworkManager::getConfigJSON() {
     return result;
 }
 
-bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
+bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage,
+                                    String* resourceError) {
+    if (resourceError) *resourceError = "";
     WiFiConfig effectiveConfig = newConfig;
     normalizeUnsupportedNetworkType(effectiveConfig);
+    const auto resourceMutex = PeripheralManager::getInstance().getMutex();
+    RecursiveMutexGuard resourceLock(resourceMutex, pdMS_TO_TICKS(500));
+    if (resourceMutex && !resourceLock.isLocked()) {
+        if (resourceError) *resourceError = "NETWORK_RESOURCE_BUSY: peripheral state is busy";
+        return false;
+    }
+    // Wi-Fi bootstrap may run before the peripheral mutex exists. Hardware
+    // reconfiguration must never proceed without serialized configuration state.
+    if (!resourceMutex && (effectiveConfig.networkType != NetworkType::NET_WIFI ||
+                           wifiConfig.networkType != NetworkType::NET_WIFI)) {
+        if (resourceError) *resourceError = "NETWORK_RESOURCE_BUSY: peripheral state is not initialized";
+        return false;
+    }
+    String resourceFailure;
+    if (!FastBee::validateNetworkResourceConfig(effectiveConfig, resourceFailure)) {
+        if (resourceError) *resourceError = resourceFailure;
+        LOG_WARNING(resourceFailure);
+        return false;
+    }
     auto& runtimeFeatures = FastBee::RuntimeFeatureManager::instance();
     const auto previousFeatureState = runtimeFeatures.captureUserConfig();
     const bool previousFeatureMDNS = runtimeFeatures.isUserEnabled("mdns");
@@ -2995,7 +3047,7 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
 
 bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     StaticJsonDocument<3072> doc;
-    DeserializationError error = deserializeJson(doc, jsonConfig);
+    DeserializationError error = deserializeJson(doc, jsonConfig.c_str(), jsonConfig.length());
     
     if (error) {
         LOG_ERROR("NetworkManager: Failed to parse JSON configuration");
@@ -3086,22 +3138,26 @@ bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     }
 
     // 以太网配置
-    if (doc.containsKey("ethernet") && doc["ethernet"].is<JsonObject>()) {
-        JsonObject eth = doc["ethernet"];
-        if (eth.containsKey("spiMosi")) newConfig.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
-        if (eth.containsKey("spiMiso")) newConfig.ethernet.spiMiso = eth["spiMiso"].as<int8_t>();
-        if (eth.containsKey("spiSck"))  newConfig.ethernet.spiSck  = eth["spiSck"].as<int8_t>();
-        if (eth.containsKey("csPin"))   newConfig.ethernet.csPin   = eth["csPin"].as<int8_t>();
-        if (eth.containsKey("rstPin"))  newConfig.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
-        if (eth.containsKey("intPin"))  newConfig.ethernet.intPin  = eth["intPin"].as<int8_t>();
+    if (doc.containsKey("ethernet")) {
+        String pinError;
+        if (!doc["ethernet"].is<JsonObject>() ||
+            !FastBee::parseEthernetResourcePins(doc["ethernet"].as<JsonObjectConst>(),
+                                               newConfig.ethernet, pinError)) {
+            LOG_WARNING("NetworkManager: invalid Ethernet pin configuration");
+            return false;
+        }
     }
 
     // 4G 蜂窝配置
-    if (doc.containsKey("cellular") && doc["cellular"].is<JsonObject>()) {
+    if (doc.containsKey("cellular")) {
+        String pinError;
+        if (!doc["cellular"].is<JsonObject>() ||
+            !FastBee::parseCellularResourcePins(doc["cellular"].as<JsonObjectConst>(),
+                                               newConfig.cellular, pinError)) {
+            LOG_WARNING("NetworkManager: invalid cellular pin configuration");
+            return false;
+        }
         JsonObject cell = doc["cellular"];
-        if (cell.containsKey("txPin"))    newConfig.cellular.txPin    = cell["txPin"].as<int8_t>();
-        if (cell.containsKey("rxPin"))    newConfig.cellular.rxPin    = cell["rxPin"].as<int8_t>();
-        if (cell.containsKey("pwrPin"))   newConfig.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
         if (cell.containsKey("baudRate")) newConfig.cellular.baudRate = cell["baudRate"].as<uint32_t>();
         if (cell.containsKey("apn"))      newConfig.cellular.apn      = cell["apn"].as<String>();
     }

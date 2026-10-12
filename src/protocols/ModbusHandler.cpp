@@ -15,9 +15,12 @@
 #include "core/MemoryBudget.h"
 #include "utils/StringUtils.h"
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <LittleFS.h>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
+#include <esp_timer.h>
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_system.h>
 #endif
@@ -28,6 +31,15 @@
 #if FASTBEE_ENABLE_MODBUS
 
 namespace {
+uint32_t nextModbusDelayInstance() {
+    static std::atomic<uint32_t> next{0};
+    uint32_t prior = next.load(std::memory_order_relaxed);
+    while (prior != UINT32_MAX) {
+        if (next.compare_exchange_weak(prior, prior + 1, std::memory_order_relaxed))
+            return prior + 1;
+    }
+    return 0; // Exhaustion blocks delayed scheduling, never reuses identity.
+}
 struct MotorBusGuard {
     SemaphoreHandle_t semaphore;
     bool held;
@@ -172,9 +184,11 @@ ModbusHandler::ModbusHandler()
         xSemaphoreGive(_oneShotSemaphore);
     }
     _pollStateMutex = xSemaphoreCreateRecursiveMutex();
+    _delayInstance = nextModbusDelayInstance();
 #if defined(ARDUINO_ARCH_ESP32)
     _motorTravelBoot = esp_random();
 #endif
+    featureOwner_.ready();
 }
 
 // 3.5 characters at 8N1 is 35 bit-times. The UART receive loops compare
@@ -326,6 +340,7 @@ void ModbusHandler::_recordSlaveOutcome(uint8_t slaveAddress, OneShotError error
 }
 
 ModbusHandler::~ModbusHandler() {
+    featureOwner_.retiring();
     end();
     // 释放信号量
     if (_oneShotSemaphore) {
@@ -341,8 +356,14 @@ ModbusHandler::~ModbusHandler() {
 bool ModbusHandler::begin(const ModbusConfig& cfg) {
     MotorBusGuard lock(_oneShotSemaphore);
     if (!lock.held) return false;
+    const bool hadLease = _uartLease.owned();
+    if (!_uartLease.acquire(FastBee::serviceUartPort(CHIP_UART_COUNT), FastBee::ResourceConsumerRole::Modbus)) {
+        LOG_ERROR("Modbus: UART_RESOURCE_BUSY; no pins or serial changed");
+        return false;
+    }
     _motorTravel.reset();
     if (isInitialized) invalidatePollObservations();
+    invalidateCoilDelayTasksLocked("CONFIGURATION_REPLACED");
     this->config = cfg;
     sanitizeConfig(this->config);
     memset(_slaveBackoff, 0, sizeof(_slaveBackoff));
@@ -350,11 +371,15 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
     _slaveBackoffEvictions = 0;
     
     if (!initializePins()) {
+        if (!hadLease) _uartLease.releaseAfterStop();
         LOG_ERROR("Modbus: Pin initialization failed");
         return false;
     }
     
     if (!initializeSerial()) {
+        if (modbusSerial) modbusSerial->end();
+        isInitialized = false;
+        _uartLease.releaseAfterStop();
         LOG_ERROR("Modbus: Serial initialization failed");
         return false;
     }
@@ -502,15 +527,22 @@ bool ModbusHandler::begin(const String& configPath) {
 }
 
 void ModbusHandler::end() {
+    {
     MotorBusGuard lock(_oneShotSemaphore);
     if (!lock.held) return;
+    invalidateCoilDelayTasksLocked("HANDLER_STOPPED");
     _motorTravel.reset();
     if (isInitialized) {
         invalidatePollObservations();
-        modbusSerial->end();
         isInitialized = false;
         LOG_INFO("Modbus: Stopped");
     }
+    if (_uartLease.owned()) {
+        if (modbusSerial) modbusSerial->end();
+        _uartLease.releaseAfterStop();
+    }
+    }
+    retireOrdinaryDelayWork(); // No bus lock held across PM finalization.
 }
 
 // ============ 配置加载/保存 ============
@@ -545,6 +577,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     }
     
     if (isInitialized) invalidatePollObservations();
+    invalidateCoilDelayTasksLocked("CONFIGURATION_LOADED");
     if (doc.containsKey("slaveAddress"))
         config.slaveAddress = doc["slaveAddress"].as<uint8_t>();
     if (doc.containsKey("baudRate"))
@@ -599,6 +632,8 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 const char* taskName = t["name"] | (t["label"] | "");
                 strlcpy(task.name, taskName, sizeof(task.name));
                 
+                // Invalid saved mappings disable this task; never silently reinterpret them.
+                if (!FastBee::validModbusTaskMappings(t)) task.enabled = false;
                 // 解析寄存器映射
                 task.mappingCount = 0;
                 if (t.containsKey("mappings")) {
@@ -607,15 +642,10 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                         if (task.mappingCount >= Protocols::MODBUS_MAX_MAPPINGS_PER_TASK) break;
                         JsonObject m = mv.as<JsonObject>();
                         RegisterMapping& mapping = task.mappings[task.mappingCount];
-                        mapping.regOffset = m["regOffset"] | (uint8_t)0;
-                        mapping.dataType = m["dataType"] | (uint8_t)0;
-                        mapping.scaleFactor = m["scaleFactor"] | 1.0f;
-                        mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
-                        const char* sid = m["sensorId"] | "";
-                        StringUtils::copyUtf8(mapping.sensorId, sizeof(mapping.sensorId), sid);
-                        const char* u = m["unit"] | "";
-                        strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
-                        mapping.unit[sizeof(mapping.unit) - 1] = '\0';
+                        if (!FastBee::readModbusRegisterMapping(m, task.quantity, mapping)) {
+                            task.enabled = false;
+                            continue;
+                        }
                         task.mappingCount++;
                     }
                 }
@@ -680,6 +710,8 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 }
                 if (const char* error = loadMotorProtocol(d, dev.motorProtocol))
                     LOG_WARNINGF("Modbus motor %u: %s; control blocked", dev.slaveAddress, error);
+                if (const char* error = loadMotorTravelDraft(d, dev.motorTravelDraft))
+                    LOG_WARNINGF("Modbus motor %u: %s; travel draft invalid", dev.slaveAddress, error);
                 config.master.deviceCount++;
             }
         }
@@ -758,6 +790,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
                 JsonObject mo = mappingsArr.createNestedObject();
                 mo["regOffset"] = mapping.regOffset;
                 mo["dataType"] = mapping.dataType;
+                mo["wordOrder"] = mapping.wordOrder;
                 mo["scaleFactor"] = mapping.scaleFactor;
                 mo["decimalPlaces"] = mapping.decimalPlaces;
                 mo["sensorId"] = mapping.sensorId;
@@ -790,6 +823,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["pidDecimals"]     = dev.pidDecimals;
         d["motorDecimals"]   = dev.motorDecimals;
         saveMotorProtocol(d, dev.motorProtocol);
+        saveMotorTravelDraft(d, dev.motorTravelDraft);
         d["motorMinPosition"] = dev.motorMinPosition;
         d["motorMaxPosition"] = dev.motorMaxPosition;
         d["motorCurrentPosition"] = dev.motorCurrentPosition;
@@ -864,6 +898,7 @@ void ModbusHandler::handle() {
     if (!isInitialized) return;
     
     if (config.mode == MODBUS_MASTER) {
+        processOrdinaryCoilDelayTasks();
         processCoilDelayTasks();
     }
 #if FASTBEE_MODBUS_SLAVE_ENABLE
@@ -1443,14 +1478,14 @@ void ModbusHandler::_notifyStatusChange() {
     JsonDocument doc;
     JsonObject data = doc.to<JsonObject>();
 
-    data["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
-    data["status"] = getStatus();
-    data["totalPolls"] = _totalPollCount;
-    data["successPolls"] = _successPollCount;
-    data["failedPolls"] = _failedPollCount;
-    data["timeoutPolls"] = _timeoutPollCount;
-    data["lastPollAgeSec"] = getLastPollAgeSec();
-    data["taskCount"] = config.master.taskCount;
+    FastBee::setFixedJsonField(data, "mode", (config.mode == MODBUS_MASTER) ? "master" : "slave");
+    FastBee::setFixedJsonField(data, "status", getStatus());
+    FastBee::setFixedJsonField(data, "totalPolls", _totalPollCount);
+    FastBee::setFixedJsonField(data, "successPolls", _successPollCount);
+    FastBee::setFixedJsonField(data, "failedPolls", _failedPollCount);
+    FastBee::setFixedJsonField(data, "timeoutPolls", _timeoutPollCount);
+    FastBee::setFixedJsonField(data, "lastPollAgeSec", getLastPollAgeSec());
+    FastBee::setFixedJsonField(data, "taskCount", config.master.taskCount);
 
     String json;
     serializeJson(doc, json);
@@ -1508,6 +1543,9 @@ void ModbusHandler::_syncMotorTravel() {
                 const auto& protocol = dev.motorProtocol;
                 mapping.valid = protocol.valid;
                 mapping.finite = protocol.finitePulseMove;
+                mapping.commandPosition = protocol.commandPosition;
+                mapping.startupReference = protocol.startupReference;
+                mapping.startupPosition = protocol.startupPosition;
                 mapping.slave = dev.slaveAddress;
                 mapping.readFunction = protocol.readFunction;
                 mapping.writeFunction = protocol.writeFunction;
@@ -2013,11 +2051,23 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, s
 
     uint8_t rawBuf[Protocols::MODBUS_BUFFER_SIZE];
     size_t rawLen = 0;
+    const uint64_t beforeWrite = _delayWriteSequence;
     result.error = _executeModbusTransactionRaw(
         request, reqLen, expectedSlaveAddr,
         rawBuf, sizeof(rawBuf), rawLen, result.exceptionCode,
         timeoutOverride, retriesOverride, bypassSlaveBackoff);
     result.travelError = result.error == ONESHOT_TRAVEL_BLOCKED ? _lastTravelError : nullptr;
+    // An exact echo is required for a delayed follow-up even where the legacy
+    // public result checks only the response function code.
+    if (result.error == ONESHOT_SUCCESS && reqLen == 8 && rawLen == 8 &&
+        request && (request[1] == 5 || request[1] == 6) &&
+        memcmp(request, rawBuf, 6) == 0 && _delayWriteSequence != beforeWrite &&
+        _delayLastWrite.writeSequence == _delayWriteSequence &&
+        _delayLastWrite.instance == _delayInstance && _delayInstance != 0 &&
+        _delayLastWrite.configuration == _delayConfiguration && _delayConfiguration != 0 &&
+        _delayLastWrite.slave == request[0] && _delayLastWrite.function == request[1] &&
+        _delayLastWrite.address == static_cast<uint16_t>((request[2] << 8) | request[3]))
+        result.delayReceipt = _delayLastWrite;
     if (result.error == ONESHOT_SUCCESS) {
         // OneShotResult 是常规短响应兼容容器；count 必须与实际复制量一致。
         const size_t copyLen = rawLen < Protocols::MODBUS_ONESHOT_BUFFER_SIZE
@@ -2107,6 +2157,10 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         ? retriesOverride
         : config.master.maxRetries;
     if (protectedWrite) maxRetries = 0;
+    // All standard, raw and control writes share this actual bus-locked
+    // boundary, after validation/travel admission and before physical output.
+    // Reads do not retire a delayed command.
+    // Delay invalidation happens only after final output admission below.
 
     // 捕获 TX 帧 hex（用于调试面板显示）—— 低堆时跳过以减少分配压力
     bool heapSafe = FastBee::MemoryBudget::dramFree() > 15000;
@@ -2115,8 +2169,12 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
         _lastRxHex = "";
         for (size_t i = 0; i < reqLen; i++) {
             if (i > 0) _lastTxHex += ' ';
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%02X", request[i]);
+            // Fixed byte encoding avoids newlib's deep formatter on worker stacks.
+            const char hex[3] = {
+                "0123456789ABCDEF"[request[i] >> 4],
+                "0123456789ABCDEF"[request[i] & 0x0F],
+                '\0'
+            };
             _lastTxHex += hex;
         }
     }
@@ -2145,12 +2203,24 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
             yield();
         }
 
+        // Consume the ordinary permit after bus acquisition/travel admission,
+        // immediately before the single UART attempt. No PM lock/callback here.
+        if (_ordinaryWriteTicket) {
+            const auto* frozen = _ordinaryWriteTicket->frame;
+            if (frozen && (reqLen != static_cast<size_t>(frozen->length) + 2U ||
+                std::memcmp(request, frozen->bytes, frozen->length) != 0)) return ONESHOT_CONTROL_REJECTED;
+            const int64_t us = esp_timer_get_time();
+            if (attempt || us < 0 || !_ordinaryWriteTicket->claim(static_cast<uint64_t>(us) / 1000ULL, static_cast<uint32_t>(millis())))
+                return ONESHOT_CONTROL_REJECTED;
+        }
+        if (!attempt) trackCoilDelayWriteLocked(request, reqLen);
         // 清空接收缓冲区
         while (modbusSerial->available()) modbusSerial->read();
 
         // 发送请求帧
         if (diagnostics) diagnostics->beginAttempt();
         setTransmitMode(true);
+        if (_ordinaryWriteTicket) _ordinaryWriteAttempted = true;
         const size_t written = modbusSerial->write(request, reqLen);
         modbusSerial->flush();
         setTransmitMode(false);
@@ -2235,8 +2305,11 @@ OneShotError ModbusHandler::_executeModbusTransactionRaw(const uint8_t* request,
             _lastRxHex = "";
             for (size_t i = 0; i < respIdx; i++) {
                 if (i > 0) _lastRxHex += ' ';
-                char hex[4];
-                snprintf(hex, sizeof(hex), "%02X", respBuf[i]);
+                const char hex[3] = {
+                    "0123456789ABCDEF"[respBuf[i] >> 4],
+                    "0123456789ABCDEF"[respBuf[i] & 0x0F],
+                    '\0'
+                };
                 _lastRxHex += hex;
             }
         }
@@ -2816,65 +2889,16 @@ OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint1
 // 线圈延时任务管理
 // ============================================================================
 bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue) {
-    return addCoilDelayTask(slaveAddr, coilAddr, delayMs, coilValue, false);
+    // A handler/transaction receipt is required; legacy callers fail closed.
+    (void)slaveAddr; (void)coilAddr; (void)delayMs; (void)coilValue;
+    return false;
 }
 
 bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, 
                                       unsigned long delayMs, bool coilValue, bool isRegisterMode) {
-    // 优先复用同一线圈地址的已有任务
-    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
-        if (coilDelayTasks[i].active &&
-            coilDelayTasks[i].slaveAddress == slaveAddr &&
-            coilDelayTasks[i].coilAddress == coilAddr) {
-            coilDelayTasks[i].triggerTime = millis() + delayMs;
-            coilDelayTasks[i].coilValue = coilValue;
-            coilDelayTasks[i].isRegisterMode = isRegisterMode;
-            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d addr=%d delay=%lums val=%s mode=%s",
-                      i, slaveAddr, coilAddr, delayMs, 
-                      coilValue ? "ON" : "OFF",
-                      isRegisterMode ? "register" : "coil");
-            return true;
-        }
-    }
-    // 查找空闲槽位
-    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
-        if (!coilDelayTasks[i].active) {
-            coilDelayTasks[i].slaveAddress = slaveAddr;
-            coilDelayTasks[i].coilAddress = coilAddr;
-            coilDelayTasks[i].triggerTime = millis() + delayMs;
-            coilDelayTasks[i].coilValue = coilValue;
-            coilDelayTasks[i].isRegisterMode = isRegisterMode;
-            coilDelayTasks[i].active = true;
-            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d addr=%d delay=%lums val=%s mode=%s",
-                      i, slaveAddr, coilAddr, delayMs, 
-                      coilValue ? "ON" : "OFF",
-                      isRegisterMode ? "register" : "coil");
-            return true;
-        }
-    }
-    LOG_WARNING("[Modbus] DelayTask: queue full, cannot add task");
+    (void)slaveAddr; (void)coilAddr; (void)delayMs;
+    (void)coilValue; (void)isRegisterMode;
     return false;
-}
-
-void ModbusHandler::processCoilDelayTasks() {
-    unsigned long now = millis();
-    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
-        // 有符号差值比较：millis() 回绕（49.7 天）时 now >= triggerTime 会误触发
-        if (coilDelayTasks[i].active && (long)(now - coilDelayTasks[i].triggerTime) >= 0) {
-            LOG_INFOF("[Modbus] DelayTask: executing slot %d, slave=%d addr=%d -> %s",
-                      i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress,
-                      coilDelayTasks[i].coilValue ? "ON" : "OFF");
-            if (coilDelayTasks[i].isRegisterMode) {
-                uint16_t regValue = coilDelayTasks[i].coilValue ? 1 : 0;
-                writeRegisterOnce(coilDelayTasks[i].slaveAddress, 
-                                  coilDelayTasks[i].coilAddress, regValue);
-            } else {
-                writeCoilOnce(coilDelayTasks[i].slaveAddress, 
-                              coilDelayTasks[i].coilAddress, coilDelayTasks[i].coilValue);
-            }
-            coilDelayTasks[i].active = false;
-        }
-    }
 }
 
 String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count) {
@@ -3156,40 +3180,8 @@ String ModbusHandler::_finalizePollResult(uint8_t taskIdx, const OneShotResult& 
             const RegisterMapping& m = task.mappings[i];
             if (m.sensorId[0] == '\0') continue;
 
-            float rawValue = 0.0f;
-            switch (m.dataType) {
-                case 0: // uint16
-                    if (m.regOffset < result.count) rawValue = (float)result.data[m.regOffset];
-                    break;
-                case 1: // int16
-                    if (m.regOffset < result.count) rawValue = (float)(int16_t)result.data[m.regOffset];
-                    break;
-                case 2: // uint32
-                    if (m.regOffset + 1 < result.count) {
-                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
-                        rawValue = (float)u32;
-                    }
-                    break;
-                case 3: // int32
-                    if (m.regOffset + 1 < result.count) {
-                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
-                        rawValue = (float)(int32_t)u32;
-                    }
-                    break;
-                case 4: // float32
-                    if (m.regOffset + 1 < result.count) {
-                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
-                        memcpy(&rawValue, &u32, sizeof(float));
-                    }
-                    break;
-                default:
-                    if (m.regOffset < result.count) rawValue = (float)result.data[m.regOffset];
-                    break;
-            }
-
-            float scaledValue = rawValue * m.scaleFactor;
-            char valBuf[16];
-            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
+            char valBuf[96];
+            if (!FastBee::formatModbusMapping(result.data, result.count, m, valBuf, sizeof(valBuf))) continue;
 
             if (!first) json += ",";
             json += "{\"id\":\"";
@@ -3553,13 +3545,13 @@ String ModbusHandler::executePollTaskBatch(const uint8_t* taskIdxList, uint8_t i
 
 String ModbusHandler::getPollStatistics() const {
     JsonDocument doc;
-    doc["totalPolls"] = _totalPollCount;
-    doc["successPolls"] = _successPollCount;
-    doc["failedPolls"] = _failedPollCount;
-    doc["timeoutPolls"] = _timeoutPollCount;
-    doc["backoffSkips"] = _slaveBackoffSkips;
-    doc["backoffEvictions"] = _slaveBackoffEvictions;
-    doc["lastPollMs"] = _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000 : 0;
+    FastBee::setFixedJsonField(doc, "totalPolls", _totalPollCount);
+    FastBee::setFixedJsonField(doc, "successPolls", _successPollCount);
+    FastBee::setFixedJsonField(doc, "failedPolls", _failedPollCount);
+    FastBee::setFixedJsonField(doc, "timeoutPolls", _timeoutPollCount);
+    FastBee::setFixedJsonField(doc, "backoffSkips", _slaveBackoffSkips);
+    FastBee::setFixedJsonField(doc, "backoffEvictions", _slaveBackoffEvictions);
+    FastBee::setFixedJsonField(doc, "lastPollMs", _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000 : 0);
 
     const uint32_t now = millis();
     uint32_t slaveTimeouts = 0;
@@ -3579,24 +3571,24 @@ String ModbusHandler::getPollStatistics() const {
                                    !_deadlineReached(now, state.cooldownUntil);
 
         JsonObject item = slaveHealth.add<JsonObject>();
-        item["address"] = state.slaveAddress;
-        item["consecutiveFailures"] = state.consecutiveFailures;
-        item["backoffLevel"] = state.backoffLevel;
-        item["backoffActive"] = backoffActive;
-        item["remainingMs"] = backoffActive ? state.cooldownUntil - now : 0;
-        item["halfOpen"] = state.halfOpen;
-        item["lastError"] = state.lastError;
-        item["timeouts"] = state.timeoutCount;
-        item["crcErrors"] = state.crcErrorCount;
-        item["exceptions"] = state.exceptionCount;
-        item["successes"] = state.successCount;
-        item["skipped"] = state.skippedCount;
-        item["halfOpenProbes"] = state.halfOpenProbeCount;
+        FastBee::setFixedJsonField(item, "address", state.slaveAddress);
+        FastBee::setFixedJsonField(item, "consecutiveFailures", state.consecutiveFailures);
+        FastBee::setFixedJsonField(item, "backoffLevel", state.backoffLevel);
+        FastBee::setFixedJsonField(item, "backoffActive", backoffActive);
+        FastBee::setFixedJsonField(item, "remainingMs", backoffActive ? state.cooldownUntil - now : 0);
+        FastBee::setFixedJsonField(item, "halfOpen", state.halfOpen);
+        FastBee::setFixedJsonField(item, "lastError", state.lastError);
+        FastBee::setFixedJsonField(item, "timeouts", state.timeoutCount);
+        FastBee::setFixedJsonField(item, "crcErrors", state.crcErrorCount);
+        FastBee::setFixedJsonField(item, "exceptions", state.exceptionCount);
+        FastBee::setFixedJsonField(item, "successes", state.successCount);
+        FastBee::setFixedJsonField(item, "skipped", state.skippedCount);
+        FastBee::setFixedJsonField(item, "halfOpenProbes", state.halfOpenProbeCount);
     }
-    doc["trackedSlaves"] = trackedSlaves;
-    doc["slaveTimeouts"] = slaveTimeouts;
-    doc["slaveCrcErrors"] = slaveCrcErrors;
-    doc["slaveExceptions"] = slaveExceptions;
+    FastBee::setFixedJsonField(doc, "trackedSlaves", trackedSlaves);
+    FastBee::setFixedJsonField(doc, "slaveTimeouts", slaveTimeouts);
+    FastBee::setFixedJsonField(doc, "slaveCrcErrors", slaveCrcErrors);
+    FastBee::setFixedJsonField(doc, "slaveExceptions", slaveExceptions);
     
     String out;
     serializeJson(doc, out);
@@ -3642,6 +3634,7 @@ void ModbusHandler::publishPollObservations(uint8_t taskIdx, bool sampled) {
         hashField(task.startAddress);
         hashField(mapping.regOffset);
         hashField(mapping.dataType);
+        hashField(mapping.wordOrder);
         uint32_t scaleBits = 0;
         static_assert(sizeof(scaleBits) == sizeof(mapping.scaleFactor), "float32 scale required");
         memcpy(&scaleBits, &mapping.scaleFactor, sizeof(scaleBits));
@@ -3650,30 +3643,18 @@ void ModbusHandler::publishPollObservations(uint8_t taskIdx, bool sampled) {
         for (const char* ch = mapping.unit; *ch; ++ch)
             fingerprint = (fingerprint ^ static_cast<uint8_t>(*ch)) * 16777619UL;
         // Version the encoding so pre-existing persisted history is invalidated.
-        char revisionId[] = "mb2:00000000";
+        char revisionId[] = "mb3:00000000";
         constexpr char revisionHexDigits[] = "0123456789abcdef";
         for (uint8_t digit = 0; digit < 8; ++digit)
             revisionId[4 + digit] = revisionHexDigits[(fingerprint >> (28 - digit * 4)) & 0xFU];
         update.sourceRevision = revisionId;
         update.quality = sampled ? ObservationQuality::ERROR : ObservationQuality::UNKNOWN;
         if (sampled && cache.valid) {
-            const size_t offset = mapping.regOffset;
-            const size_t words = mapping.dataType >= 2 && mapping.dataType <= 4 ? 2 : 1;
-            if (mapping.dataType <= 4 && offset + words <= cache.count) {
-                double raw = cache.values[offset];
-                if (mapping.dataType == 1) raw = static_cast<int16_t>(cache.values[offset]);
-                if (words == 2) {
-                    const uint32_t bits = (static_cast<uint32_t>(cache.values[offset]) << 16) | cache.values[offset + 1];
-                    if (mapping.dataType == 2) raw = bits;
-                    else if (mapping.dataType == 3) raw = static_cast<int32_t>(bits);
-                    else { float decoded; memcpy(&decoded, &bits, sizeof(decoded)); raw = decoded; }
-                }
-                const double value = raw * mapping.scaleFactor;
-                if (std::isfinite(value)) {
-                    update.value = String(value, static_cast<unsigned int>(std::min<uint8_t>(mapping.decimalPlaces, 6)));
-                    update.quality = ObservationQuality::GOOD;
-                    update.sampleTimestamp = cache.timestamp;
-                }
+            char value[96];
+            if (FastBee::formatModbusMapping(cache.values, cache.count, mapping, value, sizeof(value))) {
+                update.value = value;
+                update.quality = ObservationQuality::GOOD;
+                update.sampleTimestamp = cache.timestamp;
             }
         }
         if (update.quality == ObservationQuality::ERROR)
@@ -3738,40 +3719,8 @@ String ModbusHandler::collectCachedPollData() const {
             const RegisterMapping& m = task.mappings[j];
             if (m.sensorId[0] == '\0') continue;
 
-            float rawValue = 0.0f;
-            switch (m.dataType) {
-                case 0: // uint16
-                    if (m.regOffset < cache.count) rawValue = (float)cache.values[m.regOffset];
-                    break;
-                case 1: // int16
-                    if (m.regOffset < cache.count) rawValue = (float)(int16_t)cache.values[m.regOffset];
-                    break;
-                case 2: // uint32
-                    if (m.regOffset + 1 < cache.count) {
-                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
-                        rawValue = (float)u32;
-                    }
-                    break;
-                case 3: // int32
-                    if (m.regOffset + 1 < cache.count) {
-                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
-                        rawValue = (float)(int32_t)u32;
-                    }
-                    break;
-                case 4: // float32
-                    if (m.regOffset + 1 < cache.count) {
-                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
-                        memcpy(&rawValue, &u32, sizeof(float));
-                    }
-                    break;
-                default:
-                    if (m.regOffset < cache.count) rawValue = (float)cache.values[m.regOffset];
-                    break;
-            }
-
-            float scaledValue = rawValue * m.scaleFactor;
-            char valBuf[16];
-            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
+            char valBuf[96];
+            if (!FastBee::formatModbusMapping(cache.values, cache.count, m, valBuf, sizeof(valBuf))) continue;
 
             if (!first) json += ",";
             json += "{\"id\":\"";

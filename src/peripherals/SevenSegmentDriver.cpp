@@ -9,6 +9,8 @@
 
 #include "systems/LoggerSystem.h"
 #include "core/RuntimeFeatureManager.h"
+#include "core/AsyncExecTypes.h"
+#include <new>
 
 // TM1637 指令
 #define TM1637_CMD_DATA     0x40  // 数据命令：写入显示寄存器，地址自增
@@ -34,10 +36,40 @@ static const uint8_t SEG_DIGITS[10] = {
 
 SevenSegmentDriver& SevenSegmentDriver::instance() {
     static SevenSegmentDriver inst;
+    inst.ensureMutex();
+    static const FastBee::FeatureInstanceObserver observer{"sevenSegment", [](const void* context) {
+        return static_cast<const SevenSegmentDriver*>(context)->observeFeatureInstance();
+    }, &inst};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
     return inst;
 }
 
+bool SevenSegmentDriver::ensureMutex() {
+    if (_mutex.load(std::memory_order_acquire)) return true;
+    const auto created = xSemaphoreCreateMutex();
+    if (!created) return false;
+    SemaphoreHandle_t expected = nullptr;
+    if (!_mutex.compare_exchange_strong(expected, created, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) vSemaphoreDelete(created);
+    return true;
+}
+
+FastBee::FeatureInstanceSnapshot SevenSegmentDriver::observeFeatureInstance() const {
+    using namespace FastBee;
+    const auto mutex = _mutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    MutexGuard lock(mutex, 0);
+    if (!lock.isLocked()) return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    // A retained map entry can include failed initialization/teardown. ACKs
+    // confirm transport only; allocation alone must not imply a running display.
+    return FeatureInstanceSnapshot::lifecycle(_instances.empty()
+        ? FeatureInstanceState::Stopped : FeatureInstanceState::Allocated);
+}
+
 bool SevenSegmentDriver::exists(const String& id) const {
+    MutexGuard lock(_mutex.load(std::memory_order_acquire), 0);
+    if (!lock.isLocked()) return false;
     return _instances.find(id) != _instances.end();
 }
 
@@ -95,31 +127,36 @@ uint8_t SevenSegmentDriver::writeByte(const Instance& ins, uint8_t b) {
     return ack;  // 0 = 设备应答成功
 }
 
-bool SevenSegmentDriver::writeSegments(const Instance& ins,
-                                       const uint8_t* segs, uint8_t len,
-                                       uint8_t startAddr) {
-    // 1) 数据命令：自增地址写
+FastBee::DisplayWriteResult SevenSegmentDriver::writeSegments(const Instance& ins,
+    const uint8_t* segs, uint8_t len, uint8_t startAddr) {
+    FastBee::DisplayWriteResult result;
+    result.attempted = true;
     start(ins);
-    writeByte(ins, TM1637_CMD_DATA);
+    const bool dataCommand = writeByte(ins, TM1637_CMD_DATA) == 0;
     stop(ins);
+    if (!dataCommand) { result.reason = "DISPLAY_DATA_COMMAND_NACK"; return result; }
 
-    // 2) 地址命令 + 数据
     start(ins);
-    writeByte(ins, TM1637_CMD_ADDR | (startAddr & 0x03));
-    for (uint8_t i = 0; i < len; i++) {
-        writeByte(ins, segs[i]);
+    if (writeByte(ins, TM1637_CMD_ADDR | (startAddr & 0x03)) != 0) {
+        stop(ins); result.reason = "DISPLAY_ADDRESS_NACK"; return result;
+    }
+    for (uint8_t i = 0; i < len; ++i) {
+        if (writeByte(ins, segs[i]) != 0) {
+            stop(ins); result.reason = "DISPLAY_DATA_NACK"; return result;
+        }
     }
     stop(ins);
-
-    // 3) 显示控制
-    return commitDisplayCtrl(ins);
+    return commitDisplayCtrl(ins); // Never replay a partially accepted frame.
 }
 
-bool SevenSegmentDriver::commitDisplayCtrl(const Instance& ins) {
+FastBee::DisplayWriteResult SevenSegmentDriver::commitDisplayCtrl(const Instance& ins) {
+    FastBee::DisplayWriteResult result;
+    result.attempted = true;
     start(ins);
-    writeByte(ins, TM1637_CMD_DISP_CTL | (ins.brightness & 0x07));
+    result.acknowledged = writeByte(ins, TM1637_CMD_DISP_CTL | (ins.brightness & 0x07)) == 0;
     stop(ins);
-    return true;
+    result.reason = result.acknowledged ? "DISPLAY_TRANSPORT_ACKNOWLEDGED" : "DISPLAY_CONTROL_NACK";
+    return result;
 }
 
 // ========== 字符映射 ==========
@@ -158,61 +195,77 @@ uint8_t SevenSegmentDriver::charToSeg(char c) {
 // ========== 公共接口 ==========
 
 bool SevenSegmentDriver::begin(const String& id, uint8_t clkPin, uint8_t dioPin, uint8_t brightness) {
-    // 运行时功能门控：用户可在 Web UI 禁用 sevenSegment
-    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("sevenSegment")) {
-        LOG_INFO("SevenSegment: Compiled but runtime-disabled, skip init");
-        return false;
-    }
-    if (id.isEmpty()) return false;
+    MutexGuard lock(_mutex.load(std::memory_order_acquire), 0);
+    if (!lock.isLocked() || !FastBee::RuntimeFeatureManager::instance().shouldEnable("sevenSegment") ||
+        id.isEmpty() || clkPin == dioPin || _instances.find(id) != _instances.end()) return false;
     if (brightness > 7) brightness = 7;
-
-    Instance ins{clkPin, dioPin, brightness};
-
-    pinMode(ins.clk, OUTPUT);
-    pinMode(ins.dio, OUTPUT);
-    digitalWrite(ins.clk, HIGH);
-    digitalWrite(ins.dio, HIGH);
+    // Reserve ownership before GPIO effects. Never overwrite a retained failed instance.
+    try {
+        const auto slot = _instances.emplace(id, Instance{clkPin, dioPin, brightness});
+        if (!slot.second || slot.first->first != id) {
+            if (slot.second) _instances.erase(slot.first);
+            return false;
+        }
+    } catch (const std::bad_alloc&) { return false; }
+    auto& ins = _instances.find(id)->second;
+    pinMode(ins.clk, OUTPUT); pinMode(ins.dio, OUTPUT);
+    digitalWrite(ins.clk, HIGH); digitalWrite(ins.dio, HIGH);
     delay(2);
-
-    _instances[id] = ins;
-
-    // 初始化清屏 + 设置亮度
-    uint8_t blank[4] = {0, 0, 0, 0};
-    bool ok = writeSegments(ins, blank, 4, 0);
-
-    LOG_INFOF("[TM1637] begin id=%s clk=%d dio=%d bri=%d -> %s",
-              id.c_str(), clkPin, dioPin, brightness, ok ? "ok" : "fail");
-    return ok;
+    const uint8_t blank[4] = {};
+    const auto result = writeSegments(ins, blank, 4, 0);
+    LOG_INFOF("[TM1637] begin id=%s clk=%d dio=%d -> %s",
+        id.c_str(), clkPin, dioPin, result.reason);
+    return result.acknowledged;
 }
 
-void SevenSegmentDriver::release(const String& id) {
-    auto it = _instances.find(id);
-    if (it == _instances.end()) return;
-    // 清屏再释放
-    uint8_t blank[4] = {0, 0, 0, 0};
-    writeSegments(it->second, blank, 4, 0);
+bool SevenSegmentDriver::release(const String& id) {
+    MutexGuard lock(_mutex.load(std::memory_order_acquire), 0);
+    if (!lock.isLocked()) return false;
+    const auto it = _instances.find(id);
+    if (it == _instances.end()) return true;
+    const uint8_t blank[4] = {};
+    if (!writeSegments(it->second, blank, 4, 0).acknowledged) return false;
+    pinMode(it->second.clk, INPUT);
+    pinMode(it->second.dio, INPUT);
     _instances.erase(it);
-    LOG_INFOF("[TM1637] release id=%s", id.c_str());
+    return true; // Local transaction/owner released; no physical-display guarantee.
 }
 
-bool SevenSegmentDriver::setBrightness(const String& id, uint8_t brightness) {
-    auto it = _instances.find(id);
-    if (it == _instances.end()) return false;
-    if (brightness > 7) brightness = 7;
-    it->second.brightness = brightness;
-    return commitDisplayCtrl(it->second);
+bool SevenSegmentDriver::quiescent(const String& id) const {
+    (void)id;
+    MutexGuard lock(_mutex.load(std::memory_order_acquire), 0);
+    // All writers/lifecycle calls acquire PM before this lock. No timer or queue exists.
+    return lock.isLocked();
 }
 
-bool SevenSegmentDriver::clear(const String& id) {
-    auto it = _instances.find(id);
-    if (it == _instances.end()) return false;
-    uint8_t blank[4] = {0, 0, 0, 0};
-    return writeSegments(it->second, blank, 4, 0);
+FastBee::DisplayWriteResult SevenSegmentDriver::write(const String& id, uint8_t clk, uint8_t dio,
+    FastBee::DisplayOutputCommand command, const String& text, int32_t value) {
+    using Command = FastBee::DisplayOutputCommand;
+    FastBee::DisplayWriteResult result;
+    MutexGuard lock(_mutex.load(std::memory_order_acquire), 0);
+    if (!lock.isLocked()) { result.reason = "DISPLAY_BUSY"; return result; }
+    const auto it = _instances.find(id);
+    if (it == _instances.end() || it->second.clk != clk || it->second.dio != dio) {
+        result.reason = "DISPLAY_IDENTITY_MISMATCH"; return result;
+    }
+    if (command == Command::Number) return displayNumber(it->second, text);
+    if (command == Command::Text) return displayText(it->second, text);
+    if (command == Command::Clear) {
+        const uint8_t blank[4] = {};
+        return writeSegments(it->second, blank, 4, 0);
+    }
+    if (command == Command::Brightness && value >= 0 && value <= 7) {
+        Instance candidate = it->second;
+        candidate.brightness = static_cast<uint8_t>(value);
+        result = commitDisplayCtrl(candidate);
+        if (result.acknowledged) it->second.brightness = candidate.brightness;
+        return result;
+    }
+    result.reason = "DISPLAY_COMMAND_INVALID"; return result;
 }
 
-bool SevenSegmentDriver::displayNumber(const String& id, const String& value) {
-    auto it = _instances.find(id);
-    if (it == _instances.end()) return false;
+
+FastBee::DisplayWriteResult SevenSegmentDriver::displayNumber(const Instance& ins, const String& value) {
 
     // 解析规则：
     // - 按字符序逐个映射
@@ -258,12 +311,10 @@ bool SevenSegmentDriver::displayNumber(const String& id, const String& value) {
         segs[1] |= 0x80;
     }
 
-    return writeSegments(it->second, segs, 4, 0);
+    return writeSegments(ins, segs, 4, 0);
 }
 
-bool SevenSegmentDriver::displayText(const String& id, const String& text) {
-    auto it = _instances.find(id);
-    if (it == _instances.end()) return false;
+FastBee::DisplayWriteResult SevenSegmentDriver::displayText(const Instance& ins, const String& text) {
 
     uint8_t segs[4] = {0, 0, 0, 0};
     int len = (int)text.length();
@@ -274,7 +325,7 @@ bool SevenSegmentDriver::displayText(const String& id, const String& text) {
         segs[i] = charToSeg(text.charAt(i));
     }
 
-    return writeSegments(it->second, segs, 4, 0);
+    return writeSegments(ins, segs, 4, 0);
 }
 
 #endif // FASTBEE_ENABLE_SEVEN_SEGMENT

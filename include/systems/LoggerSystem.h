@@ -8,6 +8,7 @@
 #include <atomic>
 #include <memory>
 #include "core/interfaces/ILoggerSystem.h"
+#include "core/FeatureInstanceRegistry.h"
 #include "esp_log.h"
 #include <freertos/semphr.h>
 
@@ -33,6 +34,9 @@ public:
 
     static LoggerSystem& getInstance() {
         static LoggerSystem instance;
+        static const FastBee::FeatureInstanceObserver observer{
+            "fileLogging", &LoggerSystem::observeFeatureInstance, &instance};
+        FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
         return instance;
     }
 
@@ -43,6 +47,13 @@ public:
 
     void enableSerialLogging(bool enable);
     void enableFileLogging(bool enable);
+    void enableLogViewer(bool enable);
+    bool isLogViewerEnabled() const {
+        return (_recentLogsState.load() & RECENT_LOG_STATE_MASK) == static_cast<uint32_t>(RecentLogState::Enabled);
+    }
+    bool isLogViewerRequested() const {
+        return (_recentLogsState.load() & RECENT_LOG_STATE_MASK) != static_cast<uint32_t>(RecentLogState::Disabled);
+    }
     bool isSerialEnabled() const { return serialEnabled; }
     bool isFileLoggingEnabled() const {
         return (fileLoggingState.load() & FILE_LOGGING_STATE_MASK) == static_cast<uint32_t>(FileLoggingState::Enabled);
@@ -94,9 +105,23 @@ public:
     // 返回写入字节数；空间不足时截断。供 /api/system/diag-bundle 使用。
     size_t snapshotRecentLogs(char* out, size_t outSize) const;
     // 当前环形中已保存的日志行数（≤ RECENT_LOG_LINES）
-    size_t recentLogLineCount() const { return static_cast<size_t>(_recentLogCount); }
+    size_t recentLogLineCount() const;
     // 环形容量（行数）
     static constexpr size_t recentLogCapacity() { return RECENT_LOG_LINES; }
+    size_t recentLogAvailableCapacity() const {
+        return isLogViewerEnabled() ? RECENT_LOG_LINES : CRITICAL_LOG_LINES;
+    }
+    // Optional allocations only; the 8-line critical ring is always resident.
+    static constexpr size_t recentLogOptionalBytes() { return sizeof(RecentLogBuffer); }
+    static constexpr size_t fileLoggingBudgetBytes() {
+        // Include task-control/allocator reserve as well as the PSRAM board's
+        // temporary task stack, which still consumes internal RAM.
+        return sizeof(LogRingBuffer) + 512U
+#if FASTBEE_USE_PSRAM
+            + LOG_FLUSH_TASK_STACK_BYTES
+#endif
+            ;
+    }
 
     // 日志文件管理
     bool   lockLogFiles(uint32_t timeoutMs = 250);
@@ -126,6 +151,7 @@ public:
 private:
     LoggerSystem();
     ~LoggerSystem();
+    static FastBee::FeatureInstanceSnapshot observeFeatureInstance(const void* context);
 
     // 内部实现：使用栈缓冲区格式化，零堆分配
     void log(LogLevel level, const char* message, const char* module);
@@ -141,7 +167,9 @@ private:
     void checkLogFileSize();     // 检查文件大小并轮转
 
     // 诊断最近日志：将一行截断保存到环形（供 snapshotRecentLogs 读取）
-    void captureRecentLine(const char* entry);
+    void captureRecentLine(const char* entry, bool critical = true);
+    static void appendRecentLine(char (*lines)[128], size_t capacity,
+                                 uint8_t& writeIndex, uint8_t& count, const char* entry);
     void cancelFileLoggingRequest();
 
     static const char* getLevelString(LogLevel level);
@@ -188,7 +216,7 @@ private:
     // Allocate only while file logging is enabled. Mutable permits deferred
     // cleanup at the end of a const diagnostic snapshot holding the same lock.
     mutable std::unique_ptr<LogRingBuffer> _ringBuffer;
-    SemaphoreHandle_t _logMutex = nullptr;
+    std::atomic<SemaphoreHandle_t> _logMutex{nullptr};
     // Temporary PSRAM-board drain task: bit 0 owns the single slot; bit 1
     // prevents new submissions during destruction. No permanent task stack.
     static constexpr uint32_t LOG_FLUSH_TASK_ACTIVE = 1;
@@ -197,14 +225,25 @@ private:
     std::atomic<uint32_t> _flushTaskState{0};
     uint32_t _flushTaskGeneration = 0;  // Protected by _logMutex.
 
-    // ── 诊断用最近日志环形（静态内存，不 flush 到磁盘）──────────────────────
-    // 保留最近 RECENT_LOG_LINES 行（每行截断至 RECENT_LOG_LINE_LEN），
-    // 常驻开销 RECENT_LOG_LINES * RECENT_LOG_LINE_LEN 字节。
+    // Warning/error diagnostics survive disabled optional logging. Ordinary
+    // recent lines are retained only while the existing logViewer is enabled.
+    static constexpr size_t  CRITICAL_LOG_LINES = 8;
     static constexpr size_t  RECENT_LOG_LINES    = 32;
     static constexpr size_t  RECENT_LOG_LINE_LEN = 128;
-    char     _recentLogs[RECENT_LOG_LINES][RECENT_LOG_LINE_LEN] = {{0}};
-    uint8_t  _recentLogWriteIdx = 0;   // 下一条写入位置
-    uint8_t  _recentLogCount = 0;      // 当前有效行数
+    char     _criticalLogs[CRITICAL_LOG_LINES][RECENT_LOG_LINE_LEN] = {{0}};
+    uint8_t  _criticalLogWriteIdx = 0;
+    uint8_t  _criticalLogCount = 0;
+    struct RecentLogBuffer {
+        char lines[RECENT_LOG_LINES][RECENT_LOG_LINE_LEN] = {{0}};
+        uint8_t writeIndex = 0;
+        uint8_t count = 0;
+    };
+    enum class RecentLogState : uint32_t { Disabled, Pending, Enabled, AllocationFailed };
+    static constexpr uint32_t RECENT_LOG_STATE_MASK = 3;
+    std::atomic<uint32_t> _recentLogsState{static_cast<uint32_t>(RecentLogState::Disabled)};
+    // Every reader/producer holds _logMutex; a timed-out disable defers deletion
+    // to unlockLogFiles rather than invalidating an in-flight snapshot.
+    mutable std::unique_ptr<RecentLogBuffer> _recentLogBuffer;
 };
 
 // ============================================================================

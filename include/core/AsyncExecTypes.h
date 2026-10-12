@@ -6,6 +6,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include "PeripheralExecution.h"
+#include "UartEventOrigin.h"
+#include "core/NativeOutputControl.h"
 
 // ========== 异步执行常量 ==========
 
@@ -56,7 +58,9 @@ enum class AsyncExecError : uint8_t {
     ACTION_FAILED,
     INCOMPLETE_ACTIONS,
     CANCELLED_BY_SYSTEM,
-    WORKER_QUEUE_FULL
+    WORKER_QUEUE_FULL,
+    UART_SOURCE_UNCONFIRMED,
+    RULE_REVISION_UNCONFIRMED
 };
 
 // Results are intentionally fixed-size. A rule contains at most four actions;
@@ -94,6 +98,9 @@ struct AsyncExecContext {
     MQTTClient*      mqtt;           // MQTT 客户端指针
     SemaphoreHandle_t taskSlot;      // 完成后归还的计数信号量
     uint32_t         operationId = 0;
+    uint32_t         peripheralConfigEpoch = 0; // Captured before worker enqueue, not at execution.
+    FastBee::UartEventOrigin uartOrigin;
+    FastBee::OrdinaryControlContext ordinaryControl;
     unsigned long    queuedAt = 0;
     unsigned long    deadlineAt = 0;
     uint8_t          queuePosition = 0;
@@ -102,7 +109,11 @@ struct AsyncExecContext {
 // ========== 异步执行结果 ==========
 
 struct AsyncExecResult {
+    FastBee::OrdinaryControlResult ordinaryControlResult;
     uint32_t         operationId = 0;
+    uint32_t         peripheralConfigEpoch = 0;
+    FastBee::UartEventOrigin uartOrigin;
+    FastBee::OrdinaryControlContext ordinaryControl;
     String           ruleId;
     String           ruleName;
     AsyncExecStatus  status = AsyncExecStatus::PENDING;
@@ -113,9 +124,8 @@ struct AsyncExecResult {
     unsigned long    deadlineAt = 0;
     uint8_t          queuePosition = 0;
     bool             asyncExecution = true;
-    // 本次执行实际上报物联网平台的动作结果数量（reportAfterExec 勾选且产生可上报结果时 > 0）。
-    // 用于回归验证：GPIO/PWM/DAC、NeoPixel、Modbus 写等属性控制动作
-    // 勾选“上报数据”后确实生成上报。
+    // Results offered to the report path, not accepted MQTT packets or delivery.
+    // Serialization, admission and transport can still fail after this count.
     uint8_t          reportCount = 0;
     uint8_t          actionCount = 0;
     uint8_t          actionTraceCount = 0;

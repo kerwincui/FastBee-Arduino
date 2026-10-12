@@ -6,6 +6,9 @@
 // retain legacy FC03/FC06 behavior; explicit invalid profiles fail closed.
 struct MotorProtocol {
     bool configured = false, valid = true, finitePulseMove = true;
+    bool commandPosition = false;
+    bool startupReference = false;
+    int32_t startupPosition = 0;
     uint8_t readFunction = 3, writeFunction = 6;
     uint16_t speedReadRegister = 0, pulseReadRegister = 0;
     uint16_t forwardValue = 1, reverseValue = 1, stopValue = 1;
@@ -14,7 +17,7 @@ struct MotorProtocol {
         return configured ? (pulse ? pulseReadRegister : speedReadRegister) : regs[pulse ? 4 : 3];
     }
     bool legacyMapping(const uint16_t* regs) const {
-        return valid && finitePulseMove && readFunction == 3 && writeFunction == 6 &&
+        return valid && finitePulseMove && !commandPosition && readFunction == 3 && writeFunction == 6 &&
             forwardValue == 1 && reverseValue == 1 && stopValue == 1 &&
             readRegister(regs, false) == regs[3] && readRegister(regs, true) == regs[4];
     }
@@ -39,6 +42,25 @@ inline const char* loadMotorProtocol(JsonObjectConst device, MotorProtocol& out)
         if (!p[key].is<uint16_t>()) return "motorProtocol addresses and values must be uint16 integers";
     }
     if (!p["finitePulseMove"].is<bool>()) return "motorProtocol.finitePulseMove must be boolean";
+    if (!p["positionTracking"].isUnbound()) {
+        if (!p["positionTracking"].is<const char*>()) return "motorProtocol.positionTracking must be a string";
+        const char* tracking = p["positionTracking"];
+        if (strcmp(tracking, "conservative") && strcmp(tracking, "commanded"))
+            return "motorProtocol.positionTracking must be conservative or commanded";
+        out.commandPosition = !strcmp(tracking, "commanded");
+    }
+    if (out.commandPosition && !p["finitePulseMove"].as<bool>())
+        return "Command position tracking requires finite pulse motion";
+    if (!p["startupPosition"].isUnbound()) {
+        if (!out.commandPosition || !p["startupPosition"].is<int32_t>())
+            return "motorProtocol.startupPosition requires commanded tracking and an int32 position";
+        const int32_t minimum = device["motorMinPosition"] | 0;
+        const int32_t maximum = device["motorMaxPosition"] | 0;
+        out.startupPosition = p["startupPosition"];
+        if (maximum <= minimum || out.startupPosition < minimum || out.startupPosition > maximum)
+            return "motorProtocol.startupPosition must be inside the configured limits";
+        out.startupReference = true;
+    }
     JsonArrayConst regs = device["motorRegs"].as<JsonArrayConst>();
     if (regs.size() != 5) return "motorRegs must contain five register addresses";
     for (JsonVariantConst reg : regs) if (!reg.is<uint16_t>()) return "motorRegs must contain uint16 integers";
@@ -68,4 +90,6 @@ inline void saveMotorProtocol(JsonObject device, const MotorProtocol& p) {
     out["speedReadRegister"] = p.speedReadRegister; out["pulseReadRegister"] = p.pulseReadRegister;
     out["forwardValue"] = p.forwardValue; out["reverseValue"] = p.reverseValue; out["stopValue"] = p.stopValue;
     out["finitePulseMove"] = p.finitePulseMove;
+    if (p.commandPosition) out["positionTracking"] = "commanded";
+    if (p.startupReference) out["startupPosition"] = p.startupPosition;
 }

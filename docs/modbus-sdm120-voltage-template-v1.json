@@ -1,0 +1,27 @@
+{
+  "type": "fastbee-modbus-instrument",
+  "version": 1,
+  "templateId": "eastron-sdm120-voltage-v1",
+  "model": "Eastron SDM120-Modbus",
+  "revision": "Modbus implementation V2.4",
+  "source": "https://www.eastroneurope.com/images/uploads/products/protocol/SDM120-MODBUS_Protocol.pdf",
+  "sourcePages": "1,3,5",
+  "hardwareVerified": false,
+  "name": "SDM120 volts",
+  "read": {
+    "functionCode": 4,
+    "startAddress": 0,
+    "quantity": 2,
+    "mappings": [
+      {
+        "regOffset": 0,
+        "dataType": 4,
+        "wordOrder": 0,
+        "scaleFactor": 1,
+        "decimalPlaces": 1,
+        "sensorId": "voltage",
+        "unit": "V"
+      }
+    ]
+  }
+}

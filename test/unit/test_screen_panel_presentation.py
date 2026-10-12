@@ -53,7 +53,8 @@ class ScreenPanelPresentationTests(unittest.TestCase):
             build = subprocess.run([compiler, "-std=c++17", "-DUNIT_TEST",
                                     "-DFASTBEE_ENABLE_OTA=1", "-DFASTBEE_ENABLE_REMOTE_RESOURCES=1",
                                     "-DARDUINOJSON_ENABLE_STD_STRING=1", "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0",
-                                    f"-I{ROOT / 'test/mocks'}", f"-I{json}", str(cpp), "-o", str(binary)],
+                                    f"-I{ROOT / 'test/mocks'}", f"-I{ROOT / 'include'}", f"-I{json}", str(cpp),
+                                    str(ROOT / "src/network/FixedJsonField.cpp"), "-o", str(binary)],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True,
@@ -130,6 +131,7 @@ Promise.resolve().then(() => probe(false)).then(() => probe(true)).then(() => co
 CPP = r'''
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <array>
 #include <cassert>
 #include <cstring>

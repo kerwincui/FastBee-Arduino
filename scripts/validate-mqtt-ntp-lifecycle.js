@@ -107,39 +107,44 @@ function checkNtpLifecycle() {
 
 function checkMqttLifecycle() {
     const route = read('src/network/handlers/MqttRouteHandler.cpp');
+    const diagnostics = read('src/protocols/MqttDiagnosticJson.cpp');
     const statusHandler = snippetBetween(
         route,
         'void MqttRouteHandler::handleGetMqttStatus',
         'void MqttRouteHandler::handleMqttReconnect'
     );
 
+    const reconnectHandler = snippetBetween(route, 'void MqttRouteHandler::handleMqttReconnect', 'void MqttRouteHandler::handleMqttDisconnect');
     assert(route.includes('loadMqttStatusConfig'), 'MQTT status should read persisted MQTT config');
     assert(route.includes('tryAutoStartMqttForStatus'), 'MQTT status auto-start helper missing');
     assert(route.includes('restartMQTTDeferred'), 'MQTT status should use deferred restart instead of blocking test connect');
     assert(statusHandler.includes('tryAutoStartMqttForStatus'), 'MQTT status handler should invoke auto-start helper');
     assert(statusHandler.indexOf('tryAutoStartMqttForStatus') < statusHandler.indexOf('JsonDocument doc'), 'MQTT auto-start should happen before status response is built');
-    assert(statusHandler.includes('data["autoStartAttempted"]'), 'MQTT status response should expose autoStartAttempted');
-    assert(statusHandler.includes('data["autoStartStarted"]'), 'MQTT status response should expose autoStartStarted');
+    assert(statusHandler.includes('FastBee::setFixedJsonField(data, "autoStartAttempted", autoStartAttempted);'), 'MQTT status response should expose autoStartAttempted');
+    assert(statusHandler.includes('FastBee::setFixedJsonField(data, "autoStartStarted", autoStartStarted);'), 'MQTT status response should expose autoStartStarted');
     assert(statusHandler.includes('if (autoStartAttempted)'), 'MQTT status must refresh the client pointer after failed deferred auto-start');
     assert(statusHandler.includes('data["connecting"]'), 'MQTT status response should expose connecting state');
     assert(statusHandler.includes('configuredServer'), 'MQTT status should return configured server when runtime client is missing');
     // Failure diagnostics must be available without parsing serial output.
     assert(statusHandler.includes('networkConnected'), 'MQTT status should expose active network connectivity separately from internetAvailable');
     assert(statusHandler.includes('lastErrorClass'), 'MQTT status should expose a stable failure class');
-    assert(statusHandler.includes('lastErrorMessage'), 'MQTT status should expose a readable failure message');
+    assert(statusHandler.includes('writeMqttDiagnostic(data,') &&
+        diagnostics.includes('data["lastErrorMessage"] = message'), 'MQTT status should expose a readable failure message');
     assert(statusHandler.includes('statusReason'), 'MQTT status should expose a user-facing status reason');
-    assert(statusHandler.includes('data["stoppedByMemory"]'), 'MQTT status should expose temporary memory-stop state');
-    assert(statusHandler.includes('MQTT_STATUS_STOPPED_BY_MEMORY'), 'MQTT status should expose a stable temporary memory-stop code');
+    assert(statusHandler.includes('FastBee::setFixedJsonField(data, "stoppedByMemory", mqttStoppedByMemory);'), 'MQTT status should expose temporary memory-stop state');
+    assert(statusHandler.includes('MqttDiagnostic::MemoryStopped') &&
+        diagnostics.includes('{-14, "MQTT_STOPPED_BY_MEMORY", "resource",'), 'MQTT status should expose a stable temporary memory-stop code');
     assert(statusHandler.includes('isLastMqttsTlsMemoryFailure'), 'MQTT status should distinguish TLS memory failures from network failures');
     assert(statusHandler.includes('autoStartAttempted && !autoStartStarted'), 'MQTT status should report deferred auto-start failures');
-    assert(statusHandler.includes('MQTT_CLIENT_INIT_FAILED'), 'MQTT status should expose a stable client-init failure name');
-    assert(statusHandler.includes('lastErrorClass"] = "resource"'), 'MQTT auto-start failure should use the resource error class');
+    assert(statusHandler.includes('MqttDiagnostic::ClientStartFailed') &&
+        diagnostics.includes('{-11, "MQTT_CLIENT_INIT_FAILED", "resource",'), 'MQTT auto-start failure should retain its stable name and resource class');
     assert(route.includes('case -11: return "MQTT_CLIENT_INIT_FAILED"'), 'MQTT error-name mapping should include client-init failures');
     assert(route.includes('MQTT_STATUS_CONFIG_ERROR'), 'MQTT status should expose a non-OK code for missing/invalid config');
     assert(route.includes('MQTT_CONFIG_INVALID'), 'MQTT status should expose a stable config failure name');
-    assert(route.includes('doc["success"] = deferredOk'), 'MQTT reconnect should expose rebuild failure in the response envelope');
-    assert(route.includes('data["failureKnown"] = true'), 'MQTT reconnect failure should include a stable failure marker');
-    assert(route.includes('data["disabledByMemory"] = true'), 'MQTT reconnect should expose persisted memory-disable state');
+    assert(route.includes('doc["success"] = deferredOk || pending'), 'MQTT reconnect should distinguish queued work from a completed rebuild');
+    assert(route.includes('FastBee::setFixedJsonField(doc, "data", "lifecyclePending", pending);'), 'MQTT reconnect should expose pending lifecycle work');
+    assert(reconnectHandler.includes('FastBee::setFixedJsonField(doc, "data", "failureKnown", true);'), 'MQTT reconnect failure should include a stable failure marker');
+    assert(reconnectHandler.includes('FastBee::setFixedJsonField(doc, "data", "disabledByMemory", true);'), 'MQTT reconnect should expose persisted memory-disable state');
     assert(route.indexOf('mqttDisabledByMemory') < route.indexOf('if (mqtt && mqtt->getIsConnected())'), 'MQTT reconnect must check memory-disable marker before connected fast path');
 
     const mqttClient = read('src/protocols/MQTTClient.cpp');
@@ -153,11 +158,13 @@ function checkMqttLifecycle() {
     assert(!notifyBlock.includes('const bool networkConnected = _externalClient || WiFi.status() == WL_CONNECTED'),
         'MQTT SSE status must not infer connectivity from transport pointer or WiFi status alone');
     assert(notifyBlock.includes('stoppedByMemory'), 'MQTT SSE status should expose temporary memory-stop state');
-    assert(notifyBlock.includes('MQTT_STOPPED_BY_MEMORY'), 'MQTT SSE status should expose a stable temporary memory-stop name');
+    assert(notifyBlock.includes('FastBee::writeMqttDiagnostic(data, FastBee::MqttDiagnostic::MemoryStopped,') &&
+        diagnostics.includes('{-14, "MQTT_STOPPED_BY_MEMORY", "resource",'), 'MQTT SSE status should expose a stable temporary memory-stop name');
     assert(mqttClient.includes('case -14: return "MQTT_STOPPED_BY_MEMORY"'), 'MQTT SSE error mapping should include temporary memory-stop failures');
     assert(route.includes('return !server.isEmpty() && port > 0 && port <= 65535'), 'MQTT status config loader should reject enabled sections with an empty broker or invalid port');
     assert(statusHandler.includes('if (hasValidConfig && mqttConfigLoaded)'), 'MQTT status must not trust a stale in-memory client after config reload failure');
-    assert(route.includes('MQTT 配置未加载或格式无效，请检查 Broker 地址和端口'), 'MQTT reconnect should explain malformed broker configuration');
+    assert(reconnectHandler.includes('writeMqttDiagnosticData(doc, MqttDiagnostic::BrokerConfigInvalid,') &&
+        diagnostics.includes('MQTT 配置未加载或格式无效，请检查 Broker 地址和端口'), 'MQTT reconnect should explain malformed broker configuration');
 
     // 2025-06 修复: tryAutoStartMqttForStatus 应在 MQTT 已停止时也能触发重启
     const autoStartFn = snippetBetween(route, 'static bool tryAutoStartMqttForStatus', 'static String buildEncryptedPasswordForMqttTest');

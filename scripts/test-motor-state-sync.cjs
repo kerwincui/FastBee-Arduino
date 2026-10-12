@@ -20,6 +20,8 @@ function fixture(protocol) {
         apiGetSilentFresh: async (url, params) => { calls.push({ url, params }); return typeof next === 'function' ? next() : next; },
         apiPostSilentPriority() { throw new Error('Background sync must not submit a command or bus read'); }
     });
+    context.window = context;
+    vm.runInContext(fs.readFileSync(path.join(root, 'web-src/js/utils.js'), 'utf8'), context);
     const file = protocol ? 'protocol/modbus-relay-motor.js' : 'device-control/modbus-ctrl.js';
     vm.runInContext(fs.readFileSync(path.join(root, 'web-src/modules/runtime', file), 'utf8'), context);
     app._getMotorDevParams = () => ({ slaveAddress: 9, motorDecimals: 1 });
@@ -47,6 +49,12 @@ function fixture(protocol) {
         await h.timers.shift().fn(); await drain();
         assert.equal(h.element(h.speed).value, '9.0');
         assert.equal(h.element(h.direction).textContent, '停止应答');
+        h.element(h.speed).dataset.dirty = 'false';
+        h.setNext({ success: true, data: { parametersKnown: false, parametersCached: true,
+            parametersFresh: false, speed: 88, pulse: 330, lastAcknowledgedAction: 'stop' } });
+        await h.timers.shift().fn(); await drain();
+        assert.equal(h.element(h.speed).value, '8.8', 'expired readback stays visible without claiming freshness');
+        h.element(h.speed).dataset.dirty = 'true'; h.element(h.speed).value = '9.0';
         h.document.hidden = true;
         const beforeHidden = h.calls.length;
         await h.timers.shift().fn(); await drain();

@@ -21,6 +21,7 @@ public:
 
 private:
     WebHandlerContext* ctx;
+    void setupMigrationRoutes(AsyncWebServer* server);
 
     // 状态响应缓存
     struct ResponseCache {

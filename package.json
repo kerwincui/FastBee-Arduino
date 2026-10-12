@@ -18,6 +18,7 @@
     "test:device-control": "node scripts/test-device-control-regression.js",
     "test:com15-recovery": "node scripts/test-com15-recovery-offline.mjs",
     "test:web-configuration": "node scripts/test-web-configuration.js",
+    "test:config-wizards": "node scripts/run-config-wizard-tests.js",
     "test:e2e:debug": "npm --prefix test/browser run test -- --debug",
     "test:discover": "node test/e2e/helpers/discover-devices.js",
     "test:e2e:html": "npm --prefix test/browser run test -- --reporter=html",
@@ -31,13 +32,14 @@
     "test:static": "node scripts/check-utf8-text.js README.md README.en.md docs scripts test web-src include src data/config/peripherals.json data/config/periph_exec.json data/config/users.json && node scripts/validate-test-coverage.js && node scripts/validate-device-api-matrix.js && node scripts/validate-device-config-examples.js && node scripts/validate-mqtt-ntp-lifecycle.js && node scripts/validate-build-matrix.js && node scripts/validate-doc-links.js && node scripts/validate-stability-thresholds.js && node scripts/validate-config-defaults.js && node scripts/validate-i18n.js && node scripts/validate-file-sizes.js && node scripts/validate-rule-script-profile.js && node scripts/validate-libdeps-patches.js && node scripts/validate-feature-budgets.js && node scripts/validate-project-hygiene.js && node scripts/test-fim-manifest-validator.js && node scripts/validate-generic-architecture.js && node scripts/validate-network-ui.js && npm run test:web-assets && npm run test:meta && git diff --check",
     "test:meta": "node scripts/test-config-sanitizer.js && node scripts/test-project-hygiene-credentials.js && node scripts/test-repository-retention.js && node scripts/test-deploy-pio-observability.js && node scripts/test-firmware-build-lock.js && node scripts/test-verify-deployed-flash.js && node scripts/test-test-all-contract.js && node scripts/test-test-coverage-validator.js && node scripts/test-build-artifacts-validator.js && node scripts/test-device-config-examples-validator.js && node scripts/test-native-runner.js && node scripts/test-utf8-checker.js && node scripts/test-device-discovery.js && node scripts/test-web-publish-lock.js",
     "test:screen-panel-soak": "node --test test/unit/test_screen_panel_soak.mjs",
-    "test:contracts": "npm run test:partition && npm run test:memory && npm run test:device-config && node scripts/test-motor-control-lifecycle.js && node scripts/test-rgb-touch-build-contract.js && npm run test:screen-panel-soak",
+    "test:contracts": "npm run test:partition && npm run test:memory && npm run test:device-config && node scripts/test-motor-control-lifecycle.js && node scripts/test-rgb-touch-build-contract.js && npm run test:screen-panel-soak && npm run test:device-control && npm run test:web-configuration && npm run test:config-wizards",
     "test:all": "npm run test:host",
     "precommit": "npm run test:static && npm run test:contracts && echo 'Pre-commit validation passed!'",
     "postbuild": "node scripts/test-build-artifacts.js --quiet"
   },
   "devDependencies": {
     "@gfx/zopfli": "1.0.15",
+    "acorn": "8.18.0",
     "terser": "5.51.2"
   }
 }

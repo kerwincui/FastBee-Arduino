@@ -46,10 +46,10 @@ function Resolve-ConfigSource {
     return $resolved
 }
 
-$c3ConfigSource = Resolve-ConfigSource -OverridePath $C3ConfigPath -RepositoryPath "docs\esp32c3-deployment-config.json"
+$c3ConfigSource = Resolve-ConfigSource -OverridePath $C3ConfigPath -RepositoryPath "docs\device-test-configs\com4-esp32c3-f4r0\config"
 $c6ConfigSource = Resolve-ConfigSource -OverridePath $C6ConfigPath -RepositoryPath "docs\c6-rgb-led-f4r0"
-$classicConfigSource = Resolve-ConfigSource -OverridePath $ClassicConfigPath -RepositoryPath "docs\puzhong-esp32-config.json"
-$s3F16ConfigSource = Resolve-ConfigSource -OverridePath $S3F16ConfigPath -RepositoryPath "docs\ecm50a-s3-f16r8"
+$classicConfigSource = Resolve-ConfigSource -OverridePath $ClassicConfigPath -RepositoryPath "docs\device-test-configs\com16-esp32-f4r0\config"
+$s3F16ConfigSource = Resolve-ConfigSource -OverridePath $S3F16ConfigPath -RepositoryPath "docs\device-test-configs\com15-esp32s3-f16r8\config"
 $s3F8ConfigSource = Resolve-ConfigSource -OverridePath $S3F8ConfigPath -RepositoryPath "docs\waveshare-esp32s3-relay6ch"
 
 # Keep this order stable. USB flashing is serialized and the order is part of

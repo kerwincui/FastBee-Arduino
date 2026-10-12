@@ -315,7 +315,7 @@
                                 <span>配置导入/导出</span>
                             </h4>
                             <p style="margin:0 0 6px;font-size:12px;color:var(--text-secondary)">选择需要导入或导出的配置文件。</p>
-                            <p style="margin:0 0 10px;font-size:11px;color:var(--text-tertiary,--text-secondary);opacity:0.8">提示：配置文件较大时可分多次选择不同文件依次导入。</p>
+                            <p style="margin:0 0 10px;font-size:11px;color:var(--text-tertiary,--text-secondary);opacity:0.8">相互依赖的配置请一起选择。换板时使用接线迁移：保留逻辑ID，所有外设和规则停用，预检后等待下次重启应用。</p>
                             <div class="file-input-wrapper u-mb-10">
                                 <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file">
                                     <span>选择文件</span>
@@ -325,9 +325,13 @@
                                     <span>导入</span>
                                 </button>
                                 <button id="dev-config-export-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <span>导出</span>
+                                    <span>原始备份</span>
                                 </button>
+                                <button id="dev-config-plan-export-btn" type="button" class="fb-btn fb-btn-secondary fb-btn-compact">导出可复用方案</button>
+                                <button id="dev-config-board-migration-btn" type="button" class="fb-btn fb-btn-secondary fb-btn-compact">换板接线迁移</button>
                                 <span id="dev-config-transfer-status" class="file-name-display">--</span>
+                                <button id="dev-config-migration-status-btn" type="button" class="fb-btn fb-btn-secondary fb-btn-compact">迁移状态</button>
+                                <button id="dev-config-migration-discard-btn" type="button" class="fb-btn fb-btn-secondary fb-btn-compact">处理暂存</button>
                             </div>
                         </div>
                     </div>

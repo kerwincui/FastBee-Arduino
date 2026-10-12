@@ -1,0 +1,196 @@
+#include "protocols/MqttDiagnosticJson.h"
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+using FastBee::MqttDiagnostic;
+using FastBee::writeMqttDiagnostic;
+using FastBee::writeMqttDiagnosticData;
+namespace F = FastBee::MqttDiagnosticFields;
+
+struct BudgetAllocator : ArduinoJson::Allocator {
+    int remaining;
+    explicit BudgetAllocator(int count) : remaining(count) {}
+    void* allocate(size_t bytes) override {
+        if (remaining == 0) return nullptr;
+        if (remaining > 0) --remaining;
+        return std::malloc(bytes);
+    }
+    void deallocate(void* memory) override { std::free(memory); }
+    void* reallocate(void* memory, size_t bytes) override {
+        if (remaining == 0) return nullptr;
+        if (remaining > 0) --remaining;
+        return std::realloc(memory, bytes);
+    }
+};
+
+// Unlike a permanently exhausted budget, a transient allocation failure lets
+// subsequent nested assignments retry creating the parent and missing fields.
+struct FailOnceAllocator : ArduinoJson::Allocator {
+    int failedCall;
+    int calls = 0;
+    explicit FailOnceAllocator(int fail) : failedCall(fail) {}
+    bool fail() { return calls++ == failedCall; }
+    void* allocate(size_t bytes) override {
+        return fail() ? nullptr : std::malloc(bytes);
+    }
+    void deallocate(void* memory) override { std::free(memory); }
+    void* reallocate(void* memory, size_t bytes) override {
+        return fail() ? nullptr : std::realloc(memory, bytes);
+    }
+};
+
+static std::string json(const JsonDocument& doc) {
+    std::string result;
+    serializeJson(doc, result);
+    return result;
+}
+
+// These two blocks are the old production writes, kept as a compatibility
+// oracle for allocator failure/order/ownership, not another table implementation.
+static void oldConfig(JsonObject data, bool reason) {
+    data["lastError"] = -12;
+    data["lastErrorCode"] = -12;
+    data["lastErrorName"] = "MQTT_CONFIG_INVALID";
+    data["lastErrorClass"] = "config";
+    data["lastErrorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+    data["errorMessage"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+    if (reason) data["statusReason"] = "MQTT 配置未加载或格式无效，请检查网络配置";
+}
+static void oldMemory(JsonObject data) {
+    static constexpr const char* reason =
+        "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+    data["lastError"] = -13;
+    data["lastErrorCode"] = -13;
+    data["lastErrorName"] = "MQTT_DISABLED_BY_MEMORY";
+    data["lastErrorClass"] = "resource";
+    data["lastErrorMessage"] = reason;
+    data["errorMessage"] = reason;
+    data["statusReason"] = reason;
+}
+
+static void oldNestedAes(JsonDocument& doc) {
+    doc["data"]["error"] = -8;
+    doc["data"]["lastErrorCode"] = -8;
+    doc["data"]["lastErrorName"] = "MQTT_AES_CLIENT_ID_INVALID";
+    doc["data"]["lastErrorClass"] = "config";
+    doc["data"]["errorMessage"] = "AES clientId requires E&deviceNum&productId&userId format";
+    doc["data"]["statusReason"] = "加密认证客户端ID格式无效，应为 E&设备编号&产品编号&用户ID";
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    JsonDocument doc;
+    JsonObject data = doc.to<JsonObject>();
+    if (mode == "shapes") {
+        writeMqttDiagnostic(data, MqttDiagnostic::ClientStartFailed, F::Status);
+        assert(data.size() == 6);
+        assert(data["lastError"].as<int>() == -11 && data["lastErrorCode"].as<int>() == -11);
+        assert(data["error"].isNull() && data["statusReason"].isNull());
+        doc.clear(); data = doc.to<JsonObject>();
+        writeMqttDiagnostic(data, MqttDiagnostic::AesClientIdInvalid, F::Error | F::Reason);
+        assert(data.size() == 6 && data["error"].as<int>() == -8);
+        assert(data["lastError"].isNull() && data["lastErrorMessage"].isNull());
+        assert(data["lastErrorClass"].as<std::string>() == "config");
+        assert(data["errorMessage"].as<std::string>() ==
+               "AES clientId requires E&deviceNum&productId&userId format");
+        assert(data["statusReason"].as<std::string>() ==
+               "加密认证客户端ID格式无效，应为 E&设备编号&产品编号&用户ID");
+        doc.clear(); data = doc.to<JsonObject>();
+        writeMqttDiagnostic(data, MqttDiagnostic::RebuildNotCompleted, F::LastError | F::Reason);
+        assert(data.size() == 6 && data["lastError"].as<int>() == -11);
+        assert(data["lastErrorMessage"].isNull() && data["error"].isNull());
+        assert(data["lastErrorClass"].as<std::string>() == "runtime");
+    } else if (mode == "reason_precedence") {
+        data["statusReason"] = "MQTT 配置未加载";
+        writeMqttDiagnostic(data, MqttDiagnostic::ConfigInvalid, F::Status);
+        assert(data["statusReason"].as<std::string>() == "MQTT 配置未加载");
+        writeMqttDiagnostic(data, MqttDiagnostic::LifecycleBusy, F::Status | F::Reason);
+        assert(data["lastError"].as<int>() == 0);
+        assert(data["lastErrorClass"].as<std::string>() == "pending");
+        writeMqttDiagnostic(data, MqttDiagnostic::MemoryStopped, F::Status | F::Reason);
+        assert(data["lastError"].as<int>() == -14);
+        assert(data["statusReason"].as<std::string>() ==
+               "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连");
+        assert(data["lastErrorClass"].as<std::string>() == "resource");
+    } else if (mode == "separate_messages") {
+        writeMqttDiagnostic(data, MqttDiagnostic::ClientUninitialized, F::Status);
+        assert(data["errorMessage"].as<std::string>() ==
+               "MQTT 客户端未初始化，可能是内存不足或启动失败");
+        writeMqttDiagnostic(data, MqttDiagnostic::ClientStartFailed, F::Status);
+        assert(data["errorMessage"].as<std::string>() ==
+               "MQTT 客户端启动失败，可能是内存不足或配置无效");
+        writeMqttDiagnostic(data, MqttDiagnostic::BrokerConfigInvalid, F::LastError | F::Reason);
+        assert(data["statusReason"].as<std::string>() ==
+               "MQTT 配置未加载或格式无效，请检查 Broker 地址和端口");
+        writeMqttDiagnostic(data, MqttDiagnostic::ConfigSaveFailed, F::Error | F::Reason);
+        assert(data["error"].as<int>() == -10 && data["lastErrorCode"].as<int>() == -10);
+        assert(data["errorMessage"].as<std::string>() == "Failed to preserve or stage MQTT test configuration");
+        assert(data["statusReason"].as<std::string>() == "MQTT 测试配置保全或暂存失败；已有恢复记录保留");
+    } else if (mode == "ownership") {
+        writeMqttDiagnostic(data, MqttDiagnostic::MemoryDisabled, F::Status | F::Reason);
+        assert(data["lastErrorName"].as<JsonString>().isStatic());
+        assert(data["lastErrorMessage"].as<JsonString>().isStatic());
+        assert(data["statusReason"].as<JsonString>().isStatic());
+        doc.clear(); data = doc.to<JsonObject>();
+        writeMqttDiagnostic(data, MqttDiagnostic::MemoryDisabled, F::Status | F::Reason | F::CopyMessage);
+        assert(data["lastErrorName"].as<JsonString>().isStatic());
+        assert(!data["lastErrorMessage"].as<JsonString>().isStatic());
+        assert(!data["statusReason"].as<JsonString>().isStatic());
+        assert(data["errorMessage"].as<std::string>() == data["lastErrorMessage"].as<std::string>());
+    } else if (mode == "allocation_failures") {
+        for (int budget = 0; budget < 12; ++budget) {
+            for (int variant = 0; variant < 3; ++variant) {
+                BudgetAllocator oldAlloc(budget), newAlloc(budget);
+                JsonDocument oldDoc(&oldAlloc), newDoc(&newAlloc);
+                JsonObject oldData = oldDoc.to<JsonObject>(), newData = newDoc.to<JsonObject>();
+                if (variant == 2) {
+                    oldMemory(oldData);
+                    writeMqttDiagnostic(newData, MqttDiagnostic::MemoryDisabled, F::Status | F::Reason | F::CopyMessage);
+                } else {
+                    oldConfig(oldData, variant != 0);
+                    writeMqttDiagnostic(newData, MqttDiagnostic::ConfigInvalid,
+                                        F::Status | (variant ? F::Reason : 0));
+                }
+                assert(json(oldDoc) == json(newDoc));
+                assert(oldDoc.overflowed() == newDoc.overflowed());
+                assert(oldAlloc.remaining == newAlloc.remaining);
+            }
+        }
+    } else if (mode == "nested_allocation_failures") {
+        for (int failedCall = -1; failedCall < 16; ++failedCall) {
+            for (int variant = 0; variant < 3; ++variant) {
+                FailOnceAllocator oldAlloc(failedCall), newAlloc(failedCall);
+                JsonDocument oldDoc(&oldAlloc), newDoc(&newAlloc);
+                if (variant != 0) {
+                    oldDoc["success"] = true; newDoc["success"] = true;
+                    oldDoc["data"]["connected"] = false; newDoc["data"]["connected"] = false;
+                }
+                if (variant == 2) {
+                    oldDoc["data"]["statusReason"] = "existing";
+                    newDoc["data"]["statusReason"] = "existing";
+                    oldDoc["data"]["unrelated"] = 17; newDoc["data"]["unrelated"] = 17;
+                }
+                oldNestedAes(oldDoc);
+                writeMqttDiagnosticData(newDoc, MqttDiagnostic::AesClientIdInvalid, F::Error | F::Reason);
+                oldDoc["data"]["after"] = "observed"; newDoc["data"]["after"] = "observed";
+                assert(json(oldDoc) == json(newDoc));
+                assert(oldDoc.overflowed() == newDoc.overflowed());
+                assert(oldAlloc.calls == newAlloc.calls);
+            }
+        }
+    } else if (mode == "invalid_and_ok") {
+        data["sentinel"] = 17;
+        const std::string before = json(doc);
+        writeMqttDiagnostic(data, static_cast<MqttDiagnostic>(255), F::Status | F::Reason);
+        assert(json(doc) == before);
+        writeMqttDiagnostic(data, MqttDiagnostic::Ok, F::Status);
+        assert(data["sentinel"].as<int>() == 17);
+        assert(data["lastError"].as<int>() == 0);
+        assert(data["lastErrorName"].as<std::string>() == "OK");
+        assert(data["lastErrorClass"].as<std::string>() == "none");
+        assert(data["errorMessage"].as<std::string>().empty());
+    } else return 2;
+    assert(!doc.overflowed());
+}

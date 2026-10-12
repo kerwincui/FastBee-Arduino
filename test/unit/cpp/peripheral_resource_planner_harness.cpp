@@ -235,6 +235,52 @@ void testBoardProfiles() {
     assert(c6.defaults.spiCs == 18);
 }
 
+void testC3ProfileAndPreflight() {
+    const BoardProfile& c3 = getEsp32C3Profile();
+    assert(c3.id == BoardProfileId::ESP32_C3_GENERIC);
+    assert(strcmp(c3.key, "esp32-c3") == 0);
+    assert(&getBoardProfile(BoardProfileId::ESP32_C3_GENERIC) == &c3);
+    assert(c3.pinCount == 22 && !findBoardPin(c3, 22));
+    assert(c3.resources.genericUartCount == 1);
+    assert(c3.resources.ledcChannelCount == 6);
+    assert(c3.resources.rmtChannelCount == 2);
+    assert(c3.resources.pcntUnitCount == 0 && !c3.resources.sdmmcSupported);
+    assert(c3.defaults.onboardRgb == BOARD_PIN_NONE);
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    assert(&getCompiledBoardProfile() == &c3);
+#endif
+    for (uint8_t pin = 11; pin <= 17; ++pin) {
+        assert(findBoardPin(c3, pin)->policy == PinPolicy::HARD_FORBIDDEN);
+        const auto result = run(c3, nullptr, 0, makeGpio("flash", pin));
+        assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_HARD_FORBIDDEN));
+    }
+    assert(run(c3, nullptr, 0, makeGpio("ordinary", 3)).allowed);
+    auto result = run(c3, nullptr, 0, makeGpio("strap", 8));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_STRAPPING_ACK_REQUIRED));
+    PreflightContext acknowledged;
+    acknowledged.acknowledgements = ACK_STRAPPING_PIN;
+    assert(run(c3, nullptr, 0, makeGpio("strap", 8), PreflightOperation::ADD, acknowledged).allowed);
+    result = run(c3, nullptr, 0, makeGpio("usb", 18));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_USB_SERIAL_JTAG_ACTIVE));
+    result = run(c3, nullptr, 0, makeGpio("console", 21));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_UART0_ACTIVE));
+    assert(run(c3, nullptr, 0, makeAdc("adc1", 0)).allowed);
+    result = run(c3, nullptr, 0, makeAdc("adc2", 5));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_ADC_UNSUPPORTED));
+    result = run(c3, nullptr, 0, makePwm("pwm", 3, 6, 1000));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::LEDC_CHANNEL_INVALID));
+    PeripheralConfig uart = makeUart("uart1", 0, 1);
+    assert(run(c3, nullptr, 0, uart).allowed);
+    result = run(c3, &uart, 1, makeUart("uart2", 3, 10));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::UART_PORT_EXHAUSTED));
+    PeripheralConfig strips[] = {makeNeoPixel("strip1", 0), makeNeoPixel("strip2", 1)};
+    result = run(c3, strips, 2, makeNeoPixel("strip3", 3));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::RMT_CHANNEL_EXHAUSTED));
+    PeripheralConfig i2c = makeI2cSensor("sht", 0, 1, 0x44);
+    result = run(c3, &i2c, 1, makeI2cSensor("duplicate", 0, 1, 0x44));
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::I2C_ADDRESS_CONFLICT));
+}
+
 void testPinPoliciesAndCapabilities() {
     const BoardProfile& c6 = getEsp32C6DevKitC1Profile();
     PeripheralConfig strap = makeGpio("strap", 9);
@@ -469,6 +515,10 @@ void testGenericSensorPinRolesAndI2cSharing() {
     assert(result.hasIssue(PreflightIssueCode::I2C_ADDRESS_CONFLICT));
 
     PeripheralConfig lcdExisting[] = {makeLcd1602("lcd", 10, 11, 0x27)};
+    result = run(c6, lcdExisting, 1, bmp);
+    assert(!result.allowed); // LCD uses 100 kHz; BMP currently requests 400 kHz.
+    assert(result.hasIssue(PreflightIssueCode::I2C_BUS_PINS_MISMATCH));
+    bmp.params.sensor.frequency = 100000;
     result = run(c6, lcdExisting, 1, bmp);
     assert(result.allowed);
     assert(result.hasIssue(PreflightIssueCode::RESOURCE_SHARED));
@@ -742,13 +792,82 @@ void testRgbDisplaySharesI2cButOwnsAllDataAndCommandPins() {
     assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_DUPLICATED));
 }
 
+void testMcpAndPcfResourceReferences() {
+    const BoardProfile& profile = getEsp32C6DevKitC1Profile();
+    PeripheralConfig bus = makeI2c("bus", 23, 22, 0);
+    PeripheralConfig reset = makeGpio("reset", 18);
+    reset.params.gpio.initialState = GPIOState::STATE_HIGH;
+    PeripheralConfig parent;
+    parent.id = "mcp"; parent.type = PeripheralType::IO_EXPANDER; parent.enabled = true;
+    parent.pinCount = 0;
+    strcpy(parent.params.ioExpander.driver, "MCP23017");
+    strcpy(parent.params.ioExpander.busPeripheralId, "bus");
+    strcpy(parent.params.ioExpander.resetPeripheralId, "reset");
+    parent.params.ioExpander.address = 0x20;
+    PeripheralConfig existing[] = {bus, reset, parent};
+    auto result = run(profile, existing, 2, parent);
+    assert(result.allowed);
+    bool busSeen = false, resetSeen = false;
+    for (size_t i = 0; i < result.claimCount; ++i) {
+        const auto& claim = result.claims[i];
+        if (strcmp(claim.ownerId, "mcp")) continue;
+        if (claim.kind == ResourceKind::I2C_BUS) {
+            busSeen = claim.parameterA == 400000 && claim.pins[0] == 23 && claim.pins[1] == 22;
+        }
+        if (claim.kind == ResourceKind::CONTROL_OUTPUT) resetSeen = claim.index == 18;
+    }
+    assert(busSeen && resetSeen);
+    PeripheralConfig channel = makeGpio("b7", 255);
+    channel.pinCount = 0; channel.params.gpio.ioSource = 1; channel.params.gpio.channel = 15;
+    strcpy(channel.params.gpio.providerId, "mcp");
+    result = run(profile, existing, 3, channel);
+    assert(result.allowed && !result.hasIssue(PreflightIssueCode::PIN_REQUIRED));
+    channel.type = PeripheralType::GPIO_DIGITAL_INPUT;
+    result = run(profile, existing, 3, channel);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::IO_REFERENCE_INVALID));
+    channel.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    PeripheralConfig withChannel[] = {bus, reset, parent, channel};
+    channel.id = "duplicate-b7";
+    result = run(profile, withChannel, 4, channel);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::IO_CHANNEL_CONFLICT));
+    auto second = parent; second.id = "other-mcp"; second.params.ioExpander.address = 0x21;
+    result = run(profile, existing, 3, second);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::CONTROL_OUTPUT_CONFLICT));
+    existing[1].params.gpio.invertLogic = true;
+    result = run(profile, existing, 2, parent);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::CONTROL_REFERENCE_INVALID));
+    existing[1] = reset;
+    auto pcf = parent; strcpy(pcf.params.ioExpander.driver, "PCF8574"); pcf.params.ioExpander.resetPeripheralId[0] = 0;
+    result = run(profile, existing, 2, pcf);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::I2C_REFERENCE_INVALID));
+    existing[0].params.i2c.frequency = 100000;
+    result = run(profile, existing, 2, pcf);
+    assert(result.allowed);
+    auto differentFrequency = makeI2c("fast-bus", 23, 22, 0);
+    result = run(profile, existing, 1, differentFrequency);
+    assert(!result.allowed && result.hasIssue(PreflightIssueCode::I2C_BUS_PINS_MISMATCH));
+}
+
+void testClassicPsramIsNeverAnAcknowledgableOutput() {
+    for (uint8_t gpio : {uint8_t(16), uint8_t(17)}) {
+        const auto output = makeGpio("memory-pin", gpio);
+        auto result = run(getEsp32ModuleProfile(false), nullptr, 0, output);
+        assert(result.allowed);
+        result = run(getEsp32ModuleProfile(true), nullptr, 0, output);
+        assert(!result.allowed && result.hasIssue(PreflightIssueCode::PIN_HARD_FORBIDDEN));
+    }
+}
+
 }  // namespace
 
 int main() {
+    testClassicPsramIsNeverAnAcknowledgableOutput();
     testBoardProfiles();
+    testC3ProfileAndPreflight();
     testPinPoliciesAndCapabilities();
     testExistingRiskDiagnosticsDoNotLeakIntoCandidatePreflight();
     testI2cSharingAndAddressExclusion();
+    testMcpAndPcfResourceReferences();
     testSpiSharingAndCsExclusion();
     testC6ExclusiveResourcesAndSdspiOnly();
     testLedcTimerAndChannelClaims();

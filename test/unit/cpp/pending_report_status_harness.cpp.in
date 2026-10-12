@@ -1,0 +1,112 @@
+#include "document_json_probe.h"
+#include "network/FixedJsonField.h"
+#include "core/PendingReportQueue.h"
+#include <iostream>
+using Queue = FastBee::PendingReportQueue;
+
+@STATUS_SERIALIZERS@
+
+static const char* Fallback = "{\"available\":false,\"deliveryVerified\":false}";
+
+std::vector<Queue::Status> cases() {
+    std::vector<Queue::Status> result;
+    for (bool available : {false, true})
+        for (bool flight : {false, true})
+            for (size_t depth : {size_t(0), size_t(1), Queue::Capacity})
+                for (uint32_t delay : {uint32_t(0), uint32_t(1), Queue::RetryMs, UINT32_MAX})
+                    for (auto retry : {Queue::LastRetry::None, Queue::LastRetry::Accepted,
+                                       Queue::LastRetry::Rejected, Queue::LastRetry::InstanceChanged}) {
+                        Queue::Status status;
+                        status.available = available; status.inFlight = flight;
+                        status.depth = depth; status.retryDelayMs = delay; status.lastRetry = retry;
+                        status.oldestAgeMs = UINT32_MAX; status.oldestAttempts = UINT32_MAX;
+                        status.admitted = UINT32_MAX; status.evicted = UINT32_MAX - 1;
+                        status.rejectedInvalid = 2; status.rejectedMemory = 3;
+                        status.rejectedFull = 4; status.rejectedBusy = 5; status.contention = 6;
+                        status.retryAccepted = 7; status.retryRejected = 8;
+                        status.rejectedUnknownInstance = 9; status.discardedInstanceChanged = 10;
+                        result.push_back(status);
+                    }
+    result.push_back(Queue::Status{});
+    Queue::Status empty; empty.available = true; result.push_back(empty);
+    return result;
+}
+
+size_t compare(const Queue::Status& status,
+               size_t fault = std::numeric_limits<size_t>::max(),
+               bool persistent = false, unsigned stringMode = 0) {
+    DocumentProbeAllocator baseline(fault, persistent), current(fault, persistent), draft(fault, persistent);
+    StatusStringProbe::reset(stringMode);
+    const String a = FastBee::pendingReportStatusJsonOracle(status, baseline);
+    const auto oldStringTrace = std::make_pair(StatusStringProbe::reserveCalls, StatusStringProbe::concatCalls);
+    StatusStringProbe::reset(stringMode);
+    const String b = FastBee::pendingReportStatusJsonCurrent(status, current);
+    const auto currentStringTrace = std::make_pair(StatusStringProbe::reserveCalls, StatusStringProbe::concatCalls);
+    StatusStringProbe::reset(stringMode);
+    const String c = FastBee::pendingReportStatusJsonDraft(status, draft);
+    const auto draftStringTrace = std::make_pair(StatusStringProbe::reserveCalls, StatusStringProbe::concatCalls);
+    StatusStringProbe::reset(0);
+    assert(std::string(a.c_str(), a.length()) == std::string(b.c_str(), b.length()));
+    assert(std::string(a.c_str(), a.length()) == std::string(c.c_str(), c.length()));
+    assert(baseline.events == current.events && baseline.events == draft.events);
+    assert(baseline.eligible == current.eligible && baseline.eligible == draft.eligible);
+    assert(baseline.failures == current.failures && baseline.failures == draft.failures);
+    assert(oldStringTrace == currentStringTrace && oldStringTrace == draftStringTrace);
+    assert(baseline.blocks.empty() && current.blocks.empty() && draft.blocks.empty());
+    if (baseline.failures || stringMode) {
+        assert(a == Fallback);
+    } else {
+        JsonDocument parsed;
+        assert(!deserializeJson(parsed, a.c_str(), a.length()));
+        assert(parsed["available"].is<bool>() && parsed["available"] == status.available);
+        assert(parsed["deliveryVerified"].is<bool>() && parsed["deliveryVerified"] == false);
+        assert(parsed["bindingScope"] == "mqtt_instance");
+        if (!status.available) assert(parsed.size() == 3);
+        else {
+            assert(parsed.size() == (status.depth ? 24 : 23));
+            assert(parsed["depth"].as<size_t>() == status.depth);
+            assert(parsed["capacity"].as<size_t>() == Queue::Capacity);
+            assert(parsed["maxPayloadBytes"].as<size_t>() == Queue::MaxBytes);
+            assert(parsed["retryIntervalMs"].as<uint32_t>() == Queue::RetryMs);
+            assert(parsed["oldestAttempts"].as<uint32_t>() == status.oldestAttempts);
+            assert(parsed["retryDelayMs"].as<uint32_t>() == status.retryDelayMs);
+            assert(parsed["inFlight"].as<bool>() == status.inFlight);
+            assert(parsed["retryState"] == (!status.depth ? "empty" : status.inFlight ? "in_flight" :
+                                            status.retryDelayMs ? "cooldown" : "ready"));
+            assert(parsed["lastRetryResult"] == (status.lastRetry == Queue::LastRetry::Accepted ? "accepted" :
+                status.lastRetry == Queue::LastRetry::Rejected ? "rejected" :
+                status.lastRetry == Queue::LastRetry::InstanceChanged ? "instance_changed" : "none"));
+            assert(parsed["oldestAgeMs"].isNull() == !bool(status.depth));
+            if (status.depth) assert(parsed["oldestAgeMs"].as<uint32_t>() == status.oldestAgeMs);
+            assert(parsed["admitted"].as<uint32_t>() == status.admitted);
+            assert(parsed["evicted"].as<uint32_t>() == status.evicted);
+            assert(parsed["rejectedInvalid"].as<uint32_t>() == status.rejectedInvalid);
+            assert(parsed["rejectedMemory"].as<uint32_t>() == status.rejectedMemory);
+            assert(parsed["rejectedFull"].as<uint32_t>() == status.rejectedFull);
+            assert(parsed["rejectedBusy"].as<uint32_t>() == status.rejectedBusy);
+            assert(parsed["contention"].as<uint32_t>() == status.contention);
+            assert(parsed["retryAccepted"].as<uint32_t>() == status.retryAccepted);
+            assert(parsed["retryRejected"].as<uint32_t>() == status.retryRejected);
+            assert(parsed["rejectedUnknownInstance"].as<uint32_t>() == status.rejectedUnknownInstance);
+            assert(parsed["discardedInstanceChanged"].as<uint32_t>() == status.discardedInstanceChanged);
+        }
+    }
+    return baseline.eligible;
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    for (const auto& status : cases()) {
+        const size_t allocations = compare(status);
+        if (mode == "pending-allocation-faults") {
+            for (bool persistent : {false, true})
+                for (size_t fault = 0; fault < allocations; ++fault)
+                    compare(status, fault, persistent);
+        } else if (mode == "pending-string-faults") {
+            for (unsigned fault = 1; fault <= 4; ++fault)
+                compare(status, std::numeric_limits<size_t>::max(), false, fault);
+        } else assert(mode == "pending-values");
+    }
+    std::cout << "PASS " << mode << '\n';
+}

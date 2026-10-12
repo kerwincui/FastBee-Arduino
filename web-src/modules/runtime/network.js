@@ -33,50 +33,22 @@
             const wifiScanBtn = document.getElementById('wifi-scan-btn');
             if (wifiScanBtn) wifiScanBtn.addEventListener('click', () => this.scanWifiNetworks());
 
-            // 基本配置表单提交
-            const wifiForm = document.getElementById('wifi-form');
-            if (wifiForm) {
-                wifiForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveNetworkConfig();
-                });
-            }
-
-            // 热点配置表单提交
-            const apForm = document.getElementById('ap-form');
-            if (apForm) {
-                apForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveAPConfig();
-                });
-            }
-
-            // 高级配置表单提交
-            const advancedForm = document.getElementById('advanced-form');
-            if (advancedForm) {
-                advancedForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveAdvancedConfig();
-                });
-            }
-
-            // 以太网配置表单提交
-            const ethernetForm = document.getElementById('ethernet-form');
-            if (ethernetForm) {
-                ethernetForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveEthernetConfig();
-                });
-            }
-
-            // 4G 配置表单提交
-            const cellularForm = document.getElementById('cellular-form');
-            if (cellularForm) {
-                cellularForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveCellularConfig();
-                });
-            }
+            // 网络配置表单提交；保持 DOM 绑定顺序及提交时的方法查找。
+            [
+                ['wifi-form', 'saveNetworkConfig'],
+                ['ap-form', 'saveAPConfig'],
+                ['advanced-form', 'saveAdvancedConfig'],
+                ['ethernet-form', 'saveEthernetConfig'],
+                ['cellular-form', 'saveCellularConfig']
+            ].forEach(([id, method]) => {
+                const form = document.getElementById(id);
+                if (form) {
+                    form.addEventListener('submit', (e) => {
+                        e.preventDefault();
+                        this[method]();
+                    });
+                }
+            });
 
             // DHCP/静态IP切换
             const wifiDhcp = document.getElementById('wifi-dhcp');
@@ -143,7 +115,7 @@
             }
 
             // IP配置部分：仅WiFi和以太网需要DHCP/静态IP配置
-            const ipConfigSection = document.querySelector('#advance > .fb-section-title');
+            const ipConfigSection = document.querySelector('#advanced-form > .fb-section-title');
             if (ipConfigSection) {
                 const ipGrid = ipConfigSection.nextElementSibling;
                 const showIpConfig = (value === '0' || value === '1');
@@ -176,7 +148,7 @@
 
             // 连接设置部分：仅WiFi模式需要超时/重连配置
             const connSettings = document.querySelectorAll('#advance .fb-section-title-mt');
-            // 注意：域名配置被包在 #domain-config-section 中，连接设置是 #advance 的直接子元素
+            // 域名配置在 #domain-config-section 中，连接设置在高级配置表单中。
             const connTitles = Array.from(connSettings).filter(el => !el.closest('#domain-config-section'));
             if (connTitles.length >= 1) {
                 const connTitle = connTitles[0];

@@ -10,6 +10,7 @@ async function setup(page:any,nc=true,protocol=1){
   w.AppState={_modbusDevices:[{slaveAddress:6,channelCount:2,controlProtocol:protocol,ncMode:nc}],_activeDeviceIdx:0,_dcCoilStates:{},_dcDeviceOnline:{},_coilStates:[],_deviceCoilCache:{},_dcLifecycleGeneration:1,_dcIsLifecycleActive:()=>true,
    _markCtrlModalOnline:()=>{},_stopAutoRefreshOnErrors:()=>{},_setCtrlModalOffline:()=>{},_appendDebugLog:(_:any,title:any)=>w.debug.push(title),_appendDebugError:()=>{}};
  },{nc,protocol});
+ await page.addScriptTag({path:path.resolve(runtime,'../../js/utils.js')});
  await page.addScriptTag({path:path.join(runtime,'device-control/modbus-ctrl.js')});
  await page.addScriptTag({path:path.join(runtime,'protocol/modbus-relay-motor.js')});
  await page.evaluate(()=>{const w=window as any;w.AppState._appendDebugLog=(_:any,title:any)=>w.debug.push(title);});

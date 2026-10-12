@@ -12,33 +12,63 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "RuleScript.h"
+#include "core/FeatureInstanceRegistry.h"
+#include "core/RuleScriptLifetime.h"
+#include "core/RuleScriptResources.h"
 
 class RuleScriptManager {
 public:
     static RuleScriptManager& getInstance();
+    FastBee::FeatureInstanceSnapshot observeFeatureInstance() const;
 
     RuleScriptManager(const RuleScriptManager&) = delete;
     RuleScriptManager& operator=(const RuleScriptManager&) = delete;
 
     // 初始化（加载配置、创建信号量）
     bool initialize();
+    // Stops new access immediately. A busy holder performs final cleanup after
+    // unlocking; false means cleanup remains pending, never forced deletion.
+    bool stop();
+    bool isRunning() const { return _lifetime.running(); }
+
+    class AccessGuard {
+    public:
+        explicit AccessGuard(const RuleScriptManager& owner)
+            : _owner(owner._lifetime.acquire() ? &owner : nullptr) {}
+        ~AccessGuard() {
+            if (_owner) {
+                _owner->_lifetime.release();
+                const_cast<RuleScriptManager*>(_owner)->cleanupIfIdle();
+            }
+        }
+        AccessGuard(const AccessGuard&) = delete;
+        AccessGuard& operator=(const AccessGuard&) = delete;
+        bool admitted() const { return _owner != nullptr; }
+        SemaphoreHandle_t mutex() const { return _owner ? _owner->_mutex : nullptr; }
+    private:
+        const RuleScriptManager* _owner;
+    };
 
     // ========== CRUD ==========
+    // Success means disk commit and live replacement both completed. Failure
+    // retains the running map; response loss still requires reading back.
     bool addRule(const RuleScript& rule);
-    bool updateRule(const String& id, const RuleScript& rule);
+    bool updateRule(const String& id, const RuleScript& rule, const RuleScript* expected = nullptr);
     bool removeRule(const String& id);
-    RuleScript* getRule(const String& id);
+    bool copyRule(const String& id, RuleScript& result) const;
     std::vector<RuleScript> getAllRules() const;
-    // 零拷贝迭代用：调用方须自行持 getMutex() 保证线程安全
-    const std::map<String, RuleScript>& getRulesRef() const { return _rules; }
-    SemaphoreHandle_t getMutex() const { return _mutex; }
+    // Zero-copy readers must hold AccessGuard, then its mutex. The guard must
+    // outlive the lock and every use of this reference.
+    using RuleMap = FastBee::RuleScriptMap<String, RuleScript>;
+    const RuleMap& getRulesRef() const { return _rules; }
     bool enableRule(const String& id);
     bool disableRule(const String& id);
-    size_t getRuleCount() const { return _rules.size(); }
+    size_t getRuleCount() const;
 
     // ========== 持久化 ==========
     bool saveConfiguration();
     bool loadConfiguration();
+    bool importConfiguration(const JsonDocument& document, String& error);
 
     // ========== 数据转换管道 ==========
 
@@ -54,15 +84,25 @@ public:
 
     // 数据上报转换（由各协议发送方法调用）
     String applyReportTransform(uint8_t protocolType, const String& rawData);
+    // Bounded queue admission: busy/allocation failure is rejection, not a raw
+    // fallback. A successful output is frozen before leaving the caller.
+    bool tryApplyReportTransform(uint8_t protocolType, const String& rawData,
+                                 String& output, size_t maxBytes);
 
 private:
     RuleScriptManager() = default;
 
     // 规则存储
-    std::map<String, RuleScript> _rules;
+    RuleMap _rules;
+    // Caller holds _mutex. Null replacement removes an existing identity.
+    bool commitRuleChange(const String& id, const RuleScript* replacement);
 
     // FreeRTOS 互斥量
     SemaphoreHandle_t _mutex = nullptr;
+    mutable FastBee::RuleScriptLifetime _lifetime;
+    std::atomic<bool> _startFailed{false};
+    void cleanupIfIdle();
+    bool loadConfigurationLocked();
 
     // 模板引擎
     static String applyTemplate(const String& templateStr, const String& jsonInput);

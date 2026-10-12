@@ -1,0 +1,351 @@
+#include <cassert>
+#include <string>
+#include <map>
+#include <functional>
+#define ARDUINOJSON_ENABLE_ARDUINO_STRING 0
+#include "core/RuleScriptConfigValidation.h"
+#define FASTBEE_MEMORY_BUDGET_H
+namespace FastBee {
+struct MemoryBudget {
+    static inline uint32_t free = 1024 * 1024, largest = 1024 * 1024;
+    static uint32_t dram8Free() { return free; }
+    static uint32_t dram8Largest() { return largest; }
+};
+}
+#include "core/RuleScriptResources.h"
+unsigned stringOperations = 0, failStringAt = 0;
+bool failNextMalloc = false;
+extern "C" void* __real_malloc(size_t);
+extern "C" void* __wrap_malloc(size_t bytes) {
+    if (failNextMalloc) { failNextMalloc = false; return nullptr; }
+    return __real_malloc(bytes);
+}
+class String {
+    std::string text;
+public:
+    String() = default;
+    String(const char* value) : text(value ? value : "") {}
+    String(std::string value) : text(std::move(value)) {}
+    size_t length() const { return text.size(); }
+    const char* c_str() const { return text.c_str(); }
+    bool isEmpty() const { return text.empty(); }
+    bool reserve(unsigned int size) { if (++stringOperations == failStringAt) return false; text.reserve(size); return true; }
+    bool concat(const char* bytes, unsigned int size) { if (++stringOperations == failStringAt) return false; text.append(bytes,size); return true; }
+    friend bool operator<(const String& a, const String& b) { return a.text < b.text; }
+    friend bool operator==(const String& a, const String& b) { return a.text == b.text; }
+    friend bool operator!=(const String& a, const String& b) { return !(a == b); }
+};
+struct RuleScript {
+    String id, name, scriptContent, sourceTopic, targetTopic;
+    bool enabled = true;
+    uint8_t triggerType = 0, protocolType = 0;
+    uint32_t lastTriggerTime = 0, triggerCount = 0;
+};
+bool busy = false, held = false, primaryExists = true, backupExists = false;
+struct MutexGuard {
+    bool owned;
+    MutexGuard(void*, int = 0) : owned(!busy && !held) { if (owned) held = true; }
+    ~MutexGuard() { if (owned) held = false; }
+    bool isLocked() const { return owned; }
+};
+struct Logger {
+    void info(const char*) {} void error(const char*) {}
+    template<class... Args> void infof(Args...) {}
+    template<class... Args> void warningf(Args...) {}
+} LOGGER;
+#define RULE_SCRIPT_CONFIG_FILE "/config/rule_scripts.json"
+struct ConfigStorage {
+    bool saveOk = true, loadOk = true;
+    unsigned saves = 0, loads = 0;
+    std::function<void()> duringSave;
+    JsonDocument stored;
+    static ConfigStorage& getInstance() { static ConfigStorage value; return value; }
+    bool saveImportedJSONConfig(const char* path, const JsonDocument& value) {
+        assert(held && std::string(path) == RULE_SCRIPT_CONFIG_FILE); ++saves;
+        if (duringSave) duringSave();
+        if (saveOk) stored.set(value);
+        return saveOk;
+    }
+    bool loadJSONConfig(const char*, JsonDocument& out) {
+        assert(held); ++loads;
+        if (loadOk) out.set(stored);
+        return loadOk;
+    }
+};
+struct File {
+    bool opened = false;
+    std::string bytes;
+    size_t position = 0;
+    operator bool() const { return opened; }
+    size_t size() const { return bytes.size(); }
+    int read() { return position < bytes.size() ? static_cast<unsigned char>(bytes[position++]) : -1; }
+    size_t readBytes(char* buffer, size_t count) {
+        count = std::min(count, bytes.size() - position);
+        std::memcpy(buffer, bytes.data() + position, count); position += count; return count;
+    }
+    void close() {}
+};
+#define FILE_READ "r"
+struct Files {
+    std::string primaryRaw, backupRaw;
+    unsigned removals = 0, renames = 0;
+    bool exists(const char* path) const { return std::string(path) == RULE_SCRIPT_CONFIG_FILE ? primaryExists : backupExists; }
+    File open(const char* path, const char*) {
+        auto& storage = ConfigStorage::getInstance();
+        File file;
+        if (!exists(path)) return file;
+        ++storage.loads;
+        file.opened = true;
+        if (!storage.loadOk) file.bytes = "broken";
+        else {
+            const auto& raw = std::string(path) == RULE_SCRIPT_CONFIG_FILE ? primaryRaw : backupRaw;
+            if (!raw.empty()) file.bytes = raw;
+            else serializeJson(storage.stored, file.bytes);
+        }
+        return file;
+    }
+    bool remove(const char*) { ++removals; primaryExists = false; return true; }
+    bool rename(const char*, const char*) { ++renames; backupExists = false; primaryExists = true; return true; }
+} LittleFS;
+class TestRuleMap : public FastBee::RuleScriptMap<String, RuleScript> {
+public:
+    RuleScript& operator[](const String& id) {
+        auto found = find(id);
+        if (found != end()) return found->second;
+        if (empty()) { clear(); assert(reserve(64)); }
+        String key(id); RuleScript rule;
+        auto inserted = emplace(std::move(key), std::move(rule));
+        assert(inserted.second); return inserted.first->second;
+    }
+};
+class RuleScriptManager {
+public:
+    void* _mutex = nullptr;
+    using RuleMap = TestRuleMap;
+    RuleMap _rules;
+    // Lifecycle admission is exercised by the separate concurrency harness;
+    // these storage fault fixtures start with an admitted owner.
+    struct AccessGuard {
+        const RuleScriptManager& owner;
+        explicit AccessGuard(const RuleScriptManager& value) : owner(value) {}
+        bool admitted() const { return true; }
+        void* mutex() const { return owner._mutex; }
+    };
+    bool importConfiguration(const JsonDocument&, String&);
+    bool loadConfiguration();
+    bool loadConfigurationLocked();
+    bool copyRule(const String&, RuleScript&) const;
+    bool updateRule(const String&, const RuleScript&, const RuleScript* = nullptr);
+    bool addRule(const RuleScript&);
+    bool removeRule(const String&);
+    bool enableRule(const String&); bool disableRule(const String&);
+    bool commitRuleChange(const String&, const RuleScript*);
+    String generateUniqueId() { return "generated"; }
+};
+@IMPORT@
+@LOAD@
+@COPY@
+@UPDATE@
+@ADD@
+@REMOVE@
+@TOGGLE@
+@COMMIT@
+
+JsonDocument good() {
+    JsonDocument doc;
+    assert(!deserializeJson(doc,R"({"rules":[{"id":"r1","name":"sample","enabled":false,"triggerType":1,"protocolType":0,"scriptContent":"${x}","sourceTopic":"a/+","targetTopic":"b"}]})"));
+    return doc;
+}
+int main(int argc, char** argv) {
+    assert(argc==2); const std::string mode=argv[1];
+    RuleScriptManager manager; String error;
+    RuleScript old; old.id="old"; old.name="old name"; old.scriptContent="old";
+    manager._rules[old.id]=old;
+    auto& store=ConfigStorage::getInstance();
+    auto doc=good();
+    if (mode=="commit") {
+        store.duringSave=[&]{assert(manager._rules.size()==1 && manager._rules.count("old"));};
+        assert(manager.importConfiguration(doc,error));
+        assert(store.saves==1 && manager._rules.size()==1 && manager._rules.count("r1") && !held);
+        RuleScript copy; assert(manager.copyRule("r1",copy) && copy.scriptContent=="${x}" && !copy.enabled);
+    } else if(mode=="save_failure" || mode=="busy") {
+        store.saveOk=false; busy=mode=="busy";
+        assert(!manager.importConfiguration(doc,error));
+        assert(manager._rules.size()==1 && manager._rules.count("old") && store.saves==(busy?0U:1U) && !held);
+    } else if(mode=="schema") {
+        const char* bad[]={"null","[]","{}","{\"rules\":null}","{\"rules\":[],\"extra\":0}"};
+        for(const char* json:bad) {JsonDocument invalid;assert(!deserializeJson(invalid,json));assert(!manager.importConfiguration(invalid,error));}
+        for(const char* field:{"id","name","scriptContent","enabled","triggerType","protocolType"}) {
+            auto invalid=good();invalid["rules"][0].remove(field);assert(!manager.importConfiguration(invalid,error));
+        }
+        auto invalid=good();invalid["rules"][0]["extra"]=1;assert(!manager.importConfiguration(invalid,error));
+        assert(store.saves==0 && manager._rules.count("old"));
+    } else if(mode=="values") {
+        for(const char* field:{"triggerType","protocolType"}) for(int bad:{-1,2,256}) {
+            auto invalid=good();invalid["rules"][0][field]=bad;assert(!manager.importConfiguration(invalid,error));
+        }
+        auto invalid=good();invalid["rules"][0]["enabled"]=1;assert(!manager.importConfiguration(invalid,error));
+        invalid=good();invalid["rules"][0]["triggerType"]="0";assert(!manager.importConfiguration(invalid,error));
+        invalid=good();invalid["rules"][0]["enabled"]=true;invalid["rules"][0]["scriptContent"]="";assert(!manager.importConfiguration(invalid,error));
+        for(const char* field:{"id","name","scriptContent","sourceTopic","targetTopic"}) {
+            invalid=good();invalid["rules"][0][field]=std::string(2049,'x');assert(!manager.importConfiguration(invalid,error));
+        }
+        assert(store.saves==0 && manager._rules.count("old"));
+    } else if(mode=="identity_topics") {
+        auto invalid=good();invalid["rules"].as<JsonArray>().add(invalid["rules"][0]);assert(!manager.importConfiguration(invalid,error));
+        for(const char* bad:{"a+x","a/#/b","prefix#"}) {
+            invalid=good();invalid["rules"][0]["sourceTopic"]=bad;assert(!manager.importConfiguration(invalid,error));
+        }
+        invalid=good();invalid["rules"][0]["targetTopic"]="a/+";assert(!manager.importConfiguration(invalid,error));
+        assert(!deserializeJson(invalid,R"({"rules":[{"id":"a\u0000b","name":"x","enabled":false,"triggerType":0,"protocolType":0,"scriptContent":"x"}]})"));
+        assert(!manager.importConfiguration(invalid,error));assert(store.saves==0);
+    } else if(mode=="empty_limit") {
+        JsonDocument empty;empty["rules"].to<JsonArray>();assert(manager.importConfiguration(empty,error) && manager._rules.empty());
+        auto many=good();auto arr=many["rules"].as<JsonArray>();
+        for(unsigned i=1;i<65;++i){auto row=arr.add<JsonObject>();row.set(doc["rules"][0]);row["id"]=std::to_string(i);}
+        assert(!manager.importConfiguration(many,error) && manager._rules.empty());
+        auto huge=good();huge["rules"][0]["scriptContent"]=std::string(25000,'x');
+        assert(!manager.importConfiguration(huge,error) && store.saves==1);
+    } else if(mode=="copy_faults") {
+        stringOperations=0;assert(manager.importConfiguration(doc,error));const auto total=stringOperations;
+        for(unsigned at=1;at<=total;++at){
+            failStringAt=0;manager._rules.clear();manager._rules[old.id]=old;
+            stringOperations=0;failStringAt=at;const auto saved=store.saves;
+            assert(!manager.importConfiguration(doc,error));
+            assert(manager._rules.count("old") && manager._rules.size()==1 && store.saves==saved);
+        }
+    } else if(mode=="recovery_load") {
+        store.stored.set(doc);primaryExists=false;backupExists=true;
+        assert(manager.loadConfiguration() && store.loads==1 && store.saves==0 && manager._rules.count("r1"));
+        store.loadOk=false;assert(!manager.loadConfiguration() && manager._rules.count("r1"));
+        store.loadOk=true;store.stored["rules"][0]["id"]="";
+        assert(!manager.loadConfiguration() && manager._rules.count("r1"));
+    } else if(mode=="legacy_empty") {
+        assert(!deserializeJson(store.stored,"{\"rules\":null}"));
+        assert(manager.loadConfiguration() && manager._rules.empty());
+        primaryExists=false;backupExists=false;
+        assert(manager.loadConfiguration() && store.saves==1 && store.stored["rules"].is<JsonArray>());
+    } else if(mode=="bounded_map") {
+        FastBee::RuleScriptMap<String, RuleScript> rows;
+        assert(!rows.reserve(65) && rows.reserve(3));
+        for(const char* key:{"z","a","m"}) {
+            RuleScript rule; rule.id=key;
+            assert(rows.emplace(String(key),std::move(rule)).second);
+        }
+        assert(rows.size()==3 && rows.begin()[0].first=="a" && rows.begin()[1].first=="m" && rows.begin()[2].first=="z");
+        RuleScript extra; assert(!rows.emplace(String("x"),std::move(extra)).second && rows.size()==3);
+        assert(!rows.emplace(String("m"),RuleScript()).second && rows.size()==3);
+        FastBee::RuleScriptMap<String, RuleScript> other;
+        other.swap(rows); assert(rows.empty() && other.size()==3 && other.find("m")!=other.end());
+        other.clear(); assert(other.empty() && other.reserve(1));
+    } else if(mode=="node_allocation_failure") {
+        failNextMalloc=true;
+        assert(!manager.importConfiguration(doc,error) && !failNextMalloc);
+        assert(manager._rules.size()==1 && manager._rules.count("old") && store.saves==0);
+        assert(manager.importConfiguration(doc,error) && manager._rules.count("r1"));
+    } else if(mode=="load_json_allocation_failure") {
+        store.stored.set(doc); failNextMalloc=true;
+        assert(!manager.loadConfiguration() && !failNextMalloc);
+        assert(manager._rules.count("old") && store.saves==0 && LittleFS.renames==0 && LittleFS.removals==0);
+        assert(manager.loadConfiguration() && manager._rules.count("r1"));
+    } else if(mode=="memory_rejection") {
+        store.stored.set(doc);
+        for(unsigned dimension=0;dimension<2;++dimension) {
+            FastBee::MemoryBudget::free=dimension?1024*1024:25600;
+            FastBee::MemoryBudget::largest=dimension?10000:1024*1024;
+            assert(!manager.importConfiguration(doc,error));
+            assert(!manager.loadConfiguration());
+            assert(!manager.addRule(old) && !manager.updateRule("old",old) && !manager.disableRule("old"));
+            assert(manager._rules.count("old") && manager._rules["old"].enabled && store.saves==0);
+            assert(LittleFS.renames==0 && LittleFS.removals==0);
+        }
+        FastBee::MemoryBudget::free=FastBee::MemoryBudget::largest=1024*1024;
+        assert(manager.importConfiguration(doc,error));
+    } else if(mode=="startup_limits") {
+        backupExists=true;
+        serializeJson(doc,LittleFS.backupRaw);
+        auto checkRejected=[&](JsonDocument& invalid) {
+            store.stored.set(invalid);
+            assert(!manager.loadConfiguration());
+            assert(manager._rules.count("old") && store.saves==0 && LittleFS.renames==0 && LittleFS.removals==0);
+        };
+        auto invalid=good();
+        for(unsigned i=1;i<65;++i) { auto row=invalid["rules"].as<JsonArray>().add<JsonObject>(); row.set(doc["rules"][0]); row["id"]=std::to_string(i); }
+        checkRejected(invalid);
+        for(const auto& limit:std::initializer_list<std::pair<const char*,unsigned>>{{"id",40},{"name",128},{"scriptContent",2048},{"sourceTopic",256},{"targetTopic",256}}) {
+            invalid=good(); invalid["rules"][0][limit.first]=std::string(limit.second+1,'x'); checkRejected(invalid);
+        }
+        invalid=good(); invalid["rules"][0]["scriptContent"]=std::string(25000,'x'); checkRejected(invalid);
+        assert(manager._rules.count("old"));
+    } else if(mode=="structural_backup_recovery") {
+        backupExists=true;
+        LittleFS.primaryRaw="{\"rules\":false}"; serializeJson(doc,LittleFS.backupRaw);
+        assert(manager.loadConfiguration() && manager._rules.count("r1"));
+        assert(LittleFS.renames==1 && LittleFS.removals==1 && store.saves==0);
+    } else if(mode=="legacy_defaults") {
+        assert(!deserializeJson(store.stored,"{\"rules\":[{\"id\":\"legacy\"}]}"));
+        assert(manager.loadConfiguration() && manager._rules.count("legacy"));
+        const auto& rule=manager._rules["legacy"];
+        assert(rule.enabled && rule.triggerType==0 && rule.protocolType==0 && rule.name.isEmpty() && rule.scriptContent.isEmpty());
+    } else if(mode=="crud_save_failure" || mode=="crud_busy") {
+        store.saveOk=false;busy=mode=="crud_busy";
+        RuleScript replacement=old;replacement.name="new name";
+        RuleScript added=old;added.id="new";
+        store.duringSave=[&]{assert(manager._rules.size()==1 && manager._rules["old"].name=="old name" && manager._rules["old"].enabled);};
+        assert(!manager.addRule(added));assert(!manager.updateRule("old",replacement));
+        assert(!manager.removeRule("old"));assert(!manager.enableRule("old"));assert(!manager.disableRule("old"));
+        assert(manager._rules.size()==1 && manager._rules["old"].name=="old name" && manager._rules["old"].enabled);
+        assert(store.saves==(busy?0U:5U) && !held);
+    } else if(mode=="crud_commit") {
+        manager._rules["old"].triggerCount=17;manager._rules["old"].lastTriggerTime=51;
+        store.duringSave=[&]{assert(manager._rules.size()==1 && manager._rules.count("old") && manager._rules["old"].enabled);};
+        assert(manager.disableRule("old"));store.duringSave=nullptr;
+        assert(!manager._rules["old"].enabled && manager._rules["old"].triggerCount==17 && manager._rules["old"].lastTriggerTime==51);
+        assert(store.stored["rules"][0]["enabled"]==false);
+        assert(manager.enableRule("old") && store.stored["rules"][0]["enabled"]==true);
+        RuleScript replacement=old;replacement.name="new name";
+        assert(manager.updateRule("old",replacement) && manager._rules["old"].triggerCount==17);
+        RuleScript added=old;added.id="";added.triggerCount=90;
+        assert(manager.addRule(added) && manager._rules["generated"].triggerCount==0 && store.stored["rules"].size()==2);
+        assert(manager.removeRule("old") && manager._rules.size()==1 && !manager._rules.count("old"));
+        assert(store.saves==5 && !held);
+    } else if(mode=="crud_invalid") {
+        RuleScript invalid=old;invalid.id="new";invalid.targetTopic="a/+";
+        assert(!manager.addRule(invalid));invalid.targetTopic="";invalid.enabled=true;invalid.scriptContent="";
+        assert(!manager.addRule(invalid));invalid=old;invalid.name=String(std::string("a\0b",3));
+        assert(!manager.updateRule("old",invalid));
+        assert(!manager.removeRule("missing") && !manager.enableRule("missing") && !manager.disableRule("missing"));
+        assert(store.saves==0 && manager._rules["old"].name=="old name");
+    } else if(mode=="crud_copy_faults") {
+        RuleScript replacement=old;replacement.name="new name";
+        stringOperations=0;assert(manager.updateRule("old",replacement));const auto total=stringOperations;
+        for(unsigned at=1;at<=total;++at) {
+            failStringAt=0;manager._rules.clear();manager._rules[old.id]=old;
+            stringOperations=0;failStringAt=at;const auto saved=store.saves;
+            assert(!manager.updateRule("old",replacement));
+            assert(manager._rules.size()==1 && manager._rules["old"].name=="old name" && store.saves==saved && !held);
+        }
+    } else if(mode=="copy_snapshot_failure") {
+        RuleScript snapshot;snapshot.id="unchanged";
+        stringOperations=0;failStringAt=2;
+        assert(!manager.copyRule("old",snapshot) && snapshot.id=="unchanged");
+    } else if(mode=="form_choices") {
+        RuleScript result;
+        for(const char* invalid:{"", "256", "-1", "1x", "00", "true", "1.0"}) {
+            assert(!FastBee::parseRuleScriptFormChoices(String("true"),String(invalid),String("0"),result));
+            assert(!FastBee::parseRuleScriptFormChoices(String("true"),String("0"),String(invalid),result));
+        }
+        for(const char* invalid:{"", "TRUE", "yes", "2", "0x", "false "})
+            assert(!FastBee::parseRuleScriptFormChoices(String(invalid),String("0"),String("0"),result));
+        assert(FastBee::parseRuleScriptFormChoices(String("false"),String("1"),String("0"),result));
+        assert(!result.enabled && result.triggerType==1 && result.protocolType==0);
+    } else if(mode=="snapshot_conflict") {
+        RuleScript snapshot;assert(manager.copyRule("old",snapshot));
+        manager._rules["old"].scriptContent="changed by import";
+        auto replacement=snapshot;replacement.name="edited";
+        assert(!manager.updateRule("old",replacement,&snapshot));
+        assert(manager._rules["old"].scriptContent=="changed by import");
+        assert(manager.copyRule("old",snapshot));replacement=snapshot;replacement.name="edited";
+        assert(manager.updateRule("old",replacement,&snapshot));
+    } else assert(false);
+}

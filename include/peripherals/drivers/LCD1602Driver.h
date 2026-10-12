@@ -5,6 +5,8 @@
 #if FASTBEE_ENABLE_LCD1602
 
 #include <Arduino.h>
+#include <atomic>
+#include "core/FeatureInstanceRegistry.h"
 
 /**
  * @brief LCD1602 I2C 字符液晶驱动
@@ -37,6 +39,7 @@ struct LCD1602Config {
 class LCD1602Driver {
 public:
     static LCD1602Driver& getInstance();
+    FastBee::FeatureInstanceSnapshot observeFeatureInstance() const;
     
     /**
      * @brief 初始化 LCD1602
@@ -57,7 +60,7 @@ public:
     /**
      * @brief 清屏并移动光标到左上角
      */
-    void clear();
+    bool clear();
     
     /**
      * @brief 移动光标到左上角
@@ -69,7 +72,7 @@ public:
      * @param col 列号 (0-based)
      * @param row 行号 (0-based)
      */
-    void setCursor(uint8_t col, uint8_t row);
+    bool setCursor(uint8_t col, uint8_t row);
     
     /**
      * @brief 显示文本
@@ -77,6 +80,8 @@ public:
      * @return 显示是否成功
      */
     bool print(const String& text);
+    // Existing HTTP print action: cursor and text share one checked bus transaction group.
+    bool printAt(uint8_t col, uint8_t row, const String& text);
     
     /**
      * @brief 显示整数
@@ -135,17 +140,17 @@ public:
     /**
      * @brief 开启背光
      */
-    void backlightOn();
+    bool backlightOn();
     
     /**
      * @brief 关闭背光
      */
-    void backlightOff();
+    bool backlightOff();
     
     /**
      * @brief 设置背光开关
      */
-    void setBacklight(bool on);
+    bool setBacklight(bool on);
     
     // ========== 高级功能 ==========
     
@@ -184,7 +189,7 @@ private:
     LCD1602Driver& operator=(const LCD1602Driver&) = delete;
     
     void* _lcd = nullptr;  // LiquidCrystal_I2C* 或兼容对象
-    bool _initialized = false;
+    std::atomic<bool> _initialized{false};
     uint8_t _sdaPin = 255;
     uint8_t _sclPin = 255;
     uint8_t _cols = 16;
@@ -192,13 +197,16 @@ private:
     uint8_t _address = 0x27;
     bool _backlightOn = true;
     bool _busAcquired = false;
+    // An uncertain half-byte cannot be retried safely without begin().
+    std::atomic<bool> _writeFailed{false};
     
     // 内部方法
-    void _sendCommand(uint8_t cmd);
-    void _sendData(uint8_t data);
-    void _pulseEnable();
-    void _write4bits(uint8_t value);
-    void _expanderWrite(uint8_t value);
+    bool _sendCommand(uint8_t cmd);
+    bool _sendData(uint8_t data);
+    bool _pulseEnable(uint8_t value);
+    bool _write4bits(uint8_t value);
+    bool _expanderWrite(uint8_t value);
+    bool _failWrite();
     void _waitMicroseconds(uint16_t us);
 };
 

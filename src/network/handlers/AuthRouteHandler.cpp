@@ -65,35 +65,39 @@ void loginTask(void* arg) {
     // could fail after pause() and leave request ownership ambiguous.
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    AuthResult result = job->ctx->authManager->login(
-        job->username, job->password, job->ipAddress, job->userAgent);
+    // FreeRTOS self-deletion does not unwind C++ locals. Release the result
+    // strings before vTaskDelete(), including rejected and disconnected logins.
+    {
+        AuthResult result = job->ctx->authManager->login(
+            job->username, job->password, job->ipAddress, job->userAgent);
 
-    // 客户端可能已断开：weak_ptr 失效则静默丢弃结果
-    if (auto request = job->held.lock()) {
-        if (result.success) {
-            JsonDocument responseDoc;
-            responseDoc["success"] = true;
-            if (job->apiClient) responseDoc["sessionId"] = result.sessionId;
-            responseDoc["username"] = result.username;
+        // 客户端可能已断开：weak_ptr 失效则静默丢弃结果
+        if (auto request = job->held.lock()) {
+            if (result.success) {
+                JsonDocument responseDoc;
+                responseDoc["success"] = true;
+                if (job->apiClient) responseDoc["sessionId"] = result.sessionId;
+                responseDoc["username"] = result.username;
 
-            String jsonStr;
-            serializeJson(responseDoc, jsonStr);
-            AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
+                String jsonStr;
+                serializeJson(responseDoc, jsonStr);
+                AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
 
-            SecurityConfig securityConfig;
-            auto* authManager = static_cast<AuthManager*>(job->ctx->authManager);
-            if (authManager) securityConfig = authManager->getSecurityConfig();
-            if (securityConfig.cookieName.isEmpty()) securityConfig.cookieName = "sessionId";
-            String cookie = securityConfig.cookieName + "=" + result.sessionId +
-                            "; Path=/; Max-Age=" + String(securityConfig.cookieMaxAge) +
-                            "; SameSite=Strict";
-            if (securityConfig.cookieHttpOnly) cookie += "; HttpOnly";
-            if (securityConfig.cookieSecure) cookie += "; Secure";
-            response->addHeader("Set-Cookie", cookie);
-            response->addHeader("Connection", "close");
-            request->send(response);
-        } else {
-            job->ctx->sendError(request.get(), 401, result.errorMessage);
+                SecurityConfig securityConfig;
+                auto* authManager = static_cast<AuthManager*>(job->ctx->authManager);
+                if (authManager) securityConfig = authManager->getSecurityConfig();
+                if (securityConfig.cookieName.isEmpty()) securityConfig.cookieName = "sessionId";
+                String cookie = securityConfig.cookieName + "=" + result.sessionId +
+                                "; Path=/; Max-Age=" + String(securityConfig.cookieMaxAge) +
+                                "; SameSite=Strict";
+                if (securityConfig.cookieHttpOnly) cookie += "; HttpOnly";
+                if (securityConfig.cookieSecure) cookie += "; Secure";
+                response->addHeader("Set-Cookie", cookie);
+                response->addHeader("Connection", "close");
+                request->send(response);
+            } else {
+                job->ctx->sendError(request.get(), 401, result.errorMessage);
+            }
         }
     }
 

@@ -1,0 +1,150 @@
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <map>
+#include <string>
+#include <utility>
+#define ARDUINOJSON_ENABLE_ARDUINO_STRING 0
+#include "protocols/MqttTopicPath.h"
+#include "core/CheckedReportTemplate.h"
+
+unsigned operations = 0, failAt = 0;
+bool partialFailure = false;
+class String {
+    std::string text;
+public:
+    String() = default;
+    String(const char* value) : text(value) {}
+    String(std::string value) : text(std::move(value)) {}
+    size_t length() const { return text.size(); }
+    const char* c_str() const { return text.c_str(); }
+    bool isEmpty() const { return text.empty(); }
+    bool reserve(unsigned int size) {
+        if (++operations == failAt) return false;
+        text.reserve(size); return true;
+    }
+    bool concat(const char* bytes, unsigned int size) {
+        if (++operations == failAt) {
+            if (partialFailure && size) text.append(bytes, size - 1U);
+            return partialFailure; // Includes a lying, short successful append.
+        }
+        text.append(bytes, size); return true;
+    }
+};
+bool rulesBusy = false;
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    bool isUserEnabled(const char*) const { return true; }
+    bool shouldEnable(const char*) const { return true; }
+};
+}
+struct MutexGuard { MutexGuard(void*, int) {} bool isLocked() const { return !rulesBusy; } };
+uint32_t millis() { return 17; }
+struct RuleScript {
+    bool enabled = true;
+    unsigned triggerType = 1, protocolType = 0;
+    uint32_t lastTriggerTime = 0, triggerCount = 0;
+    String scriptContent;
+};
+class RuleScriptManager {
+public:
+    void* _mutex = nullptr;
+    std::map<int, RuleScript> _rules;
+    struct AccessGuard {
+        const RuleScriptManager& owner;
+        explicit AccessGuard(const RuleScriptManager& value) : owner(value) {}
+        bool admitted() const { return true; }
+        void* mutex() const { return owner._mutex; }
+    };
+    bool tryApplyReportTransform(uint8_t, const String&, String&, size_t);
+};
+@MANAGER@
+
+std::string bytes(const String& value) { return std::string(value.c_str(), value.length()); }
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode = argv[1];
+    const String device("dev"), product("42"), extra("app"), empty;
+    if (mode == "paths") {
+        assert(bytes(FastBee::buildMqttTopicPath(String("/{deviceNum}/{productId}"), false, false, device, product, extra)) == "/dev/42");
+        assert(bytes(FastBee::buildMqttTopicPath(String("/report"), true, false, device, product, extra)) == "app/42/dev/report");
+        assert(bytes(FastBee::buildMqttTopicPath(String("/report"), true, false, device, empty, extra)) == "app/dev/report");
+        assert(bytes(FastBee::buildMqttTopicPath(String("/report"), true, false, empty, product, extra)) == "app/report");
+        assert(bytes(FastBee::buildMqttTopicPath(String("{deviceNum}"), false, false, String("d{productId}"), product, extra)) == "d42");
+        assert(bytes(FastBee::buildMqttTopicPath(String("{deviceNum}"), false, false, String("{deviceNum}"), product, extra)) == "{deviceNum}");
+    } else if (mode == "ota") {
+        for (const char* path : {"http/upgrade/reply", "/http/upgrade/reply", "/{deviceNum}/http/upgrade/reply", "/dev/http/upgrade/reply"})
+            assert(bytes(FastBee::buildMqttTopicPath(String(path), true, true, device, product, extra)) == "/dev/http/upgrade/reply");
+        assert(bytes(FastBee::buildMqttTopicPath(String("/device/reply"), true, true, device, product, extra)) == "/dev/device/reply");
+        assert(bytes(FastBee::buildMqttTopicPath(String("/dev"), true, true, device, product, extra)) == "/dev");
+        assert(bytes(FastBee::buildMqttTopicPath(String("reply"), true, true, empty, product, extra)) == "/reply");
+    } else if (mode == "topic_bounds") {
+        const String huge(std::string(65535, 'x'));
+        assert(FastBee::buildMqttTopicPath(huge, false, false, device, product, extra).length() == 65535);
+        assert(FastBee::buildMqttTopicPath(huge, true, false, device, product, extra).isEmpty());
+        assert(FastBee::buildMqttTopicPath(String(std::string(65536, 'x')), false, false, device, product, extra).isEmpty());
+        assert(FastBee::buildMqttTopicPath(String(std::string("x\0y", 3)), false, false, device, product, extra).isEmpty());
+        assert(!FastBee::validMqttTopicText(empty, true));
+        assert(!FastBee::validMqttTopicText(String("a/+"), true));
+        assert(FastBee::validMqttTopicText(String("a/+"), false));
+    } else if (mode == "topic_faults") {
+        const String path("/{deviceNum}/{productId}/{deviceNum}");
+        for (bool ota : {false, true}) {
+            operations = 0; failAt = 0;
+            const auto complete = FastBee::buildMqttTopicPath(path, true, ota, device, product, extra);
+            assert(!complete.isEmpty()); const auto total = operations;
+            for (bool partial : {false, true}) for (unsigned at = 1; at <= total; ++at) {
+                operations = 0; failAt = at; partialFailure = partial;
+                assert(FastBee::buildMqttTopicPath(path, true, ota, device, product, extra).isEmpty());
+            }
+            failAt = 0;
+        }
+    } else if (mode == "templates") {
+        String out;
+        assert(FastBee::applyCheckedReportTemplate(String("${a}|${b}|${c}"), String("{\"a\":4,\"b\":true,\"c\":\"x\"}"), out, 512));
+        assert(bytes(out) == "4|true|x");
+        assert(FastBee::applyCheckedReportTemplate(String("${a}/${b}"), String("[{\"id\":\"a\",\"value\":\"${b}\"},{\"id\":\"b\",\"value\":7}]"), out, 512));
+        assert(bytes(out) == "7/7");
+        assert(FastBee::applyCheckedReportTemplate(String("${a}"), String("{\"a\":{\"v\":1}}"), out, 512));
+        assert(bytes(out) == "{\"v\":1}");
+    } else if (mode == "template_bounds") {
+        String out;
+        assert(!FastBee::applyCheckedReportTemplate(String(std::string(513, 'x')), String("{\"a\":1}"), out, 512) && out.isEmpty());
+        assert(!FastBee::applyCheckedReportTemplate(String("${a}"), String("{\"a\":\"x\\u0000y\"}"), out, 512) && out.isEmpty());
+        assert(!FastBee::applyCheckedReportTemplate(String("${a}${a}${a}"), String("{\"a\":\"12345678\"}"), out, 16) && out.isEmpty());
+        const String limit(std::string(512, 'x'));
+        assert(FastBee::applyCheckedReportTemplate(empty, limit, out, 512) && out.length() == 512);
+    } else if (mode == "template_raw") {
+        String out;
+        for (const char* value : {"plain", "42", "{}", "[]", "[1,2]"}) {
+            assert(FastBee::applyCheckedReportTemplate(String("${x}"), String(value), out, 512));
+            assert(bytes(out) == value);
+        }
+    } else if (mode == "template_faults") {
+        String out;
+        const String script("${a}|${b}|${c}"), input("{\"a\":\"sensor\",\"b\":12,\"c\":true}");
+        operations = 0;
+        assert(FastBee::applyCheckedReportTemplate(script, input, out, 512));
+        const auto total = operations;
+        for (bool partial : {false, true}) for (unsigned at = 1; at <= total; ++at) {
+            operations = 0; failAt = at; partialFailure = partial;
+            assert(!FastBee::applyCheckedReportTemplate(script, input, out, 512));
+            assert(out.isEmpty());
+        }
+    } else if (mode == "manager") {
+        RuleScriptManager manager; String out;
+        manager._rules[0].scriptContent = "${x}";
+        assert(manager.tryApplyReportTransform(0, "{\"x\":3}", out, 512) && bytes(out) == "3");
+        assert(manager._rules[0].triggerCount == 1);
+        manager._rules[0].scriptContent = "value=${x}";
+        assert(manager.tryApplyReportTransform(0, "{\"x\":3}", out, 512) && bytes(out) == "value=3");
+        rulesBusy = true;
+        assert(!manager.tryApplyReportTransform(0, "raw", out, 512) && out.isEmpty());
+        rulesBusy = false;
+        assert(manager.tryApplyReportTransform(1, "raw", out, 512) && bytes(out) == "raw");
+        manager._rules[0].triggerCount = UINT32_MAX;
+        assert(manager.tryApplyReportTransform(0, "{\"x\":3}", out, 512) && manager._rules[0].triggerCount == UINT32_MAX);
+        operations = 0; failAt = 1;
+        assert(!manager.tryApplyReportTransform(0, "raw", out, 512) && out.isEmpty());
+    } else assert(false);
+}

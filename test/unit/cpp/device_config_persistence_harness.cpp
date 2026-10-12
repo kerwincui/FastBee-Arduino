@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <network/DeviceConfigValidation.h>
+#include <network/FixedJsonField.h>
 #include <cassert>
 #include <map>
 #include <string>

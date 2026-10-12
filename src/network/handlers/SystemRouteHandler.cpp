@@ -1,10 +1,16 @@
 #include "./network/handlers/SystemRouteHandler.h"
+#include "network/handlers/TaskStackSnapshotRoute.h"
+#include "network/FixedJsonField.h"
+#include "network/RunningImageSizeJson.h"
+#include "network/AsyncTCPAdmissionSnapshot.h"
 #include "core/MemoryBudget.h"
+#include "core/MemoryPoolSnapshot.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
+#include "network/NetworkResourcePins.h"
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "systems/HealthMonitor.h"
@@ -15,6 +21,8 @@
 #include "utils/NetworkUtils.h"
 #include "utils/StaticPoolAllocator.h"
 #include "core/FeatureFlags.h"
+#include "core/ConfigImportSession.h"
+#include "systems/ConfigMigrationStorage.h"
 #if FASTBEE_ENABLE_POINT_HISTORY
 #include "core/PointHistory.h"
 #endif
@@ -24,6 +32,7 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <memory>
@@ -56,6 +65,17 @@ constexpr size_t kMaxConfigInlineImportBytes = 24 * 1024;
 // heap before writing, so 16 KB decoded chunk is safe.
 constexpr size_t kMaxConfigTransferChunkBytes = 16 * 1024;
 constexpr int kMaxConfigTransferChunks = 128;  // 前端分片已缩至 1.5KB（弱网适配），需更多分片数承载 128KB 上限
+#if FASTBEE_ENABLE_CONFIG_TRANSFER
+FastBee::ConfigImportSession ordinaryImport;
+bool parseConfigImportNumber(const String& text, uint32_t limit, uint32_t& value) {
+    return text.length() == strlen(text.c_str()) &&
+        FastBee::ConfigImportSession::decimal(text.c_str(), limit, value);
+}
+static_assert(kMaxConfigInlineImportBytes == FastBee::ConfigImportSession::MaxBytes,
+              "Ordinary import size limits must agree");
+static_assert(kMaxConfigTransferChunks == FastBee::ConfigImportSession::MaxChunks,
+              "Ordinary import chunk limits must agree");
+#endif
 
 bool isSafeConfigFileName(const String& name) {
     if (name.isEmpty() || name.length() > 48) return false;
@@ -164,7 +184,7 @@ bool isSensitiveRuntimeConfigPath(const String& path) {
 }
 
 bool isSafeFileApiPath(const String& path) {
-    return path.startsWith("/") && path.indexOf("..") < 0 &&
+    return !FastBee::ConfigMigration::Storage::protectedPath(path) && path.startsWith("/") && path.indexOf("..") < 0 &&
            path.indexOf('\\') < 0 && path.indexOf("//") < 0 &&
            path.indexOf("/./") < 0;
 }
@@ -211,58 +231,85 @@ bool shouldUseCompactSystemInfo(bool explicitBrief) {
     return explicitBrief || FastBee::MemoryBudget::dramFree() < 12288 || FastBee::MemoryBudget::dramLargest() < 6144;
 }
 
-void fillMemorySummary(JsonObject memory) {
+void fillMemoryPoolSummary(JsonObject memory) {
+    const auto snapshot = FastBee::readMemoryPoolSnapshot();
+    JsonObject pools = memory["capabilityPools"].to<JsonObject>();
+    FastBee::setFixedJsonField(pools, "sampledAtUptimeMs", millis());
+    FastBee::setFixedJsonField(pools, "units", "bytes");
+    FastBee::setFixedJsonField(pools, "atomicSnapshot", false);
+    FastBee::setFixedJsonField(pools, "overlappingPools", true);
+    FastBee::setFixedJsonField(pools, "minimumScope", "sum_of_heap_low_watermarks");
+    const auto append = [pools](const char* name, const FastBee::MemoryPoolSample& sample) {
+        JsonObject item = pools[name].to<JsonObject>();
+        FastBee::setFixedJsonField(item, "observed", sample.observed);
+        if (sample.observed) {
+            FastBee::setFixedJsonField(item, "free", sample.freeBytes);
+            FastBee::setFixedJsonField(item, "minFree", sample.minimumFreeBytes);
+            FastBee::setFixedJsonField(item, "largestBlock", sample.largestBlockBytes);
+        } else {
+            FastBee::setFixedJsonField(item, "free", nullptr);
+            FastBee::setFixedJsonField(item, "minFree", nullptr);
+            FastBee::setFixedJsonField(item, "largestBlock", nullptr);
+        }
+    };
+    append("internal8", snapshot.internal8);
+    append("internalDma", snapshot.internalDma);
+    append("psram8", snapshot.psram8);
+}
+
+void fillMemorySummary(JsonObject memory, bool includeCapabilityPools = false) {
     size_t heapSize = ESP.getHeapSize();
     size_t freeHeap = ESP.getFreeHeap();
     size_t heapUsed = heapSize > freeHeap ? heapSize - freeHeap : 0;
 
-    memory["heapTotal"] = heapSize;
-    memory["heapFree"] = freeHeap;
-    memory["heapUsed"] = heapUsed;
-    memory["heapMinFree"] = ESP.getMinFreeHeap();
-    memory["heapMaxAlloc"] = ESP.getMaxAllocHeap();
-    memory["heapUsagePercent"] = heapSize > 0 ? (int)((heapUsed * 100) / heapSize) : 0;
+    FastBee::setFixedJsonField(memory, "heapTotal", heapSize);
+    FastBee::setFixedJsonField(memory, "heapFree", freeHeap);
+    FastBee::setFixedJsonField(memory, "heapUsed", heapUsed);
+    FastBee::setFixedJsonField(memory, "heapMinFree", ESP.getMinFreeHeap());
+    FastBee::setFixedJsonField(memory, "heapMaxAlloc", ESP.getMaxAllocHeap());
+    FastBee::setFixedJsonField(memory, "heapUsagePercent", heapSize > 0 ? (int)((heapUsed * 100) / heapSize) : 0);
 
     size_t psramSize = ESP.getPsramSize();
     size_t psramFree = psramSize > 0 ? ESP.getFreePsram() : 0;
     size_t psramUsed = psramSize > psramFree ? psramSize - psramFree : 0;
     if (psramSize > 0) {
-        memory["psramTotal"] = psramSize;
-        memory["psramFree"] = psramFree;
-        memory["psramUsed"] = psramUsed;
-        memory["psramMinFree"] = ESP.getMinFreePsram();
-        memory["psramUsagePercent"] = (int)((psramUsed * 100) / psramSize);
+        FastBee::setFixedJsonField(memory, "psramTotal", psramSize);
+        FastBee::setFixedJsonField(memory, "psramFree", psramFree);
+        FastBee::setFixedJsonField(memory, "psramUsed", psramUsed);
+        FastBee::setFixedJsonField(memory, "psramMinFree", ESP.getMinFreePsram());
+        FastBee::setFixedJsonField(memory, "psramUsagePercent", (int)((psramUsed * 100) / psramSize));
     }
 
     size_t total = heapSize + psramSize;
     size_t free = freeHeap + psramFree;
     size_t used = total > free ? total - free : 0;
-    memory["total"] = total;
-    memory["free"] = free;
-    memory["used"] = used;
-    memory["usagePercent"] = total > 0 ? (int)((used * 100) / total) : 0;
+    FastBee::setFixedJsonField(memory, "total", total);
+    FastBee::setFixedJsonField(memory, "free", free);
+    FastBee::setFixedJsonField(memory, "used", used);
+    FastBee::setFixedJsonField(memory, "usagePercent", total > 0 ? (int)((used * 100) / total) : 0);
+    // Keep compact low-memory/probe/health paths at their existing cost.
+    if (includeCapabilityPools) fillMemoryPoolSummary(memory);
 }
 
-void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degraded) {
+void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degraded, uint32_t sketchSize) {
     JsonObject device = data["device"].to<JsonObject>();
-    device["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    device["chipModel"] = ESP.getChipModel();
-    device["chipRevision"] = ESP.getChipRevision();
-    device["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    device["sdkVersion"] = ESP.getSdkVersion();
-    device["freeHeap"] = ESP.getFreeHeap();
-    device["flashSize"] = ESP.getFlashChipSize();
-    device["firmwareVersion"] = SystemInfo::VERSION;
+    FastBee::setFixedJsonField(device, "id", String((uint32_t)ESP.getEfuseMac(), HEX));
+    FastBee::setFixedJsonField(device, "chipModel", ESP.getChipModel());
+    FastBee::setFixedJsonField(device, "chipRevision", ESP.getChipRevision());
+    FastBee::setFixedJsonField(device, "cpuFreqMHz", ESP.getCpuFreqMHz());
+    FastBee::setFixedJsonField(device, "sdkVersion", ESP.getSdkVersion());
+    FastBee::setFixedJsonField(device, "freeHeap", ESP.getFreeHeap());
+    FastBee::setFixedJsonField(device, "flashSize", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(device, "firmwareVersion", SystemInfo::VERSION);
 
-    size_t sketchSize = ESP.getSketchSize();
     size_t freeSketchSpace = ESP.getFreeSketchSpace();
     JsonObject flash = data["flash"].to<JsonObject>();
-    flash["total"] = ESP.getFlashChipSize();
-    flash["sketchSize"] = sketchSize;
-    flash["freeSketchSpace"] = freeSketchSpace;
-    flash["used"] = sketchSize;
-    flash["free"] = freeSketchSpace;
-    flash["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
+    FastBee::setFixedJsonField(flash, "total", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(flash, "sketchSize", sketchSize);
+    FastBee::setFixedJsonField(flash, "freeSketchSpace", freeSketchSpace);
+    FastBee::setFixedJsonField(flash, "used", sketchSize);
+    FastBee::setFixedJsonField(flash, "free", freeSketchSpace);
+    FastBee::setFixedJsonField(flash, "usagePercent", (int)((sketchSize * 100) / (sketchSize + freeSketchSpace)));
 
     JsonObject memory = data["memory"].to<JsonObject>();
     fillMemorySummary(memory);
@@ -271,36 +318,38 @@ void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degrade
     size_t fsTotal, fsUsed;
     getCachedFsStats(fsTotal, fsUsed);
     JsonObject filesystem = data["filesystem"].to<JsonObject>();
-    filesystem["total"] = fsTotal;
-    filesystem["used"] = fsUsed;
-    filesystem["free"] = fsTotal - fsUsed;
-    filesystem["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
+    FastBee::setFixedJsonField(filesystem, "total", fsTotal);
+    FastBee::setFixedJsonField(filesystem, "used", fsUsed);
+    FastBee::setFixedJsonField(filesystem, "free", fsTotal - fsUsed);
+    FastBee::setFixedJsonField(filesystem, "usagePercent", fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0);
 
     unsigned long uptime = millis();
     JsonObject uptimeObj = data["uptime"].to<JsonObject>();
-    uptimeObj["ms"] = uptime;
-    uptimeObj["seconds"] = uptime / 1000;
-    uptimeObj["formatted"] = ctx ? ctx->formatUptime(uptime) : String(uptime / 1000) + "s";
+    FastBee::setFixedJsonField(uptimeObj, "ms", uptime);
+    FastBee::setFixedJsonField(uptimeObj, "seconds", uptime / 1000);
+    FastBee::setFixedJsonField(uptimeObj, "formatted", ctx ? ctx->formatUptime(uptime) : String(uptime / 1000) + "s");
 
     if (ctx && ctx->networkManager) {
         NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
         JsonObject network = data["network"].to<JsonObject>();
-        network["connected"] = (info.status == NetworkStatus::CONNECTED);
-        network["ipAddress"] = info.ipAddress;
-        network["ssid"] = info.ssid;
-        network["rssi"] = info.rssi;
-        network["macAddress"] = WiFi.macAddress();
+        FastBee::setFixedJsonField(network, "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(network, "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(network, "ssid", info.ssid);
+        FastBee::setFixedJsonField(network, "rssi", info.rssi);
+        FastBee::setFixedJsonField(network, "macAddress", WiFi.macAddress());
     }
 
-    data["brief"] = true;
-    data["degraded"] = degraded;
+    FastBee::setFixedJsonField(data, "brief", true);
+    FastBee::setFixedJsonField(data, "degraded", degraded);
 }
 
 void sendCompactSystemInfo(AsyncWebServerRequest* request, WebHandlerContext* ctx, bool degraded) {
+    FastBee::RunningImageSizeResult imageSize;
+    if (!FastBee::readRunningImageSizeForResponse(request, imageSize)) return;
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
-    fillCompactSystemInfo(data, ctx, degraded);
+    fillCompactSystemInfo(data, ctx, degraded, imageSize.size);
     HandlerUtils::sendJsonStream(request, doc);
 }
 }
@@ -310,6 +359,7 @@ SystemRouteHandler::SystemRouteHandler(WebHandlerContext* ctx)
 }
 
 void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
+    setupMigrationRoutes(server);
     server->on("/api/system/info", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleSystemInfo(request); });
 
@@ -349,45 +399,45 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 case NetworkStatus::CONNECTION_FAILED:statusText = "failed";      break;
                 default: break;
             }
-            doc["data"]["status"] = statusText;
-            doc["data"]["statusCode"] = static_cast<uint8_t>(info.status);
-            doc["data"]["connected"] = (info.status == NetworkStatus::CONNECTED);
-            doc["data"]["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
-            doc["data"]["ipAddress"]     = info.ipAddress;
-            doc["data"]["macAddress"]    = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
-            doc["data"]["connectedTime"] = info.lastConnectionTime > 0 ? (millis() - info.lastConnectionTime) / 1000 : 0;
-            doc["data"]["apIPAddress"]   = info.apIPAddress;
-            doc["data"]["apClientCount"] = info.apClientCount;
-            doc["data"]["apSSID"]        = cfg.apSSID;
-            doc["data"]["internetAvailable"] = info.internetAvailable;
+            FastBee::setFixedJsonField(doc, "data", "status", statusText);
+            FastBee::setFixedJsonField(doc, "data", "statusCode", static_cast<uint8_t>(info.status));
+            FastBee::setFixedJsonField(doc, "data", "connected", (info.status == NetworkStatus::CONNECTED));
+            FastBee::setFixedJsonField(doc, "data", "deviceNetworkType", static_cast<uint8_t>(cfg.networkType));
+            FastBee::setFixedJsonField(doc, "data", "ipAddress", info.ipAddress);
+            FastBee::setFixedJsonField(doc, "data", "macAddress", info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress);
+            FastBee::setFixedJsonField(doc, "data", "connectedTime", info.lastConnectionTime > 0 ? (millis() - info.lastConnectionTime) / 1000 : 0);
+            FastBee::setFixedJsonField(doc, "data", "apIPAddress", info.apIPAddress);
+            FastBee::setFixedJsonField(doc, "data", "apClientCount", info.apClientCount);
+            FastBee::setFixedJsonField(doc, "data", "apSSID", cfg.apSSID);
+            FastBee::setFixedJsonField(doc, "data", "internetAvailable", info.internetAvailable);
 
             // WiFi 鐗规湁瀛楁
             if (cfg.networkType == NetworkType::NET_WIFI) {
-                doc["data"]["ssid"]          = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
-                doc["data"]["rssi"]          = info.rssi;
-                doc["data"]["signalStrength"]= NetworkUtils::rssiToPercentage(info.rssi);
-                doc["data"]["gateway"]       = info.currentGateway;
-                doc["data"]["subnet"]        = info.currentSubnet;
-                doc["data"]["dnsServer"]     = info.dnsServer;
-                doc["data"]["reconnectAttempts"] = info.reconnectAttempts;
+                FastBee::setFixedJsonField(doc, "data", "ssid", info.ssid.isEmpty() ? cfg.staSSID : info.ssid);
+                FastBee::setFixedJsonField(doc, "data", "rssi", info.rssi);
+                FastBee::setFixedJsonField(doc, "data", "signalStrength", NetworkUtils::rssiToPercentage(info.rssi));
+                FastBee::setFixedJsonField(doc, "data", "gateway", info.currentGateway);
+                FastBee::setFixedJsonField(doc, "data", "subnet", info.currentSubnet);
+                FastBee::setFixedJsonField(doc, "data", "dnsServer", info.dnsServer);
+                FastBee::setFixedJsonField(doc, "data", "reconnectAttempts", info.reconnectAttempts);
             }
 
             // 4G 铚傜獫缃戠粶鐘舵€侊紙浠呭湪 4G 妯″紡鏃惰繑鍥烇級
             if (cfg.networkType == NetworkType::NET_4G) {
-                doc["data"]["simStatus"]         = info.simStatus;
-                doc["data"]["operator"]          = info.operatorName;
-                doc["data"]["networkType"]       = info.cellularNetworkType;
-                doc["data"]["apn"]               = info.apn;
-                doc["data"]["imei"]              = info.imei;
-                doc["data"]["iccId"]             = info.iccid;
-                doc["data"]["signalQuality"]     = info.cellularSignalQuality;
-                doc["data"]["rssi"]              = info.rssi;
-                doc["data"]["signalStrength"]    = NetworkUtils::rssiToPercentage(info.rssi);
+                FastBee::setFixedJsonField(doc, "data", "simStatus", info.simStatus);
+                FastBee::setFixedJsonField(doc, "data", "operator", info.operatorName);
+                FastBee::setFixedJsonField(doc, "data", "networkType", info.cellularNetworkType);
+                FastBee::setFixedJsonField(doc, "data", "apn", info.apn);
+                FastBee::setFixedJsonField(doc, "data", "imei", info.imei);
+                FastBee::setFixedJsonField(doc, "data", "iccId", info.iccid);
+                FastBee::setFixedJsonField(doc, "data", "signalQuality", info.cellularSignalQuality);
+                FastBee::setFixedJsonField(doc, "data", "rssi", info.rssi);
+                FastBee::setFixedJsonField(doc, "data", "signalStrength", NetworkUtils::rssiToPercentage(info.rssi));
             }
 
             // 浠ュお缃戠姸鎬?
             if (cfg.networkType == NetworkType::NET_ETHERNET) {
-                doc["data"]["gateway"]       = info.currentGateway;
+                FastBee::setFixedJsonField(doc, "data", "gateway", info.currentGateway);
             }
 
             const char* modeText = "unknown";
@@ -396,20 +446,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
                 default: break;
             }
-            doc["data"]["mode"]       = modeText;
-            doc["data"]["modeCode"]   = static_cast<uint8_t>(cfg.mode);
-            doc["data"]["enableMDNS"] = cfg.enableMDNS;
-            doc["data"]["customDomain"] = cfg.customDomain;
+            FastBee::setFixedJsonField(doc, "data", "mode", modeText);
+            FastBee::setFixedJsonField(doc, "data", "modeCode", static_cast<uint8_t>(cfg.mode));
+            FastBee::setFixedJsonField(doc, "data", "enableMDNS", cfg.enableMDNS);
+            FastBee::setFixedJsonField(doc, "data", "customDomain", cfg.customDomain);
             DNSManager* dns = netMgr->getDNSManager();
             if (dns) {
-                doc["data"]["mdnsDomain"] = dns->getActualHostname();
+                FastBee::setFixedJsonField(doc, "data", "mdnsDomain", dns->getActualHostname());
             }
             unsigned long uptimeSec = millis() / 1000;
             char uptimeBuf[32];
             snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu",
                 uptimeSec / 86400, (uptimeSec % 86400) / 3600,
                 (uptimeSec % 3600) / 60, uptimeSec % 60);
-            doc["data"]["uptimeFormatted"] = uptimeBuf;
+            FastBee::setFixedJsonField(doc, "data", "uptimeFormatted", uptimeBuf);
         } else {
             doc["success"] = false;
             doc["error"] = "Network service unavailable";
@@ -458,25 +508,30 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                     : NetworkType::NET_WIFI;
             }
             // 浠ュお缃戦厤缃?
-            if (obj["ethernet"].is<JsonObject>()) {
-                JsonObject eth = obj["ethernet"];
-                if (eth.containsKey("spiMosi")) cfg.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
-                if (eth.containsKey("spiMiso")) cfg.ethernet.spiMiso = eth["spiMiso"].as<int8_t>();
-                if (eth.containsKey("spiSck"))  cfg.ethernet.spiSck  = eth["spiSck"].as<int8_t>();
-                if (eth.containsKey("csPin"))   cfg.ethernet.csPin   = eth["csPin"].as<int8_t>();
-                if (eth.containsKey("rstPin"))  cfg.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
-                if (eth.containsKey("intPin"))  cfg.ethernet.intPin  = eth["intPin"].as<int8_t>();
+            if (obj.containsKey("ethernet")) {
+                String pinError;
+                if (!obj["ethernet"].is<JsonObject>() ||
+                    !FastBee::parseEthernetResourcePins(obj["ethernet"].as<JsonObjectConst>(),
+                                                       cfg.ethernet, pinError)) {
+                    ctx->sendError(request, 400, pinError.isEmpty() ? String("NETWORK_PIN_INVALID: ethernet object required") : pinError);
+                    return;
+                }
             }
             // 4G 铚傜獫閰嶇疆
-            if (obj["cellular"].is<JsonObject>()) {
+            if (obj.containsKey("cellular")) {
+                String pinError;
+                if (!obj["cellular"].is<JsonObject>() ||
+                    !FastBee::parseCellularResourcePins(obj["cellular"].as<JsonObjectConst>(),
+                                                       cfg.cellular, pinError)) {
+                    ctx->sendError(request, 400, pinError.isEmpty() ? String("NETWORK_PIN_INVALID: cellular object required") : pinError);
+                    return;
+                }
                 JsonObject cell = obj["cellular"];
-                if (cell.containsKey("txPin"))    cfg.cellular.txPin    = cell["txPin"].as<int8_t>();
-                if (cell.containsKey("rxPin"))    cfg.cellular.rxPin    = cell["rxPin"].as<int8_t>();
-                if (cell.containsKey("pwrPin"))   cfg.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
                 if (cell.containsKey("baudRate")) cfg.cellular.baudRate = cell["baudRate"].as<uint32_t>();
                 if (cell.containsKey("apn"))      cfg.cellular.apn      = cell["apn"].as<String>();
             }
-            if (netMgr->updateConfig(cfg, true)) {
+            String resourceError;
+            if (netMgr->updateConfig(cfg, true, &resourceError)) {
                 LOGGER.info("Network configuration updated via web");
                 
                 // 配置保存成功，取消运行时网络重启（改为设备重启）
@@ -490,38 +545,41 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 respDoc["message"] = "Network configuration saved, device will reboot";
                 
                 // 网络模式信息
-                respDoc["data"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
-                respDoc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
+                FastBee::setFixedJsonField(respDoc, "data", "networkType", static_cast<uint8_t>(cfg.networkType));
+                FastBee::setFixedJsonField(respDoc, "data", "mode", static_cast<uint8_t>(cfg.mode));
                 const char* modeText = "unknown";
                 switch (cfg.mode) {
                     case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
                     case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
                     default: break;
                 }
-                respDoc["data"]["modeText"] = modeText;
+                FastBee::setFixedJsonField(respDoc, "data", "modeText", modeText);
                 
                 // AP信息（AP模式需要）
                 if (cfg.mode == NetworkMode::NETWORK_AP) {
-                    respDoc["data"]["apSSID"] = cfg.apSSID;
-                    respDoc["data"]["apPassword"] = cfg.apPassword;
-                    respDoc["data"]["apIP"] = cfg.apIP;
+                    FastBee::setFixedJsonField(respDoc, "data", "apSSID", cfg.apSSID);
+                    FastBee::setFixedJsonField(respDoc, "data", "apPassword", cfg.apPassword);
+                    FastBee::setFixedJsonField(respDoc, "data", "apIP", cfg.apIP);
                 }
                 
                 // mDNS信息（STA模式需要）
                 if (cfg.mode == NetworkMode::NETWORK_STA && cfg.enableMDNS) {
                     String domain = cfg.customDomain.length() > 0 ? cfg.customDomain : "fastbee";
-                    respDoc["data"]["mdnsDomain"] = domain + ".local";
+                    FastBee::setFixedJsonField(respDoc, "data", "mdnsDomain", domain + ".local");
                 }
                 
                 // 提示设备将重启
-                respDoc["data"]["restartRequired"] = true;
+                FastBee::setFixedJsonField(respDoc, "data", "restartRequired", true);
 
                 HandlerUtils::sendJsonStream(request, respDoc);
 
                 // HTTP 响应已发送，调度延迟重启（2秒后 ESP.restart）
                 SystemRebooter::scheduleConfigReboot("Network config changed");
             } else {
-                ctx->sendError(request, 500, "Failed to save network configuration");
+                const bool busy = resourceError.startsWith("NETWORK_RESOURCE_BUSY") ||
+                                  resourceError.startsWith("NETWORK_RESOURCE_MEMORY");
+                ctx->sendError(request, resourceError.isEmpty() ? 500 : (busy ? 503 : 422),
+                               resourceError.isEmpty() ? String("Failed to save network configuration") : resourceError);
             }
         });
     networkJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
@@ -647,8 +705,14 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
         if (HandlerUtils::checkLowMemory(request, 24576)) return;
 
+        FastBee::ConfigImportSession::Guard importGuard(ordinaryImport);
+        if (!importGuard) { ctx->sendError(request, 503, "配置导入忙，请稍后核验"); return; }
+        if (ordinaryImport.busy(millis())) {
+            ctx->sendError(request, 409, "已有分片导入进行中"); return;
+        }
+
         JsonDocument importedConfig;
-        DeserializationError importError = deserializeJson(importedConfig, content);
+        DeserializationError importError = deserializeJson(importedConfig, content.c_str(), content.length());
         if (importError || (!importedConfig.is<JsonObject>() && name != "ir_keys.json")) {
             ctx->sendError(request, 422, "配置文件内容不是有效的 JSON 对象，请检查文件内容");
             return;
@@ -671,11 +735,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
         String path = configPathForName(name);
         ConfigStorage& configStorage = ConfigStorage::getInstance();
-        if (!configStorage.saveJSONConfig(path, importedConfig)) {
+        if (!configStorage.saveImportedJSONConfig(path, importedConfig)) {
             ctx->sendError(request, 500, "配置文件原子提交失败，已保留原配置");
             return;
         }
         const size_t written = measureJson(importedConfig);
+        ordinaryImport.invalidate();
 
         if (name == "device.json" || name == "protocol.json") {
             FastBeeFramework* fw = FastBeeFramework::getInstance();
@@ -685,6 +750,70 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         JsonDocument doc;
         doc["name"] = name;
         doc["size"] = written;
+        doc["saved"] = true;
+        doc["applied"] = false;
+        doc["restartRequired"] = true;
+        ctx->sendSuccess(request, doc);
+    });
+
+    server->on("/api/config/transfer/import-begin", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        if (!ctx->requireAuth(request)) return;
+        if (!ctx->requireDeveloperMode(request)) return;
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config import begin", MemoryGuardLevel::SEVERE, 8)) return;
+        if (!request->hasParam("name", true) || !request->hasParam("total", true) ||
+            !request->hasParam("size", true)) {
+            ctx->sendError(request, 400, "缺少导入会话参数"); return;
+        }
+        const String& name = request->getParam("name", true)->value();
+        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法"); return; }
+        if (isManagedRuntimeConfigFileName(name)) {
+            ctx->sendError(request, 409, "该运行配置必须通过专用 API 导入"); return;
+        }
+        if (!isAllowedConfigImportFileName(name)) {
+            ctx->sendError(request, 403, "不允许导入该配置文件"); return;
+        }
+        uint32_t total = 0, size = 0;
+        if (!parseConfigImportNumber(request->getParam("total", true)->value(), kMaxConfigTransferChunks, total) ||
+            !parseConfigImportNumber(request->getParam("size", true)->value(), kMaxConfigInlineImportBytes, size) ||
+            !total || !size || total > size) {
+            ctx->sendError(request, 400, "导入大小或分片数量无效，普通配置最大24KB"); return;
+        }
+        FastBee::ConfigImportSession::Guard importGuard(ordinaryImport);
+        if (!importGuard) { ctx->sendError(request, 503, "配置导入忙，请稍后核验"); return; }
+        if (ordinaryImport.busy(millis())) {
+            ctx->sendError(request, 409, "已有分片导入进行中，请完成或等待60秒空闲后核验"); return;
+        }
+        if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
+            ctx->sendError(request, 500, "Failed to create config directory"); return;
+        }
+        // Only retire our own previous staging file. Never sweep other uploads.
+        if (ordinaryImport.name[0]) {
+            const String previousStage = configPathForName(ordinaryImport.name) + ".import.tmp";
+            if (LittleFS.exists(previousStage) && !LittleFS.remove(previousStage)) {
+                ctx->sendError(request, 500, "无法释放上一导入暂存文件"); return;
+            }
+        }
+        ordinaryImport.invalidate();
+        String stagedPath = configPathForName(name) + ".import.tmp";
+        File staged = LittleFS.open(stagedPath, "w");
+        if (!staged) { ctx->sendError(request, 500, "无法建立导入暂存文件"); return; }
+        staged.close();
+        uint8_t random[16];
+        char session[33];
+        static const char hex[] = "0123456789abcdef";
+        esp_fill_random(random, sizeof(random));
+        for (size_t i = 0; i < sizeof(random); ++i) {
+            session[i * 2] = hex[random[i] >> 4]; session[i * 2 + 1] = hex[random[i] & 15];
+        }
+        session[32] = '\0';
+        if (!ordinaryImport.begin(session, name.c_str(), total, size, millis())) {
+            ctx->sendError(request, 500, "无法建立导入会话"); return;
+        }
+        JsonDocument doc;
+        doc["name"] = name; doc["session"] = session;
+        doc["total"] = total; doc["expectedSize"] = size; doc["size"] = 0;
+        doc["saved"] = false; doc["applied"] = false; doc["restartRequired"] = false;
         ctx->sendSuccess(request, doc);
     });
 
@@ -694,15 +823,21 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->requireDeveloperMode(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
-            || !request->hasParam("index", true) || !request->hasParam("total", true)) {
-            ctx->sendError(request, 400, "缺少分片导入参数（name/chunk/index/total）");
+            || !request->hasParam("index", true) || !request->hasParam("total", true)
+            || !request->hasParam("session", true)) {
+            ctx->sendError(request, 400, "缺少分片导入参数，须先建立导入会话");
             return;
         }
 
         String name = request->getParam("name", true)->value();
         const String& chunk = request->getParam("chunk", true)->value();
-        int index = request->getParam("index", true)->value().toInt();
-        int total = request->getParam("total", true)->value().toInt();
+        const String& session = request->getParam("session", true)->value();
+        uint32_t index = 0, total = 0;
+        if (!parseConfigImportNumber(request->getParam("index", true)->value(), kMaxConfigTransferChunks, index) ||
+            !parseConfigImportNumber(request->getParam("total", true)->value(), kMaxConfigTransferChunks, total)) {
+            ctx->sendError(request, 400, "分片索引必须是规范十进制整数"); return;
+        }
+        if (session.length() != 32) { ctx->sendError(request, 400, "导入会话无效"); return; }
 
         if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法"); return; }
         if (isManagedRuntimeConfigFileName(name)) {
@@ -722,7 +857,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 ("不允许导入配置文件：" + name + "。网络、协议和认证配置必须通过各自的专用页面/API 修改").c_str());
             return;
         }
-        if (total <= 0 || total > kMaxConfigTransferChunks || index < 0 || index >= total) {
+        if (total == 0 || total > kMaxConfigTransferChunks || index >= total) {
             ctx->sendError(request, 400, "分片索引无效");
             return;
         }
@@ -738,47 +873,45 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
         if (HandlerUtils::checkLowMemory(request, 24576)) return;
 
-        if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
-            ctx->sendError(request, 500, "Failed to create config directory");
-            return;
+        FastBee::ConfigImportSession::Guard importGuard(ordinaryImport);
+        if (!importGuard) { ctx->sendError(request, 503, "配置导入忙，请稍后核验"); return; }
+        const auto admission = ordinaryImport.inspect(session.c_str(), name.c_str(), index, total, chunk.length(), millis());
+        if (admission == FastBee::ConfigImportSession::Admission::Reject) {
+            ctx->sendError(request, 409, "导入会话过期、不匹配或分片乱序，请核验后恢复"); return;
         }
-
         String path = configPathForName(name);
         String stagedPath = path + ".import.tmp";
-        if (index == 0 && LittleFS.exists(stagedPath)) {
-            LittleFS.remove(stagedPath);
+        File existing = LittleFS.open(stagedPath, "r");
+        if (!existing || existing.size() != ordinaryImport.received) {
+            existing.close(); ordinaryImport.failed();
+            ctx->sendError(request, 409, "导入暂存文件已变化，请核验后恢复"); return;
         }
-        if (index > 0 && !LittleFS.exists(stagedPath)) {
-            ctx->sendError(request, 409, "Missing previous config chunk");
-            return;
-        }
-
-        File out = LittleFS.open(stagedPath, index == 0 ? "w" : "a");
-        if (!out) { ctx->sendError(request, 500, "Failed to open staged config for chunk write"); return; }
-        size_t written = out.print(chunk);
-        out.flush();
-        out.close();
-
-        if (written != chunk.length()) {
-            LittleFS.remove(stagedPath);
-            ctx->sendError(request, 500, "分片写入不完整");
-            return;
-        }
-        // The active config is untouched until the complete staged document
-        // has parsed and ConfigStorage commits it atomically.
-        size_t fileSize = written;
-        File chk = LittleFS.open(stagedPath, "r");
-        if (chk) { fileSize = chk.size(); chk.close(); }
-        if (fileSize > kMaxConfigInlineImportBytes) {
-            LittleFS.remove(stagedPath);
-            ctx->sendError(request, 413,
-                ("配置文件过大（" + String(fileSize) + " 字节），最大 " + String(kMaxConfigInlineImportBytes / 1024) + " KB").c_str());
-            return;
+        const bool replay = admission == FastBee::ConfigImportSession::Admission::ReplayLast;
+        if (replay) {
+            bool equal = existing.seek(ordinaryImport.lastOffset);
+            for (size_t i = 0; equal && i < chunk.length(); ++i)
+                equal = existing.read() == static_cast<uint8_t>(chunk[i]);
+            existing.close();
+            if (!equal) { ctx->sendError(request, 409, "重复分片内容不一致"); return; }
+        } else {
+            existing.close();
+            File out = LittleFS.open(stagedPath, "a");
+            if (!out) { ordinaryImport.failed(); ctx->sendError(request, 500, "无法打开导入暂存文件"); return; }
+            const size_t written = out.print(chunk);
+            out.flush();
+            const size_t stored = out.size();
+            out.close();
+            if (written != chunk.length() || stored != ordinaryImport.received + written) {
+                ordinaryImport.failed();
+                ctx->sendError(request, 500, "分片写入不完整，已停止该会话"); return;
+            }
+            ordinaryImport.appended(written, millis());
         }
 
-        if (index == total - 1) {
+        if (!replay && index == total - 1) {
             File staged = LittleFS.open(stagedPath, "r");
             if (!staged) {
+                ordinaryImport.failed();
                 ctx->sendError(request, 500, "Failed to reopen staged config");
                 return;
             }
@@ -786,18 +919,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             DeserializationError importError = deserializeJson(importedConfig, staged);
             staged.close();
             if (importError || (!importedConfig.is<JsonObject>() && name != "ir_keys.json")) {
-                LittleFS.remove(stagedPath);
+                ordinaryImport.failed();
                 ctx->sendError(request, 422, "完整配置不是有效的 JSON 对象，原配置未修改");
                 return;
             }
 
             ConfigStorage& configStorage = ConfigStorage::getInstance();
-            if (!configStorage.saveJSONConfig(path, importedConfig)) {
-                LittleFS.remove(stagedPath);
+            if (!configStorage.saveImportedJSONConfig(path, importedConfig)) {
+                ordinaryImport.failed();
                 ctx->sendError(request, 500, "配置文件原子提交失败，已保留原配置");
                 return;
             }
-            LittleFS.remove(stagedPath);
+            // Retain the exact input for a bounded final acknowledgement replay;
+            // normalized active JSON is not byte-identical to the input.
+            ordinaryImport.committed();
 
             if (name == "device.json") {
                 FastBeeFramework* fw = FastBeeFramework::getInstance();
@@ -805,18 +940,15 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             }
         }
 
-        // 最后一个分片写入完成后，清理 /config/ 目录中的残留文件
-        int cleaned = 0;
-        if (index == total - 1) {
-            cleaned = cleanupStaleConfigFiles();
-        }
-
         JsonDocument doc;
         doc["name"] = name;
+        doc["session"] = session;
         doc["index"] = index;
         doc["total"] = total;
-        doc["size"] = fileSize;
-        if (cleaned > 0) doc["cleaned"] = cleaned;
+        doc["size"] = ordinaryImport.received;
+        doc["saved"] = index == total - 1;
+        doc["applied"] = false;
+        doc["restartRequired"] = index == total - 1;
         ctx->sendSuccess(request, doc);
     });
 #endif
@@ -1362,6 +1494,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // System capabilities (no auth required - public endpoint)
     server->on("/api/system/capabilities", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetCapabilities(request); });
+    FastBee::setupTaskStackSnapshotRoute(server, ctx);
 }
 
 void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
@@ -1409,30 +1542,33 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 
     if (HandlerUtils::checkLowMemory(request)) return;
 
+    FastBee::RunningImageSizeResult imageSize;
+    if (!FastBee::readRunningImageSizeForResponse(request, imageSize)) return;
+
     auto doc = FastBee::makeJsonDocument();
 
-    doc["data"]["device"]["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    doc["data"]["device"]["chipModel"] = ESP.getChipModel();
-    doc["data"]["device"]["chipRevision"] = ESP.getChipRevision();
-    doc["data"]["device"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    doc["data"]["device"]["sdkVersion"] = ESP.getSdkVersion();
-    doc["data"]["device"]["freeHeap"] = ESP.getFreeHeap();
-    doc["data"]["device"]["flashSize"] = ESP.getFlashChipSize();
-    doc["data"]["device"]["firmwareVersion"] = SystemInfo::VERSION;
+    FastBee::setFixedJsonField(doc, "data", "device", "id", String((uint32_t)ESP.getEfuseMac(), HEX));
+    FastBee::setFixedJsonField(doc, "data", "device", "chipModel", ESP.getChipModel());
+    FastBee::setFixedJsonField(doc, "data", "device", "chipRevision", ESP.getChipRevision());
+    FastBee::setFixedJsonField(doc, "data", "device", "cpuFreqMHz", ESP.getCpuFreqMHz());
+    FastBee::setFixedJsonField(doc, "data", "device", "sdkVersion", ESP.getSdkVersion());
+    FastBee::setFixedJsonField(doc, "data", "device", "freeHeap", ESP.getFreeHeap());
+    FastBee::setFixedJsonField(doc, "data", "device", "flashSize", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(doc, "data", "device", "firmwareVersion", SystemInfo::VERSION);
 
     size_t flashSize = ESP.getFlashChipSize();
-    size_t sketchSize = ESP.getSketchSize();
+    uint32_t sketchSize = imageSize.size;
     size_t freeSketchSpace = ESP.getFreeSketchSpace();
-    doc["data"]["flash"]["total"] = flashSize;
-    doc["data"]["flash"]["speed"] = ESP.getFlashChipSpeed();
-    doc["data"]["flash"]["sketchSize"] = sketchSize;
-    doc["data"]["flash"]["freeSketchSpace"] = freeSketchSpace;
-    doc["data"]["flash"]["used"] = sketchSize;
-    doc["data"]["flash"]["free"] = freeSketchSpace;
-    doc["data"]["flash"]["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
+    FastBee::setFixedJsonField(doc, "data", "flash", "total", flashSize);
+    FastBee::setFixedJsonField(doc, "data", "flash", "speed", ESP.getFlashChipSpeed());
+    FastBee::setFixedJsonField(doc, "data", "flash", "sketchSize", sketchSize);
+    FastBee::setFixedJsonField(doc, "data", "flash", "freeSketchSpace", freeSketchSpace);
+    FastBee::setFixedJsonField(doc, "data", "flash", "used", sketchSize);
+    FastBee::setFixedJsonField(doc, "data", "flash", "free", freeSketchSpace);
+    FastBee::setFixedJsonField(doc, "data", "flash", "usagePercent", (int)((sketchSize * 100) / (sketchSize + freeSketchSpace)));
 
     JsonObject memory = doc["data"]["memory"].to<JsonObject>();
-    fillMemorySummary(memory);
+    fillMemorySummary(memory, true);
 
     // 闈欐€佹睜鍒╃敤鐜囩洃鎺э紙T1+T2 纰庣墖娌荤悊鎴愭灉鍙娴嬬偣锛?
     // 涓変釜姹狅細
@@ -1440,50 +1576,69 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     //   - (192, 32): rules 鑺傜偣姹?锛?KB DRAM锛?
     //   - (64, 64) : SmallNodePool 楂橀灏忓鍣ㄨ妭鐐规睜 锛?KB DRAM锛?
     JsonObject pools = memory["staticPools"].to<JsonObject>();
+#if defined(ARDUINO_ARCH_ESP32) && CHIP_IS_ESP32S3 && \
+    defined(BOARD_HAS_PSRAM) && FASTBEE_USE_PSRAM
+#define FB_FILL_POOL_STORAGE_STATS(P, O) do {                                        \
+    FastBee::setFixedJsonField((O), "storageAvailable", (P).storageAvailable());       \
+    FastBee::setFixedJsonField((O), "externalStorage", (P).externalStorage());         \
+    FastBee::setFixedJsonField((O), "allocatedStorageBytes",                          \
+        static_cast<uint32_t>((P).allocatedStorageBytes()));                          \
+} while (0)
+#else
+#define FB_FILL_POOL_STORAGE_STATS(P, O)
+#endif
 #define FB_FILL_POOL_STATS(NAME, B, N) do {                                          \
     auto& _p = FastBee::sharedSlabPool<(B), (N)>();                                  \
     JsonObject _o = pools[NAME].to<JsonObject>();                                    \
-    _o["capacity"]      = (uint32_t)_p.capacity();                                   \
-    _o["blockSize"]     = (uint32_t)_p.blockSize();                                  \
-    _o["used"]          = (uint32_t)_p.usedCount();                                  \
-    _o["peakUsed"]      = (uint32_t)_p.peakUsed();                                   \
-    _o["overflowCount"] = (uint32_t)_p.overflowCount();                              \
-    _o["totalBytes"]    = (uint32_t)_p.totalBytes();                                 \
+    FastBee::setFixedJsonField(_o, "capacity", (uint32_t)_p.capacity());                                   \
+    FastBee::setFixedJsonField(_o, "blockSize", (uint32_t)_p.blockSize());                                  \
+    FastBee::setFixedJsonField(_o, "used", (uint32_t)_p.usedCount());                                  \
+    FastBee::setFixedJsonField(_o, "peakUsed", (uint32_t)_p.peakUsed());                                   \
+    FastBee::setFixedJsonField(_o, "overflowCount", (uint32_t)_p.overflowCount());                              \
+    FastBee::setFixedJsonField(_o, "totalBytes", (uint32_t)_p.totalBytes());                                 \
+    FB_FILL_POOL_STORAGE_STATS(_p, _o);                                              \
 } while (0)
     FB_FILL_POOL_STATS("periph256", 256, 32);
     FB_FILL_POOL_STATS("rule192",   192, 32);
     FB_FILL_POOL_STATS("small64",   FastBee::SMALL_NODE_BLOCK_SIZE,
                                     FastBee::SMALL_NODE_BLOCK_COUNT);
+#if defined(ARDUINO_ARCH_ESP32) && CHIP_IS_ESP32S3 && \
+    defined(BOARD_HAS_PSRAM) && FASTBEE_USE_PSRAM
+    // Diagnostic access initializes an unused shared pool once. The fixed
+    // backing then remains reserved for the device lifetime, like map access.
+    FB_FILL_POOL_STATS("sensor160", 160, 24);
+#endif
+#undef FB_FILL_POOL_STORAGE_STATS
 #undef FB_FILL_POOL_STATS
 
     size_t fsTotal, fsUsed;
     getCachedFsStats(fsTotal, fsUsed);
-    doc["data"]["filesystem"]["total"] = fsTotal;
-    doc["data"]["filesystem"]["used"] = fsUsed;
-    doc["data"]["filesystem"]["free"] = fsTotal - fsUsed;
-    doc["data"]["filesystem"]["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
+    FastBee::setFixedJsonField(doc, "data", "filesystem", "total", fsTotal);
+    FastBee::setFixedJsonField(doc, "data", "filesystem", "used", fsUsed);
+    FastBee::setFixedJsonField(doc, "data", "filesystem", "free", fsTotal - fsUsed);
+    FastBee::setFixedJsonField(doc, "data", "filesystem", "usagePercent", fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0);
 
     unsigned long uptime = millis();
-    doc["data"]["uptime"]["ms"] = uptime;
-    doc["data"]["uptime"]["seconds"] = uptime / 1000;
-    doc["data"]["uptime"]["formatted"] = ctx->formatUptime(uptime);
+    FastBee::setFixedJsonField(doc, "data", "uptime", "ms", uptime);
+    FastBee::setFixedJsonField(doc, "data", "uptime", "seconds", uptime / 1000);
+    FastBee::setFixedJsonField(doc, "data", "uptime", "formatted", ctx->formatUptime(uptime));
 
     if (ctx->networkManager) {
         NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
-        doc["data"]["network"]["connected"] = (info.status == NetworkStatus::CONNECTED);
-        doc["data"]["network"]["ipAddress"] = info.ipAddress;
-        doc["data"]["network"]["ssid"] = info.ssid;
-        doc["data"]["network"]["rssi"] = info.rssi;
-        doc["data"]["network"]["macAddress"] = WiFi.macAddress();
+        FastBee::setFixedJsonField(doc, "data", "network", "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(doc, "data", "network", "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(doc, "data", "network", "ssid", info.ssid);
+        FastBee::setFixedJsonField(doc, "data", "network", "rssi", info.rssi);
+        FastBee::setFixedJsonField(doc, "data", "network", "macAddress", WiFi.macAddress());
     }
 
 #if FASTBEE_ENABLE_USER_ADMIN
     if (ctx->userManager) {
-        doc["data"]["users"]["total"] = ctx->userManager->getUserCount();
+        FastBee::setFixedJsonField(doc, "data", "users", "total", ctx->userManager->getUserCount());
     }
     if (ctx->authManager) {
-        doc["data"]["users"]["activeSessions"] = ctx->authManager->getActiveSessionCount();
-        doc["data"]["users"]["online"] = ctx->authManager->getOnlineUserCount();
+        FastBee::setFixedJsonField(doc, "data", "users", "activeSessions", ctx->authManager->getActiveSessionCount());
+        FastBee::setFixedJsonField(doc, "data", "users", "online", ctx->authManager->getOnlineUserCount());
     }
 #endif
 
@@ -1492,6 +1647,9 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
+    // This public route bypasses requireAuth and the shared response helpers.
+    // Count cached, freshly built and rejected responses as request activity.
+    ctx->noteWebRequestActivity();
     unsigned long now = millis();
     // Stability: invalidate the cache when memory pressure has escalated to CRITICAL
     // since the last build. Without this, the dashboard could see a stale "running"
@@ -1517,13 +1675,13 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     auto wrapper = FastBee::makeJsonDocument();
     wrapper["success"] = true;
     JsonObject doc = wrapper["data"].to<JsonObject>();
-    doc["status"]    = "running";
-    doc["timestamp"] = millis();
-    doc["freeHeap"]  = ESP.getFreeHeap();
-    doc["uptime"]    = millis();
+    FastBee::setFixedJsonField(doc, "status", "running");
+    FastBee::setFixedJsonField(doc, "timestamp", millis());
+    FastBee::setFixedJsonField(doc, "freeHeap", ESP.getFreeHeap());
+    FastBee::setFixedJsonField(doc, "uptime", millis());
     HandlerUtils::addMemoryDegradationStatus(doc);
-    doc["memory"]["dram8Free"] = FastBee::MemoryBudget::dram8Free();
-    doc["memory"]["dram8Largest"] = FastBee::MemoryBudget::dram8Largest();
+    FastBee::setFixedJsonField(doc, "memory", "dram8Free", FastBee::MemoryBudget::dram8Free());
+    FastBee::setFixedJsonField(doc, "memory", "dram8Largest", FastBee::MemoryBudget::dram8Largest());
 
     // 功能运行时状态：disabled=未编译或用户关闭 / no-memory=预算拒绝自动降级 / active=正常启用
     // 统一从 RuntimeFeatureManager 遍历全部已注册功能（2026-08 审计修复：覆盖 27/27 而非原 8/27）
@@ -1540,6 +1698,13 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
                 : (budgetReg.isDenied(meta->key) ? "no-memory"
                 : (rfm.shouldEnable(meta->key) ? "active" : "disabled")));
             features[meta->key] = state;
+            // Menu visibility for a temporarily degraded panel follows the
+            // user's intent. Include only these two small fields so startup
+            // does not need the full feature catalog just to resolve a menu.
+            if (strcmp(meta->key, "screenPanel") == 0) {
+                FastBee::setFixedJsonField(doc, "featureIntent", "screenPanel", "compiled", meta->compiled);
+                FastBee::setFixedJsonField(doc, "featureIntent", "screenPanel", "userEnabled", userEnabled);
+            }
         }
     }
 
@@ -1564,16 +1729,16 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
             case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
             default: break;
         }
-        doc["networkStatus"]    = statusText;
-        doc["networkStatusCode"] = static_cast<uint8_t>(info.status);
-        doc["networkConnected"] = (info.status == NetworkStatus::CONNECTED);
-        doc["connected"]        = (info.status == NetworkStatus::CONNECTED);
-        doc["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
-        doc["ipAddress"]        = info.ipAddress;
-        doc["ssid"]             = info.ssid;
-        doc["rssi"]             = info.rssi;
-        doc["macAddress"]       = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
-        doc["internetAvailable"] = info.internetAvailable;
+        FastBee::setFixedJsonField(doc, "networkStatus", statusText);
+        FastBee::setFixedJsonField(doc, "networkStatusCode", static_cast<uint8_t>(info.status));
+        FastBee::setFixedJsonField(doc, "networkConnected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(doc, "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(doc, "deviceNetworkType", static_cast<uint8_t>(cfg.networkType));
+        FastBee::setFixedJsonField(doc, "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(doc, "ssid", info.ssid);
+        FastBee::setFixedJsonField(doc, "rssi", info.rssi);
+        FastBee::setFixedJsonField(doc, "macAddress", info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress);
+        FastBee::setFixedJsonField(doc, "internetAvailable", info.internetAvailable);
     }
 
     if (wrapper.overflowed()) {
@@ -1647,60 +1812,60 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         WiFiConfig cfg = netMgr->getConfig();
 
-        doc["data"]["device"]["macAddress"] = WiFi.macAddress();
+        FastBee::setFixedJsonField(doc, "data", "device", "macAddress", WiFi.macAddress());
         // deviceName 已移至设备配置，网络配置 GET 不再返回
-        doc["data"]["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
-        doc["data"]["network"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
-        doc["data"]["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
-        doc["data"]["network"]["enableMDNS"] = cfg.enableMDNS;
-        doc["data"]["network"]["customDomain"] = cfg.customDomain;
-        doc["data"]["sta"]["ssid"] = cfg.staSSID;
-        doc["data"]["sta"]["password"] = cfg.staPassword.length() > 0 ? "********" : "";
-        doc["data"]["sta"]["hasPassword"] = cfg.staPassword.length() > 0;
-        doc["data"]["sta"]["staticIP"] = cfg.staticIP;
-        doc["data"]["sta"]["gateway"] = cfg.gateway;
-        doc["data"]["sta"]["subnet"] = cfg.subnet;
-        doc["data"]["sta"]["dns1"] = cfg.dns1;
-        doc["data"]["sta"]["dns2"] = cfg.dns2;
-        doc["data"]["ap"]["ssid"] = cfg.apSSID;
-        doc["data"]["ap"]["password"] = cfg.apPassword.length() > 0 ? "********" : "";
-        doc["data"]["ap"]["hasPassword"] = cfg.apPassword.length() > 0;
-        doc["data"]["ap"]["ip"] = cfg.apIP;
-        doc["data"]["ap"]["channel"] = cfg.apChannel;
-        doc["data"]["ap"]["hidden"] = cfg.apHidden;
-        doc["data"]["ap"]["maxConnections"] = cfg.apMaxConnections;
-        doc["data"]["advanced"]["connectTimeout"] = cfg.connectTimeout;
-        doc["data"]["advanced"]["reconnectInterval"] = cfg.reconnectInterval;
-        doc["data"]["advanced"]["maxReconnectAttempts"] = cfg.maxReconnectAttempts;
-        doc["data"]["advanced"]["conflictDetection"] = static_cast<uint8_t>(cfg.conflictDetection);
-        doc["data"]["advanced"]["failoverStrategy"] = static_cast<uint8_t>(cfg.failoverStrategy);
-        doc["data"]["advanced"]["autoFailover"] = cfg.autoFailover;
-        doc["data"]["advanced"]["conflictCheckInterval"] = cfg.conflictCheckInterval;
-        doc["data"]["advanced"]["maxFailoverAttempts"] = cfg.maxFailoverAttempts;
-        doc["data"]["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
-        doc["data"]["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
+        FastBee::setFixedJsonField(doc, "data", "network", "mode", static_cast<uint8_t>(cfg.mode));
+        FastBee::setFixedJsonField(doc, "data", "network", "networkType", static_cast<uint8_t>(cfg.networkType));
+        FastBee::setFixedJsonField(doc, "data", "network", "ipConfigType", static_cast<uint8_t>(cfg.ipConfigType));
+        FastBee::setFixedJsonField(doc, "data", "network", "enableMDNS", cfg.enableMDNS);
+        FastBee::setFixedJsonField(doc, "data", "network", "customDomain", cfg.customDomain);
+        FastBee::setFixedJsonField(doc, "data", "sta", "ssid", cfg.staSSID);
+        FastBee::setFixedJsonField(doc, "data", "sta", "password", cfg.staPassword.length() > 0 ? "********" : "");
+        FastBee::setFixedJsonField(doc, "data", "sta", "hasPassword", cfg.staPassword.length() > 0);
+        FastBee::setFixedJsonField(doc, "data", "sta", "staticIP", cfg.staticIP);
+        FastBee::setFixedJsonField(doc, "data", "sta", "gateway", cfg.gateway);
+        FastBee::setFixedJsonField(doc, "data", "sta", "subnet", cfg.subnet);
+        FastBee::setFixedJsonField(doc, "data", "sta", "dns1", cfg.dns1);
+        FastBee::setFixedJsonField(doc, "data", "sta", "dns2", cfg.dns2);
+        FastBee::setFixedJsonField(doc, "data", "ap", "ssid", cfg.apSSID);
+        FastBee::setFixedJsonField(doc, "data", "ap", "password", cfg.apPassword.length() > 0 ? "********" : "");
+        FastBee::setFixedJsonField(doc, "data", "ap", "hasPassword", cfg.apPassword.length() > 0);
+        FastBee::setFixedJsonField(doc, "data", "ap", "ip", cfg.apIP);
+        FastBee::setFixedJsonField(doc, "data", "ap", "channel", cfg.apChannel);
+        FastBee::setFixedJsonField(doc, "data", "ap", "hidden", cfg.apHidden);
+        FastBee::setFixedJsonField(doc, "data", "ap", "maxConnections", cfg.apMaxConnections);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "connectTimeout", cfg.connectTimeout);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "reconnectInterval", cfg.reconnectInterval);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "maxReconnectAttempts", cfg.maxReconnectAttempts);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "conflictDetection", static_cast<uint8_t>(cfg.conflictDetection));
+        FastBee::setFixedJsonField(doc, "data", "advanced", "failoverStrategy", static_cast<uint8_t>(cfg.failoverStrategy));
+        FastBee::setFixedJsonField(doc, "data", "advanced", "autoFailover", cfg.autoFailover);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "conflictCheckInterval", cfg.conflictCheckInterval);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "maxFailoverAttempts", cfg.maxFailoverAttempts);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "conflictThreshold", cfg.conflictThreshold);
+        FastBee::setFixedJsonField(doc, "data", "advanced", "fallbackToDHCP", cfg.fallbackToDHCP);
 
         // 浠ュお缃戦厤缃?
-        doc["data"]["ethernet"]["spiMosi"] = cfg.ethernet.spiMosi;
-        doc["data"]["ethernet"]["spiMiso"] = cfg.ethernet.spiMiso;
-        doc["data"]["ethernet"]["spiSck"]  = cfg.ethernet.spiSck;
-        doc["data"]["ethernet"]["csPin"]   = cfg.ethernet.csPin;
-        doc["data"]["ethernet"]["rstPin"]  = cfg.ethernet.rstPin;
-        doc["data"]["ethernet"]["intPin"]  = cfg.ethernet.intPin;
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "spiMosi", cfg.ethernet.spiMosi);
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "spiMiso", cfg.ethernet.spiMiso);
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "spiSck", cfg.ethernet.spiSck);
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "csPin", cfg.ethernet.csPin);
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "rstPin", cfg.ethernet.rstPin);
+        FastBee::setFixedJsonField(doc, "data", "ethernet", "intPin", cfg.ethernet.intPin);
 
         // 4G 铚傜獫閰嶇疆
-        doc["data"]["cellular"]["txPin"]    = cfg.cellular.txPin;
-        doc["data"]["cellular"]["rxPin"]    = cfg.cellular.rxPin;
-        doc["data"]["cellular"]["pwrPin"]   = cfg.cellular.pwrPin;
-        doc["data"]["cellular"]["baudRate"] = cfg.cellular.baudRate;
-        doc["data"]["cellular"]["apn"]      = cfg.cellular.apn;
+        FastBee::setFixedJsonField(doc, "data", "cellular", "txPin", cfg.cellular.txPin);
+        FastBee::setFixedJsonField(doc, "data", "cellular", "rxPin", cfg.cellular.rxPin);
+        FastBee::setFixedJsonField(doc, "data", "cellular", "pwrPin", cfg.cellular.pwrPin);
+        FastBee::setFixedJsonField(doc, "data", "cellular", "baudRate", cfg.cellular.baudRate);
+        FastBee::setFixedJsonField(doc, "data", "cellular", "apn", cfg.cellular.apn);
 
         NetworkStatusInfo info = netMgr->getStatusInfo();
-        doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
-        doc["data"]["status"]["statusCode"] = static_cast<uint8_t>(info.status);
-        doc["data"]["status"]["ipAddress"] = info.ipAddress;
-        doc["data"]["status"]["rssi"] = info.rssi;
-        doc["data"]["status"]["ssid"] = info.ssid;
+        FastBee::setFixedJsonField(doc, "data", "status", "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(doc, "data", "status", "statusCode", static_cast<uint8_t>(info.status));
+        FastBee::setFixedJsonField(doc, "data", "status", "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(doc, "data", "status", "rssi", info.rssi);
+        FastBee::setFixedJsonField(doc, "data", "status", "ssid", info.ssid);
     } else {
         doc["success"] = false;
         doc["error"] = "Network service unavailable";
@@ -1747,7 +1912,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
-    doc["data"]["path"] = path;
+    FastBee::setFixedJsonField(doc, "data", "path", path);
 
     File root = LittleFS.open(path);
     if (!root || !root.isDirectory()) {
@@ -1762,14 +1927,16 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
 
     File file = root.openNextFile();
     while (file) {
+        const String entryName = file.name();
+        if (entryName.indexOf(".config-migration") >= 0) { file = root.openNextFile(); continue; }
         JsonObject item;
         if (file.isDirectory()) {
             item = dirs.add<JsonObject>();
         } else {
             item = files.add<JsonObject>();
-            item["size"] = file.size();
+            FastBee::setFixedJsonField(item, "size", file.size());
         }
-        item["name"] = String(file.name());
+        FastBee::setFixedJsonField(item, "name", String(file.name()));
         file = root.openNextFile();
     }
     root.close();
@@ -1820,72 +1987,75 @@ void SystemRouteHandler::handleDiagBundle(AsyncWebServerRequest* request) {
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
     const unsigned long now = millis();
-    data["timestamp"] = now;
+    FastBee::setFixedJsonField(data, "timestamp", now);
 
     // ── 设备信息 ─────────────────────────────────────────────────
     JsonObject device = data["device"].to<JsonObject>();
-    device["chipModel"] = ESP.getChipModel();
-    device["chipRevision"] = ESP.getChipRevision();
-    device["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    device["sdkVersion"] = ESP.getSdkVersion();
-    device["firmwareVersion"] = SystemInfo::VERSION;
-    device["flashSize"] = ESP.getFlashChipSize();
-    device["uptimeMs"] = now;
-    device["uptimeFormatted"] = ctx->formatUptime(now);
+    FastBee::setFixedJsonField(device, "chipModel", ESP.getChipModel());
+    FastBee::setFixedJsonField(device, "chipRevision", ESP.getChipRevision());
+    FastBee::setFixedJsonField(device, "cpuFreqMHz", ESP.getCpuFreqMHz());
+    FastBee::setFixedJsonField(device, "sdkVersion", ESP.getSdkVersion());
+    FastBee::setFixedJsonField(device, "firmwareVersion", SystemInfo::VERSION);
+    FastBee::setFixedJsonField(device, "flashSize", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(device, "uptimeMs", now);
+    FastBee::setFixedJsonField(device, "uptimeFormatted", ctx->formatUptime(now));
 
     // ── 重启诊断（RestartDiagnostics，RTC_NOINIT 快照只读）──────────
     JsonObject restart = data["restart"].to<JsonObject>();
     const esp_reset_reason_t resetReason = esp_reset_reason();
-    restart["resetReason"] = RestartDiagnostics::getResetReasonString(resetReason);
-    restart["resetReasonCode"] = static_cast<uint8_t>(resetReason);
-    restart["abnormalRestart"] = RestartDiagnostics::wasAbnormalRestart();
+    FastBee::setFixedJsonField(restart, "resetReason", RestartDiagnostics::getResetReasonString(resetReason));
+    FastBee::setFixedJsonField(restart, "resetReasonCode", static_cast<uint8_t>(resetReason));
+    FastBee::setFixedJsonField(restart, "abnormalRestart", RestartDiagnostics::wasAbnormalRestart());
     PreRestartSnapshot snapshot;
     if (RestartDiagnostics::getLastSnapshot(snapshot)) {
-        restart["snapshotValid"] = true;
-        restart["lastRestartReason"] =
-            RestartDiagnostics::getRestartReasonString(static_cast<RestartReason>(snapshot.restartReason));
-        restart["lastRestartReasonCode"] = snapshot.restartReason;
-        restart["lastRestartContext"] = snapshot.restartContext;
-        restart["lastUptimeMs"] = snapshot.timestamp;
+        FastBee::setFixedJsonField(restart, "snapshotValid", true);
+        FastBee::setFixedJsonField(restart, "lastRestartReason",
+            RestartDiagnostics::getRestartReasonString(static_cast<RestartReason>(snapshot.restartReason)));
+        FastBee::setFixedJsonField(restart, "lastRestartReasonCode", snapshot.restartReason);
+        FastBee::setFixedJsonField(restart, "lastRestartContext", snapshot.restartContext);
+        FastBee::setFixedJsonField(restart, "lastUptimeMs", snapshot.timestamp);
         JsonObject pre = restart["preRestart"].to<JsonObject>();
-        pre["freeHeap"] = snapshot.freeHeap;
-        pre["minFreeHeap"] = snapshot.minFreeHeap;
-        pre["largestFreeBlock"] = snapshot.largestFreeBlock;
-        pre["heapFragmentation"] = snapshot.heapFragmentation;
-        pre["memGuardLevel"] = snapshot.memGuardLevel;
-        pre["loopTaskWatermark"] = snapshot.loopTaskWatermark;
-        pre["asyncTcpWatermark"] = snapshot.asyncTcpWatermark;
-        pre["wifiConnected"] = snapshot.wifiConnected != 0;
-        pre["wifiRssi"] = snapshot.wifiRssi;
-        pre["mqttQueueDepth"] = snapshot.mqttQueueDepth;
-        pre["sseClientCount"] = snapshot.sseClientCount;
-        pre["activeRuleCount"] = snapshot.activeRuleCount;
+        FastBee::setFixedJsonField(pre, "freeHeap", snapshot.freeHeap);
+        FastBee::setFixedJsonField(pre, "minFreeHeap", snapshot.minFreeHeap);
+        FastBee::setFixedJsonField(pre, "largestFreeBlock", snapshot.largestFreeBlock);
+        FastBee::setFixedJsonField(pre, "heapFragmentation", snapshot.heapFragmentation);
+        FastBee::setFixedJsonField(pre, "memGuardLevel", snapshot.memGuardLevel);
+        FastBee::setFixedJsonField(pre, "loopTaskWatermark", nullptr);
+        FastBee::setFixedJsonField(pre, "asyncTcpWatermark", nullptr);
+        FastBee::setFixedJsonField(pre, "mqttReconnWatermark", nullptr);
+        FastBee::setFixedJsonField(pre, "taskWatermarkStatus", "unknown");
+        FastBee::setFixedJsonField(pre, "taskWatermarkReason", "NAMED_TASK_LIFETIME_UNCONFIRMED");
+        FastBee::setFixedJsonField(pre, "wifiConnected", snapshot.wifiConnected != 0);
+        FastBee::setFixedJsonField(pre, "wifiRssi", snapshot.wifiRssi);
+        FastBee::setFixedJsonField(pre, "mqttQueueDepth", snapshot.mqttQueueDepth);
+        FastBee::setFixedJsonField(pre, "sseClientCount", snapshot.sseClientCount);
+        FastBee::setFixedJsonField(pre, "activeRuleCount", snapshot.activeRuleCount);
     } else {
-        restart["snapshotValid"] = false;
+        FastBee::setFixedJsonField(restart, "snapshotValid", false);
     }
 
     // ── 内存快照（heap 汇总 + DRAM/PSRAM 分档 + HealthMonitor 守卫级）──
     JsonObject memory = data["memory"].to<JsonObject>();
-    fillMemorySummary(memory);
+    fillMemorySummary(memory, true);
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     if (monitor) {
         const SystemHealth health = monitor->getHealthStatus();
-        memory["guardLevel"] = HandlerUtils::memoryGuardLevelName(monitor->getMemoryGuardLevel());
-        memory["critical"] = monitor->isMemoryCritical();
-        memory["dramFree"] = health.dramFreeHeap;
-        memory["dramLargestBlock"] = health.dramLargestBlock;
-        memory["heapFragmentation"] = health.heapFragmentation;
-        memory["cpuUsage"] = health.cpuUsage;
+        FastBee::setFixedJsonField(memory, "guardLevel", HandlerUtils::memoryGuardLevelName(monitor->getMemoryGuardLevel()));
+        FastBee::setFixedJsonField(memory, "critical", monitor->isMemoryCritical());
+        FastBee::setFixedJsonField(memory, "dramFree", health.dramFreeHeap);
+        FastBee::setFixedJsonField(memory, "dramLargestBlock", health.dramLargestBlock);
+        FastBee::setFixedJsonField(memory, "heapFragmentation", health.heapFragmentation);
+        FastBee::setFixedJsonField(memory, "cpuUsage", health.cpuUsage);
     }
 
     // ── 文件系统（LittleFS，仅读元数据）────────────────────────
     JsonObject fs = data["filesystem"].to<JsonObject>();
     size_t fsTotal, fsUsed;
     getCachedFsStats(fsTotal, fsUsed);
-    fs["total"] = fsTotal;
-    fs["used"] = fsUsed;
-    fs["free"] = fsTotal > fsUsed ? fsTotal - fsUsed : 0;
+    FastBee::setFixedJsonField(fs, "total", fsTotal);
+    FastBee::setFixedJsonField(fs, "used", fsUsed);
+    FastBee::setFixedJsonField(fs, "free", fsTotal > fsUsed ? fsTotal - fsUsed : 0);
 
     // ── 网络状态 ─────────────────────────────────────────────────
     if (ctx->networkManager) {
@@ -1908,24 +2078,24 @@ void SystemRouteHandler::handleDiagBundle(AsyncWebServerRequest* request) {
             case NetworkMode::NETWORK_AP:  modeText = "AP";  break;
             default: break;
         }
-        network["status"] = statusText;
-        network["mode"] = modeText;
-        network["networkType"] = static_cast<uint8_t>(cfg.networkType);
-        network["ipAddress"] = info.ipAddress;
-        network["ssid"] = info.ssid;
-        network["rssi"] = info.rssi;
-        network["macAddress"] = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
-        network["internetAvailable"] = info.internetAvailable;
-        network["apClientCount"] = info.apClientCount;
+        FastBee::setFixedJsonField(network, "status", statusText);
+        FastBee::setFixedJsonField(network, "mode", modeText);
+        FastBee::setFixedJsonField(network, "networkType", static_cast<uint8_t>(cfg.networkType));
+        FastBee::setFixedJsonField(network, "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(network, "ssid", info.ssid);
+        FastBee::setFixedJsonField(network, "rssi", info.rssi);
+        FastBee::setFixedJsonField(network, "macAddress", info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress);
+        FastBee::setFixedJsonField(network, "internetAvailable", info.internetAvailable);
+        FastBee::setFixedJsonField(network, "apClientCount", info.apClientCount);
     }
 
     // ── 运行时：任务数与活跃连接（低成本只读）──────────────────────
     JsonObject runtime = data["runtime"].to<JsonObject>();
-    runtime["taskCount"] = static_cast<uint32_t>(uxTaskGetNumberOfTasks());
+    FastBee::setFixedJsonField(runtime, "taskCount", static_cast<uint32_t>(uxTaskGetNumberOfTasks()));
     WebConfigManager* webCfg = fw ? fw->getWebConfigManager() : nullptr;
     if (webCfg) {
-        runtime["sseClients"] = webCfg->getSseClientCount();
-        runtime["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
+        FastBee::setFixedJsonField(runtime, "sseClients", webCfg->getSseClientCount());
+        FastBee::setFixedJsonField(runtime, "sseMaxClients", static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS));
     }
 
     // ── 最近日志（LoggerSystem 内存环形，最近 N 行）────────────────
@@ -1934,15 +2104,16 @@ void SystemRouteHandler::handleDiagBundle(AsyncWebServerRequest* request) {
     char* logBuf = static_cast<char*>(malloc(kDiagLogBufSize));
     if (logBuf) {
         const size_t bytes = LOGGER.snapshotRecentLogs(logBuf, kDiagLogBufSize);
-        logs["content"] = logBuf;
-        logs["bytes"] = bytes;
+        FastBee::setFixedJsonField(logs, "content", logBuf);
+        FastBee::setFixedJsonField(logs, "bytes", bytes);
         free(logBuf);
     } else {
-        logs["content"] = "[Low memory - recent logs unavailable]";
-        logs["bytes"] = 0;
+        FastBee::setFixedJsonField(logs, "content", "[Low memory - recent logs unavailable]");
+        FastBee::setFixedJsonField(logs, "bytes", 0);
     }
-    logs["lines"] = LOGGER.recentLogLineCount();
-    logs["capacityLines"] = LoggerSystem::recentLogCapacity();
+    FastBee::setFixedJsonField(logs, "lines", LOGGER.recentLogLineCount());
+    FastBee::setFixedJsonField(logs, "capacityLines", LOGGER.recentLogAvailableCapacity());
+    FastBee::setFixedJsonField(logs, "optionalRecentLogsEnabled", LOGGER.isLogViewerEnabled());
 
     LOGGER.info("Diag bundle exported via web");
     HandlerUtils::sendJsonStream(request, doc);
@@ -1987,23 +2158,23 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     bool compactRuntime = !explicitFull || freeHeap < 12288 || maxAlloc < 6144;
     uint8_t frag = calculateHeapFragmentationPercent(freeHeap, largestBlock);
 
-    data["server"]["nowMs"] = now;
-    data["server"]["scheduleRestart"] = ctx->scheduleRestart;
-    data["server"]["scheduledRestartAtMs"] = ctx->scheduledRestartTime;
+    FastBee::setFixedJsonField(data, "server", "nowMs", now);
+    FastBee::setFixedJsonField(data, "server", "scheduleRestart", ctx->scheduleRestart);
+    FastBee::setFixedJsonField(data, "server", "scheduledRestartAtMs", ctx->scheduledRestartTime);
     data["server"]["scheduledRestartInMs"] =
         (ctx->scheduleRestart && ctx->scheduledRestartTime > now)
             ? (ctx->scheduledRestartTime - now)
             : 0;
 
-    data["memory"]["freeHeap"] = freeHeap;
-    data["memory"]["minFreeHeap"] = minFreeHeap;
-    data["memory"]["maxAlloc"] = maxAlloc;
-    data["memory"]["largestBlock"] = largestBlock;
-    data["memory"]["fragmentation"] = frag;
+    FastBee::setFixedJsonField(data, "memory", "freeHeap", freeHeap);
+    FastBee::setFixedJsonField(data, "memory", "minFreeHeap", minFreeHeap);
+    FastBee::setFixedJsonField(data, "memory", "maxAlloc", maxAlloc);
+    FastBee::setFixedJsonField(data, "memory", "largestBlock", largestBlock);
+    FastBee::setFixedJsonField(data, "memory", "fragmentation", frag);
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     WebConfigManager* webCfg = fw ? fw->getWebConfigManager() : nullptr;
-    data["server"]["webRunning"] = webCfg ? webCfg->isServerRunning() : false;
+    FastBee::setFixedJsonField(data, "server", "webRunning", webCfg ? webCfg->isServerRunning() : false);
 
     if (fw && fw->getHealthMonitor()) {
         HealthMonitor* hm = fw->getHealthMonitor();
@@ -2015,52 +2186,60 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
             case MemoryGuardLevel::CRITICAL: levelText = "CRITICAL"; break;
             default: break;
         }
-        data["memory"]["guardLevel"] = levelText;
+        FastBee::setFixedJsonField(data, "memory", "guardLevel", levelText);
         if (!compactRuntime) {
             char healthBuf[192];
             hm->getHealthReport(healthBuf, sizeof(healthBuf));
-            data["memory"]["healthReport"] = healthBuf;
+            FastBee::setFixedJsonField(data, "memory", "healthReport", healthBuf);
         }
     }
 
     if (webCfg && !compactRuntime) {
-        data["web"]["sseClients"] = webCfg->getSseClientCount();
-        data["web"]["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
+        // The current request itself occupies an accepted slot. Counts are
+        // global inbound slots, sampled once, and do not enumerate live PCBs.
+        const auto tcpAdmission = FastBee::captureAsyncTCPAdmissionSnapshot();
+        FastBee::setFixedJsonField(data, "web", "tcpAdmissionAvailable", tcpAdmission.available);
+        if (tcpAdmission.available) {
+            FastBee::setFixedJsonField(data, "web", "tcpAcceptedSlots", tcpAdmission.accepted);
+            FastBee::setFixedJsonField(data, "web", "tcpAcceptedSlotLimit", tcpAdmission.limit);
+        }
+        FastBee::setFixedJsonField(data, "web", "sseClients", webCfg->getSseClientCount());
+        FastBee::setFixedJsonField(data, "web", "sseMaxClients", static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS));
         // 内存护栏（无 PSRAM 机型低 DRAM/碎片化时拒新 API 请求，见 WebMemoryGuard）
-        data["web"]["memGuardActive"] = webCfg->isMemGuardActive();
-        data["web"]["memGuardRejected"] = webCfg->getMemGuardRejectedCount();
+        FastBee::setFixedJsonField(data, "web", "memGuardActive", webCfg->isMemGuardActive());
+        FastBee::setFixedJsonField(data, "web", "memGuardRejected", webCfg->getMemGuardRejectedCount());
         if (SSERouteHandler* sseHandler = webCfg->getSseRouteHandler()) {
             SSEStatsSnapshot sseStats = sseHandler->getStats();
             JsonObject sseStatsJson = data["web"]["sseStats"].to<JsonObject>();
-            sseStatsJson["acceptedConnections"] = sseStats.acceptedConnections;
-            sseStatsJson["rejectedLowMemory"] = sseStats.rejectedLowMemory;
-            sseStatsJson["rejectedGuard"] = sseStats.rejectedGuard;
-            sseStatsJson["rejectedCapacity"] = sseStats.rejectedCapacity;
-            sseStatsJson["evictedOldestClients"] = sseStats.evictedOldestClients;
-            sseStatsJson["forcedClosedClients"] = sseStats.forcedClosedClients;
-            sseStatsJson["timedOutClients"] = sseStats.timedOutClients;
-            sseStatsJson["disconnectedCleanups"] = sseStats.disconnectedCleanups;
-            sseStatsJson["skippedBroadcastLowMemory"] = sseStats.skippedBroadcastLowMemory;
-            sseStatsJson["skippedBroadcastGuard"] = sseStats.skippedBroadcastGuard;
-            sseStatsJson["lastConnectAtMs"] = sseStats.lastConnectAtMs;
-            sseStatsJson["lastRejectAtMs"] = sseStats.lastRejectAtMs;
-            sseStatsJson["lastForcedCloseAtMs"] = sseStats.lastForcedCloseAtMs;
-            sseStatsJson["lastCleanupAtMs"] = sseStats.lastCleanupAtMs;
-            sseStatsJson["lastSkipBroadcastAtMs"] = sseStats.lastSkipBroadcastAtMs;
-            sseStatsJson["lastRejectReason"] = sseStats.lastRejectReason;
-            sseStatsJson["lastSkipReason"] = sseStats.lastSkipReason;
+            FastBee::setFixedJsonField(sseStatsJson, "acceptedConnections", sseStats.acceptedConnections);
+            FastBee::setFixedJsonField(sseStatsJson, "rejectedLowMemory", sseStats.rejectedLowMemory);
+            FastBee::setFixedJsonField(sseStatsJson, "rejectedGuard", sseStats.rejectedGuard);
+            FastBee::setFixedJsonField(sseStatsJson, "rejectedCapacity", sseStats.rejectedCapacity);
+            FastBee::setFixedJsonField(sseStatsJson, "evictedOldestClients", sseStats.evictedOldestClients);
+            FastBee::setFixedJsonField(sseStatsJson, "forcedClosedClients", sseStats.forcedClosedClients);
+            FastBee::setFixedJsonField(sseStatsJson, "timedOutClients", sseStats.timedOutClients);
+            FastBee::setFixedJsonField(sseStatsJson, "disconnectedCleanups", sseStats.disconnectedCleanups);
+            FastBee::setFixedJsonField(sseStatsJson, "skippedBroadcastLowMemory", sseStats.skippedBroadcastLowMemory);
+            FastBee::setFixedJsonField(sseStatsJson, "skippedBroadcastGuard", sseStats.skippedBroadcastGuard);
+            FastBee::setFixedJsonField(sseStatsJson, "lastConnectAtMs", sseStats.lastConnectAtMs);
+            FastBee::setFixedJsonField(sseStatsJson, "lastRejectAtMs", sseStats.lastRejectAtMs);
+            FastBee::setFixedJsonField(sseStatsJson, "lastForcedCloseAtMs", sseStats.lastForcedCloseAtMs);
+            FastBee::setFixedJsonField(sseStatsJson, "lastCleanupAtMs", sseStats.lastCleanupAtMs);
+            FastBee::setFixedJsonField(sseStatsJson, "lastSkipBroadcastAtMs", sseStats.lastSkipBroadcastAtMs);
+            FastBee::setFixedJsonField(sseStatsJson, "lastRejectReason", sseStats.lastRejectReason);
+            FastBee::setFixedJsonField(sseStatsJson, "lastSkipReason", sseStats.lastSkipReason);
         }
-        data["recovery"]["softRestartCount"] = webCfg->getSoftRestartCount();
-        data["recovery"]["lastSoftRestartAtMs"] = webCfg->getLastSoftRestartAtMs();
+        FastBee::setFixedJsonField(data, "recovery", "softRestartCount", webCfg->getSoftRestartCount());
+        FastBee::setFixedJsonField(data, "recovery", "lastSoftRestartAtMs", webCfg->getLastSoftRestartAtMs());
         data["recovery"]["lastSoftRestartAgeMs"] =
             (webCfg->getLastSoftRestartAtMs() > 0 && now >= webCfg->getLastSoftRestartAtMs())
                 ? (now - webCfg->getLastSoftRestartAtMs())
                 : 0;
-        data["recovery"]["lastSoftRestartReason"] = webCfg->getLastSoftRestartReason();
-        data["recovery"]["lastSoftRestartFreeHeap"] = webCfg->getLastSoftRestartFreeHeap();
-        data["recovery"]["lastSoftRestartLargestBlock"] = webCfg->getLastSoftRestartLargestBlock();
-        data["recovery"]["lastSoftRestartFragmentation"] = webCfg->getLastSoftRestartFragmentation();
-        data["recovery"]["severePressureSinceMs"] = webCfg->getSeverePressureSinceMs();
+        FastBee::setFixedJsonField(data, "recovery", "lastSoftRestartReason", webCfg->getLastSoftRestartReason());
+        FastBee::setFixedJsonField(data, "recovery", "lastSoftRestartFreeHeap", webCfg->getLastSoftRestartFreeHeap());
+        FastBee::setFixedJsonField(data, "recovery", "lastSoftRestartLargestBlock", webCfg->getLastSoftRestartLargestBlock());
+        FastBee::setFixedJsonField(data, "recovery", "lastSoftRestartFragmentation", webCfg->getLastSoftRestartFragmentation());
+        FastBee::setFixedJsonField(data, "recovery", "severePressureSinceMs", webCfg->getSeverePressureSinceMs());
         data["recovery"]["severePressureDurationMs"] =
             (webCfg->getSeverePressureSinceMs() > 0 && now >= webCfg->getSeverePressureSinceMs())
                 ? (now - webCfg->getSeverePressureSinceMs())
@@ -2070,17 +2249,17 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
         JsonArray recoveryEventsJson = data["recovery"]["events"].to<JsonArray>();
         for (size_t i = 0; i < recoveryCount; ++i) {
             JsonObject eventJson = recoveryEventsJson.add<JsonObject>();
-            eventJson["type"] = recoveryEvents[i].type;
-            eventJson["reason"] = recoveryEvents[i].reason;
-            eventJson["atMs"] = recoveryEvents[i].atMs;
-            eventJson["ageMs"] =
+            FastBee::setFixedJsonField(eventJson, "type", recoveryEvents[i].type);
+            FastBee::setFixedJsonField(eventJson, "reason", recoveryEvents[i].reason);
+            FastBee::setFixedJsonField(eventJson, "atMs", recoveryEvents[i].atMs);
+            FastBee::setFixedJsonField(eventJson, "ageMs",
                 (recoveryEvents[i].atMs > 0 && now >= recoveryEvents[i].atMs)
                     ? (now - recoveryEvents[i].atMs)
-                    : 0;
-            eventJson["freeHeap"] = recoveryEvents[i].freeHeap;
-            eventJson["largestBlock"] = recoveryEvents[i].largestBlock;
-            eventJson["fragmentation"] = recoveryEvents[i].fragmentation;
-            eventJson["sseClients"] = recoveryEvents[i].sseClients;
+                    : 0);
+            FastBee::setFixedJsonField(eventJson, "freeHeap", recoveryEvents[i].freeHeap);
+            FastBee::setFixedJsonField(eventJson, "largestBlock", recoveryEvents[i].largestBlock);
+            FastBee::setFixedJsonField(eventJson, "fragmentation", recoveryEvents[i].fragmentation);
+            FastBee::setFixedJsonField(eventJson, "sseClients", recoveryEvents[i].sseClients);
         }
     }
 
@@ -2108,20 +2287,20 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
             default: break;
         }
 
-        data["network"]["status"] = statusText;
-        data["network"]["mode"] = modeText;
-        data["network"]["ipAddress"] = info.ipAddress;
-        data["network"]["apIPAddress"] = info.apIPAddress;
-        data["network"]["ssid"] = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
-        data["network"]["internetAvailable"] = info.internetAvailable;
-        data["network"]["customDomain"] = cfg.customDomain;
+        FastBee::setFixedJsonField(data, "network", "status", statusText);
+        FastBee::setFixedJsonField(data, "network", "mode", modeText);
+        FastBee::setFixedJsonField(data, "network", "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(data, "network", "apIPAddress", info.apIPAddress);
+        FastBee::setFixedJsonField(data, "network", "ssid", info.ssid.isEmpty() ? cfg.staSSID : info.ssid);
+        FastBee::setFixedJsonField(data, "network", "internetAvailable", info.internetAvailable);
+        FastBee::setFixedJsonField(data, "network", "customDomain", cfg.customDomain);
         auto* dns = netMgr->getDNSManager();
         if (dns) {
-            data["network"]["mdnsDomain"] = dns->getActualHostname();
+            FastBee::setFixedJsonField(data, "network", "mdnsDomain", dns->getActualHostname());
         }
     }
 
-    data["compact"] = compactRuntime;
+    FastBee::setFixedJsonField(data, "compact", compactRuntime);
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);
 }
@@ -2129,26 +2308,26 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
 void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     JsonDocument doc;
 
-    doc["data"]["mqtt"]   = (bool)FASTBEE_ENABLE_MQTT;
-    doc["data"]["modbus"] = (bool)FASTBEE_ENABLE_MODBUS;
+    FastBee::setFixedJsonField(doc, "data", "mqtt", (bool)FASTBEE_ENABLE_MQTT);
+    FastBee::setFixedJsonField(doc, "data", "modbus", (bool)FASTBEE_ENABLE_MODBUS);
 
-    doc["data"]["periphExec"]  = (bool)FASTBEE_ENABLE_PERIPH_EXEC;
-    doc["data"]["screenPanel"] = (bool)FASTBEE_ENABLE_SCREEN_PANEL;
-    doc["data"]["screenUi"] = (bool)FASTBEE_ENABLE_SCREEN_UI;
-    doc["data"]["pointHistory"] = (bool)FASTBEE_ENABLE_POINT_HISTORY;
-    doc["data"]["remoteResources"] = (bool)FASTBEE_ENABLE_REMOTE_RESOURCES;
-    doc["data"]["ruleScript"]  = (bool)FASTBEE_ENABLE_RULE_SCRIPT;
-    doc["data"]["lcd"]        = (bool)FASTBEE_ENABLE_LCD;
-    doc["data"]["ethernet"]     = (bool)FASTBEE_ENABLE_ETHERNET;
-    doc["data"]["cellular"]     = (bool)FASTBEE_ENABLE_CELLULAR;
-    doc["data"]["ota"]           = (bool)FASTBEE_ENABLE_OTA;
-    doc["data"]["auth"]         = (bool)FASTBEE_ENABLE_AUTH;
-    doc["data"]["webServer"]    = (bool)FASTBEE_ENABLE_WEB_SERVER;
-    doc["data"]["healthMonitor"]= (bool)FASTBEE_ENABLE_HEALTH_MONITOR;
-    doc["data"]["logger"]       = (bool)FASTBEE_ENABLE_LOGGER;
-    doc["data"]["logViewer"]    = (bool)FASTBEE_ENABLE_LOG_VIEWER;
-    doc["data"]["fileLogging"]  = (bool)FASTBEE_ENABLE_FILE_LOGGING;
-    doc["data"]["taskManager"]  = (bool)FASTBEE_ENABLE_TASK_MANAGER;
+    FastBee::setFixedJsonField(doc, "data", "periphExec", (bool)FASTBEE_ENABLE_PERIPH_EXEC);
+    FastBee::setFixedJsonField(doc, "data", "screenPanel", (bool)FASTBEE_ENABLE_SCREEN_PANEL);
+    FastBee::setFixedJsonField(doc, "data", "screenUi", (bool)FASTBEE_ENABLE_SCREEN_UI);
+    FastBee::setFixedJsonField(doc, "data", "pointHistory", (bool)FASTBEE_ENABLE_POINT_HISTORY);
+    FastBee::setFixedJsonField(doc, "data", "remoteResources", (bool)FASTBEE_ENABLE_REMOTE_RESOURCES);
+    FastBee::setFixedJsonField(doc, "data", "ruleScript", (bool)FASTBEE_ENABLE_RULE_SCRIPT);
+    FastBee::setFixedJsonField(doc, "data", "lcd", (bool)FASTBEE_ENABLE_LCD);
+    FastBee::setFixedJsonField(doc, "data", "ethernet", (bool)FASTBEE_ENABLE_ETHERNET);
+    FastBee::setFixedJsonField(doc, "data", "cellular", (bool)FASTBEE_ENABLE_CELLULAR);
+    FastBee::setFixedJsonField(doc, "data", "ota", (bool)FASTBEE_ENABLE_OTA);
+    FastBee::setFixedJsonField(doc, "data", "auth", (bool)FASTBEE_ENABLE_AUTH);
+    FastBee::setFixedJsonField(doc, "data", "webServer", (bool)FASTBEE_ENABLE_WEB_SERVER);
+    FastBee::setFixedJsonField(doc, "data", "healthMonitor", (bool)FASTBEE_ENABLE_HEALTH_MONITOR);
+    FastBee::setFixedJsonField(doc, "data", "logger", (bool)FASTBEE_ENABLE_LOGGER);
+    FastBee::setFixedJsonField(doc, "data", "logViewer", (bool)FASTBEE_ENABLE_LOG_VIEWER);
+    FastBee::setFixedJsonField(doc, "data", "fileLogging", (bool)FASTBEE_ENABLE_FILE_LOGGING);
+    FastBee::setFixedJsonField(doc, "data", "taskManager", (bool)FASTBEE_ENABLE_TASK_MANAGER);
 
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);

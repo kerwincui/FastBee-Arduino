@@ -15,7 +15,7 @@ async function setup(page:any){
    emit(k:string,data:any){(this.listeners[k]||[]).slice().forEach((fn:any)=>fn({data:JSON.stringify(data)}));}
   };
  });
- for(const f of ['modules/runtime/device-control/core.js','modules/runtime/device-control/render.js','modules/runtime/device-control/modbus-ops.js','modules/runtime/device-control/modbus-ctrl.js','js/state-sse.js'])await page.addScriptTag({path:resolve(source,'web-src',f)});
+ for(const f of ['js/utils.js','modules/runtime/device-control/core.js','modules/runtime/device-control/render.js','modules/runtime/device-control/modbus-ops.js','modules/runtime/device-control/modbus-ctrl.js','js/state-sse.js'])await page.addScriptTag({path:resolve(source,'web-src',f)});
  await page.evaluate((fixture:any)=>{
   const w=window as any,a=w.AppState;w.fixture=fixture;w.received=0;w.defer=false;
   a.currentPage='device-control';a._featureActive={deviceControl:true};a._eventsBound=true;

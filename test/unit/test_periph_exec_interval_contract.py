@@ -8,6 +8,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANAGER_H = (ROOT / "include/core/PeriphExecManager.h").read_text(encoding="utf-8")
 MANAGER_CPP = (ROOT / "src/core/PeriphExecManager.cpp").read_text(encoding="utf-8")
+MANAGER_CPP += '\n' + (ROOT / "src/core/PeriphExecConfigStore.cpp").read_text(encoding="utf-8")
 SCHEDULER_H = (ROOT / "include/core/PeriphExecScheduler.h").read_text(encoding="utf-8")
 SCHEDULER_CPP = (ROOT / "src/core/PeriphExecScheduler.cpp").read_text(encoding="utf-8")
 ROUTE_CPP = (
@@ -103,7 +104,16 @@ class PeriphExecIntervalContractTests(unittest.TestCase):
         self.assertIn('addIssue("INVALID_TIMER_INTERVAL"', ROUTE_CPP)
         self.assertIn('addIssue("INVALID_POLL_INTERVAL"', ROUTE_CPP)
         self.assertIn("Poll interval must be between 5 and 86400 seconds", ROUTE_CPP)
-        self.assertIn('tObj["intervalSec"] = t.intervalSec', ROUTE_CPP)
+        writer = function_body(ROUTE_CPP, r"\bwriteRuleTriggerFields\s*\(")
+        self.assertIn('FastBee::setFixedJsonField(item, "intervalSec", trigger.intervalSec);', writer)
+        candidate = function_body(ROUTE_CPP, r"\bwriteRuleCandidate\s*\(")
+        full = function_body(ROUTE_CPP, r"\bPeriphExecRouteHandler::serializeRuleFull\s*\(")
+        self.assertIn("writeRuleTriggerFields(item, trigger);", candidate)
+        self.assertIn("writeRuleTriggerFields(tObj, t);", full)
+        preflight = function_body(ROUTE_CPP, r"\bPeriphExecRouteHandler::handlePreflightRuleJson\s*\(")
+        self.assertIn("trigger.intervalSec < PERIPH_EXEC_TIMER_INTERVAL_MIN_SEC", preflight)
+        self.assertIn("trigger.intervalSec < PERIPH_EXEC_POLL_INTERVAL_MIN_SEC", preflight)
+        self.assertEqual(preflight.count("trigger.intervalSec > PERIPH_EXEC_INTERVAL_MAX_SEC"), 2)
 
     def test_web_form_rejects_values_the_firmware_would_normalize(self):
         self.assertRegex(

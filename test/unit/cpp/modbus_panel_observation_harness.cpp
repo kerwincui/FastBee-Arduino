@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "protocols/ModbusRegisterCodec.h"
 
 class String : public std::string {
 public:
@@ -42,7 +43,7 @@ struct PeriphExecManager {
 };
 struct Mapping {
     char sensorId[32] = "pm25", unit[8] = "ug/m3";
-    uint8_t regOffset = 0, dataType = 0, decimalPlaces = 0;
+    uint8_t regOffset = 0, dataType = 0, wordOrder = 0, decimalPlaces = 0;
     float scaleFactor = 1;
 };
 struct Task {
@@ -62,16 +63,62 @@ struct Cache {
     uint16_t values[8] = {42, 76};
     uint32_t timestamp = 1234;
 };
-struct Serial { bool stopped = false; void end() { stopped = true; } };
+struct TestSemaphore {
+    bool available = true;
+    unsigned takes = 0, gives = 0;
+    uint32_t lastTimeout = 0;
+};
+using SemaphoreHandle_t = TestSemaphore*;
+constexpr int pdTRUE = 1;
+constexpr uint32_t pdMS_TO_TICKS(uint32_t milliseconds) { return milliseconds; }
+int xSemaphoreTake(SemaphoreHandle_t semaphore, uint32_t timeout) {
+    assert(semaphore);
+    ++semaphore->takes;
+    semaphore->lastTimeout = timeout;
+    if (!semaphore->available) return 0;
+    semaphore->available = false;
+    return pdTRUE;
+}
+int xSemaphoreGive(SemaphoreHandle_t semaphore) {
+    assert(semaphore && !semaphore->available);
+    ++semaphore->gives;
+    semaphore->available = true;
+    return pdTRUE;
+}
+struct Serial {
+    bool stopped = false;
+    TestSemaphore* semaphore;
+    void end() {
+        assert(semaphore && !semaphore->available);
+        stopped = true;
+    }
+};
 constexpr uint8_t MODBUS_MASTER = 1;
 #define LOG_INFO(...) ((void)0)
+#include "core/UartPortLease.h"
 class ModbusHandler {
 public:
     Config config;
     Cache _taskCache[2];
     bool isInitialized = true;
-    Serial serial;
+    TestSemaphore semaphore;
+    SemaphoreHandle_t _oneShotSemaphore = &semaphore;
+    struct { unsigned resets = 0; void reset() { ++resets; } } _motorTravel;
+    Serial serial{false, &semaphore};
     Serial* modbusSerial = &serial;
+    FastBee::UartPortLease _uartLease;
+    unsigned delayInvalidations = 0;
+    unsigned delayRetirements = 0;
+    void invalidateCoilDelayTasksLocked(const char* reason) {
+        assert(_oneShotSemaphore && !semaphore.available);
+        assert(std::strcmp(reason, "HANDLER_STOPPED") == 0);
+        ++delayInvalidations;
+    }
+    void retireOrdinaryDelayWork() {
+        // The actual end() must finish PM work only after releasing its bus.
+        assert(semaphore.available && !_uartLease.owned() && !isInitialized);
+        ++delayRetirements;
+    }
     void publishPollObservations(uint8_t taskIdx, bool sampled);
     void invalidatePollObservations();
     void end();
@@ -84,6 +131,7 @@ public:
 int main() {
     auto& manager = PeriphExecManager::getInstance();
     ModbusHandler handler;
+    assert(handler._uartLease.acquire(2));
     auto& mapping = handler.config.master.tasks[0].mappings[0];
     auto& cache = handler._taskCache[0];
     auto publish = [&]() -> ObservationUpdate {
@@ -98,7 +146,7 @@ int main() {
     assert(value.sampleTimestamp == 1234 && value.maxAgeMs == 30000);
     const String initialRevision = value.sourceRevision;
     assert(!initialRevision.empty() && initialRevision.size() <= 64);
-    assert(initialRevision.substr(0, 4) == "mb2:");
+    assert(initialRevision.substr(0, 4) == "mb3:");
     // Every physical/source interpretation field must invalidate history,
     // while new sample values and sampling frequency must not change identity.
     const auto checkRevisionChange = [&](auto& field, const auto alternate) {
@@ -116,6 +164,7 @@ int main() {
     checkRevisionChange(handler.config.master.tasks[0].startAddress, 32);
     checkRevisionChange(mapping.regOffset, 1);
     checkRevisionChange(mapping.dataType, 1);
+    checkRevisionChange(mapping.wordOrder, 1);
     checkRevisionChange(mapping.scaleFactor, 1.25f);
     checkRevisionChange(mapping.decimalPlaces, 2);
     handler.config.master.tasks[0].pollInterval = 20;
@@ -144,11 +193,24 @@ int main() {
     mapping.dataType = 2; mapping.scaleFactor = 1; mapping.decimalPlaces = 0;
     cache.values[0] = 1; cache.values[1] = 2;
     assert(publish().value == "65538");
+    cache.values[0] = cache.values[1] = 0xffff;
+    assert(publish().value == "4294967295");
     mapping.dataType = 3; cache.values[0] = 0xffff; cache.values[1] = 0xfffe;
     assert(publish().value == "-2");
     mapping.dataType = 4; mapping.decimalPlaces = 2;
     cache.values[0] = 0x4148; cache.values[1] = 0;
     assert(publish().value == "12.50");
+    const auto highWordRevision = publish().sourceRevision;
+    mapping.wordOrder = 1;
+    cache.values[0] = 0; cache.values[1] = 0x4148;
+    assert(publish().value == "12.50");
+    assert(publish().sourceRevision != highWordRevision);
+    mapping.wordOrder = 0;
+
+    mapping.scaleFactor = std::numeric_limits<float>::max(); mapping.decimalPlaces = 6;
+    cache.values[0] = 0x7f7f; cache.values[1] = 0xffff;
+    assert(publish().value.size() > 70);
+    mapping.scaleFactor = 1; mapping.decimalPlaces = 2;
 
     cache.values[0] = 0x7fc0; cache.values[1] = 0;
     value = publish();
@@ -184,13 +246,40 @@ int main() {
     handler.config.master.tasks[0].enabled = true;
     handler.config.master.tasks[0].mappingCount = 2;
     std::strcpy(handler.config.master.tasks[0].mappings[1].sensorId, "pm10");
+    // Execute the production guard/end bodies. Missing/busy ownership must
+    // preserve UART, travel state and published observations, never fake stop.
+    handler._oneShotSemaphore = nullptr;
+    handler.end();
+    assert(handler.isInitialized && !handler.serial.stopped);
+    assert(manager.invalidations.empty() && handler._motorTravel.resets == 0);
+    assert(handler.semaphore.takes == 0 && handler.semaphore.gives == 0);
+    assert(handler.delayInvalidations == 0);
+    assert(handler.delayRetirements == 0);
+    handler._oneShotSemaphore = &handler.semaphore;
+    handler.semaphore.available = false;
+    handler.end();
+    assert(handler.isInitialized && !handler.serial.stopped);
+    assert(manager.invalidations.empty() && handler._motorTravel.resets == 0);
+    assert(handler.semaphore.takes == 1 && handler.semaphore.gives == 0);
+    assert(handler.semaphore.lastTimeout == 2000);
+    assert(handler.delayInvalidations == 0);
+    assert(handler.delayRetirements == 0);
+    handler.semaphore.available = true;
     handler.end();
     assert(!handler.isInitialized && handler.serial.stopped);
+    assert(handler._motorTravel.resets == 1);
+    assert(handler.delayInvalidations == 1);
+    assert(handler.delayRetirements == 1);
+    assert(handler.semaphore.available && handler.semaphore.gives == 1);
     assert(manager.invalidations.size() == 2);
     assert(manager.invalidations[0].first == "modbus.pm25");
     assert(manager.invalidations[1].first == "modbus.pm10");
     assert(manager.invalidations[0].second == "MODBUS_CONFIGURATION_CHANGED");
     handler.end();
     assert(manager.invalidations.size() == 2);
-    std::cout << "Modbus panel observations: 15 scenarios passed\n";
+    assert(handler._motorTravel.resets == 2);
+    assert(handler.delayInvalidations == 2);
+    assert(handler.delayRetirements == 2);
+    assert(handler.semaphore.available && handler.semaphore.gives == 2);
+    std::cout << "Modbus panel observations: mapping, quality, history and guarded stop lifecycle passed\n";
 }

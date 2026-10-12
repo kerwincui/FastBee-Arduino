@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "uart_text_demo",
+      "name": "UART文本发送示例-保持禁用",
+      "enabled": false,
+      "reportAfterExec": false,
+      "recordHistory": false,
+      "allowPanelControl": false,
+      "triggers": [{"triggerType": 0, "triggerPeriphId": "uart_demo", "operatorType": 1}],
+      "actions": [{
+        "actionType": 29,
+        "targetPeriphId": "uart_demo",
+        "actionValue": "{\"action\":\"send\",\"value\":\"$value\"}",
+        "useReceivedValue": true,
+        "syncDelayMs": 0,
+        "execMode": 0
+      }]
+    }
+  ]
+}

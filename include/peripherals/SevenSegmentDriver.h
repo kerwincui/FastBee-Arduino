@@ -17,39 +17,37 @@
 
 #include <Arduino.h>
 #include <map>
+#include <atomic>
+#include "core/DisplayOutputTypes.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include "core/FeatureInstanceRegistry.h"
 
 class SevenSegmentDriver {
 public:
     static SevenSegmentDriver& instance();
+    FastBee::FeatureInstanceSnapshot observeFeatureInstance() const;
 
     // 注册并初始化一个 TM1637 实例
     // brightness: 0-7（默认 2，中等亮度）
     bool begin(const String& id, uint8_t clkPin, uint8_t dioPin, uint8_t brightness = 2);
 
-    // 释放一个实例（外设删除或禁用时调用）
-    void release(const String& id);
-
-    // 显示数字（支持 "12.34" / "12:34" / "1234" / "-12" 等字符串）
-    // 带小数点的字符串会自动在对应位点亮 DP
-    // 带冒号 ":" 的字符串会点亮中间冒号（带冒号款模块生效）
-    bool displayNumber(const String& id, const String& value);
-
-    // 显示文本（最多 4 字符，支持 0-9/A-Z/空格/减号/下划线）
-    bool displayText(const String& id, const String& text);
-
-    // 清屏
-    bool clear(const String& id);
-
-    // 设置亮度（0-7），并立即生效
-    bool setBrightness(const String& id, uint8_t brightness);
+    // Failed blanking keeps the instance for checked teardown; no physical state claim.
+    bool release(const String& id);
+    bool quiescent(const String& id) const;
 
     // 是否已注册
     bool exists(const String& id) const;
 
 private:
+    friend class PeripheralManager; // Every lifecycle/write caller holds the PM lock first.
+    FastBee::DisplayWriteResult write(const String& id, uint8_t clk, uint8_t dio,
+        FastBee::DisplayOutputCommand command, const String& text, int32_t value);
     SevenSegmentDriver() = default;
     SevenSegmentDriver(const SevenSegmentDriver&) = delete;
     SevenSegmentDriver& operator=(const SevenSegmentDriver&) = delete;
+    bool ensureMutex();
+    std::atomic<SemaphoreHandle_t> _mutex{nullptr};
 
     struct Instance {
         uint8_t clk;
@@ -66,9 +64,12 @@ private:
     // 发送单字节 LSB first，返回 ACK 状态（0 = ok）
     uint8_t writeByte(const Instance& ins, uint8_t b);
     // 按起始地址写入一组段码（addr 自增模式 0x40）
-    bool writeSegments(const Instance& ins, const uint8_t* segs, uint8_t len, uint8_t startAddr = 0);
+    FastBee::DisplayWriteResult writeSegments(const Instance& ins, const uint8_t* segs,
+        uint8_t len, uint8_t startAddr = 0);
     // 下发 "显示开 + 亮度" 命令（0x88 | (bri & 0x07)）
-    bool commitDisplayCtrl(const Instance& ins);
+    FastBee::DisplayWriteResult commitDisplayCtrl(const Instance& ins);
+    FastBee::DisplayWriteResult displayNumber(const Instance& ins, const String& value);
+    FastBee::DisplayWriteResult displayText(const Instance& ins, const String& text);
 
     // 字符映射到 TM1637 段码（不含 DP）
     static uint8_t charToSeg(char c);

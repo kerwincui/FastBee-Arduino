@@ -13,15 +13,23 @@ IoExpanderProvider::~IoExpanderProvider() {
 
 bool IoExpanderProvider::acquire(uint8_t sda, uint8_t scl, String& error) {
     if (_closing) { error = "IO_SHUTDOWN_PENDING"; return false; }
-    const bool acquired = I2CBusManager::instance().acquire(this, sda, scl, 100000, error);
-    if (acquired) _leased = true;
-    return acquired;
+    I2CBusLock admission(100);
+    if (!admission.locked()) { error = "I2C_ADDRESS_BUSY"; return false; }
+    auto& bus = I2CBusManager::instance();
+    if (!bus.acquire(this, sda, scl, 100000, error, ResourceConsumerRole::Peripheral)) return false;
+    if (!bus.claimAddress(this, _address, error)) {
+        if (!_leased) bus.release(this);
+        return false;
+    }
+    _leased = true;
+    return true;
 }
 
-IoExpanderResult IoExpanderProvider::shutdown(uint8_t safeByte) {
+IoExpanderResult IoExpanderProvider::shutdown(uint16_t safeHigh) {
     if (!_closing) {
+        if ((safeHigh & 0xff00U) != 0) return IoExpanderResult::Error;
         _closing = true;
-        _shutdownByte = safeByte;
+        _shutdownByte = static_cast<uint8_t>(safeHigh);
         driver.end(); // No more normal reads/writes while waiting for admission.
     }
     if (!_leased) return _shutdownResult;
@@ -52,7 +60,9 @@ IoExpanderResult IoExpanderProvider::readByte(uint8_t& value) {
     TwoWire* wire = I2CBusManager::instance().wire(this);
     if (!wire || wire->requestFrom(_address, static_cast<uint8_t>(1)) != 1 ||
         wire->available() != 1) return IoExpanderResult::Error;
-    value = static_cast<uint8_t>(wire->read());
+    const int received = wire->read();
+    if (received < 0 || received > 255 || wire->available() != 0) return IoExpanderResult::Error;
+    value = static_cast<uint8_t>(received);
     return IoExpanderResult::Ok;
 }
 

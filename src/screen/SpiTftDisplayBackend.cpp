@@ -5,6 +5,7 @@
 
 #if FASTBEE_ENABLE_SCREEN_UI && defined(ARDUINO_ARCH_ESP32)
 #include <SPI.h>
+#include "core/SpiBusInitializer.h"
 #include <esp_idf_version.h>
 #endif
 
@@ -43,11 +44,27 @@ public:
         }
         const uint16_t shortSide = std::min(config.width, config.height);
         const uint16_t longSide = std::max(config.width, config.height);
-        if (shortSide > 240 || longSide > 320) {
+        if (shortSide == 0 || shortSide > 240 || longSide > 320) {
             error = "SCREEN_DISPLAY_DIMENSIONS_UNSUPPORTED";
             return false;
         }
 
+        SpiBusOperation operation;
+        if (!operation.locked()) {
+            error = "SPI_BUSY: display initialization lock timeout";
+            return false;
+        }
+        if (_leaseAcquired) {
+            error = "SCREEN_DISPLAY_ACTIVE: stop before reinitialization";
+            return false;
+        }
+        if (!SpiBusInitializer::instance().acquire(
+                this, static_cast<int8_t>(config.sclk), -1,
+                static_cast<int8_t>(config.mosi), static_cast<int8_t>(config.cs), error,
+                ResourceConsumerRole::Display)) {
+            return false;
+        }
+        _leaseAcquired = true;
         _config = config;
         _sleeping = false;
         _st7789 = strcasecmp(config.driver, "st7789") == 0;
@@ -72,15 +89,13 @@ public:
             if (!ledcAttachChannel(static_cast<uint8_t>(_config.backlight),
                                    5000, 8, _config.backlightChannel)) {
                 error = "SCREEN_BACKLIGHT_LEDC_INIT_FAILED";
-                releaseExclusivePins();
+                String cleanupError;
+                stop(cleanupError);
                 return false;
             }
             _backlightAttached = true;
         }
 
-        _spi->begin(static_cast<int8_t>(_config.sclk), -1,
-                    static_cast<int8_t>(_config.mosi),
-                    static_cast<int8_t>(_config.cs));
         hardwareReset();
         const bool initialized = _st7789 ? initializeSt7789() : initializeIli9341();
         if (!initialized) {
@@ -89,29 +104,63 @@ public:
             return false;
         }
         _ready = true;
-        setBrightness(_config.brightness);
+        if (_backlightAttached && !setBrightness(_config.brightness)) {
+            error = "SCREEN_BACKLIGHT_WRITE_FAILED";
+            String cleanupError;
+            stop(cleanupError);
+            return false;
+        }
         error = "";
         return true;
     }
 
+    // ScreenDevice must retain this backend until checked stop succeeds.
     void end() override {
-        if (_ready) {
+        String ignored;
+        stop(ignored);
+    }
+
+    bool stop(String& error) override {
+        error = "";
+        if (!_leaseAcquired) return true;
+        SpiBusOperation operation;
+        if (!operation.locked()) {
+            error = "SPI_BUSY: display lease retained; retry stop";
+            return false;
+        }
+        if (_ready && canTransfer()) {
             writeCommand(CMD_SLPIN, nullptr, 0);
             delay(5);
         }
+        // Once cleanup begins, a retained backend must not resume rendering.
+        _ready = false;
         if (_backlightAttached) {
             ledcWrite(static_cast<uint8_t>(_config.backlight),
                       _config.backlightActiveHigh ? 0 : 255);
-            ledcDetach(static_cast<uint8_t>(_config.backlight));
+            if (!ledcDetach(static_cast<uint8_t>(_config.backlight))) {
+                _backlightCleanupFailed = true;
+                error = "SCREEN_BACKLIGHT_DETACH_FAILED: display lease retained";
+                return false;
+            }
             _backlightAttached = false;
+            _backlightCleanupFailed = false;
         }
+        if (!SpiBusInitializer::instance().release(this, error)) return false;
         releaseExclusivePins();
-        // Do not call SPI.end(): another configured device may share MOSI/SCK.
+        // Do not call SPI.end(): W5500 host ownership is not coordinated.
+        _leaseAcquired = false;
         _ready = false;
+        _sleeping = false;
         _spi = nullptr;
+        return true;
     }
 
     bool ready() const override { return _ready; }
+    void snapshotBacklightResource(BacklightResourceSnapshot& result) const override {
+        result = {}; result.available = true; result.retained = _backlightAttached;
+        result.cleanupFailed = _backlightCleanupFailed;
+        if (_backlightAttached) { result.pin = _config.backlight; result.channel = _config.backlightChannel; }
+    }
 
     DisplayCapabilities capabilities() const override {
         DisplayCapabilities result;
@@ -131,7 +180,8 @@ public:
     bool pushPixels(uint16_t x, uint16_t y, uint16_t width,
                     uint16_t height, const uint16_t* rgb565,
                     size_t pixelCount) override {
-        if (!_ready || !rgb565 || width == 0 || height == 0 ||
+        SpiBusOperation operation(20);
+        if (!operation.locked() || !canTransfer() || !_ready || !rgb565 || width == 0 || height == 0 ||
             x >= _width || y >= _height || x + width > _width ||
             y + height > _height || pixelCount < static_cast<size_t>(width) * height) {
             return false;
@@ -158,7 +208,8 @@ public:
     }
 
     bool fill(uint16_t color) override {
-        if (!_ready) return false;
+        SpiBusOperation operation(20);
+        if (!operation.locked() || !canTransfer() || !_ready) return false;
         beginTransaction();
         setAddressWindowLocked(0, 0, _width, _height);
         digitalWrite(static_cast<uint8_t>(_config.dc), HIGH);
@@ -178,6 +229,8 @@ public:
     }
 
     bool setBrightness(uint8_t percent) override {
+        SpiBusOperation operation(20);
+        if (!operation.locked() || !canTransfer() || !_ready) return false;
         percent = normalizeBrightnessPercent(percent);
         if (!applyBrightness(percent, _sleeping)) return false;
         _brightness = percent;
@@ -185,7 +238,8 @@ public:
     }
 
     bool setSleep(bool sleeping) override {
-        if (!_ready) return false;
+        SpiBusOperation operation(20);
+        if (!operation.locked() || !canTransfer() || !_ready) return false;
         if (!writeCommand(sleeping ? CMD_SLPIN : CMD_SLPOUT, nullptr, 0)) return false;
         delay(sleeping ? 5 : 120);
         if (!applyBrightness(_brightness, sleeping)) {
@@ -200,6 +254,12 @@ public:
     bool setBuzzer(bool) override { return false; }
 
 private:
+    // Called only with the operation lock held; no GPIO/transaction on a lost lease.
+    bool canTransfer() const {
+        return _leaseAcquired && _spi && _spi->bus() &&
+               SpiBusInitializer::instance().isAcquired(this);
+    }
+
     bool applyBrightness(uint8_t percent, bool sleeping) {
         if (_config.backlight < 0 || !_backlightAttached) return sleeping || percent == 100;
         return ledcWrite(static_cast<uint8_t>(_config.backlight),
@@ -244,7 +304,8 @@ private:
     }
 
     bool writeCommand(uint8_t command, const uint8_t* data, size_t length) {
-        if (!_spi) return false;
+        SpiBusOperation operation(20);
+        if (!operation.locked() || !canTransfer()) return false;
         beginTransaction();
         writeCommandLocked(command, data, length);
         endTransaction();
@@ -286,9 +347,9 @@ private:
     }
 
     bool initializeSt7789() {
-        writeCommand(CMD_SWRESET, nullptr, 0);
+        if (!writeCommand(CMD_SWRESET, nullptr, 0)) return false;
         delay(150);
-        writeCommand(CMD_SLPOUT, nullptr, 0);
+        if (!writeCommand(CMD_SLPOUT, nullptr, 0)) return false;
         delay(120);
         const uint8_t colorMode = 0x55;
         const uint8_t memoryAccess = madctl();
@@ -301,27 +362,27 @@ private:
         const uint8_t vdv = 0x20;
         const uint8_t frame = 0x0F;
         const uint8_t power[] = {0xA4, 0xA1};
-        writeCommand(CMD_COLMOD, &colorMode, 1);
-        writeCommand(CMD_MADCTL, &memoryAccess, 1);
-        writeCommand(0xB2, porch, sizeof(porch));
-        writeCommand(0xB7, &gate, 1);
-        writeCommand(0xBB, &vcom, 1);
-        writeCommand(0xC0, &lcm, 1);
-        writeCommand(0xC2, &vdvVrh, 1);
-        writeCommand(0xC3, &vrh, 1);
-        writeCommand(0xC4, &vdv, 1);
-        writeCommand(0xC6, &frame, 1);
-        writeCommand(0xD0, power, sizeof(power));
-        writeCommand(CMD_INVON, nullptr, 0);
-        writeCommand(CMD_NORON, nullptr, 0);
+        if (!writeCommand(CMD_COLMOD, &colorMode, 1)) return false;
+        if (!writeCommand(CMD_MADCTL, &memoryAccess, 1)) return false;
+        if (!writeCommand(0xB2, porch, sizeof(porch))) return false;
+        if (!writeCommand(0xB7, &gate, 1)) return false;
+        if (!writeCommand(0xBB, &vcom, 1)) return false;
+        if (!writeCommand(0xC0, &lcm, 1)) return false;
+        if (!writeCommand(0xC2, &vdvVrh, 1)) return false;
+        if (!writeCommand(0xC3, &vrh, 1)) return false;
+        if (!writeCommand(0xC4, &vdv, 1)) return false;
+        if (!writeCommand(0xC6, &frame, 1)) return false;
+        if (!writeCommand(0xD0, power, sizeof(power))) return false;
+        if (!writeCommand(CMD_INVON, nullptr, 0)) return false;
+        if (!writeCommand(CMD_NORON, nullptr, 0)) return false;
         delay(10);
-        writeCommand(CMD_DISPON, nullptr, 0);
+        if (!writeCommand(CMD_DISPON, nullptr, 0)) return false;
         delay(120);
         return true;
     }
 
     bool initializeIli9341() {
-        writeCommand(CMD_SWRESET, nullptr, 0);
+        if (!writeCommand(CMD_SWRESET, nullptr, 0)) return false;
         delay(120);
         const uint8_t ef[] = {0x03, 0x80, 0x02};
         const uint8_t cf[] = {0x00, 0xC1, 0x30};
@@ -342,29 +403,29 @@ private:
         const uint8_t gamma = 0x01;
         const uint8_t e0[] = {0x0F,0x31,0x2B,0x0C,0x0E,0x08,0x4E,0xF1,0x37,0x07,0x10,0x03,0x0E,0x09,0x00};
         const uint8_t e1[] = {0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F};
-        writeCommand(0xEF, ef, sizeof(ef));
-        writeCommand(0xCF, cf, sizeof(cf));
-        writeCommand(0xED, ed, sizeof(ed));
-        writeCommand(0xE8, e8, sizeof(e8));
-        writeCommand(0xCB, cb, sizeof(cb));
-        writeCommand(0xF7, &f7, 1);
-        writeCommand(0xEA, ea, sizeof(ea));
-        writeCommand(0xC0, &c0, 1);
-        writeCommand(0xC1, &c1, 1);
-        writeCommand(0xC5, c5, sizeof(c5));
-        writeCommand(0xC7, &c7, 1);
-        writeCommand(CMD_MADCTL, &memoryAccess, 1);
-        writeCommand(CMD_COLMOD, &colorMode, 1);
-        writeCommand(0xB1, b1, sizeof(b1));
-        writeCommand(0xB6, b6, sizeof(b6));
-        writeCommand(0xF2, &f2, 1);
-        writeCommand(0x26, &gamma, 1);
-        writeCommand(0xE0, e0, sizeof(e0));
-        writeCommand(0xE1, e1, sizeof(e1));
-        writeCommand(CMD_INVOFF, nullptr, 0);
-        writeCommand(CMD_SLPOUT, nullptr, 0);
+        if (!writeCommand(0xEF, ef, sizeof(ef))) return false;
+        if (!writeCommand(0xCF, cf, sizeof(cf))) return false;
+        if (!writeCommand(0xED, ed, sizeof(ed))) return false;
+        if (!writeCommand(0xE8, e8, sizeof(e8))) return false;
+        if (!writeCommand(0xCB, cb, sizeof(cb))) return false;
+        if (!writeCommand(0xF7, &f7, 1)) return false;
+        if (!writeCommand(0xEA, ea, sizeof(ea))) return false;
+        if (!writeCommand(0xC0, &c0, 1)) return false;
+        if (!writeCommand(0xC1, &c1, 1)) return false;
+        if (!writeCommand(0xC5, c5, sizeof(c5))) return false;
+        if (!writeCommand(0xC7, &c7, 1)) return false;
+        if (!writeCommand(CMD_MADCTL, &memoryAccess, 1)) return false;
+        if (!writeCommand(CMD_COLMOD, &colorMode, 1)) return false;
+        if (!writeCommand(0xB1, b1, sizeof(b1))) return false;
+        if (!writeCommand(0xB6, b6, sizeof(b6))) return false;
+        if (!writeCommand(0xF2, &f2, 1)) return false;
+        if (!writeCommand(0x26, &gamma, 1)) return false;
+        if (!writeCommand(0xE0, e0, sizeof(e0))) return false;
+        if (!writeCommand(0xE1, e1, sizeof(e1))) return false;
+        if (!writeCommand(CMD_INVOFF, nullptr, 0)) return false;
+        if (!writeCommand(CMD_SLPOUT, nullptr, 0)) return false;
         delay(120);
-        writeCommand(CMD_DISPON, nullptr, 0);
+        if (!writeCommand(CMD_DISPON, nullptr, 0)) return false;
         delay(120);
         return true;
     }
@@ -377,9 +438,11 @@ private:
     uint16_t _height = 0;
     bool _st7789 = false;
     bool _backlightAttached = false;
+    bool _backlightCleanupFailed = false;
     bool _sleeping = false;
     uint8_t _brightness = 100;
     bool _ready = false;
+    bool _leaseAcquired = false;
 };
 
 }  // namespace

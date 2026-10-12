@@ -24,12 +24,13 @@ class WorkerStackProfileTests(unittest.TestCase):
         environment = dict(os.environ)
         environment["PATH"] = str(pathlib.Path(compiler).parent) + os.pathsep + environment.get("PATH", "")
         cases = [
-            ("c3_c6", 4096, False, 0, 6144),
-            ("classic_s3_no_psram", 6144, False, 0, 6144),
-            ("board_psram_disabled", 6144, True, 0, 6144),
-            ("psram_flag_without_board", 6144, False, 1, 6144),
-            ("s3_psram", 6144, True, 1, 7168),
-            ("custom_larger_stack", 8192, True, 1, 8192),
+            ("c3_c6", 4096, False, 0, 8192),
+            ("classic_s3_no_psram", 6144, False, 0, 8192),
+            ("board_psram_disabled", 6144, True, 0, 8192),
+            ("psram_flag_without_board", 6144, False, 1, 8192),
+            ("s3_psram", 6144, True, 1, 12288),
+            ("custom_larger_stack", 16384, True, 1, 16384),
+            ("custom_no_psram_stack", 12288, False, 0, 12288),
         ]
         with tempfile.TemporaryDirectory(prefix="fastbee-worker-stack-") as directory:
             temporary = pathlib.Path(directory)

@@ -82,7 +82,7 @@ class DeviceControlBackendContractTests(unittest.TestCase):
             "peripheralName",
             "cacheKey",
             "label",
-            "unit",
+            "cached == sensorCache.end() ? unit : cached->second.unit",
             "cached->second.value",
         ):
             self.assertIn(f"writer.appendQuoted({value})", builder)

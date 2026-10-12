@@ -22,7 +22,8 @@ class ScreenPanelMigrationTests(unittest.TestCase):
             '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
             '-DARDUINOJSON_ENABLE_STD_STRING=1', '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0',
             *['-I' + str(p) for p in (ROOT / 'test/mocks', ROOT / 'test/helpers', ROOT / 'include', json_header.parent)],
-            str(ROOT / 'test/helpers/screen_migration_harness.cpp'), '-o', cls.binary],
+            str(ROOT / 'test/helpers/screen_migration_harness.cpp'),
+            str(ROOT / 'src/network/FixedJsonField.cpp'), '-o', cls.binary],
             capture_output=True, text=True, encoding='utf-8', errors='replace', env=cls.env, timeout=120)
         if result.returncode:
             cls.temporary.cleanup()
@@ -36,6 +37,6 @@ class ScreenPanelMigrationTests(unittest.TestCase):
         for scenario in ('legacy', 'custom', 'already', 'bad-backup', 'recover', 'interrupted', 'sample', 'settings', 'system-template', 'system-custom'):
             with self.subTest(scenario=scenario):
                 result = subprocess.run([self.binary, scenario,
-                    str(ROOT / 'docs/waveshare-esp32s3-touch-lcd4/screen_panel.json')],
+                    str(ROOT / 'docs/device-test-configs/com8-com9-esp32s3-touch/config/screen_panel.json')],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', env=self.env, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -194,11 +194,11 @@ process.stdout.write(JSON.stringify(matches.map(String)));
         end = source.index("void SystemRouteHandler::handleSystemRestart", start)
         handler = source[start:end]
         self.assertIn(
-            'doc["memory"]["dram8Free"] = FastBee::MemoryBudget::dram8Free()',
+            'FastBee::setFixedJsonField(doc, "memory", "dram8Free", FastBee::MemoryBudget::dram8Free())',
             handler,
         )
         self.assertIn(
-            'doc["memory"]["dram8Largest"] = FastBee::MemoryBudget::dram8Largest()',
+            'FastBee::setFixedJsonField(doc, "memory", "dram8Largest", FastBee::MemoryBudget::dram8Largest())',
             handler,
         )
 

@@ -73,7 +73,7 @@ public:
     ~RgbDisplayBackend() override { end(); }
 
     bool begin(const DisplayConfigParams& config, String& error) override {
-        if (_panel || _controlLease) end();
+        if ((_panel || _controlLease || _backlightAttached || _commandPinsActive) && !stop(error)) return false;
         if (strcasecmp(config.backend, "rgb") || strcasecmp(config.driver, "st7701") ||
             strcasecmp(config.rgbInitProfile, "st7701_type1")) {
             error = "SCREEN_RGB_PROFILE_UNSUPPORTED";
@@ -114,9 +114,21 @@ public:
             if (!config.controlMasksDisjoint()) {
                 error = "SCREEN_RGB_CONTROL_MASK_CONFLICT"; return false;
             }
-            if (!I2CBusManager::instance().acquire(this, config.controlSda, config.controlScl,
-                                                  config.i2cFrequency, error)) return false;
-            _controlLease = true;
+            {
+                I2CBusLock admission(100);
+                if (!admission.locked()) { error = "I2C_ADDRESS_BUSY"; return false; }
+                auto& bus = I2CBusManager::instance();
+                if (!bus.acquire(this, config.controlSda, config.controlScl,
+                                 config.i2cFrequency, error, ResourceConsumerRole::Display)) return false;
+                _controlLease = true;
+                if (!bus.claimAddress(this, config.controlAddress, error)) {
+                    // end() must not blank a backlight or buzzer belonging to
+                    // the existing owner. Every control transfer rechecks the
+                    // address lease, including failed-initialization cleanup.
+                    end();
+                    return false;
+                }
+            }
             const uint8_t mask = activeMask | config.controlInactiveMask | config.controlTouchIntMask;
             // Change only levels explicitly assigned to this display.
             // Explicit inactive outputs are latched low before output mode is
@@ -251,7 +263,13 @@ public:
              (result == ESP_OK &&
               (heap_caps_get_free_size(internalCaps) < internalReserve ||
                heap_caps_get_largest_free_block(internalCaps) < largestReserve)))) {
-            if (_panel) { esp_lcd_panel_del(_panel); _panel = nullptr; }
+            if (_panel) {
+                if (esp_lcd_panel_del(_panel) != ESP_OK) {
+                    error = "SCREEN_RGB_PANEL_DELETE_FAILED";
+                    return false; // Retain the original allocation; no fallback overwrite.
+                }
+                _panel = nullptr;
+            }
             if (bounceRequired) {
                 result = ESP_ERR_NO_MEM;
             } else {
@@ -307,6 +325,12 @@ public:
     }
 
     void end() override {
+        String ignored;
+        stop(ignored);
+    }
+
+    bool stop(String& error) override {
+        error = "";
         // The active-high buzzer can remain latched across an MCU reset.
         // Clear it before giving up the shared CH32 lease.
         if (_controlLease && _ch32 && _config.controlBuzzerMask) {
@@ -317,19 +341,33 @@ public:
         }
         if (_ready || _controlLease || _backlightAttached) applyBrightness(_brightness, true);
         _ready = false;
+        if (_backlightAttached) {
+            if (!ledcDetach(_config.backlight)) {
+                _backlightCleanupFailed = true;
+                error = "SCREEN_BACKLIGHT_DETACH_FAILED: display retained";
+                return false;
+            }
+            _backlightAttached = false;
+            _backlightCleanupFailed = false;
+        }
         if (_panel) {
 #if FASTBEE_RGB_SCAN_TELEMETRY == 1
             if (_scanAttached) {
                 esp_lcd_rgb_panel_event_callbacks_t callbacks{};
-                esp_lcd_rgb_panel_register_event_callbacks(_panel, &callbacks, nullptr);
+                if (esp_lcd_rgb_panel_register_event_callbacks(_panel, &callbacks, nullptr) != ESP_OK) {
+                    error = "SCREEN_RGB_CALLBACK_DETACH_FAILED";
+                    return false;
+                }
                 _scanAttached = false;
             }
 #endif
             fastbee_rgb_recovery_detach(_panel);
-            esp_lcd_panel_del(_panel);
+            if (esp_lcd_panel_del(_panel) != ESP_OK) {
+                error = "SCREEN_RGB_PANEL_DELETE_FAILED";
+                return false;
+            }
             _panel = nullptr;
         }
-        if (_backlightAttached) { ledcDetach(_config.backlight); _backlightAttached = false; }
         if (_commandPinsActive) {
             digitalWrite(_config.cs, HIGH);
             for (int8_t pin : {_config.cs, _config.sclk, _config.mosi, _config.rst, _config.backlight})
@@ -341,8 +379,14 @@ public:
             _controlLease = false;
         }
         _sleeping = false;
+        return true;
     }
     bool ready() const override { return _ready; }
+    void snapshotBacklightResource(BacklightResourceSnapshot& result) const override {
+        result = {}; result.available = true; result.retained = _backlightAttached;
+        result.cleanupFailed = _backlightCleanupFailed;
+        if (_backlightAttached) { result.pin = _config.backlight; result.channel = _config.backlightChannel; }
+    }
     DisplayCapabilities capabilities() const override {
         DisplayCapabilities caps;
         caps.width = _width; caps.height = _height;
@@ -429,7 +473,7 @@ private:
 
     bool initializeCh32(uint8_t outputMask, uint8_t initialOutput) {
         I2CBusLock lock;
-        TwoWire* wire = lock.locked() ? I2CBusManager::instance().wire(this) : nullptr;
+        TwoWire* wire = lock.locked() ? controlWireLocked() : nullptr;
         uint8_t input = 0;
         if (!wire || !readLocked(wire, 0x04, input)) return false;
         const uint8_t output = (input & ~outputMask) | (initialOutput & outputMask);
@@ -445,25 +489,40 @@ private:
         return true;
     }
 
+    // Caller holds the shared transaction lock across ownership and I/O.
+    TwoWire* controlWireLocked() {
+        auto& bus = I2CBusManager::instance();
+        return bus.ownsAddress(this, _config.controlAddress) ? bus.wire(this) : nullptr;
+    }
     uint8_t outputRegister() const { return _ch32 ? 0x03 : 0x01; }
     bool readLocked(TwoWire* wire, uint8_t reg, uint8_t& value) {
-        wire->beginTransmission(_config.controlAddress); wire->write(reg);
-        if (wire->endTransmission(false) || wire->requestFrom(_config.controlAddress, static_cast<uint8_t>(1)) != 1) return false;
-        value = static_cast<uint8_t>(wire->read()); return true;
+        wire->beginTransmission(_config.controlAddress);
+        const bool pointerWritten = wire->write(reg) == 1;
+        const uint8_t status = wire->endTransmission(!pointerWritten);
+        if (!pointerWritten || status != 0) return false;
+        if (wire->requestFrom(_config.controlAddress, static_cast<uint8_t>(1)) != 1 ||
+            wire->available() != 1) return false;
+        const int received = wire->read();
+        if (received < 0 || received > 255 || wire->available() != 0) return false;
+        value = static_cast<uint8_t>(received);
+        return true;
     }
     bool writeLocked(TwoWire* wire, uint8_t reg, uint8_t value) {
-        wire->beginTransmission(_config.controlAddress); wire->write(reg); wire->write(value);
-        return wire->endTransmission() == 0;
+        wire->beginTransmission(_config.controlAddress);
+        const bool pointerWritten = wire->write(reg) == 1;
+        const bool valueWritten = pointerWritten && wire->write(value) == 1;
+        const uint8_t status = wire->endTransmission();
+        return valueWritten && status == 0;
     }
     bool writeRegister(uint8_t reg, uint8_t value) {
         I2CBusLock lock;
-        TwoWire* wire = lock.locked() ? I2CBusManager::instance().wire(this) : nullptr;
+        TwoWire* wire = lock.locked() ? controlWireLocked() : nullptr;
         return wire && writeLocked(wire, reg, value);
     }
     bool updateRegister(uint8_t reg, uint8_t mask, uint8_t value) {
         if (!mask) return true;
         I2CBusLock lock;
-        TwoWire* wire = lock.locked() ? I2CBusManager::instance().wire(this) : nullptr;
+        TwoWire* wire = lock.locked() ? controlWireLocked() : nullptr;
         if (!wire) return false;
         if (_ch32 && (reg == 0x02 || reg == 0x03)) {
             uint8_t& shadow = reg == 0x02 ? _ch32Direction : _ch32Output;
@@ -496,6 +555,7 @@ private:
     uint8_t _ch32Direction = 0, _ch32Output = 0;
     bool _ready = false, _ch32 = false, _controlLease = false;
     bool _commandPinsActive = false, _backlightAttached = false, _sleeping = false;
+    bool _backlightCleanupFailed = false;
 #if FASTBEE_RGB_SCAN_TELEMETRY == 1
     bool _scanAttached = false;
     uint32_t _scanReportedAt = 0, _scanLastVsyncs = 0, _scanLastFrames = 0;

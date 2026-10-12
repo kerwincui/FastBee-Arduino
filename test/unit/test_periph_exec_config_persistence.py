@@ -30,19 +30,22 @@ def cpp_function(source, marker):
 class PeriphExecConfigPersistenceTests(unittest.TestCase):
     def test_real_file_validation_load_migration_and_pending_restart(self):
         source = (ROOT / 'src/core/PeriphExecManager.cpp').read_text(encoding='utf-8')
+        store = (ROOT / 'src/core/PeriphExecConfigStore.cpp').read_text(encoding='utf-8')
+        constants = '\n'.join(line for line in source.splitlines() if line.startswith('constexpr ') and
+                              'PERIPH_EXEC_RULE_MUTATION_LOCK_TIMEOUT_MS' not in line)
+        source += '\n' + store
         source += "\n" + (ROOT / "src/core/PeriphExecRuleQueries.cpp").read_text(encoding="utf-8")
         source += "\n" + (ROOT / "include/core/PeriphExecRemoteBindings.h").read_text(encoding="utf-8")
         header = (ROOT / 'include/core/PeriphExecManager.h').read_text(encoding='utf-8')
-        helpers = source[source.index('constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC'):
-                         source.index('#if FASTBEE_ENABLE_REMOTE_RESOURCES\nstatic bool canonicalRemoteRuleNumber')]
+        helpers = constants + '\n' + store[store.index('namespace {') + len('namespace {'):
+                                            store.index('} // namespace')]
         helpers += '\n' + cpp_function(source, 'bool hasRetiredRemoteSource(')
-        helpers += '\n' + cpp_function(source, 'static bool validateRuleProfileLimits(')
         helpers += '\n' + cpp_function((SUPPORT / 'src/utils/FileUtils.cpp').read_text(encoding='utf-8'),
                                        'bool FileUtils::commitAtomicWrite(')
         methods = [cpp_function(source, 'bool PeriphExecManager::' + method + '(') for method in (
             'saveConfiguration', 'saveConfigurationLocked', 'writeConfigurationLocked',
             'validateConfigurationFile', 'importConfigurationFile', 'loadConfiguration',
-            'setIrKeysJson', 'removeRuleLocked', 'addRuleLocked', 'updateRuleLocked', 'setRuleEnabledLocked',
+            'copyIrKeysJson', 'setIrKeysJson', 'removeRuleLocked', 'addRuleLocked', 'updateRuleLocked', 'setRuleEnabledLocked',
             'sanitizeRuleForSafety', 'sanitizeTriggerForSafety')]
         methods.append(cpp_function(header, 'const char* configurationWriteError()').replace(
             'configurationWriteError()', 'PeriphExecManager::configurationWriteError()'))
@@ -63,16 +66,34 @@ class PeriphExecConfigPersistenceTests(unittest.TestCase):
             cpp = Path(directory) / 'config.cpp'
             binary = Path(directory) / 'config.exe'
             cpp.write_text(program, encoding='utf-8')
-            for target in os.environ.get('FASTBEE_CONFIG_TEST_TARGETS', 'ESP32C3,ESP32,ESP32S3').split(','):
+            for target in os.environ.get('FASTBEE_CONFIG_TEST_TARGETS', 'ESP32C3,ESP32,ESP32S3,ESP32C6').split(','):
                 with self.subTest(target=target):
                     command = [compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-const-variable', '-Wno-unused-function',
                         '-DARDUINOJSON_ENABLE_ARDUINO_STRING=1', '-DCONFIG_IDF_TARGET_' + target,
-                        '-I' + directory, *['-I' + str(p) for p in includes], str(cpp), '-o', str(binary)]
+                        '-I' + directory, *['-I' + str(p) for p in includes], str(cpp),
+                        str(ROOT / 'src/network/FixedJsonField.cpp'),
+                        str(ROOT / 'src/utils/SharedJsonSerializer.cpp'), str(ROOT / 'src/utils/SharedJsonDeserializer.cpp'), '-o', str(binary)]
                     built = subprocess.run(command, text=True, capture_output=True, timeout=60, env=env)
                     self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
                     result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15, env=env)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if target == 'ESP32C3':
+                        guard = 'if (!visitConfigurationFile(stagedPath, checkReferences, &importedIds, nullptr, errorMsg)) return false;'
+                        self.assertEqual(program.count(guard), 1)
+                        mutant = program.replace(guard, '(void)checkReferences;', 1)
+                        try:
+                            cpp.write_text(mutant, encoding='utf-8')
+                            built_mutant = subprocess.run(command, text=True, capture_output=True, timeout=60, env=env)
+                            self.assertEqual(built_mutant.returncode, 0, built_mutant.stdout + built_mutant.stderr)
+                            rejected = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15, env=env)
+                            self.assertEqual(rejected.returncode, 86, rejected.stdout + rejected.stderr)
+                            self.assertIn('!m.importConfigurationFile', rejected.stderr)
+                            print('reference guard removed: C3 mutant correctly rejected, exit=86')
+                        finally:
+                            cpp.write_text(program, encoding='utf-8')
+                        rebuilt = subprocess.run(command, text=True, capture_output=True, timeout=60, env=env)
+                        self.assertEqual(rebuilt.returncode, 0, rebuilt.stdout + rebuilt.stderr)
                     port = {'ESP32C3': 'COM4', 'ESP32': 'COM16'}.get(target)
                     snapshot = SUPPORT / f'artifacts/resume-20260922-r12-{port}-write/live-filesystem-before.bin'
                     if port and snapshot.is_file():

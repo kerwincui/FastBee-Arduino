@@ -19,7 +19,9 @@ class WebForegroundSamplingTests(unittest.TestCase):
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include "core/MemoryBudget.h"
+#include "protocols/MqttClientLease.h"
 // Captured COM15 steady state while status requests are active.
 uint32_t nowMs=1000, freeBytes=30552, largestBytes=16372;
 bool psram=true;
@@ -38,8 +40,14 @@ struct TaskManager {
    network=true;return true;
  }
 };
-struct MQTTClient {unsigned yields=0;void yieldToWeb(){++yields;}};
-struct ProtocolManager {MQTTClient mqtt;MQTTClient* getMQTTClient(){return &mqtt;}};
+class MQTTClient {public: unsigned yields=0;void yieldToWeb(){++yields;}};
+struct ProtocolManager {
+ MQTTClient mqtt; FastBee::MqttClientLifetime lifetime;
+ FastBee::MqttClientLease acquireMQTTClient(){
+  FastBee::MqttClientLifetime::Read read(lifetime);
+  return FastBee::MqttClientLease(std::move(read), &mqtt);
+ }
+};
 struct FastBeeFramework {
  TaskManager task;HealthMonitor monitor;ProtocolManager protocol;
  static FastBeeFramework* getInstance(){static FastBeeFramework fw;return &fw;}
@@ -89,17 +97,26 @@ int main(){
             # MemoryBudget reads the same INTERNAL|8BIT values used on target.
             (base / "esp_heap_caps.h").write_text('''#pragma once
 #include <cstdint>
+#include <cstdlib>
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
 extern uint32_t freeBytes, largestBytes;
 inline uint32_t heap_caps_get_free_size(int caps){return caps==3?freeBytes:4000000;}
 inline uint32_t heap_caps_get_largest_free_block(int caps){return caps==3?largestBytes:3000000;}
+inline void* heap_caps_malloc(size_t bytes, int){return std::malloc(bytes);}
+inline void heap_caps_free(void* pointer){std::free(pointer);}
 ''', encoding="utf-8")
+            # This fixture constructs the lifetime on its native stack (internal
+            # DRAM). PSRAM placement/OOM are covered by the atomic-storage suite.
+            (base / "esp_memory_utils.h").write_text(
+                '#pragma once\ninline bool esp_ptr_in_dram(const void*) { return true; }\n',
+                encoding="utf-8")
             program = base / "sampling.cpp"
             program.write_text(cpp, encoding="utf-8")
             executable = base / ("sampling.exe" if os.name == "nt" else "sampling")
             result = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                                     "-DESP_PLATFORM=1", f"-I{base}", f"-I{ROOT / 'include'}",
+                                     "-DESP_PLATFORM=1", "-DCONFIG_IDF_TARGET_ESP32S3=1",
+                                     f"-I{base}", f"-I{ROOT / 'include'}",
                                      str(program), "-o", str(executable)],
                                     capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

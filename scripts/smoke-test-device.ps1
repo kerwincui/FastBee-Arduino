@@ -354,7 +354,8 @@ function Test-CheckSemantics {
             if ($null -eq (Get-ObjectValue -Object $data -Name "progress")) { return "missing ota progress" }
         }
         "rule-scripts" {
-            if ($null -eq $data) { return "missing data" }
+            if (-not (Test-ObjectHasProperty -Object $Response -Name "data")) { return "missing data" }
+            if ($Response.data -isnot [Array]) { return "rule script data must be an array" }
         }
         "users" {
             if ($null -eq $data) { return "missing data" }
@@ -1213,25 +1214,51 @@ if ($ReadOnly) {
         -Path "/api/config/transfer/import-chunk"
 }
 elseif ($exportSingleOk) {
-    $importChunk = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-chunk" -Body @{
-        name = "device.json"
-        chunk = $exportSingleContent
-        index = 0
-        total = 1
+    $importBytes = [System.Text.Encoding]::UTF8.GetByteCount($exportSingleContent)
+    $importBegin = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-begin" -Body @{
+        name = "device.json"; total = 1; size = $importBytes
     }
+    $beginData = Get-ObjectValue -Object $importBegin -Name "data"
+    $importSession = [string](Get-ObjectValue -Object $beginData -Name "session")
+    $beginOk = ($null -ne $importBegin -and $importBegin.success -eq $true -and
+        $importSession -cmatch '^[a-f0-9]{32}$' -and
+        (Get-ObjectValue -Object $beginData -Name "name") -ceq "device.json" -and
+        (Get-ObjectValue -Object $beginData -Name "total") -eq 1 -and
+        (Get-ObjectValue -Object $beginData -Name "expectedSize") -eq $importBytes -and
+        (Get-ObjectValue -Object $beginData -Name "size") -eq 0 -and
+        (Get-ObjectValue -Object $beginData -Name "saved") -eq $false -and
+        (Get-ObjectValue -Object $beginData -Name "applied") -eq $false -and
+        (Get-ObjectValue -Object $beginData -Name "restartRequired") -eq $false)
+    $importChunk = $null
+    # Never retry begin/chunk or fall back to the old append protocol.
+    if ($beginOk) {
+        $importChunk = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-chunk" -Body @{
+            name = "device.json"
+            session = $importSession
+            chunk = $exportSingleContent
+            index = 0
+            total = 1
+        }
+    }
+    $importData = Get-ObjectValue -Object $importChunk -Name "data"
     $importOk = ($null -ne $importChunk -and $importChunk.success -eq $true)
     $importName = Get-ObjectValue -Object $importChunk -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "name" }
     $importOk = $importOk -and ([string]$importName -eq "device.json")
-    # 内存守卫 503 限流属设计内保护，降级通过
-    $importDegraded = ($null -ne $importChunk -and $importChunk.PSObject.Properties.Name -contains "code" -and
-                       $importChunk.code -eq 503 -and $importChunk.PSObject.Properties.Name -contains "retryAfter")
+    $importOk = $importOk -and
+        ((Get-ObjectValue -Object $importData -Name "session") -ceq $importSession) -and
+        ((Get-ObjectValue -Object $importData -Name "index") -eq 0) -and
+        ((Get-ObjectValue -Object $importData -Name "total") -eq 1) -and
+        ((Get-ObjectValue -Object $importData -Name "size") -eq $importBytes) -and
+        ((Get-ObjectValue -Object $importData -Name "saved") -eq $true) -and
+        ((Get-ObjectValue -Object $importData -Name "applied") -eq $false) -and
+        ((Get-ObjectValue -Object $importData -Name "restartRequired") -eq $true)
     $script:Results += [pscustomobject]@{
         Name = "config-transfer-import-roundtrip"
         Method = "POST"
         Path = "/api/config/transfer/import-chunk"
-        Passed = ($importOk -or $importDegraded)
+        Passed = $importOk
         Attempts = 1
-        Message = if ($importOk) { "OK" } elseif ($importDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "config import roundtrip failed" }
+        Message = if ($importOk) { "saved, pending restart" } else { "import not confirmed; verify device before recovery; no automatic replay" }
     }
 
     # A success envelope alone is not enough: read the file back and compare
@@ -1277,7 +1304,7 @@ elseif ($exportSingleOk) {
             Name = "config-transfer-import-readback"
             Method = "GET"
             Path = "/api/config/transfer/export"
-            Passed = ($readbackOk -or $readbackMemDegraded)
+            Passed = $readbackOk
             Attempts = $readbackAttempts
             Message = if ($readbackOk) { "OK" } elseif ($readbackMemDegraded) { "degraded: memory pressure (503 gated, by design)" } else { "import succeeded but exported content differs ($readbackDifference)" }
         }
@@ -1287,7 +1314,7 @@ elseif ($exportSingleOk) {
         Name = "config-transfer-import-roundtrip"
         Method = "POST"
         Path = "/api/config/transfer/import-chunk"
-        Passed = $exportMemDegraded
+        Passed = $false
         Attempts = 0
         Message = if ($exportMemDegraded) { "skipped (export degraded by SEVERE memory pressure)" } else { "skipped (export prerequisite failed)" }
     }

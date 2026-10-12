@@ -58,7 +58,7 @@ class UiResponsiveStatusContractTests(unittest.TestCase):
         self.assertIn("min-height: 40px", CSS)
 
     def test_feature_resources_are_visible_in_the_primary_row(self):
-        self.assertIn("<th>功能</th><th>状态</th><th>Flash</th><th>RAM</th><th>依赖</th><th>启用</th>", FEATURE_JS)
+        self.assertIn("<th>功能</th><th>状态</th><th>Flash 估算</th><th>RAM 估算</th><th>依赖</th><th>启用</th>", FEATURE_JS)
         self.assertIn("fb-table-mobile", FEATURE_JS)
         self.assertNotIn('<details class="feature-details">', FEATURE_JS)
         self.assertIn('data-feature-resource="flash"', FEATURE_JS)

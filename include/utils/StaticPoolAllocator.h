@@ -2,13 +2,14 @@
 #define FB_STATIC_POOL_ALLOCATOR_H
 
 /**
- * @description: 静态固定块内存池 + STL Allocator 适配器
+ * @description: 固定块内存池 + STL Allocator 适配器
  *               用于 std::map / std::set 等节点型容器的堆碎片治理
  *
  * 设计目标（对应 FastBee 内存优化 T3）：
- *  - 启动时一次性预留固定大小的内存池（DRAM），为 std::map 节点提供"不会被操作系统/其它模块复用"的稳定区域
+ *  - 无 PSRAM、非 S3 及 Native 保留内联 DRAM 池；支持 PSRAM 的 S3 按实际初始化状态优先申请外部池，失败回退同容量内部池
+ *  - 池容量固定，S3 动态 backing 保留至设备生命周期结束，不因全局容器析构顺序提前释放
  *  - 运行期增删节点仅在池内 freelist 中串链，不触发 malloc/free，**根治堆碎片**
- *  - 池耗尽时优雅回退到 ::malloc，**保证功能不降级**
+ *  - 池耗尽或 S3 两类 backing 均分配失败时回退到 ::malloc；节点分配失败保留既有 std::bad_alloc 路径
  *
  * 关键约束：
  *  - STL Allocator 必须支持 rebind（std::map 内部会 rebind 到 _Rb_tree_node<value_type>）
@@ -16,8 +17,9 @@
  *  - 池为每种 (BlockSize, BlockCount) 组合使用一个 Meyers 单例 slab，跨线程安全需外层 mutex 保证
  *
  * 内存占用：
- *  - 单池 RAM = BlockSize * BlockCount + 少量元数据
- *  - 例：512 * 16 = 8KB，适合 peripherals/rules 两个 map 共享
+ *  - 单池 backing = sizeof(对齐后的 Node) * BlockCount，另有内部指针和计数等元数据
+ *  - 外部 backing 不消耗同容量内部 DRAM；实际回退状态由 storageAvailable/externalStorage/allocatedStorageBytes 表示
+ *  - 例：512 * 16 = 8KB；同 (BlockSize, BlockCount) 的 map 共享一块 backing
  *
  * @author: kerwincui
  * @copyright: FastBee All rights reserved.
@@ -28,6 +30,23 @@
 #include <cstdlib>
 #include <new>
 #include <type_traits>
+
+#if defined(ARDUINO_ARCH_ESP32)
+// Load the project defaults and SDK target before selecting a class layout,
+// including when this utility is the first header in a translation unit.
+#include "core/ChipConfig.h"
+#include "core/FeatureFlags.h"
+#endif
+
+// Only S3 targets explicitly built for PSRAM use dynamic slab backing.
+// Other chips, no-PSRAM targets and native tests retain their inline arrays.
+#if defined(ARDUINO_ARCH_ESP32) && CHIP_IS_ESP32S3 && \
+    defined(BOARD_HAS_PSRAM) && defined(FASTBEE_USE_PSRAM) && FASTBEE_USE_PSRAM
+#include <esp_heap_caps.h>
+#define FB_SLAB_S3_PSRAM_STORAGE 1
+#else
+#define FB_SLAB_S3_PSRAM_STORAGE 0
+#endif
 
 namespace FastBee {
 
@@ -57,7 +76,10 @@ public:
     // 释放；若指针落在池区间内则归还到 freelist，否则 free
     void deallocate(void* p) noexcept {
         if (!p) return;
-        if (isInPool(p)) {
+        if (isPoolAddress(p)) {
+            // An interior pointer is not a slab node and is not malloc-owned.
+            // Reject it without freeing memory or corrupting the freelist.
+            if (!isInPool(p)) return;
             Node* n = static_cast<Node*>(p);
             n->next = _freeHead;
             _freeHead = n;
@@ -73,6 +95,23 @@ public:
     static constexpr size_t capacity() noexcept { return BlockCount; }
     static constexpr size_t blockSize() noexcept { return BlockSize; }
     static constexpr size_t totalBytes() noexcept { return BlockSize * BlockCount; }
+    bool storageAvailable() const noexcept {
+#if FB_SLAB_S3_PSRAM_STORAGE
+        return _pool != nullptr;
+#else
+        return true;
+#endif
+    }
+    bool externalStorage() const noexcept {
+#if FB_SLAB_S3_PSRAM_STORAGE
+        return _externalStorage;
+#else
+        return false;
+#endif
+    }
+    size_t allocatedStorageBytes() const noexcept {
+        return storageAvailable() ? sizeof(Node) * BlockCount : 0;
+    }
 
 private:
     union Node {
@@ -80,19 +119,53 @@ private:
         alignas(alignof(std::max_align_t)) uint8_t raw[BlockSize];
     };
 
+#if FB_SLAB_S3_PSRAM_STORAGE
+    // Never free this backing: global maps may outlive a Meyers singleton's
+    // destructor. Its fixed capacity is reserved for the device lifetime.
+    Node* _pool = nullptr;
+    bool _externalStorage = false;
+#else
     Node _pool[BlockCount];
+#endif
     Node* _freeHead = nullptr;
     size_t _usedCount = 0;
     size_t _peakUsed = 0;
     size_t _overflowCount = 0;
 
+    bool isPoolAddress(void* p) const noexcept {
+#if FB_SLAB_S3_PSRAM_STORAGE
+        if (!_pool) return false;
+#endif
+        const uintptr_t start = reinterpret_cast<uintptr_t>(_pool);
+        const uintptr_t address = reinterpret_cast<uintptr_t>(p);
+        return address >= start && address - start < sizeof(Node) * BlockCount;
+    }
+
     bool isInPool(void* p) const noexcept {
-        return p >= static_cast<const void*>(&_pool[0])
-            && p <  static_cast<const void*>(&_pool[BlockCount]);
+        if (!isPoolAddress(p)) return false;
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(_pool);
+        return offset % sizeof(Node) == 0;
     }
 
     void reset() noexcept {
         _freeHead = nullptr;
+#if FB_SLAB_S3_PSRAM_STORAGE
+        constexpr size_t bytes = sizeof(Node) * BlockCount;
+        // Capability checks describe initialized allocator memory, rather than
+        // relying on the build name or physical PSRAM capacity alone.
+        if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) > 0) {
+            _pool = static_cast<Node*>(heap_caps_aligned_alloc(
+                alignof(Node), bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            _externalStorage = (_pool != nullptr);
+        }
+        if (!_pool) {
+            _pool = static_cast<Node*>(heap_caps_aligned_alloc(
+                alignof(Node), bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+        // Preserve the existing per-node malloc / bad_alloc failure path when
+        // neither same-capacity slab is available. Never do null arithmetic.
+        if (!_pool) return;
+#endif
         // 反向构建 freelist，使首次分配从 pool[0] 开始（cache-friendly）
         for (size_t i = BlockCount; i > 0; --i) {
             _pool[i - 1].next = _freeHead;
@@ -191,5 +264,7 @@ template <typename T>
 using SmallNodeAllocator = PooledAllocator<T, SMALL_NODE_BLOCK_SIZE, SMALL_NODE_BLOCK_COUNT>;
 
 } // namespace FastBee
+
+#undef FB_SLAB_S3_PSRAM_STORAGE
 
 #endif // FB_STATIC_POOL_ALLOCATOR_H

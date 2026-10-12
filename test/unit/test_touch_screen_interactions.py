@@ -10,6 +10,73 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class TouchScreenInteractionTests(unittest.TestCase):
     compile_run = helpers.PanelRuntimeRegressionTests.compile_run
+    def test_pending_motor_refreshes_promptly_without_interrupting_a_held_touch(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
+        types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
+        constants = runtime[runtime.index('constexpr uint32_t SNAPSHOT_INTERVAL_MS'):runtime.index('constexpr uint32_t START_TIMEOUT_MS')]
+        production = 'uint32_t snapshotIntervalMs(const ScreenPanelSnapshot& snapshot)' + block(runtime, 'uint32_t snapshotIntervalMs(')
+        start = runtime.index('if (forceRender || (!gesture.down && (requestedRefresh')
+        condition = runtime[start:runtime.index('{', start)]
+        self.compile_run(r'''
+#include <Arduino.h>
+#include <array>
+#include <cassert>
+#include <cstring>
+TYPES
+CONSTANTS
+PRODUCTION
+bool refresh(const ScreenPanelSnapshot& s, uint32_t now, uint32_t lastSnapshotMs,
+             bool held=false, bool requestedRefresh=false, bool forceRender=false) {
+ const auto* snapshot=&s;struct {bool down;} gesture{held};
+ CONDITION {return true;} return false;
+}
+int main(){
+ ScreenPanelSnapshot s;
+ assert(!refresh(s,499,0)&&refresh(s,500,0));
+ s.pageCount=2;strcpy(s.pages[0].id,"motor");strcpy(s.pages[1].id,"other");
+ s.cardCount=2;auto& c=s.cards[0];c.pending=true;c.visualType=ScreenVisualType::MOTOR_CONTROL;
+ strcpy(c.pageId,"motor");
+ assert(!refresh(s,99,0)&&refresh(s,100,0));
+ assert(!refresh(s,500,0,true)&&refresh(s,100,0,true,false,true));
+ assert(!refresh(s,100,0,true,true)&&refresh(s,1,0,false,true));
+ c.pending=false;assert(!refresh(s,100,0)&&refresh(s,500,0));
+ c.pending=true;s.activePageIndex=1;assert(!refresh(s,100,0));
+ auto& other=s.cards[1];other.pending=true;strcpy(other.pageId,"other");
+ assert(!refresh(s,100,0));other.visualType=ScreenVisualType::MOTOR_CONTROL;assert(refresh(s,100,0));
+ s.activePageIndex=2;assert(!refresh(s,100,0));
+ s.activePageIndex=0;assert(!refresh(s,83,0xfffffff0U)&&refresh(s,84,0xfffffff0U));
+}
+'''.replace('TYPES', types).replace('CONSTANTS', constants).replace('PRODUCTION', production).replace('CONDITION', condition), [ROOT / 'test/mocks', ROOT / 'include'])
+
+    def test_motor_readback_sync_survives_command_error_and_preserves_drafts(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        start = runtime.index('if (card.visualType == ScreenVisualType::MOTOR_CONTROL && !card.pending')
+        condition = runtime[start:runtime.index('{', start)]
+        production = condition + block(runtime[start:], condition)
+        self.compile_run(r'''
+#include <cassert>
+#include <cstdint>
+enum class ScreenVisualType { MOTOR_CONTROL, OTHER };
+struct Card {
+ ScreenVisualType visualType=ScreenVisualType::MOTOR_CONTROL;
+ bool pending=false,motorKnown=true,motorSpeedDirty=false,motorPulseDirty=false;
+ uint16_t motorSpeed=25,motorPulse=400,motorSpeedInput=10,motorPulseInput=100;
+ char error[64]="TRAVEL_CALIBRATION_REQUIRED";
+};
+void sync(Card& card){PRODUCTION}
+int main(){
+ Card c;sync(c);assert(c.motorSpeedInput==25&&c.motorPulseInput==400&&c.error[0]);
+ c.motorSpeedDirty=true;c.motorSpeedInput=30;c.motorSpeed=35;c.motorPulse=500;
+ sync(c);assert(c.motorSpeedInput==30&&c.motorSpeedDirty&&c.motorPulseInput==500);
+ c.motorKnown=false;c.motorSpeed=30;c.motorPulse=600;sync(c);
+ assert(c.motorSpeedDirty&&c.motorPulseInput==500);
+ c.motorKnown=true;c.pending=true;sync(c);assert(c.motorSpeedDirty&&c.motorPulseInput==500);
+ c.pending=false;sync(c);assert(!c.motorSpeedDirty&&c.motorPulseInput==600);
+ c.motorSpeed=40;sync(c);assert(c.motorSpeedInput==40);
+}
+'''.replace('PRODUCTION', production))
+
     def test_touch_beep_respects_live_toggle_duration_and_failed_output(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
         production = 'const auto touchFeedback = [&](uint32_t now)' + block(runtime, 'const auto touchFeedback =') + ';'
@@ -63,18 +130,30 @@ r.drawMotor(c,s,{0,0,448,400},{});bool speed=false,pulse=false,input=false;for(c
 auto has=[&](const char* text){for(const auto& label:c.labels)if(label.find(text)!=std::string::npos)return true;return false;};
 s.motorCommandKnown=true;s.motorCommandSuccess=true;s.motorKnown=false;strcpy(s.value,"stop");
 c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("停止已应答，运动状态未知")&&has("参数未读回")&&!has("已停止"));
+assert(has("停止指令已应答")&&has("点动模式")&&!has("已停止"));
+s.motorSoftLimitEnabled=s.motorReferenceKnown=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(has("启动前自动读取参数")&&!has("禁止启动"));
+s.motorSoftLimitEnabled=s.motorReferenceKnown=false;
 s.motorCommandSuccess=false;strcpy(s.value,"reverse");c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("反转未确认")&&!has("反转已应答"));
+assert(has("反转指令失败")&&!has("反转指令已应答"));
 s.motorKnown=true;s.motorPulse=1600;s.motorSoftLimitEnabled=false;
 c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("软限位未启用")&&!has("软限位仅按指令估算"));
+assert(has("点动模式")&&!has("软限位仅按指令估算"));
 s.motorSoftLimitEnabled=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
 assert(!has("软限位未启用")&&has("参考位置未确认"));
 s.motorReferenceKnown=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("运动结束未确认"));
+assert(has("换向时自动先停止，再启动"));
 s.motorStationaryConfirmed=true;s.motorForwardReady=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("可能位置范围保护")&&!has("参考位置未确认"));
+assert(has("软限位已启用")&&!has("参考位置未确认"));
+strcpy(s.error,"未启动：请先完成行程标定");screenRememberMotorFeedback(s,100);
+s.error[0]=0;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
+assert(has("未启动：请先完成行程标定"));
+screenExpireMotorFeedback(s,5099);assert(s.motorUiFeedback[0]);
+screenExpireMotorFeedback(s,5100);assert(!s.motorUiFeedback[0]);
+c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});assert(!has("未启动："));
+strcpy(s.error,"TEST_WRAP");screenRememberMotorFeedback(s,0xfffffff0U);
+screenExpireMotorFeedback(s,100);assert(s.motorUiFeedback[0]);
+screenExpireMotorFeedback(s,4984);assert(!s.motorUiFeedback[0]);
 }
 '''.replace('TYPES', types).replace('DRAW', draw), [ROOT / 'test/mocks', ROOT / 'include'])
 
@@ -115,7 +194,9 @@ int main(){
     def test_wake_touch_is_consumed_and_slider_drag_saves_once(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
         touch = runtime[runtime.rindex('ITouchBackend* touch = device.touch();'):]
-        chain = touch[touch.index('if (sleeping) {'):touch.index('\n        }\n\n        const bool requestedRefresh')]
+        chain = touch[touch.index('if (sleeping) {'):touch.index('\n        }\n\n        // Retry a touch wake')]
+        retry = touch[touch.index('if (touchWakePending && sleeping &&'):touch.index('const bool requestedRefresh')]
+        chain += '\n' + retry
         # Include the production post-poll invalidation, so consumed refresh
         # requests and a saved layout during a held press behave as on device.
         refresh = touch[touch.index('const bool requestedRefresh'):]
@@ -128,6 +209,9 @@ int main(){
 #include <cassert>
 #include "screen/ScreenInteraction.h"
 using namespace FastBee::Screen;
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+struct Logger { template<class... Args> void infof(const char*, Args...) {} } LOGGER;
 size_t strlcpy(char* to,const char* from,size_t n){if(n)snprintf(to,n,"%s",from);return strlen(from);}
 constexpr int MIN_SWIPE_PX=40,TAP_MOVE_PX=14,TAP_MAX_MS=900;
 enum class ScreenVisualType{SLIDER,ACTION};
@@ -147,6 +231,8 @@ Device device;Renderer renderer;Snapshot s;Snapshot* snapshot=&s;TouchGesture ge
 ScreenControlSession controlSession;int updates=0,feedback=0;
 struct State{std::atomic<bool> refreshRequested{false};}state;
 bool sleeping=false,brightnessOverridden=false,forceRender=false;uint8_t appliedBrightness=70;
+bool touchWakePending=false,touchWakeContactDown=false;uint8_t touchWakeAttempts=0;
+uint32_t touchWakeNextAttemptMs=0,lastInteractionMs=0;
 unsigned brightnessOverrideRevision=0;char confirmationCardId[41]{};size_t snapshotBytes=100,framebufferBytes=100;
 void updateRuntimeState(bool,bool,size_t){++updates;}
 void touchFeedback(unsigned){++feedback;}
@@ -158,7 +244,7 @@ h.device.d.brightnessOk=false;h.process({100,80,true},0);assert(h.sleeping&&h.up
 h.device.d.brightnessOk=true;h.device.d.wakeOk=false;h.process({100,80,true},0);assert(h.sleeping&&h.updates==0&&!h.gesture.suppressUntilRelease);
 int attempts=h.device.d.calls;h.process({100,80,false},0);assert(h.sleeping&&h.device.d.calls==attempts);
 h.device.d.wakeOk=true;h.brightnessOverridden=true;h.appliedBrightness=35;
-h.process({100,80,true},0);assert(!h.sleeping&&h.gesture.suppressUntilRelease);
+h.process({100,80,true},100);assert(!h.sleeping&&h.gesture.suppressUntilRelease);
 assert(h.renderer.invalidations==1&&h.forceRender);
 assert(h.device.d.brightness==35&&h.updates==1&&!h.controlSession.allows("motor.a")&&!h.confirmationCardId[0]&&h.feedback==0);
 h.process({100,80,true},100);h.process({100,80,false},120);assert(taps==0&&pages==0&&m.writes==0);
@@ -260,6 +346,7 @@ int main(){
         types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
         content = block(runtime, 'bool handleContentTap(')
         motor = block(content, 'if (card.visualType == ScreenVisualType::MOTOR_CONTROL)')
+        confirm = block(block(runtime, 'bool dispatchCardAction('), 'if (card.visualType == ScreenVisualType::MOTOR_CONTROL)')
         self.compile_run(r'''
 #include <Arduino.h>
 #include <array>
@@ -283,30 +370,76 @@ struct ScreenPanelManager {
 bool tap(ScreenPanelCardSnapshot& card,const ScreenPixelRect& bounds,uint16_t x,uint16_t y,
          char* confirmationCardId,size_t confirmationCapacity,ScreenControlSession* controlSession,uint32_t now)
 __MOTOR__
+bool confirm(ScreenPanelCardSnapshot& card)
+__CONFIRM__
 int main(){
  const ScreenPixelRect bounds{16,16,448,400};const ScreenMotorLayout layout{bounds};
  ScreenPanelCardSnapshot ready;ready.motorKnown=true;ready.motorPulse=1600;
  ready.motorSoftLimitEnabled=ready.motorReferenceKnown=ready.motorStationaryConfirmed=true;
  ready.motorForwardReady=ready.motorReverseReady=true;
  ready.motorPulseInput=1600;ready.motorSpeedInput=50;ready.pending=false;
+ ready.requiresConfirmation=true;
  std::strcpy(ready.id,"motor");std::strcpy(ready.controlRef,"motor.8");
  auto& manager=ScreenPanelManager::instance();ScreenControlSession session;session.approve(ready.controlRef,100);
  auto invoke=[&](ScreenPanelCardSnapshot& card,ScreenPixelRect button,char* confirmation,ScreenControlSession* active){
   assert(tap(card,bounds,button.x+button.w/2,button.y+button.h/2,confirmation,41,active,101));
  };
- for(unsigned mask=1;mask<64;++mask){
-  auto blocked=ready;blocked.pending=mask&1;blocked.motorKnown=!(mask&2);
+ // Default manual mode needs no calibration, reference or confirmation dialog.
+ for(unsigned direction=0;direction<2;++direction){
+  auto card=ready;char confirmation[41]{};manager.commands.clear();
+  card.motorKnown=false;card.motorPulse=100;card.motorSpeed=10;
+  card.motorSoftLimitEnabled=card.motorReferenceKnown=card.motorStationaryConfirmed=false;
+  card.motorForwardReady=card.motorReverseReady=false;
+  card.requiresConfirmation=false;
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  assert(manager.commands.size()==1&&card.pending&&!confirmation[0]);
+  assert(manager.commands[0]==(direction?"reverse":"forward"));
+  card.pending=false;manager.commands.clear();card.motorSoftLimitEnabled=true;
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  assert(manager.commands.empty()&&card.motorUiFeedback[0]&&!card.pending);
+  card.motorReferenceKnown=true;card.requiresConfirmation=true;
+  if(direction)card.motorReverseReady=true;else card.motorForwardReady=true;
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  assert(manager.commands.empty()&&!std::strcmp(confirmation,"motor"));
+  assert(card.motorConfirmAction==direction+1&&!card.motorUiFeedback[0]);
+  assert(confirm(card)&&manager.commands.size()==1);
+  assert(manager.commands[0]==(direction?"reverse":"forward"));
+ }
+ // A first tap delegates missing/zero parameters to the service. Repeated
+ // taps cannot queue more starts while pending, but STOP remains available.
+ for(bool known:{false,true}) for(unsigned zeroMask=0;zeroMask<4;++zeroMask)
+ for(unsigned direction=0;direction<2;++direction){
+  auto card=ready;char confirmation[41]{};manager.commands.clear();
+  card.motorKnown=known;card.motorSpeed=(zeroMask&1)?0:10;card.motorPulse=(zeroMask&2)?0:100;
+  card.motorSoftLimitEnabled=card.motorReferenceKnown=card.motorStationaryConfirmed=false;
+  card.motorForwardReady=card.motorReverseReady=card.requiresConfirmation=false;
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  assert(card.pending&&manager.commands.size()==1&&!confirmation[0]);
+  assert(manager.commands[0]==(direction?"reverse":"forward"));
+  invoke(card,layout.direction(direction),confirmation,nullptr);
+  invoke(card,layout.direction(1-direction),confirmation,nullptr);
+  assert(manager.commands.size()==1&&!confirmation[0]);
+  invoke(card,layout.stop(),confirmation,nullptr);
+  assert(manager.commands.size()==2&&manager.commands.back()=="stop"&&!confirmation[0]);
+ }
+ for(unsigned mask=1;mask<32;++mask){
+  if(mask==4)continue; // Zero parameters are initialized by the service on demand.
+  auto blocked=ready;blocked.pending=mask&1;blocked.motorReferenceKnown=!(mask&2);
   if(mask&4)blocked.motorPulse=0;
   blocked.motorSpeedDirty=mask&8;blocked.motorPulseDirty=mask&16;
-  if(mask&32)blocked.motorForwardReady=blocked.motorReverseReady=false;
   for(unsigned direction=0;direction<2;++direction){
    auto card=blocked;char confirmation[41]{};manager.commands.clear();
    invoke(card,layout.direction(direction),confirmation,&session);
    assert(manager.commands.empty()&&card.error[0]&&!confirmation[0]);
+   assert(!std::strcmp(card.motorUiFeedback,card.error));
+   card.motorConfirmAction=direction+1;card.error[0]=0;card.motorUiFeedback[0]=0;
+   assert(!confirm(card)&&manager.commands.empty()&&card.motorUiFeedback[0]);
+   assert(!card.motorConfirmAction&&!std::strcmp(card.motorUiFeedback,card.error));
   }
   char confirmation[41]{};manager.commands.clear();
   invoke(blocked,layout.stop(),confirmation,nullptr);
   assert(manager.commands.size()==1&&manager.commands[0]=="stop"&&blocked.pending&&!confirmation[0]);
+  assert(!blocked.motorUiFeedback[0]);
  }
  for(unsigned direction=0;direction<2;++direction){
   auto card=ready;char confirmation[41]{};manager.commands.clear();
@@ -319,9 +452,22 @@ int main(){
  }
  auto card=ready;char confirmation[41]{};manager.commands.clear();manager.ok=false;
  invoke(card,layout.direction(0),confirmation,&session);
- assert(!card.pending&&!std::strcmp(card.error,"TEST_REJECTED"));
+assert(!card.pending&&!std::strcmp(card.error,"TEST_REJECTED"));
+assert(!std::strcmp(card.motorUiFeedback,"TEST_REJECTED"));
+manager.ok=true;
+// Expired feedback and unknown rest are resolved in one service operation,
+// including when the screen still contains an old zero-pulse reading.
+for(unsigned direction=0;direction<2;++direction){
+ card=ready;card.motorKnown=false;card.motorPulse=0;card.motorStationaryConfirmed=false;
+ card.motorForwardReady=card.motorReverseReady=false;manager.commands.clear();confirmation[0]=0;
+ invoke(card,layout.direction(direction),confirmation,&session);
+ assert(card.pending&&!confirmation[0]&&manager.commands.size()==1);
+ assert(manager.commands[0]==(direction?"reverse":"forward"));
+ invoke(card,layout.direction(direction),confirmation,&session);
+ assert(manager.commands.size()==1);
 }
-'''.replace('__TYPES__', types).replace('__MOTOR__', motor), [ROOT / 'test/mocks', ROOT / 'include'])
+}
+'''.replace('__TYPES__', types).replace('__MOTOR__', motor).replace('__CONFIRM__', confirm), [ROOT / 'test/mocks', ROOT / 'include'])
 
     def test_trend_motor_and_timeout_taps(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')

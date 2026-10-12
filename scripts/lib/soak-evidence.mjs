@@ -21,6 +21,9 @@ export class CoverageTracker {
   constructor(report, started) {
     this.report = report; this.started = started; this.limit = Math.max(90, report.intervalSeconds * 3);
     this.lastSuccess = this.previousAttempt = null; this.gapOpen = false;
+    this.firstSuccess = null;
+    report.firstSuccessfulSampleAt = null;
+    report.actualSampleSpanSeconds = 0;
     report.lastSuccessfulSampleAt = null;
   }
   update(now) {
@@ -32,7 +35,8 @@ export class CoverageTracker {
     r.maximumSamplingGapSeconds = Math.max(r.maximumSamplingGapSeconds || 0, gap);
     if (gap > this.limit && !this.gapOpen) { r.samplingGaps++; this.gapOpen = true; }
     r.durationComplete = elapsed >= r.requestedSeconds;
-    r.coveragePassed = r.durationComplete && r.samples >= r.minimumRequiredSamples && !r.samplingGaps;
+    r.coveragePassed = r.durationComplete && r.actualSampleSpanSeconds >= r.requestedSeconds &&
+      r.samples >= r.minimumRequiredSamples && !r.samplingGaps;
     if (r.samplingGaps) r.stabilityStatus = 'FAIL';
   }
   attempt(now) {
@@ -43,7 +47,12 @@ export class CoverageTracker {
   complete(now, at, complete) {
     this.update(now);
     if (complete) {
+      if (this.firstSuccess === null) {
+        this.firstSuccess = now;
+        this.report.firstSuccessfulSampleAt = at;
+      }
       this.report.samples++; this.lastSuccess = now; this.gapOpen = false;
+      this.report.actualSampleSpanSeconds = Math.max(0, now - this.firstSuccess);
       this.report.lastSuccessfulSampleAt = at;
     } else { this.report.measurementUnavailableSamples++; this.report.measurementStatus = 'FAIL'; }
     this.update(now);
@@ -110,7 +119,9 @@ export function validateSnapshot(row, {authenticated, fresh}) {
 export function finishReport(report, {completed = false, interrupted = false} = {}) {
   const failed = report.stabilityStatus === 'FAIL' || FAILURE_COUNTERS.some(k => report[k]);
   const measuredFailed = report.measurementStatus === 'FAIL' || report.invalidMeasurementSamples || report.measurementUnavailableSamples;
-  const covered = report.durationComplete && report.coveragePassed;
+  const covered = report.durationComplete && report.coveragePassed &&
+    Number.isFinite(report.actualSampleSpanSeconds) && report.actualSampleSpanSeconds >= report.requestedSeconds;
+  report.coveragePassed = Boolean(covered);
   const stable = completed && covered && !failed;
   report.stabilityStatus = stable ? 'PASS' : failed || completed ? 'FAIL' : 'INCOMPLETE';
   report.measurementStatus = measuredFailed ? 'FAIL' : completed && covered && report.samples ? 'PASS' : 'INCOMPLETE';

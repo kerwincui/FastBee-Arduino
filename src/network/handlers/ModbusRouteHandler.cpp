@@ -10,6 +10,11 @@
 #include "./protocols/ModbusHandler.h"
 #include "core/PeriphExecManager.h"
 #include "core/MotorControlService.h"
+#include "core/PeripheralManager.h"
+#include "core/ActionReportIdentity.h"
+#include "network/HttpOutputControl.h"
+#include "network/FixedJsonField.h"
+#include "ModbusHttpOutput.h"
 #include "utils/PsramJsonDocument.h"
 #include <ArduinoJson.h>
 #include <new>
@@ -17,30 +22,30 @@
 
 static void addModbusReadDiagnostics(JsonDocument& doc, const ModbusReadDiagnostics& trace) {
     JsonObject out = doc["diagnostic"].to<JsonObject>();
-    out["scope"] = "request:lastAttempt";
-    out["reason"] = trace.reason;
-    out["attempts"] = trace.attempts;
-    out["txLength"] = trace.txLength;
-    out["txWrittenLastAttempt"] = trace.txWritten;
-    out["rxBufferedLastAttempt"] = trace.rxBuffered;
-    out["totalRxBuffered"] = trace.totalRxBuffered;
-    out["uartReady"] = trace.uartReady;
-    out["uartBaudRate"] = trace.uartBaudRate;
-    out["rxOverflow"] = trace.rxOverflow;
-    out["crcValid"] = trace.crcValid;
-    out["addressMatched"] = trace.addressMatched;
-    out["txPrefixTruncated"] = trace.txLength > trace.txPrefixLength;
-    out["rxPrefixTruncated"] = trace.rxOverflow || trace.rxBuffered > trace.rxPrefixLength;
+    FastBee::setFixedJsonField(out, "scope", "request:lastAttempt");
+    FastBee::setFixedJsonField(out, "reason", trace.reason);
+    FastBee::setFixedJsonField(out, "attempts", trace.attempts);
+    FastBee::setFixedJsonField(out, "txLength", trace.txLength);
+    FastBee::setFixedJsonField(out, "txWrittenLastAttempt", trace.txWritten);
+    FastBee::setFixedJsonField(out, "rxBufferedLastAttempt", trace.rxBuffered);
+    FastBee::setFixedJsonField(out, "totalRxBuffered", trace.totalRxBuffered);
+    FastBee::setFixedJsonField(out, "uartReady", trace.uartReady);
+    FastBee::setFixedJsonField(out, "uartBaudRate", trace.uartBaudRate);
+    FastBee::setFixedJsonField(out, "rxOverflow", trace.rxOverflow);
+    FastBee::setFixedJsonField(out, "crcValid", trace.crcValid);
+    FastBee::setFixedJsonField(out, "addressMatched", trace.addressMatched);
+    FastBee::setFixedJsonField(out, "txPrefixTruncated", trace.txLength > trace.txPrefixLength);
+    FastBee::setFixedJsonField(out, "rxPrefixTruncated", trace.rxOverflow || trace.rxBuffered > trace.rxPrefixLength);
     char hex[sizeof(trace.rxPrefix) * 3]{};
     size_t used = 0;
     for (uint8_t i = 0; i < trace.txPrefixLength; ++i)
         used += snprintf(hex + used, sizeof(hex) - used, i ? " %02X" : "%02X", trace.txPrefix[i]);
-    out["txPrefix"] = hex;
+    FastBee::setFixedJsonField(out, "txPrefix", hex);
     used = 0;
     hex[0] = '\0';
     for (uint8_t i = 0; i < trace.rxPrefixLength; ++i)
         used += snprintf(hex + used, sizeof(hex) - used, i ? " %02X" : "%02X", trace.rxPrefix[i]);
-    out["rxPrefix"] = hex;
+    FastBee::setFixedJsonField(out, "rxPrefix", hex);
 }
 
 // ============================================================================
@@ -163,8 +168,8 @@ static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
     String tx, rx;
     if (!modbus->getDebugSnapshot(tx, rx)) return;
     JsonObject debug = doc["debug"].to<JsonObject>();
-    debug["tx"] = tx;
-    debug["rx"] = rx;
+    FastBee::setFixedJsonField(debug, "tx", tx);
+    FastBee::setFixedJsonField(debug, "rx", rx);
 }
 
 // 杈呭姪锛氶€氳繃 slaveAddress 鏌ユ壘瀛愯澶囩储寮曪紙闆舵嫹璐濓紝閬垮厤 3.4KB ModbusConfig 鏍堝垎閰嶏級
@@ -176,47 +181,25 @@ static int findDeviceIndexBySlaveAddr(ModbusHandler* modbus, uint8_t slaveAddr) 
 }
 
 // 杈呭姪锛氭瀯寤哄苟鍙戝竷鍗曟潯 MQTT 涓婃姤
-static void publishControlReport(WebHandlerContext* ctx, ModbusHandler* modbus,
-                                  int deviceIndex, uint16_t channel, const String& value) {
-    if (deviceIndex < 0) return;
-    String sid = modbus->buildSensorId((uint8_t)deviceIndex, channel);
-    if (sid.isEmpty()) return;
-    MQTTClient* mqtt = ctx->protocolManager ? ctx->protocolManager->getMQTTClient() : nullptr;
-    if (!mqtt || !mqtt->getIsConnected()) return;
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    JsonObject obj = arr.add<JsonObject>();
-    obj["id"] = sid;
-    obj["value"] = value;
-    obj["remark"] = "";
-    String payload;
-    serializeJson(doc, payload);
-    LOG_WARNINGF("[MqttReport] publishControlReport: id='%s' value='%s'", sid.c_str(), value.c_str());
-    mqtt->publishReportData(payload);
-}
 
 // 杈呭姪锛氭瀯寤哄苟鍙戝竷鎵归噺 MQTT 涓婃姤锛堝閫氶亾锛?
-static void publishBatchControlReport(WebHandlerContext* ctx, ModbusHandler* modbus,
-                                       int deviceIndex, uint16_t channelCount, const bool* states) {
-    if (deviceIndex < 0) return;
-    MQTTClient* mqtt = ctx->protocolManager ? ctx->protocolManager->getMQTTClient() : nullptr;
+
+static void publishFrozenModbusReport(WebHandlerContext* ctx, const ModbusSubDevice& device,
+                                     uint8_t index, uint16_t channel, const String& value,
+                                     const char* remark) {
+    ActionExecResult binding;
+    char peripheral[16]; snprintf(peripheral, sizeof(peripheral), "modbus:%u", index);
+    FastBee::captureModbusReportIdentity(binding, peripheral, device.sensorId, device.channelCount, channel);
+    FastBee::completeCapturedReport(binding, value, true, remark);
+    const String* id = FastBee::capturedReportId(binding);
+    if (binding.reportIdentity != FastBee::ActionReportIdentity::Field || !id) return;
+    auto mqtt = ctx->protocolManager ? ctx->protocolManager->acquireMQTTClient() : FastBee::MqttClientLease{};
     if (!mqtt || !mqtt->getIsConnected()) return;
     JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    bool hasEntry = false;
-    for (uint16_t i = 0; i < channelCount; i++) {
-        String sid = modbus->buildSensorId((uint8_t)deviceIndex, i);
-        if (sid.isEmpty()) continue;
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = sid;
-        obj["value"] = String(states[i] ? 1 : 0);
-        obj["remark"] = "";
-        hasEntry = true;
-    }
-    if (!hasEntry) return;
-    String payload;
-    serializeJson(doc, payload);
-    mqtt->publishReportData(payload);
+    JsonObject item = doc.to<JsonArray>().add<JsonObject>();
+    item["id"] = *id; item["value"] = value; item["remark"] = remark;
+    item["physicalOutputVerified"] = false;
+    String payload; serializeJson(doc, payload); mqtt->publishReportData(payload);
 }
 
 static uint8_t countEnabledPollTasks(ModbusHandler* modbus) {
@@ -492,40 +475,41 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
     if (rejectModbusHeavyRequest(request, "Modbus status", compactStatus ? 4096 : 8192)) return;
 
     auto doc = FastBee::makeJsonDocument(32768);
-    doc["success"] = true;
+    FastBee::setFixedJsonField(doc, "success", true);
 
     JsonObject data = doc["data"].to<JsonObject>();
-    data["compact"] = compactStatus;
+    FastBee::setFixedJsonField(data, "compact", compactStatus);
+    if (modbus) modbus->getCoilDelayStatus(data["delayedWrites"].to<JsonObject>());
     JsonObject health = data["health"].to<JsonObject>();
     JsonArray warnings = health["warnings"].to<JsonArray>();
 
     if (!modbus) {
         // Modbus 鏈垵濮嬪寲鏃惰繑鍥炵┖鐘舵€佽€岄潪 404
-        data["mode"] = "master";
-        data["workMode"] = 1;
-        data["status"] = "stopped";
-        data["taskCount"] = 0;
+        FastBee::setFixedJsonField(data, "mode", "master");
+        FastBee::setFixedJsonField(data, "workMode", 1);
+        FastBee::setFixedJsonField(data, "status", "stopped");
+        FastBee::setFixedJsonField(data, "taskCount", 0);
         // 鍒濆鍖栫粺璁″瓧娈典负0
-        data["totalPolls"] = 0;
-        data["successPolls"] = 0;
-        data["failedPolls"] = 0;
-        data["timeoutPolls"] = 0;
+        FastBee::setFixedJsonField(data, "totalPolls", 0);
+        FastBee::setFixedJsonField(data, "successPolls", 0);
+        FastBee::setFixedJsonField(data, "failedPolls", 0);
+        FastBee::setFixedJsonField(data, "timeoutPolls", 0);
         data["tasks"].to<JsonArray>();
-        health["riskLevel"] = "low";
-        health["enabledTaskCount"] = 0;
-        health["minPollInterval"] = 0;
-        health["maxPollInterval"] = 0;
-        health["responseTimeout"] = 0;
-        health["maxRetries"] = 0;
-        health["interPollDelay"] = 0;
-        health["lastPollAgeSec"] = 0;
-        health["successRate"] = 0.0;
-        health["failureRate"] = 0.0;
-        health["timeoutRate"] = 0.0;
+        FastBee::setFixedJsonField(health, "riskLevel", "low");
+        FastBee::setFixedJsonField(health, "enabledTaskCount", 0);
+        FastBee::setFixedJsonField(health, "minPollInterval", 0);
+        FastBee::setFixedJsonField(health, "maxPollInterval", 0);
+        FastBee::setFixedJsonField(health, "responseTimeout", 0);
+        FastBee::setFixedJsonField(health, "maxRetries", 0);
+        FastBee::setFixedJsonField(health, "interPollDelay", 0);
+        FastBee::setFixedJsonField(health, "lastPollAgeSec", 0);
+        FastBee::setFixedJsonField(health, "successRate", 0.0);
+        FastBee::setFixedJsonField(health, "failureRate", 0.0);
+        FastBee::setFixedJsonField(health, "timeoutRate", 0.0);
     } else {
-        data["mode"] = (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave";
-        data["workMode"] = modbus->getWorkMode();
-        data["status"] = modbus->getStatus();
+        FastBee::setFixedJsonField(data, "mode", (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave");
+        FastBee::setFixedJsonField(data, "workMode", modbus->getWorkMode());
+        FastBee::setFixedJsonField(data, "status", modbus->getStatus());
 
         if (modbus->getMode() == MODBUS_MASTER) {
             uint8_t enabledTaskCount = countEnabledPollTasks(modbus);
@@ -540,26 +524,26 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
             float failureRate = calcRate(failedPolls + timeoutPolls, totalPolls);
             float timeoutRate = calcRate(timeoutPolls, totalPolls);
 
-            data["taskCount"] = modbus->getPollTaskCount();
+            FastBee::setFixedJsonField(data, "taskCount", modbus->getPollTaskCount());
 
             // 娣诲姞杞缁熻鏁版嵁
-            data["totalPolls"] = totalPolls;
-            data["successPolls"] = successPolls;
-            data["failedPolls"] = failedPolls;
-            data["timeoutPolls"] = timeoutPolls;
+            FastBee::setFixedJsonField(data, "totalPolls", totalPolls);
+            FastBee::setFixedJsonField(data, "successPolls", successPolls);
+            FastBee::setFixedJsonField(data, "failedPolls", failedPolls);
+            FastBee::setFixedJsonField(data, "timeoutPolls", timeoutPolls);
 
-            health["riskLevel"] = buildModbusRiskLevel(modbus, enabledTaskCount, minPollInterval,
-                                                       totalPolls, timeoutRate, failureRate, lastPollAgeSec);
-            health["enabledTaskCount"] = enabledTaskCount;
-            health["minPollInterval"] = minPollInterval;
-            health["maxPollInterval"] = maxPollInterval;
-            health["responseTimeout"] = modbus->getResponseTimeout();
-            health["maxRetries"] = modbus->getMaxRetries();
-            health["interPollDelay"] = modbus->getInterPollDelay();
-            health["lastPollAgeSec"] = lastPollAgeSec;
-            health["successRate"] = successRate;
-            health["failureRate"] = failureRate;
-            health["timeoutRate"] = timeoutRate;
+            FastBee::setFixedJsonField(health, "riskLevel", buildModbusRiskLevel(modbus, enabledTaskCount, minPollInterval,
+                                                       totalPolls, timeoutRate, failureRate, lastPollAgeSec));
+            FastBee::setFixedJsonField(health, "enabledTaskCount", enabledTaskCount);
+            FastBee::setFixedJsonField(health, "minPollInterval", minPollInterval);
+            FastBee::setFixedJsonField(health, "maxPollInterval", maxPollInterval);
+            FastBee::setFixedJsonField(health, "responseTimeout", modbus->getResponseTimeout());
+            FastBee::setFixedJsonField(health, "maxRetries", modbus->getMaxRetries());
+            FastBee::setFixedJsonField(health, "interPollDelay", modbus->getInterPollDelay());
+            FastBee::setFixedJsonField(health, "lastPollAgeSec", lastPollAgeSec);
+            FastBee::setFixedJsonField(health, "successRate", successRate);
+            FastBee::setFixedJsonField(health, "failureRate", failureRate);
+            FastBee::setFixedJsonField(health, "timeoutRate", timeoutRate);
 
             if (enabledTaskCount >= 4) {
                 warnings.add("Many polling tasks are enabled; watch bus load and Web response time.");
@@ -595,17 +579,17 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 const ModbusHandler::PollTaskCache* cache = modbus->getTaskCache(i);
                 uint32_t cacheAgeSec = getTaskCacheAgeSec(cache);
                 JsonObject t = tasks.add<JsonObject>();
-                t["slaveAddress"] = task.slaveAddress;
-                t["functionCode"] = task.functionCode;
-                t["startAddress"] = task.startAddress;
-                t["quantity"] = task.quantity;
-                t["pollInterval"] = task.pollInterval;
-                t["enabled"] = task.enabled;
-                t["name"] = String(task.name);
-                t["status"] = getTaskHealthStatus(task, cache);
-                t["cacheAgeSec"] = cacheAgeSec;
-                t["staleAfterSec"] = getTaskStaleThresholdSec(task);
-                t["lastError"] = cache ? cache->lastError : 0;
+                FastBee::setFixedJsonField(t, "slaveAddress", task.slaveAddress);
+                FastBee::setFixedJsonField(t, "functionCode", task.functionCode);
+                FastBee::setFixedJsonField(t, "startAddress", task.startAddress);
+                FastBee::setFixedJsonField(t, "quantity", task.quantity);
+                FastBee::setFixedJsonField(t, "pollInterval", task.pollInterval);
+                FastBee::setFixedJsonField(t, "enabled", task.enabled);
+                FastBee::setFixedJsonField(t, "name", String(task.name));
+                FastBee::setFixedJsonField(t, "status", getTaskHealthStatus(task, cache));
+                FastBee::setFixedJsonField(t, "cacheAgeSec", cacheAgeSec);
+                FastBee::setFixedJsonField(t, "staleAfterSec", getTaskStaleThresholdSec(task));
+                FastBee::setFixedJsonField(t, "lastError", cache ? cache->lastError : 0);
 
                 // 瀵勫瓨鍣ㄦ槧灏勯厤缃?- 鎸?regOffset 鎺掑簭鍚庤緭鍑猴紝纭繚鏄剧ず椤哄簭姝ｇ‘
                 if (task.mappingCount > 0) {
@@ -629,21 +613,22 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                         const RegisterMapping& m = task.mappings[sortedIdx[j]];
                         if (m.sensorId[0] == '\0') continue;
                         JsonObject mo = mappings.add<JsonObject>();
-                        mo["regOffset"] = m.regOffset;
-                        mo["dataType"] = m.dataType;
-                        mo["scaleFactor"] = m.scaleFactor;
-                        mo["decimalPlaces"] = m.decimalPlaces;
-                        mo["sensorId"] = String(m.sensorId);
-                        if (m.unit[0] != '\0') mo["unit"] = String(m.unit);
+                        FastBee::setFixedJsonField(mo, "regOffset", m.regOffset);
+                        FastBee::setFixedJsonField(mo, "dataType", m.dataType);
+                        FastBee::setFixedJsonField(mo, "wordOrder", m.wordOrder);
+                        FastBee::setFixedJsonField(mo, "scaleFactor", m.scaleFactor);
+                        FastBee::setFixedJsonField(mo, "decimalPlaces", m.decimalPlaces);
+                        FastBee::setFixedJsonField(mo, "sensorId", String(m.sensorId));
+                        if (m.unit[0] != '\0') FastBee::setFixedJsonField(mo, "unit", String(m.unit));
                     }
                 }
 
                 // 娣诲姞缂撳瓨鏁版嵁锛堟渶鏂伴噰闆嗙殑鍊硷級
                 if (cache && cache->valid) {
                     JsonObject cachedData = t["cachedData"].to<JsonObject>();
-                    cachedData["timestamp"] = cache->timestamp;
-                    cachedData["ageSec"] = cacheAgeSec;
-                    cachedData["lastError"] = cache->lastError;
+                    FastBee::setFixedJsonField(cachedData, "timestamp", cache->timestamp);
+                    FastBee::setFixedJsonField(cachedData, "ageSec", cacheAgeSec);
+                    FastBee::setFixedJsonField(cachedData, "lastError", cache->lastError);
                     JsonArray values = cachedData["values"].to<JsonArray>();
                     // 闃插尽鎬ф鏌ワ細纭繚 count 涓嶈秴杩囨暟缁勮竟鐣?
                     uint8_t safeCount = cache->count;
@@ -656,27 +641,27 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 }
             }
         } else {
-            health["riskLevel"] = "low";
-            health["enabledTaskCount"] = 0;
-            health["minPollInterval"] = 0;
-            health["maxPollInterval"] = 0;
-            health["responseTimeout"] = 0;
-            health["maxRetries"] = 0;
-            health["interPollDelay"] = 0;
-            health["lastPollAgeSec"] = 0;
-            health["successRate"] = 0.0;
-            health["failureRate"] = 0.0;
-            health["timeoutRate"] = 0.0;
+            FastBee::setFixedJsonField(health, "riskLevel", "low");
+            FastBee::setFixedJsonField(health, "enabledTaskCount", 0);
+            FastBee::setFixedJsonField(health, "minPollInterval", 0);
+            FastBee::setFixedJsonField(health, "maxPollInterval", 0);
+            FastBee::setFixedJsonField(health, "responseTimeout", 0);
+            FastBee::setFixedJsonField(health, "maxRetries", 0);
+            FastBee::setFixedJsonField(health, "interPollDelay", 0);
+            FastBee::setFixedJsonField(health, "lastPollAgeSec", 0);
+            FastBee::setFixedJsonField(health, "successRate", 0.0);
+            FastBee::setFixedJsonField(health, "failureRate", 0.0);
+            FastBee::setFixedJsonField(health, "timeoutRate", 0.0);
         }
     }
 
     if (request->hasParam("hardware") && request->getParam("hardware")->value() == "1") {
         JsonObject hardware = data["uartHardware"].to<JsonObject>();
         if (modbus) modbus->appendUartHardwareSnapshot(hardware);
-        else { hardware["supported"] = false; hardware["error"] = "MODBUS_NOT_RUNNING"; }
+        else { FastBee::setFixedJsonField(hardware, "supported", false); FastBee::setFixedJsonField(hardware, "error", "MODBUS_NOT_RUNNING"); }
     }
 
-    health["warningCount"] = warnings.size();
+    FastBee::setFixedJsonField(health, "warningCount", warnings.size());
 
     _statusCache.valid = false;
     HandlerUtils::sendJsonStream(request, doc);
@@ -688,41 +673,26 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
 
 void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-
-    ProtocolManager* pm = ctx->protocolManager;
-    if (!pm) {
-        ctx->sendError(request, 500, "Protocol manager not available");
-        return;
-    }
-
-    auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) {
-        ctx->sendError(request, 503, "Modbus not started");
-        return;
-    }
-
-    if (modbus->getMode() != MODBUS_MASTER) {
-        ctx->sendError(request, 400, "Modbus is not in Master mode");
-        return;
-    }
-
-    if (rejectModbusCriticalControl(request, "Modbus queued write", 6144)) return;
-
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t regAddr = (uint16_t)ctx->getParamInt(request, "regAddress", 0);
-    uint16_t value = (uint16_t)ctx->getParamInt(request, "value", 0);
-
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
-    }
-
-    if (modbus->masterWriteSingleRegister(slaveAddr, regAddr, value)) {
-        ctx->sendSuccess(request, "Write request queued");
-    } else {
-        ctx->sendError(request, 503, "Write queue full");
-    }
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "regAddress", "value"})) return;
+    uint32_t slave, address, value;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "regAddress", 0, 0, 65535, address) ||
+        !ModbusHttp::number(*ctx, request, "value", 0, 0, 65535, value)) return;
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus || rejectModbusCriticalControl(request, "Modbus register write", 6144)) return;
+    FastBee::ModbusOutputFrame frame;
+    if (!frame.single(slave, 6, address, value)) { ctx->sendBadRequest(request, "Invalid write frame"); return; }
+    ModbusHttp::Output output(*ctx, request, *modbus);
+    if (!output.begin()) return;
+    const auto result = output.submit(frame);
+    if (result.error != ONESHOT_SUCCESS) { output.fail(result); return; }
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    FastBee::setFixedJsonField(doc, "message", "Write command acknowledged");
+    auto data = doc["data"].to<JsonObject>();
+    data["register"] = address; data["value"] = value;
+    output.append(data); addModbusDebug(doc, modbus);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -731,138 +701,85 @@ void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request) {
-    static uint32_t _coilCtrlSeq = 0;
-    uint32_t reqSeq = ++_coilCtrlSeq;
-    
     if (!ctx->requireAuth(request)) return;
-    
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "channel", "coilBase", "action", "mode",
+        "confirmOverride", "controlGeneration", "controlTargetId", "controlConfigEpoch"})) return;
+    uint32_t slave, channel, base;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "channel", 0, 0, Protocols::MODBUS_MAX_WRITE_COILS - 1, channel) ||
+        !ModbusHttp::number(*ctx, request, "coilBase", 0, 0, 65535, base)) return;
+    const String action = ctx->getParamValue(request, "action", "toggle");
+    const String mode = ctx->getParamValue(request, "mode", "coil");
+    if (!validRelayChannel(slave, channel, base) || (mode != "coil" && mode != "register") ||
+        (action != "on" && action != "off" && action != "toggle")) {
+        ctx->sendBadRequest(request, "Invalid relay endpoint, mode or action"); return;
+    }
     auto modbusLease = getModbusMaster(ctx, request);
     ModbusHandler* modbus = modbusLease.get();
     if (!modbus) return;
-    
-    const int slaveInput = ctx->getParamInt(request, "slaveAddress", 1);
-    uint8_t slaveAddr = static_cast<uint8_t>(slaveInput);
-    const int channelInput = ctx->getParamInt(request, "channel", 0);
-    uint16_t channel = static_cast<uint16_t>(channelInput);
-    const int baseInput = ctx->getParamInt(request, "coilBase", 0);
-    uint16_t coilBase = static_cast<uint16_t>(baseInput);
-    String action = ctx->getParamValue(request, "action", "toggle");
-    String mode = ctx->getParamValue(request, "mode", "coil");
-
-    LOG_WARNINGF("[CoilCtrl#%u] HTTP entry: slave=%d ch=%d action=%s mode=%s clientIP=%s",
-                 reqSeq, slaveAddr, channel, action.c_str(), mode.c_str(),
-                 request->client() ? request->client()->remoteIP().toString().c_str() : "?");
-
     if (rejectModbusCriticalControl(request, "Modbus relay control", 6144)) return;
-
-    if (!validRelayChannel(slaveInput, channelInput, baseInput)) {
-        ctx->sendBadRequest(request, "Invalid relay address, channel or base");
-        return;
+    const uint16_t address = static_cast<uint16_t>(base + channel);
+    const uint8_t function = mode == "register" ? 6 : 5;
+    FastBee::ModbusControlTarget target;
+    ModbusSubDevice device;
+    if (!modbus->snapshotOrdinaryRelayEndpoint(static_cast<uint8_t>(slave), function, address, device, target) ||
+        function != target.function || address < target.first ||
+        uint32_t(address) >= uint32_t(target.first) + target.count) {
+        ctx->sendError(request, 409, "CONTROL_RELAY_MAPPING_UNCONFIRMED"); return;
     }
-    
-    if (mode != "coil" && mode != "register") {
-        ctx->sendBadRequest(request, "Invalid mode (coil/register)");
-        return;
+    char canonical[41]; target.key(canonical);
+    FastBee::OrdinaryControlContext control;
+    FastBee::OrdinaryControlResult result;
+    const uint32_t epoch = FastBee::SensorConfigEpoch::current();
+    if (!FastBee::beginHttpModbusRelayOutput(*ctx, request, String(canonical), epoch, control)) return;
+    struct Terminal {
+        const FastBee::OrdinaryControlContext& context;
+        ~Terminal() { PeripheralManager::getInstance().finishOrdinaryControl(context); }
+    } terminal{control};
+    const bool toggle = action == "toggle";
+    const uint16_t value = action == "on" ? (function == 5 ? 0xff00 : 1) : 0;
+    const OneShotResult written = PeripheralManager::getInstance().submitOrdinaryModbusRelay(
+        *modbus, target, function, address, value, control, result, 0, toggle);
+    if (written.error != ONESHOT_SUCCESS) {
+        JsonDocument denied;
+        FastBee::setFixedJsonField(denied, "success", false); FastBee::setFixedJsonField(denied, "reason", result.reason); FastBee::setFixedJsonField(denied, "configEpoch", epoch);
+        FastBee::writeOrdinaryControlJson(denied["control"].to<JsonObject>(), result);
+        ctx->sendJsonResponse(request, written.outputAttempted ? 502 : 409, denied); return;
     }
-    const int configuredIndex = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    if (configuredIndex >= 0 && channel >= modbus->getSubDevice(configuredIndex).channelCount) {
-        ctx->sendBadRequest(request, "Channel exceeds configured device");
-        return;
+    // The exact echoed FC05/06 value confirms transport only. Use the frozen
+    // mapping for reporting; neither current-index lookup nor ACK proves load state.
+    const bool state = written.data[4] || written.data[5];
+    const bool logical = device.ncMode ? !state : state;
+    const uint16_t savedChannel = static_cast<uint16_t>(address - target.first);
+    // The common captured-report helper uses the copied sensorId and count;
+    // do not resolve a mutable device index again after the transaction.
+    ActionExecResult binding;
+    char peripheral[16]; snprintf(peripheral, sizeof(peripheral), "modbus:%u", target.index);
+    FastBee::captureModbusReportIdentity(binding, peripheral, device.sensorId, device.channelCount, savedChannel);
+    FastBee::completeCapturedReport(binding, String(logical ? 1 : 0), true, "modbus_command_acknowledged");
+    auto mqtt = ctx->protocolManager ? ctx->protocolManager->acquireMQTTClient() : FastBee::MqttClientLease{};
+    const String* reportId = FastBee::capturedReportId(binding);
+    if (mqtt && mqtt->getIsConnected() && binding.reportIdentity == FastBee::ActionReportIdentity::Field && reportId) {
+        JsonDocument report;
+        JsonArray array = report.to<JsonArray>(); JsonObject item = array.add<JsonObject>();
+        item["id"] = *reportId; item["value"] = String(logical ? 1 : 0);
+        item["remark"] = "modbus_command_acknowledged"; item["physicalOutputVerified"] = false;
+        String payload; serializeJson(report, payload); mqtt->publishReportData(payload);
     }
-    uint16_t coilAddr = coilBase + channel;
-    OneShotResult result;
-    bool newState = false;  // 鐢ㄤ簬璁板綍鎿嶄綔鍚庣殑鐘舵€?
-    
-    if (mode == "register") {
-        // 瀵勫瓨鍣ㄦā寮忥細FC06 鍐欎繚鎸佸瘎瀛樺櫒
-        // 鍐欏叆鎴愬姛鍚庣姸鎬佺洿鎺ョ‘瀹氾紝鏃犻渶鍐嶈鍙栫‘璁?
-        if (action == "on") {
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // isControl=true
-            newState = true;
-        } else if (action == "off") {
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // isControl=true
-            newState = false;
-        } else if (action == "toggle") {
-            // 鍏堣褰撳墠鍊煎啀鍙嶈浆
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1, true);  // isControl=true
-            if (readR.error != ONESHOT_SUCCESS || readR.count < 1) {
-                if (readR.error == ONESHOT_SUCCESS) readR.error = ONESHOT_CRC_ERROR;
-                sendOneShotError(ctx, request, readR);
-                return;
-            }
-            uint16_t newVal = (readR.data[0] != 0) ? 0 : 1;
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, newVal, true);  // isControl=true
-            newState = (newVal != 0);  // 鍐欏叆鍊煎嵆涓烘柊鐘舵€?
-        } else {
-            ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
-            return;
-        }
-    } else {
-        // 绾垮湀妯″紡锛欶C05 鍐欑嚎鍦?
-        // 鍐欏叆鎴愬姛鍚庣洿鎺ユ帹瀵肩姸鎬侊紝鏃犻渶棰濆璇诲彇纭
-        if (action == "on") {
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, true, true);  // isControl=true
-            if (result.error == ONESHOT_SUCCESS) newState = true;
-        } else if (action == "off") {
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, false, true);  // isControl=true
-            if (result.error == ONESHOT_SUCCESS) newState = false;
-        } else if (action == "toggle") {
-            // toggle 鏃犳硶浠庡啓鍏ュ€兼帹瀵肩粨鏋滐紝闇€瑕佸厛璇诲彇褰撳墠鐘舵€?
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilAddr, 1, true);  // isControl=true
-            if (readR.error != ONESHOT_SUCCESS || readR.count < 1) {
-                if (readR.error == ONESHOT_SUCCESS) readR.error = ONESHOT_CRC_ERROR;
-                sendOneShotError(ctx, request, readR);
-                return;
-            }
-            bool currentState = (readR.data[0] != 0);
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, !currentState, true);  // isControl=true
-            if (result.error == ONESHOT_SUCCESS) newState = !currentState;
-        } else {
-            ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
-            return;
-        }
-    }
-    
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-    
-    // MQTT 涓婃姤鎺у埗缁撴灉锛坣cMode 璁惧鎶ュ憡鐢ㄦ埛鎰忓浘鍊硷紝闈炲師濮嬬嚎鍦堢數骞筹級
-    // 鍚﹀垯骞冲彴鍥炲啓璇ュ€兼椂 processDataCommandMatch 浼氬啀娆″簲鐢?ncMode 鍙嶈浆锛?
-    // 瀵艰嚧鍙岄噸鍙嶈浆浣胯澶囨仮澶嶅師鐘?
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    if (devIdx >= 0) {
-        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
-        bool reportState = newState;
-        if (dev.ncMode) {
-            reportState = !newState;
-        }
-        publishControlReport(ctx, modbus, devIdx, channel, String(reportState ? 1 : 0));
-    }
-    
-    // 瑙﹀彂 mc: 浜嬩欢锛堜緵浜嬩欢瑙﹀彂瑙勫垯鍖归厤锛?
-    if (devIdx >= 0) {
-        char mcIdBuf[16];
-        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
-        const char* evAct = newState ? "on" : "off";
-        char mcDataBuf[96];
-        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
-            devIdx, channel, evAct);
-        PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["channel"] = channel;
-    data["coilAddress"] = coilAddr;
-    data["state"] = newState;
-    data["action"] = action;
-    data["mode"] = mode;
-    addModbusDebug(doc, modbus);
-    
-    HandlerUtils::sendJsonStream(request, doc);
+    char mcId[16], event[96];
+    snprintf(mcId, sizeof(mcId), "mc:%u", target.index);
+    snprintf(event, sizeof(event), "{\"d\":%u,\"c\":%u,\"a\":\"%s\"}",
+        target.index, savedChannel, logical ? "on" : "off");
+    PeriphExecManager::getInstance().triggerEventById(String(mcId), String(event));
+    JsonDocument document;
+    FastBee::setFixedJsonField(document, "success", true);
+    JsonObject data = document["data"].to<JsonObject>();
+    data["channel"] = savedChannel; data["coilAddress"] = address; data["state"] = state;
+    data["action"] = action; data["mode"] = mode; data["configEpoch"] = epoch;
+    data["commandAcknowledged"] = true; data["physicalOutputVerified"] = false;
+    FastBee::writeOrdinaryControlJson(data["control"].to<JsonObject>(), result);
+    addModbusDebug(document, modbus);
+    HandlerUtils::sendJsonStream(request, document);
 }
 
 // ============================================================================
@@ -871,220 +788,102 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
-    static uint32_t _coilBatchSeq = 0;
-    uint32_t reqSeq = ++_coilBatchSeq;
-    
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
-    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
-    String action = ctx->getParamValue(request, "action", "allOff");
-    String mode = ctx->getParamValue(request, "mode", "coil");
-    
-    LOG_WARNINGF("[CoilBatch#%u] HTTP entry: slave=%d count=%d action=%s mode=%s clientIP=%s",
-                 reqSeq, slaveAddr, channelCount, action.c_str(), mode.c_str(),
-                 request->client() ? request->client()->remoteIP().toString().c_str() : "?");
-
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "channelCount", "coilBase", "action", "mode"})) return;
+    uint32_t slave, count, base;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "channelCount", 8, 1, 32, count) ||
+        !ModbusHttp::number(*ctx, request, "coilBase", 0, 0, 65535, base)) return;
+    const String action = ctx->getParamValue(request, "action", "allOff");
+    const String mode = ctx->getParamValue(request, "mode", "coil");
+    if (base + count > 65536U || (mode != "coil" && mode != "register") ||
+        (action != "allOn" && action != "allOff" && action != "allToggle")) {
+        ctx->sendBadRequest(request, "Invalid batch action, mode or range"); return;
+    }
     if (rejectModbusHeavyRequest(request, "Modbus batch control", 8192)) return;
-
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus) return;
+    ModbusSubDevice device;
+    FastBee::ModbusControlTarget target;
+    const uint8_t function = mode == "register" ? 6 : 5;
+    if (!modbus->snapshotOrdinaryRelayEndpoint(slave, function, base, device, target) ||
+        target.first != base || target.function != function || count > target.count ||
+        ((target.batch || (function == 5 && action == "allToggle")) && count != target.count)) {
+        ctx->sendError(request, 409, "CONTROL_RELAY_MAPPING_UNCONFIRMED"); return;
     }
-    if (channelCount == 0 || channelCount > Protocols::MODBUS_MAX_WRITE_COILS) {
-        ctx->sendBadRequest(request, "Invalid channel count (1-32)");
-        return;
-    }
-    
-    OneShotResult result;
-    
-    // 鏌ユ壘璁惧閰嶇疆涓殑 batchRegister 鍜?batchRegType锛堥浂鎷疯礉璁块棶锛?
-    uint16_t batchReg = 0;
-    uint8_t batchRegType = 0;  // 0=浣嶅浘, 1=鍛戒护
-    {
-        int devIdxBatch = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-        if (devIdxBatch >= 0) {
-            const ModbusSubDevice& batchDev = modbus->getSubDevice((uint8_t)devIdxBatch);
-            batchReg = batchDev.batchRegister;
-            batchRegType = batchDev.batchRegType;
+    ModbusHttp::Output output(*ctx, request, *modbus); output.expect(target);
+    if (!output.begin()) return;
+    bool commandKnown[32]{}, commandState[32]{};
+    auto record = [&](uint16_t channel, bool state) {
+        commandKnown[channel] = true; commandState[channel] = state;
+    };
+    FastBee::ModbusOutputFrame frame;
+    OneShotResult written;
+    const bool bitmap = function == 6 && target.batch && target.batchType == 0;
+    if (bitmap || (function == 6 && target.batch && target.batchType == 1 && action != "allToggle")) {
+        const uint16_t mask = bitmap ? (count == 16 ? 0xffff : static_cast<uint16_t>((1U << count) - 1U)) : 1;
+        frame.single(slave, 6, target.batch, action == "allOff" ? 0 : mask);
+        if (action == "allToggle") frame.transform = FastBee::ModbusFrameTransform::RelayBatchToggle;
+        written = output.submit(frame);
+        if (written.error != ONESHOT_SUCCESS) { output.fail(written); return; }
+        const uint16_t echoed = static_cast<uint16_t>((written.data[4] << 8) | written.data[5]);
+        for (uint16_t i = 0; i < count; ++i) record(i, bitmap ? ((echoed >> i) & 1U) : echoed != 0);
+    } else if (function == 6) {
+        for (uint16_t i = 0; i < count; ++i) {
+            written = output.relay(target, 6, base + i, action == "allOn" ? 1 : 0, action == "allToggle");
+            if (written.error != ONESHOT_SUCCESS) { output.fail(written); return; }
+            record(i, written.data[4] || written.data[5]);
         }
-    }
-
-    if (mode == "register") {
-        if (batchReg > 0 && batchRegType == 0) {
-            // 浣嶅浘瀵勫瓨鍣ㄦā寮忥細鍗曟 FC06 鍐欎綅鍥撅紙姣?bit 瀵瑰簲涓€涓€氶亾锛?
-            uint16_t bitmask = (channelCount >= 16) ? 0xFFFF : (uint16_t)((1 << channelCount) - 1);
-            if (action == "allOn") {
-                result = modbus->writeRegisterOnce(slaveAddr, batchReg, bitmask, true);
-            } else if (action == "allOff") {
-                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)0, true);
-            } else if (action == "allToggle") {
-                OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, batchReg, 1, true);
-                if (readR.error != ONESHOT_SUCCESS) {
-                    sendOneShotError(ctx, request, readR);
-                    return;
-                }
-                uint16_t current = readR.data[0];
-                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)(current ^ bitmask), true);
-            } else {
-                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-                return;
-            }
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-        } else if (batchReg > 0 && batchRegType == 1 && action != "allToggle") {
-            // 鍛戒护瀵勫瓨鍣ㄦā寮忥細鍐?1=鍏ㄥ紑, 0=鍏ㄥ叧锛堝涓洓绉戞妧 0x0034锛?
-            // allToggle 涓嶆敮鎸侊紝闄嶇骇鍒伴€愰€氶亾妯″紡
-            if (action == "allOn") {
-                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)1, true);
-            } else if (action == "allOff") {
-                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)0, true);
-            } else {
-                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-                return;
-            }
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-        } else {
-            // 閫愰€氶亾 FC06 妯″紡
-            if (action == "allOn" || action == "allOff") {
-                uint16_t targetVal = (action == "allOn") ? 1 : 0;
-                for (uint16_t i = 0; i < channelCount; i++) {
-                    OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal, true);
-                    if (wr.error != ONESHOT_SUCCESS) {
-                        sendOneShotError(ctx, request, wr);
-                        return;
-                    }
-                }
-                result.error = ONESHOT_SUCCESS;
-            } else if (action == "allToggle") {
-                OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);
-                if (readR.error != ONESHOT_SUCCESS) {
-                    sendOneShotError(ctx, request, readR);
-                    return;
-                }
-                for (uint16_t i = 0; i < channelCount; i++) {
-                    uint16_t newVal = (readR.data[i] != 0) ? 0 : 1;
-                    OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal, true);
-                    if (wr.error != ONESHOT_SUCCESS) {
-                        sendOneShotError(ctx, request, wr);
-                        return;
-                    }
-                }
-                result.error = ONESHOT_SUCCESS;
-            } else {
-                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-                return;
-            }
-        }
+    } else if (action == "allToggle") {
+        frame.single(slave, 5, base, 0x5a00, FastBee::ModbusFrameAccess::RelayVendor);
+        written = output.submit(frame);
+        if (written.error != ONESHOT_SUCCESS) { output.fail(written); return; }
+        // Vendor toggle ACK confirms the command, never a final channel state.
     } else {
-        // 绾垮湀妯″紡锛欶C15 鎵归噺鍐?
-        if (action == "allOn" || action == "allOff") {
-            bool targetOn = (action == "allOn");
-            bool values[Protocols::MODBUS_MAX_WRITE_COILS];
-            for (uint16_t i = 0; i < channelCount; i++) values[i] = targetOn;
-            result = modbus->writeMultipleCoilsOnce(slaveAddr, coilBase, channelCount, values, true);
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-        } else if (action == "allToggle") {
-            result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00, true);  // isControl=true
-        } else {
-            ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-            return;
+        uint8_t bytes[11]{};
+        const uint8_t byteCount = static_cast<uint8_t>((count + 7) / 8);
+        bytes[0] = slave; bytes[1] = 15; bytes[2] = base >> 8; bytes[3] = base;
+        bytes[4] = 0; bytes[5] = count; bytes[6] = byteCount;
+        for (uint16_t i = 0; i < count; ++i) {
+            const bool state = action == "allOn";
+            if (state) bytes[7 + i / 8] |= 1U << (i % 8);
+            record(i, state);
         }
+        if (!frame.assign(bytes, 7 + byteCount)) { ctx->sendBadRequest(request, "Invalid batch frame"); return; }
+        written = output.submit(frame);
+        if (written.error != ONESHOT_SUCCESS) { output.fail(written); return; }
     }
-    
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
+    // Readback is separate evidence. Missing/short readback stays unknown and
+    // cannot synthesize allOff or trigger rules as though the load was measured.
+    FastBee::ModbusControlTarget after;
+    ModbusSubDevice afterDevice;
+    OneShotResult observed;
+    if (modbus->snapshotOrdinaryRelayEndpoint(slave, function, base, afterDevice, after) &&
+        target.sameMapping(after)) {
+        observed = modbus->readRegistersOnce(slave, bitmap || function == 6 ? 3 : 1,
+            bitmap ? target.batch : base, bitmap ? 1 : count, true);
     }
-    
-    // 鎿嶄綔鍚庤鍙栧疄闄呯姸鎬?
-    OneShotResult readResult;
-    bool useBitmapRead = (mode == "register" && batchReg > 0 && batchRegType == 0);
-    if (useBitmapRead) {
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, batchReg, 1, true);
-    } else if (mode == "register") {
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);
-    } else {
-        uint16_t readQty = ((channelCount + 7) / 8) * 8;
-        if (readQty < 8) readQty = 8;
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);
+    const bool readback = observed.error == ONESHOT_SUCCESS && observed.count >= (bitmap ? 1 : count);
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    auto data = doc["data"].to<JsonObject>();
+    data["channelCount"] = count; data["action"] = action; data["mode"] = mode;
+    data["readbackAvailable"] = readback;
+    auto states = data["states"].to<JsonArray>();
+    for (uint16_t i = 0; i < count; ++i) {
+        if (readback) states.add(bitmap ? ((observed.data[0] >> i) & 1U) != 0 : observed.data[i] != 0);
+        else states.add(nullptr);
+        if (!commandKnown[i]) continue;
+        const bool logical = device.ncMode ? !commandState[i] : commandState[i];
+        publishFrozenModbusReport(ctx, device, target.index, i, String(logical ? 1 : 0),
+            "modbus_command_acknowledged");
+        char eventId[16], event[96];
+        snprintf(eventId, sizeof(eventId), "mc:%u", target.index);
+        snprintf(event, sizeof(event), "{\"d\":%u,\"c\":%u,\"a\":\"%s\"}",
+            target.index, i, logical ? "on" : "off");
+        PeriphExecManager::getInstance().triggerEventById(String(eventId), String(event));
     }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["channelCount"] = channelCount;
-    data["action"] = action;
-    data["mode"] = mode;
-    JsonArray states = data["states"].to<JsonArray>();
-    bool stateValues[32]; // 鐢ㄤ簬 MQTT 涓婃姤
-    if (readResult.error == ONESHOT_SUCCESS) {
-        if (useBitmapRead) {
-            uint16_t bitmap = readResult.data[0];
-            for (uint16_t i = 0; i < channelCount; i++) {
-                bool s = (bitmap >> i) & 1 ? true : false;
-                states.add(s);
-                if (i < 32) stateValues[i] = s;
-            }
-        } else {
-            for (uint16_t i = 0; i < channelCount; i++) {
-                bool s = readResult.data[i] != 0;
-                states.add(s);
-                if (i < 32) stateValues[i] = s;
-            }
-        }
-    } else {
-        for (uint16_t i = 0; i < channelCount; i++) {
-            bool s = (action == "allOn");
-            states.add(s);
-            if (i < 32) stateValues[i] = s;
-        }
-    }
-
-    // MQTT 涓婃姤鎵归噺鎺у埗缁撴灉锛坣cMode 璁惧闇€瑕佸弽杞负鐢ㄦ埛鎰忓浘鍊硷級
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    if (devIdx >= 0) {
-        bool isNcMode = modbus->getSubDevice((uint8_t)devIdx).ncMode;
-        if (isNcMode) {
-            bool reportValues[32];
-            for (uint16_t i = 0; i < channelCount && i < 32; i++) {
-                reportValues[i] = !stateValues[i];
-            }
-            publishBatchControlReport(ctx, modbus, devIdx, channelCount, reportValues);
-        } else {
-            publishBatchControlReport(ctx, modbus, devIdx, channelCount, stateValues);
-        }
-    }
-
-    // 瑙﹀彂 mc: 浜嬩欢锛堜緵浜嬩欢瑙﹀彂瑙勫垯鍖归厤锛屾寜姣忎釜閫氶亾鐙珛瑙﹀彂锛?
-    if (devIdx >= 0) {
-        char mcIdBuf[16];
-        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
-        for (uint16_t ch = 0; ch < channelCount; ch++) {
-            bool chState = (ch < 32) ? stateValues[ch] : (action == "allOn");
-            char mcDataBuf[96];
-            snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
-                devIdx, ch, chState ? "on" : "off");
-            PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
-        }
-    }
-
-    addModbusDebug(doc, modbus);
-    
-    HandlerUtils::sendJsonStream(request, doc);
+    output.append(data); addModbusDebug(doc, modbus); HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1094,185 +893,116 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
 
 void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    const int slaveInput = ctx->getParamInt(request, "slaveAddress", 1);
-    uint8_t slaveAddr = static_cast<uint8_t>(slaveInput);
-    const int channelInput = ctx->getParamInt(request, "channel", 0);
-    uint16_t channel = static_cast<uint16_t>(channelInput);
-    uint16_t delayBase = (uint16_t)ctx->getParamInt(request, "delayBase", 0x0200);
-    uint16_t delayUnits = (uint16_t)ctx->getParamInt(request, "delayUnits", 50);
-    bool ncMode = ctx->getParamBool(request, "ncMode", false);
-    const int baseInput = ctx->getParamInt(request, "coilBase", 0);
-    uint16_t coilBase = static_cast<uint16_t>(baseInput);
-    String mode = ctx->getParamValue(request, "mode", "coil");
-    // delayMode: 0=FC05闂紑(榛樿), 1=杞欢寤舵椂, 2=纭欢瀵勫瓨鍣ㄥ欢鏃?
-    uint8_t delayMode = (uint8_t)ctx->getParamInt(request, "delayMode", 0);
-    
-    // 浠庤澶囬厤缃腑鏌ユ壘榛樿 delayMode
-    int devIdxForDelay = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    if (devIdxForDelay >= 0 && delayMode == 0) {
-        const ModbusSubDevice& delayDev = modbus->getSubDevice((uint8_t)devIdxForDelay);
-        if (delayDev.delayMode > 0) {
-            delayMode = delayDev.delayMode;
-        }
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "channel", "coilBase", "mode",
+            "delayBase", "delayUnits", "ncMode", "delayMode"})) return;
+    uint32_t slave, channel, base, delayBase, units, delayMode;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "channel", 0, 0, 31, channel) ||
+        !ModbusHttp::number(*ctx, request, "coilBase", 0, 0, 65535, base) ||
+        !ModbusHttp::number(*ctx, request, "delayBase", 0x0200, 0, 65535, delayBase) ||
+        !ModbusHttp::number(*ctx, request, "delayUnits", 50, 1, 255, units) ||
+        !ModbusHttp::number(*ctx, request, "delayMode", 0, 0, 2, delayMode)) return;
+    const String mode = ctx->getParamValue(request, "mode", "coil");
+    if (base + channel > 65535U || delayBase + channel > 65535U ||
+        (mode != "coil" && mode != "register")) {
+        ctx->sendBadRequest(request, "Invalid delay endpoint or mode"); return;
     }
-
     if (rejectModbusHeavyRequest(request, "Modbus delayed control", 8192)) return;
-
-    if (!validRelayChannel(slaveInput, channelInput, baseInput)) {
-        ctx->sendBadRequest(request, "Invalid relay address, channel or base");
-        return;
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus) return;
+    const uint8_t function = mode == "register" ? 6 : 5;
+    const uint16_t address = static_cast<uint16_t>(base + channel);
+    ModbusSubDevice device;
+    FastBee::ModbusControlTarget target;
+    if (!modbus->snapshotOrdinaryRelayEndpoint(slave, function, address, device, target) ||
+        target.function != function || target.first != base || channel >= target.count) {
+        ctx->sendError(request, 409, "CONTROL_RELAY_MAPPING_UNCONFIRMED"); return;
     }
-    if (delayUnits == 0 || delayUnits > 255) {
-        ctx->sendBadRequest(request, "Invalid delay (1-255 x100ms, max 25.5s)");
-        return;
+    const bool nc = device.ncMode;
+    if (request->hasParam("ncMode", true)) {
+        const String text = request->getParam("ncMode", true)->value();
+        if (text != "true" && text != "false" && text != "1" && text != "0") {
+            ctx->sendBadRequest(request, "Invalid NC mode"); return;
+        }
+        if ((text == "true" || text == "1") != nc) {
+            ctx->sendError(request, 409, "CONTROL_RELAY_CONFIGURATION_CHANGED"); return;
+        }
     }
-    
-    unsigned long delayMs = (unsigned long)delayUnits * 100;
-    uint16_t coilAddr = coilBase + channel;
-
-    // === 纭欢瀵勫瓨鍣ㄥ欢鏃舵ā寮?(delayMode=2) ===
-    // 鍚戦€氶亾瀵勫瓨鍣ㄥ啓鍏ュ€?> 1锛岃澶囪嚜鍔ㄥ欢鏃?(value-1)*0.01s 鍚庣炕杞?
-    // 闂紑娴佺▼锛氬厛鍐?(寮€鍚?锛屽啀鍐欏欢鏃跺€?寤舵椂鍚庣炕杞?鍏抽棴)
-    if (delayMode == 2) {
-        // 纭欢瀵勫瓨鍣ㄥ欢鏃讹細浣跨敤FC06鍚戦€氶亾瀵勫瓨鍣ㄥ啓鍏ュ欢鏃跺€?
-        // 璁惧琛屼负锛氬啓鍏ュ€?N>1 鏃讹紝寤舵椂 (N-1)*0.01 绉掑悗缈昏浆
-        // 闂紑瀹炵幇锛氬厛寮€(l)锛屽啀鍐欏欢鏃跺€硷紝璁惧鍒版椂鍚庤嚜鍔ㄧ炕杞?鍏抽棴)
-        uint16_t delayValue = (uint16_t)(delayUnits * 10 / 1) + 1;  // delayUnits*100ms 鈫?value=(N-1)*0.01s 鈫?N=delayUnits*10+1
-        if (delayValue < 2) delayValue = 2;
-        if (delayValue > 65535) delayValue = 65535;
-        
-        // 鍏堝紑鍚户鐢靛櫒
-        OneShotResult onResult;
-        if (ncMode) {
-            onResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // NC: 鍐?=鏂紑=璁惧閫氱數
-        } else {
-            onResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // NO: 鍐?=寮€鍚?
+    // Zero retains the saved default. Explicit software mode must remain
+    // software even for a normally-open coil with a hardware flash profile.
+    if (!delayMode) delayMode = device.delayMode;
+    const bool hardwareRegister = delayMode == 2;
+    const bool hardwareCoil = function == 5 && delayMode == 0 && !nc;
+    const bool hardware = hardwareRegister || hardwareCoil;
+    if (delayMode > 2 || (hardwareRegister && (function != 6 || device.delayMode != 2)) ||
+        (hardwareCoil && delayBase != 0x0200)) {
+        ctx->sendError(request, 409, "CONTROL_DELAY_PROFILE_UNCONFIRMED"); return;
+    }
+    const uint32_t delayMs = units * 100U;
+    const bool softwareFinal = !hardware || (hardwareRegister && nc);
+    const uint32_t finalDelayMs = delayMs + (hardwareRegister && nc ? 500U : 0U);
+    ModbusHttp::Output output(*ctx, request, *modbus); output.expect(target);
+    if (!output.begin()) return;
+    if (softwareFinal && output.context().request.holdMs <= finalDelayMs) {
+        ctx->sendBadRequest(request, "CONTROL_DELAY_EXCEEDS_HOLD"); return;
+    }
+    uint64_t operationId = 0, hardwareOperationId = 0;
+    ModbusDelayReceipt receipt;
+    auto send = [&](bool success, const char* reason, const OneShotResult* fault = nullptr) {
+        JsonDocument doc; FastBee::setFixedJsonField(doc, "success", success);
+        if (!success) FastBee::setFixedJsonField(doc, "error", reason);
+        auto data = doc["data"].to<JsonObject>();
+        output.append(data);
+        data["slaveAddress"] = slave; data["channel"] = channel; data["address"] = address;
+        data["delayUnits"] = units; data["delayMs"] = delayMs; data["delayMode"] = delayMode;
+        data["ncMode"] = nc; data["mode"] = hardware ? "hardware" : "software";
+        data["initialCommandAcknowledged"] = data["acknowledgedCommandCount"].as<unsigned>() != 0;
+        data["finalScheduled"] = operationId != 0;
+        data["finalCommandAcknowledged"] = false;
+        data["hardwareWindowTracked"] = hardwareOperationId != 0;
+        if (!success) data["manualReviewRequired"] = data["outputAttempted"].as<bool>();
+        if (fault) {
+            data["errorCode"] = static_cast<unsigned>(fault->error);
+            data["exceptionCode"] = fault->exceptionCode;
+            data["resultUnknown"] = fault->outputAttempted && fault->error != ONESHOT_EXCEPTION;
         }
-        if (onResult.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, onResult);
-            return;
+        if (operationId || hardwareOperationId) {
+            char id[21]; snprintf(id, sizeof(id), "%llu", static_cast<unsigned long long>(operationId ? operationId : hardwareOperationId));
+            data["operationId"] = id; data["handlerInstance"] = receipt.instance;
+            data["configuration"] = receipt.configuration;
         }
-        
-        // 鍐欏叆寤舵椂鍊硷紝璁惧鍦ㄥ欢鏃跺悗鑷姩缈昏浆锛堝叧闂級
-        OneShotResult delayResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, delayValue, true);
-        if (delayResult.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, delayResult);
-            return;
-        }
-        
-        // NC妯″紡棰濆锛氭坊鍔犺蒋浠跺欢鏃朵换鍔″湪寤舵椂鍚庢仮澶嶄负ON锛堝洜涓虹‖浠剁炕杞細浣縉C鏂數锛?
-        if (ncMode) {
-            modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs + 500, true, true);
-        }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["channel"] = channel;
-        data["delayUnits"] = delayUnits;
-        data["delayMs"] = (uint32_t)delayMs;
-        data["ncMode"] = ncMode;
-        data["mode"] = "hardware";
-        data["delayValue"] = delayValue;
+        if (hardwareRegister) data["delayValue"] = units * 10U + 1U;
         addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
+        ctx->sendJsonResponse(request, success ? 200 : data["outputAttempted"].as<bool>() ? 502 : 409, doc);
+    };
+    FastBee::ModbusOutputFrame frame;
+    frame.single(slave, function, address, nc ? 0 : function == 5 ? 0xff00 : 1);
+    OneShotResult written = output.submit(frame);
+    if (written.error != ONESHOT_SUCCESS || !written.delayReceipt.writeSequence) {
+        send(false, "INITIAL_COMMAND_UNCONFIRMED", &written); return;
     }
-
-    if (mode == "register") {
-        // 瀵勫瓨鍣ㄦā寮忥細浣跨敤 FC 0x06 鍐欏瘎瀛樺櫒
-        if (ncMode) {
-            // NC 甯搁棴妯″紡锛氬厛鍐?0锛堟柇寮€锛夛紝寤舵椂鍚庡啓 1锛堟仮澶嶏級
-            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // isControl=true
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true, true);
-            if (!ok) {
-                ctx->sendError(request, 500, "Delay task queue full");
-                return;
-            }
-        } else {
-            // NO 甯稿紑妯″紡锛氬厛鍐?1锛堝惛鍚堬級锛屽欢鏃跺悗鍐?0锛堟柇寮€锛?
-            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // isControl=true
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, false, true);
-            if (!ok) {
-                ctx->sendError(request, 500, "Delay task queue full");
-                return;
-            }
+    receipt = written.delayReceipt;
+    if (hardware) {
+        if (hardwareRegister) frame.single(slave, 6, address, units * 10U + 1U);
+        else frame.single(slave, 5, delayBase + channel, units << 8, FastBee::ModbusFrameAccess::RelayVendor);
+        frame.hardwareWindowMs = delayMs;
+        written = output.submit(frame);
+        // The PM core retains a possible hardware window for every attempted
+        // trigger, including a lost ACK. No HTTP retry or late compensating write.
+        if (written.error != ONESHOT_SUCCESS || !written.delayReceipt.writeSequence) {
+            send(false, "HARDWARE_DELAY_UNCONFIRMED", &written); return;
         }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["channel"] = channel;
-        data["delayUnits"] = delayUnits;
-        data["delayMs"] = (uint32_t)delayMs;
-        data["ncMode"] = ncMode;
-        data["mode"] = "software";
-        addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
-    } else {
-        // 绾垮湀妯″紡锛氫娇鐢?FC 0x05 鍐欑嚎鍦?
-        // 姝ラ1锛氱珛鍗虫墦寮€缁х數鍣紙鍐欑嚎鍦?ON锛?
-        // NO妯″紡: 绾垮湀ON=璁惧閫氱數; NC妯″紡: 绾垮湀ON=NC鏂紑=璁惧鏂數锛堜絾鎴戜滑瑕佸厛鎵撳紑锛屾墍浠C杩欓噷鍐橭FF锛?
-        // 淇锛氬欢鏃舵柇寮€ = 鍏堟墦寮€璁惧锛屽欢鏃跺悗鍏抽棴
-        // NO妯″紡: 鍏堝啓ON(璁惧閫? 鈫?寤舵椂鍚庤嚜鍔∣FF(璁惧鏂?
-        // NC妯″紡: 鍏堝啓OFF(NC闂悎=璁惧閫? 鈫?寤舵椂鍚庡啓ON(NC鏂紑=璁惧鏂?
-        bool initialValue = ncMode ? false : true;  // NO鍐橭N, NC鍐橭FF
-        OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue, true);  // isControl=true
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
+        receipt = written.delayReceipt;
+        if (!modbus->retainOrdinaryHardwareDelay(slave, delayMs, receipt, output.context(), &hardwareOperationId)) {
+            send(false, "HARDWARE_ACKNOWLEDGED_TRACKING_UNCONFIRMED"); return;
         }
-
-        // 姝ラ2锛氬惎鍔ㄥ欢鏃舵満鍒讹紝寤舵椂鍚庤嚜鍔ㄥ叧闂?
-        if (ncMode) {
-            // NC 甯搁棴妯″紡锛氫娇鐢ㄨ蒋浠跺欢鏃朵换鍔?
-            // 寤舵椂鍚庡啓绾垮湀ON (NC鏂紑=璁惧鏂數)
-            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true);
-            if (!ok) {
-                ctx->sendError(request, 500, "Delay task queue full");
-                return;
-            }
-        } else {
-            // NO 甯稿紑妯″紡锛氫娇鐢ㄧ‖浠堕棯寮€鎸囦护
-            // 闂紑鎸囦护锛欶C 0x05 鍦板潃=(delayBase + channel) 鍊?寤舵椂鍗曚綅鍦ㄩ珮瀛楄妭
-            // 纭欢浼氳嚜鍔細寤舵椂鍚庡叧闂户鐢靛櫒
-            uint16_t delayAddr = delayBase + channel;
-            uint16_t rawValue = ((uint16_t)delayUnits) << 8;
-
-            result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue, true);  // isControl=true
-            if (result.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, result);
-                return;
-            }
-        }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["channel"] = channel;
-        data["delayUnits"] = delayUnits;
-        data["delayMs"] = (uint32_t)delayMs;
-        data["ncMode"] = ncMode;
-        data["mode"] = ncMode ? "software" : "hardware";
-        addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
     }
+    if (softwareFinal && !modbus->addOrdinaryCoilDelayTask(slave, address, finalDelayMs, nc,
+            function == 6, receipt, output.context(), &operationId)) {
+        send(false, "INITIAL_ACKNOWLEDGED_FINAL_NOT_SCHEDULED"); return;
+    }
+    send(true, nullptr);
 }
 
 // ============================================================================
@@ -1343,52 +1073,44 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
 
 void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t addrRegister = (uint16_t)ctx->getParamInt(request, "addressRegister", 0x0000);
-    String newAddrStr = ctx->getParamValue(request, "newAddress", "");
-
-    if (rejectModbusHeavyRequest(request, "Modbus device address", 8192)) return;
-
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    
-    if (newAddrStr.isEmpty()) {
-        // 璇诲彇褰撳墠鍦板潃锛氫娇鐢ㄥ箍鎾湴鍧€ 0x00锛堟枃妗ｇ‘璁わ細00 03 00 00 00 01 85 DB锛?
-        // 璁惧浼氫互瀹為檯鍦板潃鍝嶅簲锛堝 03 03 02 00 03 ...锛?
-        // sendOneShotRequest 涓?expectedSlaveAddr==0 鏃跺凡璺宠繃鍦板潃鍖归厤
-        OneShotResult result = modbus->readRegistersOnce(0x00, 0x03, addrRegister, 1, true);  // isControl=true
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
-        }
-        data["currentAddress"] = result.data[0];
-        data["register"] = addrRegister;
-    } else {
-        // 璁剧疆鏂板湴鍧€锛氫娇鐢ㄥ箍鎾湴鍧€ 0x00锛孎C 0x10 鍐欏涓瘎瀛樺櫒
-        uint16_t newAddr = (uint16_t)newAddrStr.toInt();
-        if (newAddr < 1 || newAddr > 255) {
-            ctx->sendBadRequest(request, "Invalid new address (1-255)");
-            return;
-        }
-        uint16_t regValues[1] = { newAddr };
-        OneShotResult result = modbus->writeMultipleRegistersOnce(0x00, addrRegister, 1, regValues, true);  // isControl=true
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
-        }
-        data["previousAddress"] = slaveAddr;
-        data["newAddress"] = newAddr;
-        data["register"] = addrRegister;
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "addressRegister", "newAddress"})) return;
+    uint32_t slave, address;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "addressRegister", 0, 0, 65535, address)) return;
+    const String next = ctx->getParamValue(request, "newAddress", "");
+    uint32_t newAddress = 0;
+    if (!next.isEmpty() && !ModbusHttp::decimal(next, 1, 247, newAddress)) {
+        ctx->sendBadRequest(request, "Invalid new address (1-247)"); return;
     }
-    addModbusDebug(doc, modbus);
-    
-    HandlerUtils::sendJsonStream(request, doc);
+    if (!next.isEmpty() && !ctx->requireDeveloperMode(request)) return;
+    if (rejectModbusHeavyRequest(request, "Modbus device address", 8192)) return;
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus) return;
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    auto data = doc["data"].to<JsonObject>();
+    if (next.isEmpty()) {
+        // Legacy discovery is read-only. The connected device responds with its
+        // own slave address; no ordinary output permission is fabricated.
+        const auto result = modbus->readRegistersOnce(0, 3, address, 1, true);
+        if (result.error != ONESHOT_SUCCESS) { sendOneShotError(ctx, request, result); return; }
+        data["currentAddress"] = result.data[0]; data["register"] = address;
+    } else {
+        uint8_t bytes[] = {0, 16, static_cast<uint8_t>(address >> 8),
+            static_cast<uint8_t>(address), 0, 1, 2, 0, static_cast<uint8_t>(newAddress)};
+        FastBee::ModbusOutputFrame frame;
+        if (!frame.assign(bytes, sizeof(bytes), FastBee::ModbusFrameAccess::Maintenance)) {
+            ctx->sendBadRequest(request, "Invalid address frame"); return;
+        }
+        ModbusHttp::Output output(*ctx, request, *modbus);
+        if (!output.begin(true)) return;
+        const auto result = output.submit(frame);
+        if (result.error != ONESHOT_SUCCESS) { output.fail(result); return; }
+        data["previousAddress"] = slave; data["newAddress"] = newAddress; data["register"] = address;
+        data["scope"] = "busMaintenance"; data["configurationUpdated"] = false;
+        output.append(data);
+    }
+    addModbusDebug(doc, modbus); HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1396,122 +1118,76 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* request) {
-    if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint32_t baudRate = (uint32_t)ctx->getParamInt(request, "baudRate", 9600);
-    // mode: 0=FC0xB0涓撴湁鎸囦护(榛樿), 1=FC06鍐欎繚鎸佸瘎瀛樺櫒
-    uint8_t mode = (uint8_t)ctx->getParamInt(request, "mode", 0);
-    // baudRateReg: FC06妯″紡涓嬫尝鐗圭巼瀵勫瓨鍣ㄥ湴鍧€(榛樿0x0033)
-    uint16_t baudRateReg = (uint16_t)ctx->getParamInt(request, "baudRateReg", 0x0033);
-
+    if (!ctx->requireAuth(request) || !ctx->requireDeveloperMode(request)) return;
+    if (!ModbusHttp::fields(*ctx, request,
+        {"slaveAddress", "baudRate", "mode", "baudRateReg", "baudCode"})) return;
+    uint32_t slave, baudRate, mode, reg;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "baudRate", 9600, 1, 115200, baudRate) ||
+        !ModbusHttp::number(*ctx, request, "mode", 0, 0, 1, mode) ||
+        !ModbusHttp::number(*ctx, request, "baudRateReg", 0x33, 0, 65535, reg)) return;
     if (rejectModbusHeavyRequest(request, "Modbus baudrate change", 8192)) return;
-    
-    // 浠庤澶囬厤缃腑鏌ユ壘榛樿鍊?
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-    if (devIdx >= 0 && mode == 0) {
-        const ModbusSubDevice& baudDev = modbus->getSubDevice((uint8_t)devIdx);
-        // 濡傛灉璁惧閰嶇疆浜?baudRateMode=1锛岃嚜鍔ㄥ垏鎹㈠埌瀵勫瓨鍣ㄦā寮?
-        if (baudDev.baudRateMode == 1) {
-            mode = 1;
-            baudRateReg = baudDev.baudRateReg;
-            if (baudRateReg == 0) baudRateReg = 0x0033;
-        }
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus) return;
+    ModbusSubDevice saved;
+    FastBee::ModbusControlTarget savedTarget;
+    const int index = findDeviceIndexBySlaveAddr(modbus, slave);
+    const bool captured = index >= 0 && modbus->snapshotControlDevice(index, saved, savedTarget) &&
+        saved.slaveAddress == slave;
+    // Preserve the saved register-mode default, using a copied configuration.
+    if (captured && mode == 0 && saved.baudRateMode == 1) {
+        mode = 1; reg = saved.baudRateReg ? saved.baudRateReg : 0x33;
     }
-    
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
-    }
-    
-    if (mode == 1) {
-        // FC06 瀵勫瓨鍣ㄦā寮忥細鏍囧噯 Modbus 鍐欎繚鎸佸瘎瀛樺櫒
-        // 閫氱敤娉㈢壒鐜囩紪鐮佹槧灏勶紙鍏煎涓洓绉戞妧绛夊搧鐗岋級
-        // 0:4800, 1:9600, 2:14400, 3:19200, 4:38400, 5:56000, 6:57600, 7:115200
-        uint16_t baudCode;
-        switch (baudRate) {
-            case 4800:   baudCode = 0; break;
-            case 9600:   baudCode = 1; break;
-            case 14400:  baudCode = 2; break;
-            case 19200:  baudCode = 3; break;
-            case 38400:  baudCode = 4; break;
-            case 56000:  baudCode = 5; break;
-            case 57600:  baudCode = 6; break;
-            case 115200: baudCode = 7; break;
-            default:     baudCode = 1; break; // 榛樿 9600
+    uint32_t code = 0;
+    const auto* overrideCode = request->getParam("baudCode", true);
+    if (overrideCode) {
+        if (!ModbusHttp::decimal(overrideCode->value(), 0, mode ? 65535 : 255, code)) {
+            ctx->sendBadRequest(request, "Invalid baud code"); return;
         }
-        
-        // 鍏佽閫氳繃 baudCode 鍙傛暟鐩存帴鎸囧畾缂栫爜鍊?
-        String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
-        if (!baudCodeStr.isEmpty()) {
-            baudCode = (uint16_t)baudCodeStr.toInt();
-        }
-        
-        // FC 0x06 鍐欎繚鎸佸瘎瀛樺櫒
-        OneShotResult result = modbus->writeRegisterOnce(slaveAddr, baudRateReg, baudCode, true);  // isControl=true
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
-        }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["baudRate"] = baudRate;
-        data["baudCode"] = baudCode;
-        data["mode"] = "register";
-        data["register"] = baudRateReg;
-        addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
     } else {
-        // FC 0xB0 涓撴湁鎸囦护妯″紡锛堥粯璁わ紝鍏煎鍥戒骇閫氱敤缁х數鍣ㄦ澘锛?
-        uint8_t baudCode;
-        switch (baudRate) {
-            case 1200:   baudCode = 0; break;
-            case 2400:   baudCode = 1; break;
-            case 4800:   baudCode = 2; break;
-            case 9600:   baudCode = 3; break;
-            case 19200:  baudCode = 4; break;
-            case 115200: baudCode = 5; break;
-            default:     baudCode = 3; break; // 榛樿 9600
+        bool known = true;
+        if (mode) {
+            switch (baudRate) {
+                case 4800: code=0; break; case 9600: code=1; break;
+                case 14400: code=2; break; case 19200: code=3; break;
+                case 38400: code=4; break; case 56000: code=5; break;
+                case 57600: code=6; break; case 115200: code=7; break;
+                default: known=false; break;
+            }
+        } else {
+            switch (baudRate) {
+                case 1200: code=0; break; case 2400: code=1; break;
+                case 4800: code=2; break; case 9600: code=3; break;
+                case 19200: code=4; break; case 115200: code=5; break;
+                default: known=false; break;
+            }
         }
-        
-        // 鍏佽鐢ㄦ埛閫氳繃 baudCode 鍙傛暟鐩存帴鎸囧畾缂栫爜鍊?
-        String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
-        if (!baudCodeStr.isEmpty()) {
-            baudCode = (uint8_t)baudCodeStr.toInt();
-        }
-        
-        // 鍙戦€佷笓鏈?FC 0xB0 娉㈢壒鐜囪缃抚锛歔slaveAddr, 0xB0, 0x00, 0x00, baudCode, 0x00]
-        uint8_t frame[6];
-        frame[0] = slaveAddr;
-        frame[1] = 0xB0;
-        frame[2] = 0x00;
-        frame[3] = 0x00;
-        frame[4] = baudCode;
-        frame[5] = 0x00;
-        
-        OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6, true);  // isControl=true
-        if (result.error != ONESHOT_SUCCESS) {
-            sendOneShotError(ctx, request, result);
-            return;
-        }
-        
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["baudRate"] = baudRate;
-        data["baudCode"] = baudCode;
-        data["mode"] = "proprietary";
-        addModbusDebug(doc, modbus);
-        
-        HandlerUtils::sendJsonStream(request, doc);
+        if (!known) { ctx->sendBadRequest(request, "Baud rate has no code for selected mode"); return; }
     }
+    FastBee::ModbusOutputFrame frame;
+    const bool valid = mode
+        ? frame.single(slave, 6, reg, code, FastBee::ModbusFrameAccess::Maintenance)
+        : frame.single(slave, 0xB0, 0, code << 8, FastBee::ModbusFrameAccess::Maintenance);
+    if (!valid) { ctx->sendBadRequest(request, "Invalid baud frame"); return; }
+    FastBee::ModbusControlTarget current;
+    if (!modbus->snapshotOrdinaryFrame(frame, current) ||
+        (captured && (current.instance != savedTarget.instance || current.configuration != savedTarget.configuration))) {
+        ctx->sendError(request, 409, "CONTROL_FRAME_MAPPING_UNCONFIRMED"); return;
+    }
+    ModbusHttp::Output output(*ctx, request, *modbus);
+    output.expect(current);
+    if (!output.begin(true)) return;
+    const auto result = output.submit(frame);
+    if (result.error != ONESHOT_SUCCESS) { output.fail(result); return; }
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    auto data = doc["data"].to<JsonObject>();
+    data["baudRate"] = baudRate; data["baudCode"] = code;
+    data["mode"] = mode ? "register" : "proprietary";
+    if (mode) data["register"] = reg;
+    data["scope"] = "busMaintenance"; data["configurationUpdated"] = false;
+    output.append(data); addModbusDebug(doc, modbus);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1626,46 +1302,37 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
 
 void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t regAddr = (uint16_t)ctx->getParamInt(request, "registerAddress", 0);
-    uint16_t value = (uint16_t)ctx->getParamInt(request, "value", 0);
-
-    if (rejectModbusCriticalControl(request, "Modbus register write", 6144)) return;
-    
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "registerAddress", "value"})) return;
+    uint32_t slave, address, value;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "registerAddress", 0, 0, 65535, address) ||
+        !ModbusHttp::number(*ctx, request, "value", 0, 0, 65535, value)) return;
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus || rejectModbusCriticalControl(request, "Modbus register write", 6144)) return;
+    FastBee::ModbusOutputFrame frame;
+    if (!frame.single(slave, 6, address, value)) { ctx->sendBadRequest(request, "Invalid write frame"); return; }
+    ModbusSubDevice reportDevice;
+    FastBee::ModbusControlTarget reportTarget;
+    const bool relayReport = value <= 1 && modbus->snapshotOrdinaryRelayEndpoint(
+        slave, 6, address, reportDevice, reportTarget);
+    ModbusHttp::Output output(*ctx, request, *modbus);
+    if (!output.begin()) return;
+    const auto result = output.submit(frame);
+    if (result.error != ONESHOT_SUCCESS) { output.fail(result); return; }
+    // Only an exact captured channel gets a relay report. A generic register
+    // write must never impersonate channel zero or a later configuration.
+    if (relayReport && reportTarget.instance == output.binding().instance &&
+        reportTarget.configuration == output.binding().configuration &&
+        address >= reportTarget.first && address < uint32_t(reportTarget.first) + reportTarget.count) {
+        publishFrozenModbusReport(ctx, reportDevice, reportTarget.index,
+            static_cast<uint16_t>(address - reportTarget.first),
+            String(reportDevice.ncMode ? !value : value), "modbus_command_acknowledged");
     }
-    
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
-
-    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value, true);  // isControl=true
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-    
-    // MQTT 涓婃姤瀵勫瓨鍣ㄥ啓鍏ョ粨鏋?
-
-    if (devIdx >= 0) {
-        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
-        uint16_t channel = (regAddr >= dev.coilBase && regAddr < dev.coilBase + dev.channelCount)
-                           ? (regAddr - dev.coilBase) : 0;
-        publishControlReport(ctx, modbus, devIdx, channel, String(value));
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["register"] = regAddr;
-    data["value"] = value;
-    addModbusDebug(doc, modbus);
-    
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    auto data = doc["data"].to<JsonObject>();
+    data["register"] = address; data["value"] = value;
+    output.append(data); addModbusDebug(doc, modbus);
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -1675,59 +1342,33 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
 
 void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
-    
-    auto modbusLease = getModbusMaster(ctx, request);
-    ModbusHandler* modbus = modbusLease.get();
-    if (!modbus) return;
-    
-    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
-    uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
-    String valuesStr = ctx->getParamValue(request, "values", "[]");
-
+    if (!ModbusHttp::fields(*ctx, request, {"slaveAddress", "startAddress", "values"})) return;
+    uint32_t slave, address;
+    if (!ModbusHttp::number(*ctx, request, "slaveAddress", 1, 1, 247, slave) ||
+        !ModbusHttp::number(*ctx, request, "startAddress", 0, 0, 65535, address)) return;
     if (rejectModbusHeavyRequest(request, "Modbus batch register write", 8192)) return;
-    
-    if (slaveAddr < 1 || slaveAddr > 247) {
-        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
-        return;
+    const String encoded = ctx->getParamValue(request, "values", "[]");
+    if (encoded.length() > 1024 || encoded.length() != std::strlen(encoded.c_str())) {
+        ctx->sendBadRequest(request, "Invalid values"); return;
     }
-    
-    // 瑙ｆ瀽 JSON 鏁扮粍
-    JsonDocument valDoc;
-    DeserializationError err = deserializeJson(valDoc, valuesStr);
-    if (err || !valDoc.is<JsonArray>()) {
-        ctx->sendBadRequest(request, "Invalid values (JSON array expected)");
-        return;
+    JsonDocument values;
+    FastBee::ModbusOutputFrame frame;
+    if (!ModbusHttp::registerArray(encoded, values) ||
+        !ModbusHttp::registers(frame, slave, address, values.as<JsonArrayConst>())) {
+        ctx->sendBadRequest(request, "Expected 1-123 integer values (0-65535) within address range"); return;
     }
-    
-    JsonArray arr = valDoc.as<JsonArray>();
-    uint16_t quantity = arr.size();
-    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
-        ctx->sendBadRequest(request, "Invalid quantity (1-125)");
-        return;
-    }
-    
-    uint16_t regValues[125];
-    for (uint16_t i = 0; i < quantity; i++) {
-        regValues[i] = (uint16_t)arr[i].as<int>();
-    }
-    
-    OneShotResult result = modbus->writeMultipleRegistersOnce(slaveAddr, startAddr, quantity, regValues, true);  // isControl=true
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["startAddress"] = startAddr;
-    data["quantity"] = quantity;
-    JsonArray respValues = data["values"].to<JsonArray>();
-    for (uint16_t i = 0; i < quantity; i++) {
-        respValues.add(regValues[i]);
-    }
-    addModbusDebug(doc, modbus);
-    
+    auto lease = getModbusMaster(ctx, request);
+    auto* modbus = lease.get();
+    if (!modbus) return;
+    ModbusHttp::Output output(*ctx, request, *modbus);
+    if (!output.begin()) return;
+    const auto result = output.submit(frame);
+    if (result.error != ONESHOT_SUCCESS) { output.fail(result); return; }
+    JsonDocument doc; FastBee::setFixedJsonField(doc, "success", true);
+    auto data = doc["data"].to<JsonObject>();
+    data["startAddress"] = address; data["quantity"] = values.size();
+    data["values"].set(values.as<JsonArrayConst>());
+    output.append(data); addModbusDebug(doc, modbus);
     HandlerUtils::sendJsonStream(request, doc);
 }
 
@@ -1754,8 +1395,9 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         }
         data["motorRef"] = ref; data["motionKnown"] = false;
         data["parametersKnown"] = state.known; data["pending"] = state.pending;
+        data["parametersCached"] = state.parametersCached; data["parametersFresh"] = state.parametersFresh;
         data["precision"] = state.precision; data["updatedMs"] = state.updatedMs;
-        if (state.known) { data["speed"] = state.speed; data["pulse"] = state.pulse; }
+        if (state.known || state.parametersCached) { data["speed"] = state.speed; data["pulse"] = state.pulse; }
         data["lastAction"] = state.lastAction; data["commandKnown"] = state.commandKnown;
         data["commandSuccess"] = state.commandSuccess; data["commandUpdatedMs"] = state.commandUpdatedMs;
         data["lastAcknowledgedAction"] = state.lastAcknowledgedAction; data["acknowledgedMs"] = state.acknowledgedMs;
@@ -1766,11 +1408,13 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         data["stationaryConfirmed"] = state.stationaryConfirmed;
         data["forwardReady"] = state.forwardReady; data["reverseReady"] = state.reverseReady;
         data["travelToken"] = state.travelToken; data["travelReason"] = state.travelReason;
-        if (state.referenceKnown) {
+        data["positionTracking"] = state.commandPosition ? "commanded" : "conservative";
+        if (state.referenceKnown && !state.commandPosition) {
             data["possiblePositionMin"] = state.possiblePositionMin;
             data["possiblePositionMax"] = state.possiblePositionMax;
         }
-        data["estimatedPosition"] = nullptr;
+        if (state.referenceKnown && state.commandPosition) data["estimatedPosition"] = state.estimatedPosition;
+        else data["estimatedPosition"] = nullptr;
     } else if (action == "confirmReference" || action == "confirmStationary") {
         const String ref = ctx->getParamValue(request, "motorRef", "");
         const String token = ctx->getParamValue(request, "travelToken", "");
@@ -1805,9 +1449,26 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         if (ref.isEmpty() && slave >= 1 && slave <= 247) ref = motors.referenceForSlave(static_cast<uint8_t>(slave));
         const String requestId = ctx->getParamValue(request, "requestId", "");
         uint32_t operationId = 0; String error;
-        if (!motors.submit(ref, action, ctx->getParamInt(request, "value", 0), requestId, operationId, error)) {
-            ctx->sendBadRequest(request, error); return;
+        FastBee::OrdinaryControlContext control;
+        FastBee::ModbusControlTarget target;
+        const bool output = action != "readStatus";
+        if (output) {
+            if (!motors.snapshotTarget(ref, target)) {
+                ctx->sendError(request, 409, "CONTROL_MOTOR_MAPPING_UNCONFIRMED"); return;
+            }
+            char canonical[41]; target.key(canonical);
+            if (!FastBee::beginHttpMotorOutput(*ctx, request, String(canonical),
+                    FastBee::SensorConfigEpoch::current(), control)) return;
+            data["controlTargetId"] = canonical;
         }
+        bool accepted = false;
+        struct Terminal {
+            const FastBee::OrdinaryControlContext& control; const bool& accepted;
+            ~Terminal() { if (control.request.operation) PeripheralManager::getInstance().finishOrdinaryControl(control, !accepted); }
+        } terminal{control, accepted};
+        accepted = motors.submit(ref, action, ctx->getParamInt(request, "value", 0), requestId,
+            operationId, error, output ? &control : nullptr);
+        if (!accepted) { ctx->sendBadRequest(request, error); return; }
         // Acceptance is durable even if the immediate result lock is busy.
         // Return the ID so the client polls it instead of resubmitting motion.
         if (!motors.operation(operationId, data)) {

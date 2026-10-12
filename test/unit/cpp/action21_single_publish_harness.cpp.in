@@ -1,0 +1,174 @@
+// Actual Executor branch -> Manager wrappers -> Scheduler -> Manager notifier.
+// Peripheral lookup/fanout and MQTT callback are explicit offline boundaries.
+#include <Arduino.h>
+#include "core/PeripheralExecution.h"
+#include "core/UartEventOrigin.h"
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <vector>
+#define CHECK(c) do { if (!(c)) { std::fprintf(stderr,"%d: %s\n",__LINE__,#c); std::exit(86); } } while(false)
+enum class PeripheralType { DEVICE_EVENT, OTHER };
+struct PeripheralConfig { PeripheralType type=PeripheralType::DEVICE_EVENT; String name="Catalog device name"; };
+struct PeripheralManager {
+    bool current=true;
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+        return origin.unbound() || (current && origin.matches(7,9));
+    }
+    bool getPeripheralSnapshot(const String& id,PeripheralConfig& config) {
+        if (id=="other_peripheral") { config.type=PeripheralType::OTHER; return true; }
+        return id=="custom_device_event";
+    }
+};
+struct Logger { template<class... T> void infof(T...) {} template<class... T> void warningf(T...) {} } LOGGER;
+struct PeriphExecScheduler;
+struct PeriphExecManager {
+    static inline PeriphExecManager* fixture=nullptr;
+    static PeriphExecManager& getInstance() { CHECK(fixture); return *fixture; }
+    PeriphExecScheduler* _scheduler=nullptr;
+    bool initialized=true,retireInChild=false;
+    struct Fanout { String id; FastBee::UartEventOrigin origin; bool completion; };
+    std::vector<Fanout> fanouts;
+    std::function<bool(const String&,const String&,const String&)> _mqttEventPublishCb;
+    bool isInitialized() const { return initialized; }
+    void triggerEvent(EventType,const String&,const FastBee::UartEventOrigin& = {});
+    void triggerEventById(const String&,const String&,const FastBee::UartEventOrigin& = {},bool = true);
+    bool notifyMqttEventPublish(const String&,const String&,const String&,const FastBee::UartEventOrigin& = {});
+    void dispatchEventMatchedRules(const String& id,const String&,const FastBee::UartEventOrigin& origin) {
+        CHECK(PeripheralManager::getInstance().isUartEventOriginCurrent(origin));
+        fanouts.push_back({id,origin,false});
+        if(retireInChild) PeripheralManager::getInstance().current=false;
+    }
+    void dispatchPeriphExecEvent(const String& id,const String&,const FastBee::UartEventOrigin& origin) {
+        CHECK(PeripheralManager::getInstance().isUartEventOriginCurrent(origin));
+        fanouts.push_back({id,origin,true});
+        if(retireInChild) PeripheralManager::getInstance().current=false;
+    }
+};
+struct PeriphExecScheduler {
+    PeriphExecManager* _manager;
+    void triggerEvent(EventType,const String&,const FastBee::UartEventOrigin&,bool = true);
+    void triggerEventById(const String&,const String&,const FastBee::UartEventOrigin&,bool = true);
+    void triggerPeriphExecEvent(const String&,const String&,const FastBee::UartEventOrigin&);
+};
+// ACTUAL_ROUTING_METHODS
+static void appendActionResult(std::vector<ActionExecResult>& results,const String& target,
+        const String& value,bool success,const char* remark) {
+    ActionExecResult result;result.targetPeriphId=target;result.actualValue=value;
+    result.success=success;result.remark=remark;results.push_back(result);
+}
+struct Trace { FastBee::UartEventOrigin uartOrigin; };
+static std::vector<ActionExecResult> executeCurrent(const PeriphExecRule& rule,const ExecAction& action,
+        const String& effectiveValue,bool suppressReport,Trace* traceOut) {
+    bool ok=false;std::vector<ActionExecResult> actionResults;
+    // ACTUAL_ACTION21_BODY
+    CHECK(actionResults.size()==1 && ok==actionResults[0].success);return actionResults;
+}
+static std::vector<ActionExecResult> executeLegacy(const PeriphExecRule& rule,const ExecAction& action,
+        const String& effectiveValue,bool suppressReport,Trace* traceOut) {
+    bool ok=false;std::vector<ActionExecResult> actionResults;
+    // FROZEN_ACTION21_BODY
+    CHECK(ok);return actionResults;
+}
+struct Publication { String id,name,data; };
+static size_t caseCount=0;
+static void runAction(const char* id,bool report,bool suppress,const char* state,bool legacy=false) {
+    ++caseCount;
+    auto& peripherals=PeripheralManager::getInstance();peripherals.current=true;
+    PeriphExecManager manager;PeriphExecScheduler scheduler{&manager};manager._scheduler=&scheduler;
+    PeriphExecManager::fixture=&manager;
+    std::vector<Publication> sink;
+    manager._mqttEventPublishCb=[&](const String& eventId,const String& eventName,const String& data) {
+        sink.push_back({eventId,eventName,data});return String(state)!="sink_failure";
+    };
+    Trace trace{FastBee::UartEventOrigin::captured(7,9)};
+    Trace* traceOut=&trace;
+    const String mode=state;
+    if(mode=="stale") peripherals.current=false;
+    if(mode=="malformed") trace.uartOrigin.required=false;
+    if(mode=="unbound") { traceOut=nullptr;peripherals.current=false; }
+    if(mode=="child_retires") manager.retireInChild=true;
+    if(mode=="uninitialized") manager.initialized=false;
+    if(mode=="no_scheduler") manager._scheduler=nullptr;
+    if(mode=="no_callback") manager._mqttEventPublishCb={};
+    if(mode=="no_manager") scheduler._manager=nullptr;
+    PeriphExecRule rule;rule.id="exec_rule";rule.name="Rule-selected event name";rule.reportAfterExec=report;
+    ExecAction action;action.actionType=21;action.targetPeriphId=id;
+    String payload="payload";
+    if(mode=="legacy_value") {action.targetPeriphId="";payload=id;}
+    if(mode=="legacy_empty") {action.targetPeriphId="";payload="";id="exec_rule";}
+    const bool dynamic=mode=="dynamic_missing" || mode=="dynamic_disabled";
+    if(dynamic) { action.targetPeriphId="";action.useReceivedValue=true;payload=id; }
+    if(mode=="dynamic_disabled") rule.enabled=false;
+    if(mode=="explicit_received") action.useReceivedValue=true;
+    const auto results=legacy ? executeLegacy(rule,action,payload,suppress,traceOut)
+                              : executeCurrent(rule,action,payload,suppress,traceOut);
+    if(dynamic&&!legacy) {
+        CHECK(results.size()==1 && !results[0].success &&
+              results[0].remark=="CONFIG_RULE_EVENT_DYNAMIC_TARGET");
+        CHECK(results[0].targetPeriphId.isEmpty() && results[0].actualValue==payload);
+        CHECK(manager.fanouts.empty() && sink.empty());
+        return;
+    }
+    CHECK(results.size()==1 && results[0].success && results[0].remark=="event_triggered");
+    CHECK(results[0].targetPeriphId==id && results[0].actualValue==payload);
+    const bool local=String(id)=="wifi_connected" || String(id)=="custom_device_event" ||
+                     String(id).startsWith("exec_") || String(id).startsWith("mc:");
+    const bool blocked=mode=="stale" || mode=="malformed" || mode=="uninitialized" ||
+                       mode=="no_scheduler" || mode=="no_manager";
+    CHECK(manager.fanouts.size()==(local&&!blocked ? 1U:0U));
+    for(const auto& fanout:manager.fanouts) {
+        CHECK(fanout.id==id && fanout.completion==String(id).startsWith("exec_"));
+        const auto expected=traceOut?trace.uartOrigin:FastBee::UartEventOrigin{};
+        CHECK(fanout.origin.configEpoch==expected.configEpoch &&
+              fanout.origin.receiveGeneration==expected.receiveGeneration && fanout.origin.required==expected.required);
+    }
+    const bool provenance=mode!="stale" && mode!="malformed" && !(mode=="child_retires"&&local);
+    const bool callback=mode!="no_callback";
+    const bool explicitPublish=report&&!suppress&&provenance&&callback;
+    const bool implicitPublish=legacy&&!blocked&&provenance&&callback&&
+                               !String(id).startsWith("exec_")&&!String(id).startsWith("mc:");
+    CHECK(sink.size()==static_cast<size_t>(explicitPublish)+static_cast<size_t>(implicitPublish));
+    for(const auto& publication:sink) CHECK(publication.id==id && publication.data==payload);
+    if(explicitPublish) CHECK(sink.back().name==rule.name);
+    // The legacy static/device branches publish a catalog name followed by the
+    // executor's selected name; these are two distinct outbound notifications.
+    if(legacy&&sink.size()==2&&(String(id)=="wifi_connected"||String(id)=="custom_device_event"))
+        CHECK(sink.front().name!=sink.back().name);
+}
+static void runOrdinary(const char* id,bool publish,bool viaType=false) {
+    ++caseCount;
+    PeripheralManager::getInstance().current=true;
+    PeriphExecManager manager;PeriphExecScheduler scheduler{&manager};manager._scheduler=&scheduler;
+    unsigned sent=0;
+    manager._mqttEventPublishCb=[&](const String& eventId,const String&,const String& data) {
+        CHECK(eventId==id && data=="payload");++sent;return true;
+    };
+    const auto origin=FastBee::UartEventOrigin::captured(7,9);
+    if(viaType) {
+        if(publish) manager.triggerEvent(EventType::EVENT_WIFI_CONNECTED,"payload",origin);
+        else scheduler.triggerEvent(EventType::EVENT_WIFI_CONNECTED,"payload",origin,false);
+    } else if(publish) manager.triggerEventById(id,"payload",origin); // Compatibility default.
+    else manager.triggerEventById(id,"payload",origin,false);
+    const bool implicit=!String(id).startsWith("exec_")&&!String(id).startsWith("mc:");
+    CHECK(sent==(publish&&implicit?1U:0U));
+}
+int main() {
+    const char* ids[]={"wifi_connected","custom_device_event","unknown_event","other_peripheral","exec_parent","mc:2"};
+    const char* states[]={"normal","stale","malformed","unbound","child_retires","uninitialized",
+                          "no_scheduler","no_manager","no_callback","sink_failure","legacy_value","legacy_empty",
+                          "dynamic_missing","dynamic_disabled","explicit_received"};
+    for(const auto* id:ids) {
+        for(bool report:{false,true}) for(bool suppress:{false,true}) {
+            // Frozen former Executor branch still demonstrates 2/1 notifications
+            // through the backward-compatible actual production routing methods.
+            runAction(id,report,suppress,"normal",true);
+            for(const auto* state:states) runAction(id,report,suppress,state);
+        }
+        runAction(id,true,false,"dynamic_missing",true);
+        runOrdinary(id,true);runOrdinary(id,false);
+    }
+    runOrdinary("wifi_connected",true,true);runOrdinary("wifi_connected",false,true);
+    std::printf("%zu action/report/provenance/default-routing cases passed\n",caseCount);
+}

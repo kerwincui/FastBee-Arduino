@@ -638,7 +638,7 @@ void WiFiManager::processPendingEvents() {
         {
             auto* fw = FastBeeFramework::getInstance();
             auto* pm = fw ? fw->getProtocolManager() : nullptr;
-            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+            auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
             if (mqtt) {
                 mqtt->resetErrorCounters();
             }

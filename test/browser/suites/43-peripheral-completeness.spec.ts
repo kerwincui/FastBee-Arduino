@@ -1,6 +1,7 @@
 import { test, expect } from '../fixtures/base.fixture';
 import { enableOptionalUiFeatures } from '../fixtures/optional-features.fixture';
 import { sensorDrivers } from '../generic-peripheral-fixtures.mjs';
+const { MAPPING: privateNames } = require('../../../scripts/web-private-properties');
 
 test.beforeEach(async({authPage})=>{
   expect(new URL(authPage.url()).hostname).toBe('127.0.0.2');
@@ -53,11 +54,12 @@ test('execution editor enumerates every supported action and preserves secondary
   expect(types).toContain(18);expect(types).toContain(19);expect(types).toContain(34);expect(types).not.toContain(33);
   const errors:string[]=[];authPage.on('pageerror',e=>errors.push(e.message));
   for(const type of types) {
-    await authPage.evaluate(type=>{
+    await authPage.evaluate(({type,names})=>{
       const app=(window as any).AppState;
+      const key=names._createPeriphExecActionElement in app?names._createPeriphExecActionElement:'_createPeriphExecActionElement';
       document.getElementById('periph-exec-actions')!.replaceChildren();
-      app._createPeriphExecActionElement({actionType:type,actionValue:'0'},0);
-    },type);
+      app[key]({actionType:type,actionValue:'0'},0);
+    },{type,names:privateNames});
     await expect(modal.locator('.pe-action-type')).toHaveValue(String(type));
   }
   expect(errors).toEqual([]);
@@ -102,6 +104,31 @@ test('execution edit dependency failure cannot silently save a partial rule',asy
   await authPage.locator('#periph-exec-page-add-btn').click();
   await expect(authPage.locator('#periph-exec-error')).toContainText(/加载|不可用/);
   await expect(authPage.locator('#save-periph-exec-btn')).toBeDisabled();
+});
+
+test('toggle save reviews fresh preflight semantics before mutation without executing the rule',async({authPage,navigateTo})=>{
+  const posts:string[]=[];
+  authPage.on('request',request=>{
+    const path=new URL(request.url()).pathname;
+    if(request.method()==='POST' && path.startsWith('/api/periph-exec'))posts.push(path);
+  });
+  await navigateTo('periph-exec');await authPage.locator('#periph-exec-page-add-btn').click();
+  const modal=authPage.locator('#periph-exec-modal');
+  await expect(modal.locator('#save-periph-exec-btn')).toBeEnabled();
+  await modal.locator('#periph-exec-name').fill('翻转动作预检回归');
+  await modal.locator('.pe-trigger-type').first().selectOption('1');
+  await modal.locator('.pe-interval').first().fill('60');
+  await modal.locator('.pe-action-type').first().selectOption('30');
+  await modal.locator('.pe-target-periph').first().selectOption('offline_gpio_1');
+  await modal.locator('#save-periph-exec-btn').click();
+  await expect(modal.locator('#periph-exec-preflight')).toContainText('再次点击保存确认');
+  await modal.locator('#periph-exec-preflight summary').click();
+  await expect(modal.locator('#periph-exec-preflight details')).toContainText('不要直接重试');
+  await expect(modal.locator('#periph-exec-preflight details')).toContainText('未验证物理输出');
+  expect(posts).toEqual(['/api/periph-exec/preflight']);
+  await modal.locator('#save-periph-exec-btn').click();
+  await expect(modal).toBeHidden();
+  expect(posts).toEqual(['/api/periph-exec/preflight','/api/periph-exec/preflight','/api/periph-exec']);
 });
 
 test('peripheral invalid pins and save rejection retain draft and unlock retry',async({authPage,navigateTo})=>{

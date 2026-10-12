@@ -53,10 +53,11 @@ class MqttOtaConfigContractTests(unittest.TestCase):
         ):
             self.assertIn(topic, HANDLER)
             self.assertIn(topic, MQTT_RUNTIME)
-        self.assertIn('topic["autoPrefix"] = false;', helper)
+        self.assertIn('FastBee::setFixedJsonField(topic, "autoPrefix", false);', helper)
         default_pos = helper.index("JsonObject topic = topics.add")
         self.assertNotIn('topic["enabled"]', helper[:default_pos])
-        self.assertIn('topic["enabled"] = true;', helper[default_pos:])
+        self.assertNotIn('FastBee::setFixedJsonField(topic, "enabled",', helper[:default_pos])
+        self.assertIn('FastBee::setFixedJsonField(topic, "enabled", true);', helper[default_pos:])
 
     def test_runtime_ota_matching_uses_resolved_paths_and_removes_duplicates(self):
         normalizer = function_body(

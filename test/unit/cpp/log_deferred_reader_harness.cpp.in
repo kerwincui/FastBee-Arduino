@@ -1,0 +1,354 @@
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <thread>
+#include <vector>
+using namespace std::chrono_literals;
+std::atomic<bool> failAllocation{false};
+std::atomic<void*> allocatedJob{nullptr};
+void* operator new(std::size_t bytes, const std::nothrow_t&) noexcept {
+    if (failAllocation.load()) return nullptr;
+    void* ptr=std::malloc(bytes);assert(!allocatedJob.load());allocatedJob=ptr;return ptr;
+}
+void operator delete(void* ptr) noexcept {
+    void* expected=ptr;allocatedJob.compare_exchange_strong(expected,nullptr);std::free(ptr);
+}
+void operator delete(void* ptr,std::size_t) noexcept{::operator delete(ptr);}
+
+struct Client {
+    std::atomic<bool> live{true};std::atomic<uint32_t> rxTimeout{3};
+    bool connected() const{return live.load();}
+    void setRxTimeout(uint32_t seconds){rxTimeout=seconds;}
+};
+std::atomic<int> destroyedRequests{0};
+struct Request : std::enable_shared_from_this<Request> {
+    Client ownedClient;std::atomic<bool> clientReleased{false};
+    std::atomic<bool> paused{false};std::atomic<int> status{0};
+    Client* client(){return clientReleased?nullptr:&ownedClient;}
+    std::weak_ptr<Request> pause(){ownedClient.setRxTimeout(0);paused=true;return weak_from_this();}
+    void send(int code){assert(client()&&client()->connected());status=code;paused=false;}
+    ~Request(){++destroyedRequests;}
+};
+using AsyncWebServerRequest=Request;
+using AsyncWebServerRequestPtr=std::weak_ptr<Request>;
+struct WebHandlerContext {
+    bool authenticated=true,enabled=true;
+    bool requireAuth(Request* request){if(!authenticated)request->send(401);return authenticated;}
+    void sendError(Request* request,int code,const char*){request->send(code);}
+};
+bool requireDeviceLogs(WebHandlerContext* ctx,Request* request){
+    if(!ctx->enabled){request->send(503);}
+    return ctx->enabled;
+}
+namespace HandlerUtils{void sendJsonError(Request* request,int code,const char*,int){request->send(code);}}
+namespace FastBee{
+std::atomic<bool> psramAvailable{true};
+bool psramAvailableForJson(uint32_t){return psramAvailable;}
+namespace MemoryBudget{
+std::atomic<uint32_t> freeBytes{64000},largest{50000};
+uint32_t dram8Free(){return freeBytes;}uint32_t dram8Largest(){return largest;}
+}}
+uint32_t millis(){return 0;}
+struct SerialMock{template<typename... Args>void printf(const char*,Args...) {}}Serial;
+int ets_printf(const char*,...){return 0;}
+enum eTaskState{eRunning,eSuspended};
+struct Task{
+    std::mutex mutex;std::condition_variable cv;bool notified=false,deleteRequested=false;
+    std::atomic<eTaskState> state{eRunning};std::thread thread;
+};
+using TaskHandle_t=Task*;
+constexpr int pdTRUE=1,pdPASS=1;
+constexpr uint32_t portMAX_DELAY=UINT32_MAX;
+thread_local Task* currentTask=nullptr;
+std::vector<std::unique_ptr<Task>> tasks;
+std::atomic<bool> failCreation{false},deliverNotify{true},allowSuspend{true};
+std::atomic<int> liveTaskAllocations{0},maxLiveTaskAllocations{0};
+struct TaskDeleted{};
+void ulTaskNotifyTake(int,uint32_t){
+    std::unique_lock<std::mutex> lock(currentTask->mutex);
+    currentTask->cv.wait(lock,[]{return currentTask->notified;});
+}
+int xTaskCreate(void(*entry)(void*),const char*,uint32_t stack,void* job,int,TaskHandle_t* handle){
+    assert(stack==4096);if(failCreation)return 0;
+    // One task's stack/TCB is actually accounted until external deletion.
+    assert(liveTaskAllocations==0);
+    ++liveTaskAllocations;maxLiveTaskAllocations=1;
+    FastBee::MemoryBudget::freeBytes.fetch_sub(5120);
+    auto task=std::make_unique<Task>();auto* ptr=task.get();*handle=ptr;
+    ptr->thread=std::thread([=]{currentTask=ptr;try{entry(job);}catch(const TaskDeleted&) {}});
+    tasks.push_back(std::move(task));return pdPASS;
+}
+void notify(Task* task){
+    {std::lock_guard<std::mutex> lock(task->mutex);task->notified=true;}task->cv.notify_all();
+}
+void xTaskNotifyGive(Task* task){if(deliverNotify)notify(task);}
+uint32_t uxTaskGetStackHighWaterMark(void*){return 2000;}
+void vTaskSuspend(void*){
+    // Pause before scheduling away, even after completed publication. This
+    // exposes the unsafe old window where active cleared but stack stayed live.
+    while(!allowSuspend)std::this_thread::yield();
+    currentTask->state=eSuspended;
+    std::unique_lock<std::mutex> lock(currentTask->mutex);
+    currentTask->cv.wait(lock,[]{return currentTask->deleteRequested;});
+    throw TaskDeleted{};
+}
+eTaskState eTaskGetState(Task* task){assert(task);return task->state;}
+std::atomic<bool> holdExternalDelete{false},externalDeleteEntered{false};
+void vTaskDelete(Task* task){
+    assert(task&&task!=currentTask&&task->state==eSuspended);
+    externalDeleteEntered=true;while(holdExternalDelete)std::this_thread::yield();
+    {std::lock_guard<std::mutex> lock(task->mutex);task->deleteRequested=true;}task->cv.notify_all();
+    if(task->thread.joinable())task->thread.join();
+    --liveTaskAllocations;FastBee::MemoryBudget::freeBytes.fetch_add(5120);
+}
+void delay(int ms){std::this_thread::sleep_for(std::chrono::milliseconds(ms));}
+void vTaskDelay(uint32_t ticks){assert(ticks==1);std::this_thread::yield();}
+
+@WORKER@
+
+struct Logger{
+    std::timed_mutex files;std::atomic<int> unlocks{0};
+    bool lockLogFiles(uint32_t ms){return files.try_lock_for(std::chrono::milliseconds(ms));}
+    void unlockLogFiles(){++unlocks;files.unlock();}
+}LOGGER;
+@GUARD@
+@ACCESS@
+
+struct Owner{void retiring(){}};
+struct LogRouteHandler{
+    std::atomic<bool> fileReadActive_{false},fileReadStopping_{false};
+    std::atomic<TaskHandle_t> fileReadTask_{nullptr};
+    std::atomic<bool> fileReadCompleted_{false},fileReadCleanupBusy_{false};
+    Owner featureOwner_;~LogRouteHandler();void performMaintenance();
+};
+@MAINTENANCE@
+@DESTRUCTOR@
+
+WebHandlerContext ctx;
+std::atomic<int> operations{0};
+std::atomic<bool> operationEntered{false},reading{false},finishRead{true};
+void operation(WebHandlerContext* context,Request* request){
+    operationEntered=true;
+    ScopedLogFileAccess access;
+    if(!requireLogFileAccess(context,request,access))return;
+    reading=true;while(!finishRead)delay(1);
+    if(logClientLive(request)){++operations;request->send(200);}
+}
+void dispatch(LogRouteHandler& owner,Request* request){
+    deferLogFileOperation(&ctx,request,operation,owner.fileReadActive_,owner.fileReadStopping_,
+        owner.fileReadTask_,owner.fileReadCompleted_,owner.fileReadCleanupBusy_);
+}
+void awaitSuspended(LogRouteHandler& owner){
+    while(!owner.fileReadCompleted_||eTaskGetState(owner.fileReadTask_)!=eSuspended)std::this_thread::yield();
+}
+void finish(LogRouteHandler& owner){
+    awaitSuspended(owner);owner.performMaintenance();
+    assert(!owner.fileReadActive_&&!owner.fileReadTask_&&!owner.fileReadCompleted_&&!allocatedJob);
+    assert(liveTaskAllocations==0);tasks.clear();
+}
+void normalMemory(){FastBee::MemoryBudget::freeBytes=64000;FastBee::MemoryBudget::largest=50000;FastBee::psramAvailable=true;}
+
+std::atomic<int> budgetOperations{0};
+std::atomic<bool> budgetEntered{false};
+LogReadKind budgetKind=LogReadKind::Content;
+void budgetOperation(WebHandlerContext* context,Request* request){
+    budgetEntered=true;
+    ScopedLogFileAccess access;
+    if(!requireLogFileAccess(context,request,access,logReadPeakBytes(budgetKind)))return;
+    ++budgetOperations;request->send(200);
+}
+void dispatchBudget(LogRouteHandler& owner,Request* request,LogReadKind kind){
+    budgetKind=kind;budgetEntered=false;
+    deferLogFileOperation(&ctx,request,budgetOperation,owner.fileReadActive_,owner.fileReadStopping_,
+        owner.fileReadTask_,owner.fileReadCompleted_,owner.fileReadCleanupBusy_,kind);
+}
+void operationBudgetBoundaries(LogRouteHandler& owner){
+    // Actual production dispatch and worker must use the same operation peak.
+    // No task is created one byte below the full initial budget; the inclusive
+    // boundary completes through file-lock recheck and external reclamation.
+    for(bool psram : {false,true}){
+        for(auto kind : {LogReadKind::Info,LogReadKind::List,LogReadKind::Content}){
+            normalMemory();FastBee::psramAvailable=psram;
+            const uint32_t required=LOG_READ_STACK_BYTES+256U+sizeof(LogReadJob)+
+                LOG_READ_TASK_CONTROL_BYTES+LOG_READ_REMAINING_DRAM_BYTES+logReadPeakBytes(kind);
+            auto request=std::make_shared<Request>();FastBee::MemoryBudget::freeBytes=required-1;
+            dispatchBudget(owner,request.get(),kind);
+            assert(request->status==503&&!request->paused&&tasks.empty()&&!owner.fileReadActive_);
+            request=std::make_shared<Request>();FastBee::MemoryBudget::freeBytes=required;
+            dispatchBudget(owner,request.get(),kind);finish(owner);assert(request->status==200);
+        }
+    }
+    // A constrained target can serve info at 40KB without claiming the much
+    // larger list/content response is safe under the same headroom.
+    normalMemory();FastBee::psramAvailable=false;FastBee::MemoryBudget::freeBytes=40000;
+    auto request=std::make_shared<Request>();dispatchBudget(owner,request.get(),LogReadKind::Info);
+    finish(owner);assert(request->status==200);
+    for(auto kind : {LogReadKind::List,LogReadKind::Content}){
+        FastBee::MemoryBudget::freeBytes=40000;request=std::make_shared<Request>();
+        dispatchBudget(owner,request.get(),kind);
+        assert(request->status==503&&!request->paused&&tasks.empty()&&!owner.fileReadActive_);
+    }
+    // Free bytes can remain abundant while the contiguous block is inadequate.
+    normalMemory();FastBee::MemoryBudget::largest=LOG_READ_STACK_BYTES+256U+LOG_READ_MIN_LARGEST_BYTES-1;
+    request=std::make_shared<Request>();dispatchBudget(owner,request.get(),LogReadKind::Info);
+    assert(request->status==503&&tasks.empty());
+    // Loss of PSRAM after dispatch restores the real operation's internal JSON
+    // cost. Every operation rejects before user code and releases the worker.
+    for(auto kind : {LogReadKind::Info,LogReadKind::List,LogReadKind::Content}){
+        normalMemory();deliverNotify=false;request=std::make_shared<Request>();
+        const int before=budgetOperations;dispatchBudget(owner,request.get(),kind);
+        FastBee::psramAvailable=false;
+        FastBee::MemoryBudget::freeBytes=LOG_READ_REMAINING_DRAM_BYTES+logReadPeakBytes(kind)-1;
+        notify(owner.fileReadTask_);finish(owner);
+        assert(request->status==503&&budgetOperations==before);deliverNotify=true;
+    }
+    // A further loss while waiting for the real file mutex is rechecked using
+    // the same operation peak, even after the worker's first admission passed.
+    for(auto kind : {LogReadKind::Info,LogReadKind::List}){
+        normalMemory();FastBee::psramAvailable=false;LOGGER.files.lock();
+        const int before=budgetOperations;request=std::make_shared<Request>();
+        dispatchBudget(owner,request.get(),kind);
+        while(!budgetEntered)std::this_thread::yield();
+        FastBee::MemoryBudget::freeBytes=LOG_READ_REMAINING_DRAM_BYTES+logReadPeakBytes(kind)-1;
+        LOGGER.files.unlock();finish(owner);
+        assert(request->status==503&&budgetOperations==before);
+    }
+    assert(budgetOperations==7);normalMemory();
+}
+
+int main(){
+    LogRouteHandler owner;auto request=std::make_shared<Request>();
+    operationBudgetBoundaries(owner);
+    ctx.authenticated=false;dispatch(owner,request.get());
+    assert(request->status==401&&!request->paused&&!owner.fileReadActive_&&tasks.empty());ctx.authenticated=true;
+    ctx.enabled=false;dispatch(owner,request.get());
+    assert(request->status==503&&!request->paused&&!owner.fileReadActive_&&tasks.empty());ctx.enabled=true;
+    for(int scenario=0;scenario<5;++scenario){
+        request=std::make_shared<Request>();
+        FastBee::MemoryBudget::largest=scenario==0?16351:50000;
+        FastBee::MemoryBudget::freeBytes=scenario==1?31000:64000;
+        failAllocation=scenario==2;failCreation=scenario==3;owner.fileReadStopping_=scenario==4;
+        dispatch(owner,request.get());
+        assert(request->status==503&&!request->paused&&!owner.fileReadActive_&&tasks.empty()&&!allocatedJob);
+    }
+    owner.fileReadStopping_=false;failAllocation=false;failCreation=false;normalMemory();
+
+    // Actual mutex contention is handled by the worker; dispatch returns while
+    // another request remains free to run. Queue busy is bounded and visible.
+    LOGGER.files.lock();operationEntered=false;request=std::make_shared<Request>();
+    auto started=std::chrono::steady_clock::now();dispatch(owner,request.get());
+    assert(std::chrono::steady_clock::now()-started<100ms&&request->paused);
+    while(!operationEntered)std::this_thread::yield();
+    auto competing=std::make_shared<Request>();dispatch(owner,competing.get());
+    assert(competing->status==503&&!competing->paused&&liveTaskAllocations==1);
+    std::this_thread::sleep_for(250ms);LOGGER.files.unlock();finish(owner);
+    assert(request->status==200&&!request->paused&&operations==1);
+
+    // Disconnect before notification: weak ownership expires, job still cleans up.
+    deliverNotify=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    request.reset();notify(owner.fileReadTask_);finish(owner);assert(operations==1);deliverNotify=true;
+
+    // Disconnect after weak.lock() acquired a strong owner, while file mutex is
+    // held by writer: request and AsyncClient survive, but no reply is attempted.
+    LOGGER.files.lock();operationEntered=false;request=std::make_shared<Request>();
+    std::weak_ptr<Request> weak=request;dispatch(owner,request.get());
+    while(!operationEntered)std::this_thread::yield();
+    request->ownedClient.live=false;int destroyedBefore=destroyedRequests;request.reset();
+    assert(!weak.expired()&&destroyedRequests==destroyedBefore);
+    LOGGER.files.unlock();finish(owner);assert(weak.expired()&&operations==1);
+
+    // A connection lost after file access, immediately before response send.
+    finishRead=false;reading=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    while(!reading){std::this_thread::yield();}
+    request->ownedClient.live=false;finishRead=true;
+    finish(owner);assert(request->status==0&&operations==1);
+
+    // The ordinary route does not release clients; reject that synthetic null safely.
+    deliverNotify=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    request->clientReleased=true;notify(owner.fileReadTask_);finish(owner);
+    assert(request->status==0&&operations==1);deliverNotify=true;
+
+    // Memory pressure and loss of PSRAM headroom after task allocation.
+    for(int scenario=0;scenario<2;++scenario){
+        normalMemory();deliverNotify=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+        FastBee::MemoryBudget::freeBytes=scenario?40000:31000;
+        FastBee::psramAvailable=scenario==0;notify(owner.fileReadTask_);finish(owner);
+        assert(request->status==503&&operations==1);deliverNotify=true;
+    }
+    normalMemory();
+
+    // Critical rejection must not call heap-based error builders. A paused
+    // request recovers finite RX inactivity timeout, and all worker resources
+    // are released before the client's eventual SDK timeout/disconnect.
+    deliverNotify=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    assert(request->paused&&request->ownedClient.rxTimeout==0);
+    FastBee::MemoryBudget::freeBytes=1000;FastBee::MemoryBudget::largest=512;
+    notify(owner.fileReadTask_);finish(owner);
+    assert(request->status==0&&request->ownedClient.rxTimeout==3&&operations==1);
+    weak=request;request->ownedClient.live=false;request.reset();assert(weak.expired());
+    deliverNotify=true;normalMemory();
+    // Same critical collapse after the worker has begun waiting for the file.
+    LOGGER.files.lock();operationEntered=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    while(!operationEntered)std::this_thread::yield();
+    FastBee::MemoryBudget::freeBytes=1000;FastBee::MemoryBudget::largest=512;
+    LOGGER.files.unlock();finish(owner);
+    assert(request->status==0&&request->ownedClient.rxTimeout==3&&operations==1);
+    weak=request;request->ownedClient.live=false;request.reset();assert(weak.expired());normalMemory();
+    // Floor is inclusive, matching the existing production reject guard.
+    for(int scenario=0;scenario<3;++scenario){
+        request=std::make_shared<Request>();
+        FastBee::MemoryBudget::freeBytes=scenario==0?4095:4096;
+        FastBee::MemoryBudget::largest=scenario==1?1023:1024;
+        dispatch(owner,request.get());
+        assert(request->status==(scenario==2?503:0)&&tasks.empty()&&!owner.fileReadActive_&&!allocatedJob);
+        normalMemory();
+    }
+
+    // Resource headroom can disappear while the writer owns the file mutex.
+    // The actual access gate must reject before reading/allocating next data.
+    for(int scenario=0;scenario<3;++scenario){
+        LOGGER.files.lock();operationEntered=false;request=std::make_shared<Request>();
+        dispatch(owner,request.get());while(!operationEntered)std::this_thread::yield();
+        if(scenario==0) FastBee::MemoryBudget::freeBytes=34000;
+        if(scenario==1) FastBee::MemoryBudget::largest=11999;
+        if(scenario==2){FastBee::psramAvailable=false;FastBee::MemoryBudget::freeBytes=40000;}
+        LOGGER.files.unlock();finish(owner);
+        assert(request->status==503&&operations==1);normalMemory();
+    }
+
+    // Completed user code with still-running/unreaped task must keep the slot.
+    allowSuspend=false;request=std::make_shared<Request>();dispatch(owner,request.get());
+    while(!owner.fileReadCompleted_){std::this_thread::yield();}
+    owner.performMaintenance();
+    competing=std::make_shared<Request>();dispatch(owner,competing.get());
+    assert(competing->status==503&&liveTaskAllocations==1&&owner.fileReadActive_);
+    allowSuspend=true;finish(owner);assert(operations==2);
+    request=std::make_shared<Request>();dispatch(owner,request.get());finish(owner);assert(operations==3);
+
+    // Two reapers and destruction race with suspended-task external cleanup.
+    auto retiring=std::make_unique<LogRouteHandler>();request=std::make_shared<Request>();
+    dispatch(*retiring,request.get());awaitSuspended(*retiring);
+    holdExternalDelete=true;externalDeleteEntered=false;
+    std::thread reaper([&]{retiring->performMaintenance();});
+    while(!externalDeleteEntered)std::this_thread::yield();
+    std::atomic<bool> destroyed{false};
+    std::thread teardown([&]{retiring.reset();destroyed=true;});
+    std::this_thread::sleep_for(100ms);assert(!destroyed&&liveTaskAllocations==1);
+    holdExternalDelete=false;reaper.join();teardown.join();tasks.clear();
+    assert(destroyed&&liveTaskAllocations==0&&!allocatedJob);
+
+    // Each new cycle starts only after prior stack/TCB and job destruction.
+    for(int cycle=0;cycle<30;++cycle){
+        normalMemory();request=std::make_shared<Request>();dispatch(owner,request.get());
+        finish(owner);assert(request->status==200&&!request->paused);
+    }
+    assert(maxLiveTaskAllocations==1&&liveTaskAllocations==0&&operations==34);
+    puts("PASS admission, real file-lock disconnects, asynchronous completion and synchronous task reclamation");
+}

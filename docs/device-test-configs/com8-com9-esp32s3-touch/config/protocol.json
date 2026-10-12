@@ -1,0 +1,222 @@
+{
+  "version": 2,
+  "mqtt": {
+    "enabled": false,
+    "scheme": "mqtt",
+    "server": "",
+    "port": 1883,
+    "clientId": "",
+    "username": "",
+    "password": "",
+    "keepAlive": 60,
+    "autoReconnect": true,
+    "mqttSecret": "",
+    "authCode": "",
+    "publishTopics": [
+      {
+        "topic": "/{deviceNum}/http/upgrade/reply",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": false,
+        "topicType": 5
+      }
+    ],
+    "subscribeTopics": [
+      {
+        "topic": "/{deviceNum}/http/upgrade/set",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": false,
+        "topicType": 5
+      }
+    ]
+  },
+  "modbusRtu": {
+    "enabled": true,
+    "peripheralId": "rs485",
+    "mode": "master",
+    "slaveAddress": 4,
+    "dePin": 255,
+    "transferType": 0,
+    "master": {
+      "responseTimeout": 1000,
+      "maxRetries": 2,
+      "interPollDelay": 100,
+      "tasks": [
+        {
+          "slaveAddress": 4,
+          "functionCode": 3,
+          "startAddress": 0,
+          "quantity": 2,
+          "pollInterval": 30,
+          "enabled": false,
+          "name": "PM2.5 PM10 slav",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "pm25",
+              "unit": "ug/m3"
+            },
+            {
+              "regOffset": 1,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "pm10",
+              "unit": "ug/m3"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 8,
+          "functionCode": 3,
+          "startAddress": 5,
+          "quantity": 1,
+          "pollInterval": 30,
+          "enabled": false,
+          "name": "Motor speed raw",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "motor_speed",
+              "unit": "raw"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 8,
+          "functionCode": 3,
+          "startAddress": 7,
+          "quantity": 1,
+          "pollInterval": 30,
+          "enabled": false,
+          "name": "Motor pulse raw",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "motor_pulse",
+              "unit": "raw"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 8,
+          "functionCode": 3,
+          "startAddress": 4,
+          "quantity": 1,
+          "pollInterval": 30,
+          "enabled": false,
+          "name": "Motor count raw",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "motor_count",
+              "unit": "raw"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 8,
+          "functionCode": 3,
+          "startAddress": 10,
+          "quantity": 1,
+          "pollInterval": 30,
+          "enabled": false,
+          "name": "Motor baud code",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "motor_baud_code",
+              "unit": "code"
+            }
+          ]
+        }
+      ],
+      "devices": [
+        {
+          "name": "Modbus motor slave 8 - manual w",
+          "sensorId": "motor_controller",
+          "deviceType": "motor",
+          "slaveAddress": 8,
+          "channelCount": 1,
+          "coilBase": 0,
+          "ncMode": false,
+          "controlProtocol": 1,
+          "batchRegister": 0,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "enabled": true,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "motorDecimals": 0,
+          "motorProtocol": {
+            "version": 1,
+            "readFunction": 3,
+            "writeFunction": 6,
+            "speedReadRegister": 5,
+            "pulseReadRegister": 7,
+            "forwardValue": 1,
+            "reverseValue": 1,
+            "stopValue": 1,
+            "finitePulseMove": true
+          },
+          "motorMinPosition": 0,
+          "motorMaxPosition": 0,
+          "motorCurrentPosition": 0,
+          "motorMoveStep": 0,
+          "motorLastPulse": 100,
+          "motorRegs": [
+            0,
+            1,
+            2,
+            5,
+            7
+          ]
+        }
+      ]
+    }
+  },
+  "remoteChannels": [],
+  "weatherSources": [
+    {
+      "id": "home_weather",
+      "label": "心知天气",
+      "provider": "seniverse",
+      "enabled": true,
+      "url": "https://api.seniverse.com/v3/weather/now.json",
+      "apiKey": "",
+      "location": "qujing",
+      "intervalSeconds": 1800,
+      "staleAfterSeconds": 3600
+    }
+  ],
+  "screenWeatherVersion": 1,
+  "screenWeatherRevision": 2,
+  "screenWeatherMigration": {
+    "retiredChannels": [],
+    "required": false
+  }
+}

@@ -8,6 +8,7 @@ namespace FastBee {
 // Stalls and an early stop may shorten a move; they cannot restore travel budget.
 struct MotorTravelGuard {
     bool referenced = false;
+    bool commandTracking = false;
     int32_t minimum = 0, maximum = 0, lower = 0, upper = 0;
 
     bool configure(int32_t minValue, int32_t maxValue) {
@@ -38,6 +39,12 @@ struct MotorTravelGuard {
 
     bool reserve(bool forward, uint16_t pulse) {
         if (!pulse || available(forward, pulse) != pulse) return false;
+        if (commandTracking) {
+            // This is a signed command coordinate, not a measured position or
+            // a containment interval. Only explicitly configured axes use it.
+            lower = upper = static_cast<int32_t>(static_cast<int64_t>(lower) + (forward ? pulse : -static_cast<int32_t>(pulse)));
+            return true;
+        }
         if (forward) upper = static_cast<int32_t>(static_cast<int64_t>(upper) + pulse);
         else lower = static_cast<int32_t>(static_cast<int64_t>(lower) - pulse);
         return true;

@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
 #include "core/SensorConfigEpoch.h"
+#include "core/UartEventOrigin.h"
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -28,6 +29,8 @@ __attribute__((noinline)) void* operator new(std::size_t size) {
 __attribute__((noinline)) void operator delete(void* value) noexcept { std::free(value); }
 __attribute__((noinline)) void operator delete(void* value, std::size_t) noexcept { std::free(value); }
 static std::atomic<uint32_t> publicationNow{100};
+static uint64_t publicationWrapBase = 0;
+static int64_t esp_timer_get_time() { return static_cast<int64_t>(publicationWrapBase + publicationNow.load()) * 1000; }
 static uint32_t publicationMillis() { return publicationNow.load(); }
 #define millis publicationMillis
 
@@ -80,7 +83,11 @@ static std::atomic<unsigned> sseCount{0}, ruleCount{0}, historyCount{0};
 static std::atomic<bool> waitingForRules{false};
 static std::mutex ruleMutex;
 struct TestScheduler {
-    void handlePollData(const String&, const String&) {
+    FastBee::UartEventOrigin lastOrigin;
+    void handlePollArray(const String& source, JsonArray& data, const FastBee::UartEventOrigin& origin = {}) {
+        assert(source == "sensor_cache" && data.size() == 1);
+        assert(data[0]["id"].is<const char*>() && data[0]["value"].is<const char*>());
+        lastOrigin = origin;
         assertOutsideLocks();
         waitingForRules = true;
         std::lock_guard<std::mutex> ruleGuard(ruleMutex);
@@ -107,11 +114,17 @@ public:
     static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
     TestSemaphore mutex;
     SemaphoreHandle_t _mutex = &mutex;
+    uint64_t _configurationReviewVersion = 1;
     std::map<String, PeripheralConfig> peripherals{{"sensor", PeripheralConfig()}};
     SemaphoreHandle_t getMutex() const { return _mutex; }
     bool getPeripheralSnapshot(const String&, PeripheralConfig&, uint32_t* = nullptr) const;
     bool commitSensorRead(uint32_t, const std::function<bool()>&) const;
     void invalidateSensorConfigurationLocked();
+    bool uartCurrent = true;
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+        assert(!cacheDepth);
+        return origin.unbound() || (uartCurrent && origin.matches(7,19));
+    }
 };
 class PeriphExecManager {
 public:
@@ -127,7 +140,8 @@ public:
     TestScheduler* _scheduler = &scheduler;
     bool updateSensorReadCache(const String&, const String&, const String&, const String&,
         const String& = "", const String& = "", uint32_t = 0, uint32_t = 0,
-        bool = false, uint32_t = 0, const String& = "", uint32_t = 0);
+        bool = false, uint32_t = 0, const String& = "", uint32_t = 0,
+        const FastBee::UartEventOrigin& = {}, uint64_t = UINT64_MAX);
     bool upsertObservation(const ObservationUpdate&, uint32_t = 0);
     bool upsertSensorObservationBatch(const ObservationUpdate* const*, size_t, uint32_t);
     void publishObservation(const ObservationUpdate&);
@@ -139,7 +153,7 @@ public:
     std::vector<ObservationSnapshot> getObservationSnapshots(size_t = SENSOR_CACHE_MAX_ENTRIES) const;
     std::vector<ObservationSnapshot> getObservationSnapshots(const std::vector<const char*>&) const;
     void evictStaleSensorCache();
-    void notifySensorDataSSE(const String&, const String&, const String&, const String&) {
+    void notifySensorDataSSE(const String&, const String&, const String&, const String&, const ObservationUpdate* = nullptr) {
         assertOutsideLocks(); ++sseCount;
     }
 };
@@ -320,6 +334,9 @@ static void batchFailuresLeavePreviousGroupAndTtlHonest() {
     assert(!publishPair(invalid, epoch)); verifyPair(100, "old");
     invalid = pair(100, "new"); invalid[1].sourceRef = invalid[0].sourceRef;
     assert(!publishPair(invalid, epoch)); verifyPair(100, "old");
+    invalid = pair(100, "new"); invalid[0].sampledAtMs = 100;
+    invalid[1].sampledAtMs = UINT64_C(0x100000064);
+    assert(!publishPair(invalid, epoch)); verifyPair(100, "old");
     publicationNow = 10100;
     auto observed = manager.getObservationSnapshots(pairSources);
     assert(observed.size() == 2 && !observed[0].stale && !observed[1].stale);
@@ -343,6 +360,23 @@ static void batchFailuresLeavePreviousGroupAndTtlHonest() {
     }
     invalid = pair(100, "new"); invalid[1].sourceRef = "new_humidity";
     assert(!publishPair(invalid, epoch)); verifyPair(100, "old");
+}
+static void scanGroupKeepsAcquisitionTimesAndOwner() {
+    auto& manager=PeriphExecManager::getInstance();
+    changeConfiguration();publicationNow=110;
+    const auto epoch=capture();
+    auto values=pair(100,"scan");
+    values[0].sampledAtMs=100;values[1].sampleTimestamp=105;values[1].sampledAtMs=105;
+    values[0].sampleGroup=values[1].sampleGroup=73;
+    assert(publishPair(values,epoch));
+    const auto observed=manager.getObservationSnapshots(pairSources);
+    assert(observed.size()==2 && observed[0].sampledAtMs==100 && observed[1].sampledAtMs==105);
+    auto invalid=values;invalid[1].sampleGroup=0;assert(!publishPair(invalid,epoch));
+    invalid=values;invalid[1].sampleGroup=74;assert(!publishPair(invalid,epoch));
+    invalid=values;invalid[1].periphId="another";assert(!publishPair(invalid,epoch));
+    invalid=values;invalid[1].quality=ObservationQuality::ERROR;assert(!publishPair(invalid,epoch));
+    invalid=values;invalid[1].sampledAtMs=111;invalid[1].sampleTimestamp=111;assert(!publishPair(invalid,epoch));
+    changeConfiguration();assert(!publishPair(values,epoch));
 }
 static void batchEpochAndAllocationFailure() {
     auto& manager = PeriphExecManager::getInstance();
@@ -391,6 +425,24 @@ static void batchEpochAndAllocationFailure() {
     assert(manager.getObservationSnapshots(pairSources).empty());
     failAllocationAfter = -1; verifyPair(100, "old");
 }
+static void sampleClockAndOrigin() {
+    auto& manager=PeriphExecManager::getInstance();auto& pm=PeripheralManager::getInstance();
+    changeConfiguration();publicationWrapBase=0;publicationNow=100;
+    auto value=update();value.sampleTimestamp=0;value.sampledAtMs=0;
+    assert(manager.upsertObservation(value,capture()));
+    ObservationSnapshot snapshot;assert(manager.getObservation(value.sourceRef,snapshot));
+    assert(snapshot.sampleTimestamp==0 && snapshot.sampledAtMs==0 && !snapshot.stale);
+    publicationWrapBase=UINT64_C(0x100000000);
+    assert(manager.getObservation(value.sourceRef,snapshot) && snapshot.stale);
+    PeriphExecManager::SensorReadCache cache;assert(!manager.lookupSensorCache(value.sourceRef,cache));
+    publicationWrapBase=0;value.sampledAtMs=100;
+    value.uartOrigin=FastBee::UartEventOrigin::captured(7,19);pm.uartCurrent=false;
+    const auto before=ruleCount.load();assert(!manager.upsertObservation(value,capture()) && ruleCount==before);
+    pm.uartCurrent=true;assert(manager.upsertObservation(value,capture()));
+    assert(manager.scheduler.lastOrigin.matches(7,19));
+    pm.uartCurrent=false;manager.publishObservation(value);assert(ruleCount==before+1);
+    pm.uartCurrent=true;
+}
 int main() {
     std::set_terminate([] { std::fprintf(stderr,"unexpected exception at allocation case %d, remaining %d\n",allocationCase,failAllocationAfter); std::exit(3); });
     staleAdmissionAndFailure(); mutationBetweenCommitAndClaim();
@@ -399,6 +451,8 @@ int main() {
     atomicPairPublicationAndSnapshot();
     batchFailuresLeavePreviousGroupAndTtlHonest();
     batchEpochAndAllocationFailure();
+    scanGroupKeepsAcquisitionTimesAndOwner();
+    sampleClockAndOrigin();
     assertOutsideLocks();
     std::printf("SensorReadCache host sizeof=%zu; group storage is bounded heap\n",sizeof(PeriphExecManager::SensorReadCache));
 }

@@ -40,7 +40,9 @@ enum class ResourceKind : uint8_t {
     RMT_CHANNEL,
     ADC_CHANNEL,
     ENCODER_SLOT,
-    SDMMC_HOST
+    SDMMC_HOST,
+    IO_CHANNEL,
+    CONTROL_OUTPUT
 };
 
 enum class ResourceShareMode : uint8_t {
@@ -113,7 +115,11 @@ enum class PreflightIssueCode : uint8_t {
     ISSUE_CAPACITY_EXCEEDED,
     RESOURCE_SHARED,
     DISPLAY_CONTROL_INVALID,
-    I2C_REFERENCE_INVALID
+    I2C_REFERENCE_INVALID,
+    IO_REFERENCE_INVALID,
+    IO_CHANNEL_CONFLICT,
+    CONTROL_REFERENCE_INVALID,
+    CONTROL_OUTPUT_CONFLICT
 };
 
 enum PreflightAcknowledgement : uint32_t {
@@ -124,12 +130,32 @@ enum PreflightAcknowledgement : uint32_t {
     ACK_ADC2_WITH_WIFI = 1UL << 3
 };
 
+// Configuration intent only; this is not a snapshot of a running driver.
+struct EthernetResourceConfig {
+    bool enabled = false;
+    int8_t miso = -1;
+    int8_t mosi = -1;
+    int8_t sck = -1;
+    int8_t cs = -1;
+    int8_t rst = -1;
+    int8_t irq = -1;
+};
+
+struct CellularResourceConfig {
+    bool enabled = false;
+    int8_t rx = -1;
+    int8_t tx = -1;
+    int8_t power = -1;
+};
+
 struct PreflightContext {
     bool wifiActive = true;
     bool uart0ConsoleActive = true;
     bool usbSerialJtagActive = true;
     bool jtagActive = false;
     uint32_t acknowledgements = ACK_NONE;
+    EthernetResourceConfig ethernet;
+    CellularResourceConfig cellular;
 };
 
 // ownerId is borrowed from PeripheralConfig::id (or from the caller for an
@@ -188,10 +214,12 @@ public:
     // Allows runtime services (logging, protocol stacks, or future drivers) to
     // participate in the same graph without manufacturing a PeripheralConfig.
     bool addClaim(const ResourceClaim& claim);
+    bool addEthernet(const EthernetResourceConfig& config);
+    bool addCellular(const CellularResourceConfig& config);
 
 private:
     const BoardProfile& _profile;
-    const PreflightContext& _context;
+    const PreflightContext _context;
     PreflightResult& _result;
     const PeripheralConfig* _existing;
     size_t _existingCount;

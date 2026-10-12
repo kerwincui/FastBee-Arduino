@@ -57,6 +57,7 @@ enum class PeripheralType {
     RFID_MFRC522 = 54,  // MFRC522 RFID（SPI：SCK/MOSI/MISO/SS/RST）
     IO_EXPANDER = 55,   // Shared I2C GPIO provider; logical children retain GPIO types
     SCREEN_DISPLAY = 56, // Graphical display with optional external touch controller
+    PCA9685_PWM = 57,   // Shared-frequency PWM with dedicated external OE ownership
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -104,7 +105,7 @@ inline PeripheralCategory getPeripheralCategory(PeripheralType type) {
     if (typeValue >= 26 && typeValue <= 30) return PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
     if (typeValue >= 31 && typeValue <= 35) return PeripheralCategory::CATEGORY_DEBUG;
     if (typeValue >= 36 && typeValue <= 50) return PeripheralCategory::CATEGORY_SPECIAL;
-    if (typeValue >= 51 && typeValue <= 56) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue >= 51 && typeValue <= 57) return PeripheralCategory::CATEGORY_SPECIAL;
     if (typeValue == 60) return PeripheralCategory::CATEGORY_SPECIAL;
     return PeripheralCategory::CATEGORY_GPIO;
 }
@@ -116,6 +117,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::UART: return "UART";
         case PeripheralType::I2C: return "I2C";
         case PeripheralType::IO_EXPANDER: return "IO Expander";
+        case PeripheralType::PCA9685_PWM: return "PCA9685 PWM";
         case PeripheralType::SPI: return "SPI";
         case PeripheralType::CAN: return "CAN";
         case PeripheralType::USB: return "USB";
@@ -237,6 +239,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         // Modbus外设不使用GPIO引脚
         case PeripheralType::MODBUS_DEVICE:
         case PeripheralType::SCREEN_DISPLAY:
+        case PeripheralType::PCA9685_PWM:
             return 0;
 
         // 设备事件虚拟外设不使用GPIO引脚
@@ -256,6 +259,7 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "UART") == 0) return PeripheralType::UART;
     if (strcasecmp(typeStr, "I2C") == 0) return PeripheralType::I2C;
     if (strcasecmp(typeStr, "IO_EXPANDER") == 0) return PeripheralType::IO_EXPANDER;
+    if (strcasecmp(typeStr, "PCA9685_PWM") == 0) return PeripheralType::PCA9685_PWM;
     if (strcasecmp(typeStr, "SPI") == 0) return PeripheralType::SPI;
     if (strcasecmp(typeStr, "CAN") == 0) return PeripheralType::CAN;
     if (strcasecmp(typeStr, "USB") == 0) return PeripheralType::USB;
@@ -331,6 +335,7 @@ inline PeripheralType peripheralTypeFromInt(int value) {
         case static_cast<int>(PeripheralType::UART):
         case static_cast<int>(PeripheralType::I2C):
         case static_cast<int>(PeripheralType::IO_EXPANDER):
+        case static_cast<int>(PeripheralType::PCA9685_PWM):
         case static_cast<int>(PeripheralType::SPI):
         case static_cast<int>(PeripheralType::CAN):
         case static_cast<int>(PeripheralType::USB):
@@ -476,6 +481,8 @@ inline bool isPeripheralTypeImplemented(PeripheralType type) {
         case PeripheralType::DEVICE_EVENT:
             return true;
         case PeripheralType::IO_EXPANDER:
+            return FASTBEE_ENABLE_IO_EXPANDER != 0;
+        case PeripheralType::PCA9685_PWM:
             return FASTBEE_ENABLE_IO_EXPANDER != 0;
         case PeripheralType::LCD:
             return FASTBEE_ENABLE_LCD != 0;

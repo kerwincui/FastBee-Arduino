@@ -1,0 +1,374 @@
+// Actual production branch fragments. Outer JSON/rule/script parsers have separate fixtures.
+enum class ExecActionType { ACTION_SET_PWM, ACTION_HIGH };
+struct MotionAction { String targetPeriphId = "servo"; };
+static bool typedServo(PeripheralManager& pm, const String& effectiveValue,
+                       const Context* control, Result* controlResult, bool pwm = true) {
+    const auto digitalTarget = pm.peripherals.at("servo");
+    const bool digitalTargetFound = true;
+    const auto actType = pwm ? ExecActionType::ACTION_SET_PWM : ExecActionType::ACTION_HIGH;
+    MotionAction action;
+    // @typed_servo@
+    return false;
+}
+static bool callMotion(PeripheralManager& pm, const String& targetId, const String& cmd,
+                       const String& valueStr, const Context* control, Result* controlResult) {
+    const auto* targetCfg = &pm.peripherals.at(targetId);
+    const FastBee::UartEventOrigin uartOrigin = control ? control->uartOrigin : FastBee::UartEventOrigin{};
+    // @call_stepper@
+    // @call_servo@
+    return false;
+}
+struct MotionScriptCommand { String strParam = "servo", subAction = "PWM"; int intParam = 4096; };
+static bool scriptServo(PeripheralManager& pm, const Context* control, Result* controlResult) {
+    MotionScriptCommand cmd;
+    PeripheralConfig nativeTarget;
+    do {
+        // @script_servo@
+        return false;
+    } while (false);
+    return true;
+}
+static Context motionRequest(PeripheralManager& pm, OC::Source source = OC::Source::Http,
+    uint64_t actor = 1, const FastBee::UartEventOrigin& origin = {}, bool overrideConfirmed = false,
+    uint64_t generation = 0, const String& target = "") {
+    Context request;
+    assert(pm.beginOrdinaryControl(source, actor, OC::isManual(source) ? 30000 : 0,
+        overrideConfirmed, generation, target, FastBee::SensorConfigEpoch::current(), origin, request));
+    return request;
+}
+static int legacyMotionCase(const String& mode, PeripheralManager& pm) {
+    if (mode.startsWith("servo_")) {
+        auto& config = pm.peripherals.at("servo");
+        auto& state = pm.runtimeStates.at("servo");
+        config.params.servo.releaseAfterMove = true;
+        { RecursiveMutexGuard guard(pm._mutex); assert(pm.attachServoSignal(config)); }
+        assert(pm.scheduleServoRelease("servo"));
+        const auto token = pm.servoReleaseTickers.at("servo")->token;
+        const auto tick = [&]() { pm.serviceServoRelease(token); };
+        if (mode == "servo_replace") {
+            assert(pm.scheduleServoRelease("servo"));
+            tick(); assert(!pwmWrites && timerHandles == 1);
+            pm.serviceServoRelease(pm.servoReleaseTickers.at("servo")->token);
+        } else if (mode == "servo_cancel") {
+            assert(pm.cancelServoRelease("servo"));
+            tick(); assert(!pwmWrites && !timerHandles && signalAttached); return 0;
+        } else if (mode == "servo_pin_changed") {
+            config.pins[0] = 24;
+            tick(); assert(!pwmWrites && timerHandles == 1 && state.lastError == "SERVO_TARGET_UNCONFIRMED");
+            assert(pm.servoReleaseTickers.at("servo")->token == 0); return 0;
+        } else if (mode == "servo_failed_schedule") {
+            timerStartOk = false;
+            assert(!pm.scheduleServoRelease("servo"));
+            assert(timerHandles == 1 && state.lastError == "SERVO_RELEASE_SCHEDULE_FAILED");
+            tick(); assert(!pwmWrites);
+            assert(pm.cancelServoRelease("servo") && !timerHandles); return 0;
+        } else if (mode == "servo_low_memory" || mode == "servo_token_exhausted") {
+            if (mode == "servo_low_memory") freeMemory = 0; else pm._nextActionTickerToken = UINT32_MAX;
+            assert(!pm.scheduleServoRelease("servo"));
+            assert(pm.servoReleaseTickers.at("servo")->token == token);
+            tick();
+        } else {
+            if (mode == "servo_busy") {
+                busy = true; tick(); assert(!pwmWrites && timerHandles == 1); busy = false;
+            }
+            if (mode == "servo_failed_write" || mode == "servo_failed_detach") {
+                pwmWriteOk = mode != "servo_failed_write"; pwmDetachOk = mode != "servo_failed_detach";
+                tick(); assert(timerHandles == 1 && state.state.servo.signalAttached);
+                assert(state.lastError == "SERVO_RELEASE_PENDING"); pwmWriteOk = pwmDetachOk = true;
+            }
+            tick();
+        }
+        assert(!timerHandles && pm.servoReleaseTickers.empty() && !signalAttached && !state.state.servo.signalAttached);
+        const auto before = pwmWrites; tick(); assert(pwmWrites == before); return 0;
+    }
+    auto& config = pm.peripherals.at("motor");
+    auto& state = pm.runtimeStates.at("motor");
+    auto origin = FastBee::UartEventOrigin::captured(7, 19);
+    if (mode == "origin_invalid") pm.originCurrent = false;
+    if (mode == "malformed") origin.required = false;
+    if (mode == "unbound") { origin = {}; pm.originCurrent = false; }
+    if (mode == "low_memory") freeMemory = 0;
+    if (mode == "token_exhausted") pm._nextActionTickerToken = UINT32_MAX;
+    if (mode == "reserved_pin") config.pins[0] = 6;
+    if (mode == "invalid_pin") config.pins[0] = 255;
+    const bool rejected = mode == "origin_invalid" || mode == "malformed" || mode == "low_memory" ||
+        mode == "token_exhausted" || mode == "reserved_pin" || mode == "invalid_pin" || mode == "invalid_command";
+    const String command = mode == "invalid_command" ? "bad" : mode == "reverse" ? "reverse" :
+        mode == "speed_idle" ? "speed" : "forward";
+    assert(pm.controlStepper("motor", command, mode == "speed_idle" ? 10 : 0, origin) != rejected);
+    if (rejected) { assert(!levelCalls && !timerHandles && config.params.stepper.speed == 8); return 0; }
+    if (mode == "speed_idle") { assert(pm.stepperTickers.empty() && config.params.stepper.speed == 10 && !levelCalls); return 0; }
+    auto* data = pm.stepperTickers.at("motor");
+    const auto token = data->token;
+    const auto tick = [&]() { pm.serviceStepperTicker(token); };
+    if (mode == "stop" || mode == "deleted") {
+        assert(pm.teardownStepperHardware("motor"));
+        const auto before = levelCalls; tick();
+        assert(levelCalls == before && !timerHandles && pm.stepperTickers.empty()); return 0;
+    }
+    if (mode == "retire" || mode == "pin_changed" || mode == "suspended" || mode == "runtime_error" || mode == "busy") {
+        if (mode == "busy") { busy = true; tick(); assert(data->running); busy = false; }
+        if (mode == "retire" || mode == "busy") pm.originCurrent = false;
+        if (mode == "pin_changed") config.pins[0] = 20;
+        if (mode == "suspended") state.memorySuspended = true;
+        if (mode == "runtime_error") state.status = PeripheralStatus::PERIPHERAL_ERROR;
+        tick(); assert(!data->running && !data->retainedMask && !timerHandles && data->phase == 0);
+        const auto before = levelCalls; tick(); assert(levelCalls == before); return 0;
+    }
+    if (mode == "origin_mismatch" || mode == "speed_overflow") {
+        auto context = motionRequest(pm, OC::Source::Rule, 1, origin);
+        Result result;
+        const auto before = levelCalls;
+        assert(!pm.controlStepper("motor", "faster", mode == "speed_overflow" ? 65536 : 2,
+            mode == "origin_mismatch" ? FastBee::UartEventOrigin{} : origin, &context, &result));
+        assert(config.params.stepper.speed == 8 && data->token == token && levelCalls == before); return 0;
+    }
+    if (mode == "timer_failed") {
+        timerStartOk = false;
+        assert(!pm.controlStepper("motor", "speed", 20, origin));
+        assert(config.params.stepper.speed == 8 && !data->running && data->token == 0);
+        const auto before = levelCalls; tick();
+        assert(levelCalls == before && state.lastError == "STEPPER_TIMER_FAILED"); return 0;
+    }
+    if (mode == "replacement" || mode == "speed_saturate" || mode == "slower") {
+        assert(pm.controlStepper("motor", mode == "replacement" ? "reverse" : mode == "slower" ? "slower" : "faster",
+            mode == "replacement" ? 0 : 65535, origin));
+        const auto before = levelCalls; tick(); assert(levelCalls == before && data->token != token);
+        if (mode == "speed_saturate") assert(config.params.stepper.speed == STEPPER_MAX_RPM);
+        if (mode == "slower") assert(config.params.stepper.speed == STEPPER_MIN_RPM);
+        pm.serviceStepperTicker(data->token); assert(levelCalls == before + 4); return 0;
+    }
+    tick();
+    assert(data->phase == (mode == "reverse" ? 7 : 1));
+    assert(timerHandles == 1);
+    return 0;
+}
+
+static int motionCase(const String& mode, PeripheralManager& pm) {
+    pm.peripherals["motor"] = {}; pm.runtimeStates["motor"] = {};
+    PeripheralConfig servo;
+    servo.id = "servo"; servo.type = PeripheralType::PWM_SERVO; servo.pinCount = 1; servo.pins[0] = 23;
+    pm.peripherals["servo"] = servo; pm.runtimeStates["servo"] = {};
+    if (mode.startsWith("motion_legacy_")) return legacyMotionCase(mode.substring(14), pm);
+    auto& servoConfig = pm.peripherals.at("servo");
+    const bool motor = mode.startsWith("motion_motor_");
+    const String id = motor ? "motor" : "servo";
+    auto& state = pm.runtimeStates.at(id);
+    auto& lease = state.ordinaryControl;
+    Result result;
+    auto request = motionRequest(pm);
+    const auto submit = [&](const Context* context, Result& output) {
+        return motor ? pm.controlStepper(id, "forward", 0,
+            context ? context->uartOrigin : FastBee::UartEventOrigin{}, context, &output) :
+            pm.submitOrdinaryServo(id, 90, false, context, &output);
+    };
+    const auto countWrites = [&]() { return pwmWrites + levelCalls; };
+    if (mode.endsWith("_missing")) {
+        assert(!submit(nullptr, result) && String(result.reason) == "CONTROL_CONTEXT_REQUIRED");
+        assert(!pwmWrites && !sdkCalls && !timerCreates); return 0;
+    }
+    if (mode == "motion_motor_idle_speed") {
+        assert(pm.controlStepper(id, "speed", 12, {}, &request, &result));
+        assert(!result.attempted && String(result.reason) == "CONTROL_ACCEPTED_CONFIG_ONLY");
+        assert(pm.peripherals.at(id).params.stepper.speed == 12 && !sdkCalls && !timerCreates);
+        pm.finishOrdinaryControl(request); assert(lease.phase == OC::Phase::Held); return 0;
+    }
+    if (mode == "motion_servo_dispatch") {
+        assert(typedServo(pm, "4096", &request, &result) && lastDuty == 4096);
+        result = Result{}; assert(scriptServo(pm, &request, &result) && lastDuty == 4096);
+        result = Result{}; assert(callMotion(pm, id, "pwm", "65535", &request, &result) && lastDuty == 65535);
+        const auto before = pwmWrites;
+        for (const auto invalid : {"-1", "65536", "2.5", "x", "4294967296"}) {
+            result = Result{}; assert(!typedServo(pm, invalid, &request, &result));
+            assert(!result.attempted && pwmWrites == before);
+        }
+        result = Result{}; assert(!typedServo(pm, "10", &request, &result, false));
+        result = Result{}; assert(!scriptServo(pm, nullptr, &result));
+        assert(pwmWrites == before); return 0;
+    }
+    if (mode == "motion_motor_dispatch") {
+        assert(callMotion(pm, id, "direction", "reverse", &request, &result));
+        assert(pm.stepperTickers.at(id)->direction == -1);
+        const auto before = sdkCalls, token = pm.stepperTickers.at(id)->token;
+        for (const auto invalid : {"", "rev", "0", "+1", "2", "-2"}) {
+            result = Result{}; assert(!callMotion(pm, id, "direction", invalid, &request, &result));
+            assert(!result.attempted && pm.stepperTickers.at(id)->token == token && sdkCalls == before);
+        }
+        result = Result{}; assert(!callMotion(pm, id, "speed", "65536", &request, &result));
+        result = Result{}; assert(!callMotion(pm, id, "forward", "garbage", &request, &result));
+        result = Result{}; assert(!callMotion(pm, id, "stop", "", nullptr, &result));
+        assert(sdkCalls == before); return 0;
+    }
+    if (!motor && mode != "motion_servo_no_auto" && mode != "motion_servo_range")
+        servoConfig.params.servo.releaseAfterMove = true;
+    if (mode.endsWith("_rule")) {
+        request = motionRequest(pm, OC::Source::Rule);
+        request.ruleBound = true; request.ruleEpoch = FastBee::RuleOutputIdentity::currentEpoch();
+    }
+    if (mode.endsWith("_uart")) request = motionRequest(pm, OC::Source::Rule, 1, FastBee::UartEventOrigin::captured(7, 19));
+    if (mode.endsWith("_override")) request = motionRequest(pm, OC::Source::Rule);
+    if (mode == "motion_servo_no_auto") request = motionRequest(pm, OC::Source::Rule);
+    if (mode == "motion_servo_range") {
+        for (const int64_t invalid : {-1LL, 181LL}) {
+            result = Result{}; assert(!pm.submitOrdinaryServo(id, invalid, false, &request, &result));
+            assert(!result.attempted && !pwmWrites && !pwmAttaches);
+        }
+        servoConfig.params.servo.frequency = 100; servoConfig.params.servo.pwmResolution = 12;
+        assert(pm.writeServoAngle(id, 90, &request, &result));
+        assert(state.state.servo.currentPulseUs == 1500 && lastDuty == 614);
+        assert(pm.submitOrdinaryServo(id, 4095, true, &request, &result));
+        assert(lastDuty == 4095 && state.state.servo.currentAngle == 90);
+        result = Result{}; assert(!pm.submitOrdinaryServo(id, 4096, true, &request, &result));
+        assert(!result.attempted && lastDuty == 4095); return 0;
+    }
+    const bool startFailure = mode.endsWith("_timer_start") || mode.endsWith("_timer_create") ||
+                              mode.endsWith("_partial_create");
+    if (mode.endsWith("_timer_start")) timerStartOk = false;
+    if (mode.endsWith("_timer_create")) timerCreateOk = false;
+    if (mode.endsWith("_partial_create")) { timerCreateOk = false; timerPartialCreate = true; }
+    if (mode == "motion_servo_attach_failure") pwmAttachOk = false;
+    if (mode == "motion_servo_write_failure") pwmWriteOk = false;
+    const bool accepted = submit(&request, result);
+    if (startFailure || mode == "motion_servo_attach_failure" || mode == "motion_servo_write_failure") {
+        assert(!accepted && result.attempted && !result.accepted && lease.phase == OC::Phase::Fault);
+        const auto before = countWrites();
+        if (motor) assert(pm.stepperTickers.at(id)->retainedMask == 15 && pm.stepperTickers.at(id)->cleanupPending);
+        else assert(pm.servoReleaseTickers.at(id));
+        auto other = motionRequest(pm, OC::Source::Http, 2);
+        result = Result{}; assert(!submit(&other, result) && countWrites() == before);
+        const String history = state.lastError;
+        pwmWriteOk = pwmAttachOk = timerStopOk = timerDeleteOk = true;
+        pm.finishOrdinaryControl(request);
+        assert(lease.phase == OC::Phase::Idle && timerHandles == 0 && state.lastError == history);
+        return 0;
+    }
+    assert(accepted && result.attempted && result.accepted);
+    assert(String(result.reason) == "CONTROL_ACCEPTED_SDK_ONLY");
+    if (mode == "motion_servo_no_auto") {
+        const auto duty = lastDuty, writesBefore = pwmWrites;
+        pm.finishOrdinaryControl(request);
+        assert(lease.phase == OC::Phase::Idle && lastDuty == duty && pwmWrites == writesBefore);
+        assert(signalAttached && !timerCreates && !pwmDetaches); return 0;
+    }
+    const auto token = motor ? pm.stepperTickers.at(id)->token : pm.servoReleaseTickers.at(id)->token;
+    const auto tick = [&]() { if (motor) pm.serviceStepperTicker(token); else pm.serviceServoRelease(token); };
+    pm.finishOrdinaryControl(request);
+    assert(lease.phase == OC::Phase::Producing);
+    if (mode.endsWith("_invalid_preserves")) {
+        const auto before = countWrites(), stops = timerStops;
+        auto next = motionRequest(pm);
+        if (motor) {
+            assert(!pm.controlStepper(id, "direction", 0, {}, &next, &result));
+            pm.peripherals.at(id).pins[3] = pm.peripherals.at(id).pins[0];
+            result = Result{}; assert(!pm.controlStepper(id, "forward", 0, {}, &next, &result));
+        } else assert(!pm.submitOrdinaryServo(id, 181, false, &next, &result));
+        assert(!result.attempted && lease.operation == request.request.operation);
+        assert(countWrites() == before && timerStops == stops); return 0;
+    }
+    if (mode.endsWith("_conflict")) {
+        const auto before = countWrites(), stops = timerStops;
+        auto other = motionRequest(pm, OC::Source::Http, 2);
+        result = Result{}; assert(!submit(&other, result) && String(result.reason) == "CONTROL_CONFLICT");
+        assert(!result.attempted && before == countWrites() && stops == timerStops); return 0;
+    }
+    if (mode.endsWith("_replace") || mode.endsWith("_override") ||
+        mode.endsWith("_timer_stop") || mode.endsWith("_timer_delete")) {
+        const auto oldGeneration = lease.generation;
+        auto next = mode.endsWith("_override") ?
+            motionRequest(pm, OC::Source::Http, 2, {}, true, oldGeneration, id) : motionRequest(pm);
+        const auto before = countWrites();
+        if (mode.endsWith("_timer_stop")) timerStopOk = false;
+        if (mode.endsWith("_timer_delete")) timerDeleteOk = false;
+        result = Result{}; const bool replacement = submit(&next, result);
+        if (mode.endsWith("_timer_stop") || mode.endsWith("_timer_delete")) {
+            assert(!replacement && !result.attempted && lease.phase == OC::Phase::Fault);
+            assert(before == countWrites() && timerHandles == 1 && state.ordinaryStopFailures == 1);
+            tick(); assert(before == countWrites());
+            timerStopOk = timerDeleteOk = true; ordinaryClockUs += 1000000;
+            pm.serviceOrdinaryControlExpiry(); assert(timerHandles == 0 && lease.phase == OC::Phase::Idle);
+        } else {
+            assert(replacement && result.accepted && lease.generation > oldGeneration);
+            assert(timerHandles == 1);
+            const auto after = countWrites(); tick(); assert(countWrites() == after); // Opaque late token.
+        }
+        return 0;
+    }
+    if (mode.endsWith("_expiry")) {
+        auto stale = motionRequest(pm, OC::Source::Http, 2);
+        ordinaryClockUs += 30000000;
+        result = Result{}; assert(!submit(&stale, result) && result.cleanupConfirmed && result.attempted);
+        assert(String(result.reason) == "CONTROL_EXPIRED_RETRY_NEW_OPERATION" && lease.phase == OC::Phase::Idle);
+        const auto before = countWrites();
+        result = Result{}; assert(!submit(&stale, result) && before == countWrites());
+        assert(String(result.reason) == "CONTROL_OPERATION_STALE"); return 0;
+    }
+    if (mode.endsWith("_config") || mode.endsWith("_rule") || mode.endsWith("_uart") ||
+        mode.endsWith("_negative_clock")) {
+        const auto before = countWrites();
+        if (mode.endsWith("_config")) FastBee::SensorConfigEpoch::advance();
+        if (mode.endsWith("_rule")) FastBee::RuleOutputIdentity::invalidate();
+        if (mode.endsWith("_uart")) pm.originCurrent = false;
+        if (mode.endsWith("_negative_clock")) ordinaryClockUs = -1;
+        tick();
+        if (mode.endsWith("_negative_clock")) {
+            assert(lease.phase == OC::Phase::Fault && countWrites() == before && timerHandles == 1);
+            ordinaryClockUs = 2000000; pm.serviceOrdinaryControlExpiry();
+        }
+        assert(lease.phase == OC::Phase::Idle && timerHandles == 0);
+        const auto after = countWrites(); tick(); assert(countWrites() == after);
+        if (motor) assert(!pm.stepperTickers.at(id)->retainedMask);
+        else assert(!signalAttached);
+        return 0;
+    }
+    if (mode == "motion_servo_release_write" || mode == "motion_servo_release_detach") {
+        if (mode == "motion_servo_release_write") pwmWriteOk = false; else pwmDetachOk = false;
+        tick();
+        assert(lease.phase == OC::Phase::Fault && signalAttached && pm.servoReleaseTickers.count(id));
+        assert(state.state.servo.signalAttached && state.lastError == "SERVO_RELEASE_PENDING");
+        const auto before = pwmWrites;
+        auto other = motionRequest(pm, OC::Source::Http, 2);
+        result = Result{}; assert(!submit(&other, result) && pwmWrites == before);
+        pwmWriteOk = pwmDetachOk = true; pm.serviceOrdinaryControlExpiry();
+        assert(!signalAttached && !pm.servoReleaseTickers.count(id) && lease.phase == OC::Phase::Idle);
+        assert(state.lastError == "SERVO_RELEASE_PENDING"); return 0;
+    }
+    if (mode == "motion_servo_release_delete") {
+        timerDeleteOk = false; tick();
+        assert(!signalAttached && timerHandles == 1 && pm.servoReleaseTickers.at(id)->releaseDone);
+        const auto before = pwmWrites;
+        timerDeleteOk = true; pm.serviceOrdinaryControlExpiry();
+        assert(pwmWrites == before && timerHandles == 0 && lease.phase == OC::Phase::Idle); return 0;
+    }
+    if (mode == "motion_servo_release") {
+        tick();
+        assert(!signalAttached && timerHandles == 0 && lease.phase == OC::Phase::Held);
+        assert(lastDuty == 0 && !state.state.servo.signalAttached && state.state.servo.currentAngle == 90);
+        const auto before = pwmWrites; tick(); assert(pwmWrites == before); return 0;
+    }
+    if (mode == "motion_motor_stop") {
+        auto stop = motionRequest(pm);
+        result = Result{};
+        assert(pm.controlStepper(id, "stop", 0, {}, &stop, &result));
+        assert(result.attempted && result.cleanupConfirmed && String(result.reason) == "CONTROL_STOPPED_SDK_ONLY");
+        assert(!pm.stepperTickers.at(id)->retainedMask && !timerHandles); return 0;
+    }
+    if (mode == "motion_motor_partial_release") {
+        failLevelAt = levelCalls + 3;
+        auto stop = motionRequest(pm);
+        result = Result{}; assert(!pm.controlStepper(id, "stop", 0, {}, &stop, &result));
+        assert(result.attempted && lease.phase == OC::Phase::Fault && !timerHandles);
+        assert(pm.stepperTickers.at(id)->retainedMask == 4 && pm.stepperTickers.at(id)->cleanupPending);
+        const auto before = countWrites(); tick(); assert(countWrites() == before);
+        failLevelAt = 0; ordinaryClockUs += 1000000; pm.serviceOrdinaryControlExpiry();
+        assert(!pm.stepperTickers.at(id)->retainedMask && lease.phase == OC::Phase::Idle); return 0;
+    }
+    if (mode == "motion_motor_partial_phase") {
+        failLevelAt = levelCalls + 3; tick();
+        auto* data = pm.stepperTickers.at(id);
+        assert(data->phase == 0 && data->cleanupPending && data->retainedMask == 15 && lease.phase == OC::Phase::Fault);
+        const auto before = countWrites(); tick(); assert(countWrites() == before);
+        failLevelAt = 0; pm.serviceOrdinaryControlExpiry();
+        assert(lease.phase == OC::Phase::Idle && !data->retainedMask); return 0;
+    }
+    return 2;
+}

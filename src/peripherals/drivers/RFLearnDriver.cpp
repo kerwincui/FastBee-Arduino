@@ -6,418 +6,365 @@
 
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_RF_LEARN
-
 #include "peripherals/drivers/RFLearnDriver.h"
 #include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
+#include "utils/FileUtils.h"
+#include "utils/ConsumedStringJsonReader.h"
+#include "utils/SharedJsonDeserializer.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-
+#include <cstring>
+#include <new>
+#include <utility>
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
 
-// ============ 静态成员定义 ============
 volatile uint32_t RFLearnDriver::_isrLastEdgeTime = 0;
 volatile uint16_t RFLearnDriver::_isrPulseBuffer[RFLearnDriver::ISR_BUFFER_SIZE];
 volatile uint8_t RFLearnDriver::_isrPulseCount = 0;
 volatile bool RFLearnDriver::_isrFrameReady = false;
+namespace {
+const char* RF_KEYS_FILE = "/config/rf_keys.json";
+constexpr size_t RF_KEYS_MAX_BYTES = 8192;
+portMUX_TYPE rfIsrMux = portMUX_INITIALIZER_UNLOCKED;
+bool rfIsrEnabled = false;
+uint32_t rfIsrGeneration = 0;
+struct RfGuard {
+    SemaphoreHandle_t mutex; bool held;
+    explicit RfGuard(SemaphoreHandle_t value, TickType_t wait = 0)
+        : mutex(value), held(value && xSemaphoreTake(value, wait) == pdTRUE) {}
+    void release() { if (held) { xSemaphoreGive(mutex); held = false; } }
+    ~RfGuard() { release(); }
+};
+struct RfMutation {
+    std::atomic_flag& flag; bool held;
+    explicit RfMutation(std::atomic_flag& value) : flag(value), held(!flag.test_and_set(std::memory_order_acquire)) {}
+    ~RfMutation() { if (held) flag.clear(std::memory_order_release); }
+};
+bool validRfName(const String& name) {
+    if (name.isEmpty() || name.length() > 32) return false;
+    for (size_t i = 0; i < name.length(); ++i) {
+        const char c = name[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ' ') continue;
+        return false;
+    }
+    return true;
+}
+bool parseRfKeyCode(const String& code, uint32_t& value) {
+    size_t at = code.startsWith("0x") || code.startsWith("0X") ? 2 : 0;
+    if (at == code.length() || code.length() - at > 8) return false;
+    value = 0;
+    for (; at < code.length(); ++at) {
+        const char c = code[at];
+        unsigned digit;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else return false;
+        value = (value << 4) | digit;
+    }
+    return true;
+}
+bool readRfKeyFile(const char* path, String& raw, bool& exists) {
+    raw = ""; exists = false;
+    if (!FileUtils::isInitialized()) return false;
+    exists = LittleFS.exists(path);
+    if (!exists) return true;
+    File file = LittleFS.open(path, "r");
+    if (!file) return false;
+    const size_t size = file.size();
+    if (!size || size > RF_KEYS_MAX_BYTES || !raw.reserve(size + 1)) { file.close(); return false; }
+    for (size_t i = 0; i < size; ++i) {
+        const int next = file.read();
+        if (next < 0 || !raw.concat(static_cast<char>(next))) { file.close(); return false; }
+    }
+    const bool complete = file.available() == 0 && raw.length() == size && raw.length() == std::strlen(raw.c_str());
+    file.close(); return complete;
+}
+using RfJsonReader = FastBee::ConsumedStringJsonReader;
+bool parseRfKeys(const String& raw, std::vector<RfKeyEntry>& keys) {
+    keys.clear(); if (raw.isEmpty()) return true;
+    JsonDocument doc; RfJsonReader reader{raw};
+    if (FastBee::deserializeJsonShared(doc, reader) || !reader.onlyWhitespaceRemaining() ||
+        doc.overflowed() || !doc.is<JsonArray>() || doc.size() > 40) return false;
+    for (JsonVariantConst item : doc.as<JsonArrayConst>()) {
+        if (!item.is<JsonObjectConst>() || !item["name"].is<const char*>() || !item["code"].is<const char*>()) return false;
+        const JsonString name = item["name"].as<JsonString>(), code = item["code"].as<JsonString>();
+        if (name.size() != std::strlen(name.c_str()) || code.size() != std::strlen(code.c_str())) return false;
+        if ((!item["bits"].isNull() && !item["bits"].is<uint8_t>()) ||
+            (!item["pulse"].isNull() && !item["pulse"].is<uint16_t>())) return false;
+        const String codeText(code.c_str());
+        RfKeyEntry entry{String(name.c_str()), 0, item["bits"] | uint8_t(24), item["pulse"] | uint16_t(350)};
+        if (entry.name.length() != name.size() || !validRfName(entry.name) ||
+            codeText.length() != code.size() || !parseRfKeyCode(codeText, entry.code) || entry.bitLength < 12 || entry.bitLength > 32 ||
+            entry.pulseWidth < 80 || entry.pulseWidth > 2000 ||
+            (entry.bitLength < 32 && (entry.code >> entry.bitLength))) return false;
+        for (const auto& old : keys) if (old.name == entry.name) return false;
+        keys.push_back(std::move(entry));
+    }
+    return true;
+}
+bool serializeRfKeys(const std::vector<RfKeyEntry>& keys, String& output) {
+    output = ""; JsonDocument doc; JsonArray array = doc.to<JsonArray>();
+    for (const auto& entry : keys) {
+        auto object = array.add<JsonObject>();
+        object["name"] = entry.name;
+        char code[12]; snprintf(code, sizeof(code), "0x%06lX", static_cast<unsigned long>(entry.code));
+        object["code"] = code; object["bits"] = entry.bitLength; object["pulse"] = entry.pulseWidth;
+    }
+    if (doc.overflowed()) return false;
+    const size_t expected = measureJson(doc);
+    return expected <= RF_KEYS_MAX_BYTES && serializeJson(doc, output) == expected && output.length() == expected;
+}
+}
 
-static const char* RF_KEYS_FILE = "/config/rf_keys.json";
-
-// ============ 单例 ============
 RFLearnDriver& RFLearnDriver::getInstance() {
     static RFLearnDriver instance;
-    if (!instance._mutex) {
-        instance._mutex = xSemaphoreCreateMutex();
-    }
+    instance.ensureMutex();
+    static const FastBee::FeatureInstanceObserver observer{"rfLearn", [](const void* context) {
+        return static_cast<const RFLearnDriver*>(context)->observeFeatureInstance();
+    }, &instance};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
     return instance;
 }
-
-RFLearnDriver::~RFLearnDriver() {
-    stop();
-}
-
-// ============ ISR ============
-void IRAM_ATTR RFLearnDriver::_isrHandler() {
-    uint32_t now = micros();
-    uint32_t duration = now - _isrLastEdgeTime;
-    _isrLastEdgeTime = now;
-
-    // 过滤过短的毛刺（<50μs）
-    if (duration < 50) return;
-
-    // 限幅到 uint16 范围
-    if (duration > 65000) duration = 65000;
-
-    // 检测到超长间隔（>SYNC_MIN_US）：表示前一帧结束，标记帧就绪
-    if (duration > SYNC_MIN_US && _isrPulseCount >= (MIN_DATA_BITS * 2)) {
-        _isrFrameReady = true;
-        return;
-    }
-
-    // 超长间隔但数据不够：重置缓冲
-    if (duration > SYNC_MIN_US) {
-        _isrPulseCount = 0;
-        return;
-    }
-
-    // 写入缓冲
-    if (_isrPulseCount < ISR_BUFFER_SIZE) {
-        _isrPulseBuffer[_isrPulseCount++] = (uint16_t)duration;
-    } else {
-        // 缓冲溢出：标记帧就绪尝试解码
-        _isrFrameReady = true;
-    }
-}
-
-// ============ 初始化 / 停止 ============
-bool RFLearnDriver::begin(uint8_t rxPin) {
-    // 运行时功能门控：用户可在 Web UI 禁用 rfLearn
-    if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("rfLearn")) {
-        LOGGER.info("[RFLearn] Compiled but runtime-disabled, skip init");
-        return false;
-    }
-    if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
-    if (_initialized) {
-        if (_rxPin == rxPin) { if (_mutex) xSemaphoreGive(_mutex); return true; }
-        // 引脚变更：先停止再重新初始化
-        detachInterrupt(digitalPinToInterrupt(_rxPin));
-        _initialized = false;
-    }
-    _rxPin = rxPin;
-    pinMode(_rxPin, INPUT);
-    _isrPulseCount = 0;
-    _isrFrameReady = false;
-    _isrLastEdgeTime = micros();
-    attachInterrupt(digitalPinToInterrupt(_rxPin), _isrHandler, CHANGE);
-    _initialized = true;
-    loadKeyMap();
-    LOG_INFOF("[RF-Learn] Initialized on GPIO%u", _rxPin);
-    if (_mutex) xSemaphoreGive(_mutex);
+bool RFLearnDriver::ensureMutex() {
+    if (_mutex.load(std::memory_order_acquire)) return true;
+    const auto created = xSemaphoreCreateMutex();
+    if (!created) return false;
+    SemaphoreHandle_t expected = nullptr;
+    if (!_mutex.compare_exchange_strong(expected, created, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) vSemaphoreDelete(created);
     return true;
 }
-
-void RFLearnDriver::stop() {
-    if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
-    if (!_initialized) { if (_mutex) xSemaphoreGive(_mutex); return; }
-    detachInterrupt(digitalPinToInterrupt(_rxPin));
-    _initialized = false;
-    _isrPulseCount = 0;
-    _isrFrameReady = false;
-    LOG_INFOF("[RF-Learn] Stopped");
-    if (_mutex) xSemaphoreGive(_mutex);
+FastBee::FeatureInstanceSnapshot RFLearnDriver::observeFeatureInstance() const {
+    using namespace FastBee;
+    const auto mutex = _mutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTake(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    const auto snapshot = FeatureInstanceSnapshot::lifecycle(
+        _initialized ? FeatureInstanceState::Running : FeatureInstanceState::Stopped);
+    xSemaphoreGive(mutex); return snapshot;
 }
-
-// ============ 主循环检查 ============
+RFLearnDriver::~RFLearnDriver() { stop(); }
+void IRAM_ATTR RFLearnDriver::_isrHandler(void* generation) {
+    portENTER_CRITICAL_ISR(&rfIsrMux);
+    do {
+        if (!rfIsrEnabled || static_cast<uint32_t>(reinterpret_cast<uintptr_t>(generation)) != rfIsrGeneration) break;
+        const uint32_t now = micros();
+        uint32_t duration = now - _isrLastEdgeTime; _isrLastEdgeTime = now;
+        if (_isrFrameReady || duration < 50) break;
+        if (duration > 65000) duration = 65000;
+        if (duration > SYNC_MIN_US && _isrPulseCount >= MIN_DATA_BITS * 2) { _isrFrameReady = true; break; }
+        if (duration > SYNC_MIN_US) { _isrPulseCount = 0; break; }
+        if (_isrPulseCount < ISR_BUFFER_SIZE) _isrPulseBuffer[_isrPulseCount++] = static_cast<uint16_t>(duration);
+        else _isrFrameReady = true;
+    } while (false);
+    portEXIT_CRITICAL_ISR(&rfIsrMux);
+}
+bool RFLearnDriver::begin(uint8_t rxPin) {
+    if (!_mutex || !FastBee::RuntimeFeatureManager::instance().shouldEnable("rfLearn")) return false;
+    loadKeyMap(); // Storage is never called while holding the receiver lock.
+    RfGuard guard(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+    if (!guard.held || _stopping || _dispatching) return false;
+    if (_initialized) return _rxPin == rxPin; // Never steal the singleton from another configured pin.
+    portENTER_CRITICAL(&rfIsrMux);
+    if (rfIsrGeneration == UINT32_MAX) { portEXIT_CRITICAL(&rfIsrMux); return false; }
+    const uint32_t generation = ++rfIsrGeneration;
+    rfIsrEnabled = false; _isrPulseCount = 0; _isrFrameReady = false; _isrLastEdgeTime = micros();
+    portEXIT_CRITICAL(&rfIsrMux);
+    _rxPin = rxPin; pinMode(rxPin, INPUT);
+    attachInterruptArg(digitalPinToInterrupt(rxPin), _isrHandler,
+                       reinterpret_cast<void*>(static_cast<uintptr_t>(generation)), CHANGE);
+    portENTER_CRITICAL(&rfIsrMux); rfIsrEnabled = true; portEXIT_CRITICAL(&rfIsrMux);
+    _initialized = true; _lastCode = ""; _lastValue = 0; _lastBitLength = 0; _lastPulseWidth = 0; _lastEventTime = 0;
+    _learnState = RfLearnState::IDLE; _learnDeadline = 0;
+    return true; // Arduino attach API has no SDK acknowledgement; this is not physical reception evidence.
+}
+bool RFLearnDriver::stop(uint8_t expectedPin) {
+    RfGuard guard(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+    if (!guard.held) return false;
+    if (_initialized && expectedPin != 255 && expectedPin != _rxPin) return false;
+    if (_dispatching) { _stopping = true; return false; }
+    portENTER_CRITICAL(&rfIsrMux);
+    rfIsrEnabled = false; _isrPulseCount = 0; _isrFrameReady = false;
+    portEXIT_CRITICAL(&rfIsrMux);
+    if (_initialized) detachInterrupt(digitalPinToInterrupt(_rxPin));
+    _initialized = false; _stopping = false; _rxPin = 255;
+    _learnState = RfLearnState::IDLE; _learnDeadline = 0; _learnedCode = ""; _learnedBitLength = 0; _learnedPulseWidth = 0;
+    _lastCode = ""; _lastValue = 0; _lastBitLength = 0; _lastPulseWidth = 0;
+    return true;
+}
 void RFLearnDriver::check() {
-    // 非阻塞获取锁：若 stop()/begin() 正在执行则跳过本轮
-    if (_mutex && xSemaphoreTake(_mutex, 0) != pdTRUE) return;
-    if (!_initialized) { if (_mutex) xSemaphoreGive(_mutex); return; }
-
-    // 刷新学习超时
+    RfGuard guard(_mutex.load(std::memory_order_acquire));
+    if (!guard.held || !_initialized || _stopping || _dispatching) return;
     _updateLearnTimeout();
-
-    // 检查是否有帧就绪
-    if (!_isrFrameReady) { if (_mutex) xSemaphoreGive(_mutex); return; }
-
-    // 临界区：拷贝缓冲并重置
-    noInterrupts();
-    uint16_t localBuf[ISR_BUFFER_SIZE];
-    uint8_t count = _isrPulseCount;
-    for (uint8_t i = 0; i < count; i++) localBuf[i] = _isrPulseBuffer[i];
-    _isrPulseCount = 0;
-    _isrFrameReady = false;
-    interrupts();
-
-    if (count < MIN_DATA_BITS * 2) { if (_mutex) xSemaphoreGive(_mutex); return; }
-
-    // 解码
-    // EV1527 格式：数据位交替 HIGH/LOW，每个位占 2 个脉冲
-    // bit=1: HIGH=3T, LOW=1T; bit=0: HIGH=1T, LOW=3T
-    // 找到第一个有效同步后的数据段
-
-    // 计算平均脉宽（取最短脉冲作为 1T 基准）
+    uint16_t localBuf[ISR_BUFFER_SIZE]; uint8_t count = 0;
+    portENTER_CRITICAL(&rfIsrMux);
+    if (_isrFrameReady) {
+        count = _isrPulseCount;
+        for (uint8_t i = 0; i < count; ++i) localBuf[i] = _isrPulseBuffer[i];
+        _isrPulseCount = 0; _isrFrameReady = false;
+    }
+    portEXIT_CRITICAL(&rfIsrMux);
+    if (count < MIN_DATA_BITS * 2) return;
     uint16_t minPulse = 65535;
-    for (uint8_t i = 0; i < count; i++) {
-        if (localBuf[i] < minPulse) minPulse = localBuf[i];
-    }
-    if (minPulse < 80 || minPulse > 2000) { if (_mutex) xSemaphoreGive(_mutex); return; } // 不合理脉宽
-
-    uint16_t T = minPulse; // 1T 基准
-    uint32_t code = 0;
-    uint8_t bits = 0;
-    uint16_t pulseSum = 0;
-    uint8_t pulseSamples = 0;
-
-    // 从缓冲中提取数据位（每 2 个脉冲为一位）
+    for (uint8_t i = 0; i < count; ++i) if (localBuf[i] < minPulse) minPulse = localBuf[i];
+    if (minPulse < 80 || minPulse > 2000) return;
+    const uint16_t T = minPulse;
+    uint32_t code = 0, pulseSum = 0; uint8_t bits = 0, samples = 0;
     for (uint8_t i = 0; i + 1 < count && bits < MAX_DATA_BITS; i += 2) {
-        uint16_t high = localBuf[i];
-        uint16_t low = localBuf[i + 1];
-
-        // 跳过明显异常脉冲
+        const uint16_t high = localBuf[i], low = localBuf[i + 1];
         if (high > T * 6 || low > T * 6) continue;
-
-        uint8_t highRatio = (high + T / 2) / T;
-        uint8_t lowRatio = (low + T / 2) / T;
-
-        if (highRatio >= 2 && lowRatio <= 2) {
-            // bit = 1 (3:1)
-            code = (code << 1) | 1;
-            bits++;
-            pulseSum += (high + low) / 4;
-            pulseSamples++;
-        } else if (highRatio <= 2 && lowRatio >= 2) {
-            // bit = 0 (1:3)
-            code = (code << 1) | 0;
-            bits++;
-            pulseSum += (high + low) / 4;
-            pulseSamples++;
-        }
-        // 其他比例：噪声，跳过
+        const uint8_t highRatio = (high + T / 2) / T, lowRatio = (low + T / 2) / T;
+        if (highRatio >= 2 && lowRatio <= 2) code = (code << 1) | 1;
+        else if (highRatio <= 2 && lowRatio >= 2) code <<= 1;
+        else continue;
+        ++bits; pulseSum += (high + low) / 4; ++samples;
     }
-
-    if (bits < MIN_DATA_BITS) { if (_mutex) xSemaphoreGive(_mutex); return; }
-
-    uint16_t avgPulse = pulseSamples > 0 ? pulseSum / pulseSamples : T;
-
-    // 防重复：相同编码短时间内不重复处理
-    unsigned long now = millis();
-    if (code == _lastValue && bits == _lastBitLength &&
-        (now - _lastEventTime) < MIN_EVENT_INTERVAL_MS) {
-        if (_mutex) xSemaphoreGive(_mutex);
-        return;
-    }
-
-    // 更新最近解码
-    _lastValue = code;
-    _lastBitLength = bits;
-    _lastPulseWidth = avgPulse;
-    char hexBuf[12];
-    snprintf(hexBuf, sizeof(hexBuf), "0x%06lX", (unsigned long)code);
-    _lastCode = hexBuf;
-    _lastEventTime = now;
-
-    LOG_INFOF("[RF-Learn] Decoded: %s (%u bits, pulse=%uus)", _lastCode.c_str(), bits, avgPulse);
-
-    // 学习模式：捕获
+    if (bits < MIN_DATA_BITS) return;
+    const uint16_t pulse = samples ? pulseSum / samples : T;
+    const uint32_t now = millis();
+    if (code == _lastValue && bits == _lastBitLength && uint32_t(now - _lastEventTime) < MIN_EVENT_INTERVAL_MS) return;
+    char hex[12]; snprintf(hex, sizeof(hex), "0x%06lX", static_cast<unsigned long>(code));
+    _lastCode = hex; _lastValue = code; _lastBitLength = bits; _lastPulseWidth = pulse; _lastEventTime = now;
     if (_learnState == RfLearnState::LEARNING) {
-        _learnedCode = _lastCode;
-        _learnedBitLength = bits;
-        _learnedPulseWidth = avgPulse;
-        _learnState = RfLearnState::CAPTURED;
-        if (_mutex) xSemaphoreGive(_mutex);
+        _learnedCode = _lastCode; _learnedBitLength = bits; _learnedPulseWidth = pulse; _learnState = RfLearnState::CAPTURED;
         return;
     }
-
-    // 正常模式：派发事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
-    String keyName = resolveKeyName(code, bits);
-    String eventData = "{\"code\":\"" + _lastCode + "\",\"bits\":" + String(bits) +
-                       ",\"pulse\":" + String(avgPulse);
-    if (keyName.length() > 0) {
-        eventData += ",\"key\":\"" + keyName + "\"";
-    }
-    eventData += "}";
-    PeriphExecManager::getInstance().dispatchEventMatchedRules("rf_code_received", eventData);
+    JsonDocument doc; doc["code"] = _lastCode; doc["bits"] = bits; doc["pulse"] = pulse;
+    const String key = _resolveKeyNameLocked(code, bits); if (!key.isEmpty()) doc["key"] = key;
+    if (doc.overflowed()) return;
+    String data; const size_t expected = measureJson(doc);
+    if (serializeJson(doc, data) != expected || data.length() != expected) return;
+    _dispatching = true; guard.release();
+    struct Terminal {
+        RFLearnDriver& driver;
+        ~Terminal() { RfGuard lock(driver._mutex.load(std::memory_order_acquire), portMAX_DELAY); if (lock.held) driver._dispatching = false; }
+    } terminal{*this};
+    PeriphExecManager::getInstance().dispatchEventMatchedRules("rf_code_received", data);
 #endif
-    if (_mutex) xSemaphoreGive(_mutex);
 }
-
-// ============ 学习模式 ============
-void RFLearnDriver::startLearn(uint32_t timeoutMs) {
+bool RFLearnDriver::startLearn(uint32_t timeoutMs) {
+    RfGuard guard(_mutex.load(std::memory_order_acquire));
+    if (!guard.held || !_initialized || _stopping || _dispatching) return false;
     if (timeoutMs < 1000) timeoutMs = 1000;
     if (timeoutMs > 60000) timeoutMs = 60000;
-    _learnState = RfLearnState::LEARNING;
-    _learnDeadline = millis() + timeoutMs;
-    _learnedCode = "";
-    _learnedBitLength = 0;
-    _learnedPulseWidth = 0;
-    LOG_INFOF("[RF-Learn] Learning started (timeout=%lums)", (unsigned long)timeoutMs);
+    portENTER_CRITICAL(&rfIsrMux); _isrPulseCount = 0; _isrFrameReady = false; _isrLastEdgeTime = micros(); portEXIT_CRITICAL(&rfIsrMux);
+    _learnState = RfLearnState::LEARNING; _learnDeadline = uint32_t(millis()) + timeoutMs;
+    _learnedCode = ""; _learnedBitLength = 0; _learnedPulseWidth = 0; return true;
 }
-
-void RFLearnDriver::stopLearn() {
-    _learnState = RfLearnState::IDLE;
-    _learnedCode = "";
+bool RFLearnDriver::stopLearn() {
+    RfGuard guard(_mutex.load(std::memory_order_acquire)); if (!guard.held) return false;
+    _learnState = RfLearnState::IDLE; _learnDeadline = 0; _learnedCode = ""; _learnedBitLength = 0; _learnedPulseWidth = 0; return true;
 }
-
-RfLearnState RFLearnDriver::getLearnState() {
-    _updateLearnTimeout();
-    return _learnState;
-}
-
-String RFLearnDriver::getLearnStateName() {
-    _updateLearnTimeout();
-    switch (_learnState) {
-        case RfLearnState::LEARNING: return "learning";
-        case RfLearnState::CAPTURED: return "captured";
-        case RfLearnState::TIMEOUT:  return "timeout";
-        default: return "idle";
-    }
-}
-
-uint32_t RFLearnDriver::getLearnRemainingMs() {
-    if (_learnState != RfLearnState::LEARNING) return 0;
-    unsigned long now = millis();
-    if (now >= _learnDeadline) return 0;
-    return (uint32_t)(_learnDeadline - now);
-}
-
 void RFLearnDriver::_updateLearnTimeout() {
-    if (_learnState == RfLearnState::LEARNING && millis() >= _learnDeadline) {
-        _learnState = RfLearnState::TIMEOUT;
-        LOG_INFOF("[RF-Learn] Learning timeout");
-    }
+    if (_learnState == RfLearnState::LEARNING && static_cast<int32_t>(uint32_t(millis()) - _learnDeadline) >= 0) _learnState = RfLearnState::TIMEOUT;
 }
-
-// ============ 按键映射 ============
-bool RFLearnDriver::loadKeyMap() {
-    _keyMap.clear();
-    _keyMapLoaded = true;
-
-    if (!LittleFS.exists(RF_KEYS_FILE)) return true; // 无文件=空表
-
-    File f = LittleFS.open(RF_KEYS_FILE, "r");
-    if (!f) return false;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-    if (err) {
-        LOG_WARNINGF("[RF-Learn] Failed to parse rf_keys.json: %s", err.c_str());
-        return false;
-    }
-
-    JsonArray arr = doc.as<JsonArray>();
-    for (JsonObject obj : arr) {
-        RfKeyEntry entry;
-        entry.name = obj["name"] | "";
-        const char* codeStr = obj["code"] | "0";
-        entry.code = (uint32_t)strtoul(codeStr, nullptr, 16);
-        entry.bitLength = obj["bits"] | 24;
-        entry.pulseWidth = obj["pulse"] | 350;
-        if (entry.name.length() > 0) {
-            _keyMap.push_back(entry);
+bool RFLearnDriver::getSnapshot(RfStatusSnapshot& snapshot) const {
+    snapshot = {}; RfGuard guard(_mutex.load(std::memory_order_acquire)); if (!guard.held) return false;
+    try {
+        RfStatusSnapshot value; value.initialized = _initialized && !_stopping; value.stopping = _stopping;
+        value.keysLoaded = _keyMapLoaded; value.rxPin = _rxPin; value.keyCount = _keyMap.size(); value.lastValue = _lastValue;
+        value.lastCode = _lastCode; value.lastBits = _lastBitLength; value.lastPulse = _lastPulseWidth;
+        value.learnedCode = _learnedCode; value.learnedBits = _learnedBitLength; value.learnedPulse = _learnedPulseWidth;
+        if (value.lastCode != _lastCode || value.learnedCode != _learnedCode) return false;
+        value.learnState = _stopping ? RfLearnState::IDLE : _learnState;
+        if (value.learnState == RfLearnState::LEARNING) {
+            const int32_t remaining = static_cast<int32_t>(_learnDeadline - uint32_t(millis()));
+            if (remaining > 0) value.remainingMs = remaining; else value.learnState = RfLearnState::TIMEOUT;
         }
-    }
-    LOG_INFOF("[RF-Learn] Loaded %u keys", (unsigned)_keyMap.size());
-    return true;
+        snapshot = std::move(value); return true;
+    } catch (const std::bad_alloc&) { return false; }
 }
-
-String RFLearnDriver::resolveKeyName(uint32_t code, uint8_t bitLength) const {
-    for (const auto& e : _keyMap) {
-        if (e.code == code && e.bitLength == bitLength) return e.name;
-    }
+bool RFLearnDriver::isInitialized() const { RfStatusSnapshot s; return getSnapshot(s) && s.initialized; }
+uint8_t RFLearnDriver::getRxPin() const { RfStatusSnapshot s; return getSnapshot(s) ? s.rxPin : 255; }
+String RFLearnDriver::getLastCode() const { RfStatusSnapshot s; return getSnapshot(s) ? s.lastCode : String(); }
+uint32_t RFLearnDriver::getLastValue() const { RfStatusSnapshot s; return getSnapshot(s) ? s.lastValue : 0; }
+uint8_t RFLearnDriver::getLastBitLength() const { RfStatusSnapshot s; return getSnapshot(s) ? s.lastBits : 0; }
+uint16_t RFLearnDriver::getLastPulseWidth() const { RfStatusSnapshot s; return getSnapshot(s) ? s.lastPulse : 0; }
+bool RFLearnDriver::isLearning() const { RfStatusSnapshot s; return getSnapshot(s) && s.learnState == RfLearnState::LEARNING; }
+RfLearnState RFLearnDriver::getLearnState() { RfStatusSnapshot s; return getSnapshot(s) ? s.learnState : RfLearnState::IDLE; }
+String RFLearnDriver::getLearnStateName() {
+    switch (getLearnState()) { case RfLearnState::LEARNING: return "learning"; case RfLearnState::CAPTURED: return "captured"; case RfLearnState::TIMEOUT: return "timeout"; default: return "idle"; }
+}
+String RFLearnDriver::getLearnedCode() const { RfStatusSnapshot s; return getSnapshot(s) ? s.learnedCode : String(); }
+uint8_t RFLearnDriver::getLearnedBitLength() const { RfStatusSnapshot s; return getSnapshot(s) ? s.learnedBits : 0; }
+uint16_t RFLearnDriver::getLearnedPulseWidth() const { RfStatusSnapshot s; return getSnapshot(s) ? s.learnedPulse : 0; }
+uint32_t RFLearnDriver::getLearnRemainingMs() { RfStatusSnapshot s; return getSnapshot(s) ? s.remainingMs : 0; }
+size_t RFLearnDriver::getKeyCount() const { RfStatusSnapshot s; return getSnapshot(s) ? s.keyCount : 0; }
+String RFLearnDriver::_resolveKeyNameLocked(uint32_t code, uint8_t bits) const {
+    for (const auto& entry : _keyMap) if (entry.code == code && entry.bitLength == bits) return entry.name;
     return "";
 }
-
-String RFLearnDriver::getKeysJson() const {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (const auto& e : _keyMap) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["name"] = e.name;
-        char hex[12];
-        snprintf(hex, sizeof(hex), "0x%06lX", (unsigned long)e.code);
-        obj["code"] = hex;
-        obj["bits"] = e.bitLength;
-        obj["pulse"] = e.pulseWidth;
-    }
-    String out;
-    serializeJson(doc, out);
-    return out;
+String RFLearnDriver::resolveKeyName(uint32_t code, uint8_t bits) const {
+    RfGuard guard(_mutex.load(std::memory_order_acquire)); return guard.held ? _resolveKeyNameLocked(code, bits) : String();
 }
-
-bool RFLearnDriver::upsertKey(const String& name, const String& code, uint8_t bitLength, uint16_t pulseWidth, String& err) {
-    if (name.length() == 0 || name.length() > 32) {
-        err = "按键名称长度需在 1-32 字符之间";
-        return false;
-    }
-    // 校验名称安全字符
-    for (size_t i = 0; i < name.length(); i++) {
-        char c = name[i];
-        if (!isalnum(c) && c != '_' && c != '-' && c != ' ') {
-            err = "名称仅支持字母、数字、下划线、连字符和空格";
-            return false;
-        }
-    }
-
-    uint32_t codeVal = (uint32_t)strtoul(code.c_str(), nullptr, 16);
-    if (codeVal == 0 && !code.startsWith("0x0") && !code.equals("0")) {
-        err = "无效的编码值";
-        return false;
-    }
-    if (bitLength < MIN_DATA_BITS || bitLength > MAX_DATA_BITS) {
-        err = "位长需在 12-32 之间";
-        return false;
-    }
-
-    if (_keyMap.size() >= MAX_RF_KEYS) {
-        // 检查是否为更新
-        bool found = false;
-        for (auto& e : _keyMap) {
-            if (e.name == name) { found = true; break; }
-        }
-        if (!found) {
-            err = "按键数量已达上限 (" + String(MAX_RF_KEYS) + ")";
-            return false;
-        }
-    }
-
-    // 更新或新增
-    for (auto& e : _keyMap) {
-        if (e.name == name) {
-            e.code = codeVal;
-            e.bitLength = bitLength;
-            e.pulseWidth = pulseWidth;
-            return _persistKeyMap();
-        }
-    }
-    RfKeyEntry entry;
-    entry.name = name;
-    entry.code = codeVal;
-    entry.bitLength = bitLength;
-    entry.pulseWidth = pulseWidth;
-    _keyMap.push_back(entry);
-    return _persistKeyMap();
+bool RFLearnDriver::loadKeyMap() {
+    RfMutation mutation(_keyMutation); if (!mutation.held) return false;
+    try {
+        String raw; bool exists; std::vector<RfKeyEntry> candidate;
+        if (!readRfKeyFile(RF_KEYS_FILE, raw, exists) || !parseRfKeys(raw, candidate)) return false;
+        RfGuard guard(_mutex.load(std::memory_order_acquire), portMAX_DELAY); if (!guard.held) return false;
+        _keyMap.swap(candidate); _keyMapLoaded = true; return true;
+    } catch (const std::bad_alloc&) { return false; }
 }
-
-bool RFLearnDriver::deleteKey(const String& name) {
-    for (auto it = _keyMap.begin(); it != _keyMap.end(); ++it) {
-        if (it->name == name) {
-            _keyMap.erase(it);
-            return _persistKeyMap();
+bool RFLearnDriver::getKeySnapshot(String& json, size_t& count) const {
+    json = ""; count = 0; RfGuard guard(_mutex.load(std::memory_order_acquire));
+    if (!guard.held || !_keyMapLoaded) return false;
+    try { if (!serializeRfKeys(_keyMap, json)) { json = ""; return false; } count = _keyMap.size(); return true; }
+    catch (const std::bad_alloc&) { json = ""; return false; }
+}
+String RFLearnDriver::getKeysJson() const { String json; size_t count; getKeySnapshot(json, count); return json; }
+bool RFLearnDriver::upsertKey(const String& name, const String& code, uint8_t bits, uint16_t pulse, String& error) {
+    error = ""; uint32_t value;
+    if (!validRfName(name)) { error = "RF_KEY_NAME_INVALID"; return false; }
+    if (!parseRfKeyCode(code, value) || bits < MIN_DATA_BITS || bits > MAX_DATA_BITS ||
+        (bits < 32 && (value >> bits)) || pulse < 80 || pulse > 2000) { error = "RF_KEY_PARAMETERS_INVALID"; return false; }
+    return _editKeyMap(name, value, bits, pulse, 0, error);
+}
+bool RFLearnDriver::deleteKey(const String& name, String* error) { String ignored; return _editKeyMap(name, 0, 0, 0, 1, error ? *error : ignored); }
+bool RFLearnDriver::clearKeys(String* error) { String ignored; return _editKeyMap("", 0, 0, 0, 2, error ? *error : ignored); }
+bool RFLearnDriver::_editKeyMap(const String& name, uint32_t code, uint8_t bits, uint16_t pulse, uint8_t operation, String& error) {
+    error = "";
+    if (operation != 2 && !validRfName(name)) { error = "RF_KEY_NAME_INVALID"; return false; }
+    if (!_mutex.load(std::memory_order_acquire)) { error = "RF_KEYS_UNAVAILABLE"; return false; }
+    RfMutation mutation(_keyMutation); if (!mutation.held) { error = "RF_KEYS_BUSY"; return false; }
+    try {
+        String source, candidateJson; bool existed; std::vector<RfKeyEntry> candidate;
+        if (!readRfKeyFile(RF_KEYS_FILE, source, existed) || !parseRfKeys(source, candidate)) { error = "RF_KEYS_SOURCE_UNCONFIRMED"; return false; }
+        size_t found = 0; while (found < candidate.size() && candidate[found].name != name) ++found;
+        if (operation == 2) candidate.clear();
+        else if (operation == 1) {
+            if (found == candidate.size()) { error = "RF_KEY_NOT_FOUND"; return false; }
+            candidate.erase(candidate.begin() + found);
+        } else {
+            RfKeyEntry entry{name, code, bits, pulse}; if (entry.name != name) { error = "RF_KEYS_MEMORY"; return false; }
+            if (found < candidate.size()) candidate[found] = std::move(entry);
+            else { if (candidate.size() >= MAX_RF_KEYS) { error = "RF_KEYS_LIMIT"; return false; } candidate.push_back(std::move(entry)); }
         }
-    }
-    return false;
+        if (!serializeRfKeys(candidate, candidateJson)) { error = "RF_KEYS_MEMORY"; return false; }
+        const String temporary = String(RF_KEYS_FILE) + ".tmp";
+        if (temporary != "/config/rf_keys.json.tmp") { error = "RF_KEYS_MEMORY"; return false; }
+        File output = FileUtils::openAtomicWrite(RF_KEYS_FILE);
+        if (!output) { error = "RF_KEYS_STORAGE_UNCONFIRMED"; return false; }
+        const size_t written = output.write(reinterpret_cast<const uint8_t*>(candidateJson.c_str()), candidateJson.length());
+        output.flush(); output.close();
+        String verified, latest; bool stagedExists, latestExists;
+        if (written != candidateJson.length() || !readRfKeyFile(temporary.c_str(), verified, stagedExists) ||
+            !stagedExists || verified != candidateJson || !readRfKeyFile(RF_KEYS_FILE, latest, latestExists) ||
+            latestExists != existed || latest != source) {
+            LittleFS.remove(temporary); error = "RF_KEYS_VERIFY_OR_SOURCE_CONFLICT"; return false;
+        }
+        if (!FileUtils::commitAtomicWrite(temporary, RF_KEYS_FILE)) { error = "RF_KEYS_COMMIT_UNCONFIRMED"; return false; }
+        RfGuard guard(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+        if (!guard.held) { error = "RF_KEYS_PUBLISH_UNCONFIRMED"; return false; }
+        _keyMap.swap(candidate); _keyMapLoaded = true; return true;
+    } catch (const std::bad_alloc&) { error = "RF_KEYS_MEMORY"; return false; }
 }
-
-bool RFLearnDriver::clearKeys() {
-    _keyMap.clear();
-    return _persistKeyMap();
-}
-
-bool RFLearnDriver::_persistKeyMap() {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (const auto& e : _keyMap) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["name"] = e.name;
-        char hex[12];
-        snprintf(hex, sizeof(hex), "0x%06lX", (unsigned long)e.code);
-        obj["code"] = hex;
-        obj["bits"] = e.bitLength;
-        obj["pulse"] = e.pulseWidth;
-    }
-
-    File f = LittleFS.open(RF_KEYS_FILE, "w");
-    if (!f) {
-        LOG_ERRORF("[RF-Learn] Cannot open rf_keys.json for writing");
-        return false;
-    }
-    serializeJson(doc, f);
-    f.close();
-    return true;
-}
-
 #endif // FASTBEE_ENABLE_RF_LEARN

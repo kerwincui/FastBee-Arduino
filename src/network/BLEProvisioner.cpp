@@ -71,9 +71,11 @@ private:
 // ---------------------------------------------------------------------------
 BLEProvisioner::BLEProvisioner(FBNetworkManager* netMgr) : netMgr(netMgr) {
     rxMutex = xSemaphoreCreateMutex();
+    featureOwner_.ready();
 }
 
 BLEProvisioner::~BLEProvisioner() {
+    featureOwner_.retiring();
     stop();
     if (rxMutex) {
         vSemaphoreDelete(rxMutex);

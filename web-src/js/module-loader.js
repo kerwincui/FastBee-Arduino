@@ -42,7 +42,8 @@ var ModuleLoader = {
         'periph-exec-editor': [
             'periph-exec',
             'periph-exec-modbus',
-            'periph-exec-form'
+            'periph-exec-form',
+            'periph-exec-templates'
         ]
     },
 

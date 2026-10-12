@@ -5,33 +5,34 @@ import subprocess
 import tempfile
 import unittest
 from test.unit.test_libdeps_patch_contract import PATCH_MODULE
-from test.unit.test_screen_panel_contract import braced_block
+from test.unit.zero_progress_support import (
+    RUNTIME_ENVIRONMENT, braced_block, copy_web_members, progress_methods,
+    select_runtime_inputs, verify_old_fixture, verify_runtime_inputs_unchanged,
+    write_progress_headers,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class WebResponseBatchTests(unittest.TestCase):
     def test_full_installer_on_installed_312_is_idempotent(self):
-        candidates = list((ROOT / ".pio/libdeps").glob("*/ESPAsyncWebServer/src/WebResponses.cpp"))
-        if not candidates:
-            self.skipTest("installed library is unavailable")
+        inputs = select_runtime_inputs(ROOT, RUNTIME_ENVIRONMENT)
         with tempfile.TemporaryDirectory(prefix="fastbee-web-install-") as directory:
             target = pathlib.Path(directory) / "WebResponses.cpp"
-            shutil.copyfile(candidates[0], target)
+            shutil.copyfile(inputs.web / "src/WebResponses.cpp", target)
             PATCH_MODULE._patch_web_responses(target)
             first = target.read_text(encoding="utf-8")
             self.assertFalse(PATCH_MODULE._patch_web_responses(target))
             self.assertEqual(first, target.read_text(encoding="utf-8"))
             self.assertIn("bound a low-DRAM response batch", first)
             self.assertEqual(2, first.count("FastBee patch: retry only previously failed TCP output"))
+        verify_runtime_inputs_unchanged(inputs)
 
     def test_installed_header_upgrade_preserves_dynamic_buffers_and_is_idempotent(self):
-        candidates = list((ROOT / ".pio/libdeps").glob("*/ESPAsyncWebServer/src/WebResponseImpl.h"))
-        if not candidates:
-            self.skipTest("installed library is unavailable")
+        inputs = select_runtime_inputs(ROOT, RUNTIME_ENVIRONMENT)
         with tempfile.TemporaryDirectory(prefix="fastbee-web-header-") as directory:
             target = pathlib.Path(directory) / "WebResponseImpl.h"
-            source = candidates[0].read_text(encoding="utf-8")
+            source = (inputs.web / "src/WebResponseImpl.h").read_text(encoding="utf-8")
             # Explicitly exercise the previous deployed header's upgrade.
             source = source.replace("  size_t _fastbeePendingOutputBytes{0};\n", "")
             target.write_text(source, encoding="utf-8")
@@ -40,6 +41,7 @@ class WebResponseBatchTests(unittest.TestCase):
             self.assertEqual(2, first.count("size_t _fastbeePendingOutputBytes{0};"))
             self.assertFalse(PATCH_MODULE._patch_web_response_impl(target))
             self.assertEqual(first, target.read_text(encoding="utf-8"))
+        verify_runtime_inputs_unchanged(inputs)
 
     def test_real_response_code_keeps_complete_bytes_under_bounded_batches(self):
         compiler = shutil.which("g++") or "D:/msys64/ucrt64/bin/g++.exe"
@@ -79,11 +81,25 @@ class WebResponseBatchTests(unittest.TestCase):
         second, changed = PATCH_MODULE._patch_peer_drained_completion(source)
         self.assertFalse(changed)
         self.assertEqual(source, second)
+        source, changed = PATCH_MODULE._patch_finite_progress_response(source)
+        self.assertTrue(changed)
+        second, changed = PATCH_MODULE._patch_finite_progress_response(source)
+        self.assertFalse(changed)
+        self.assertEqual(source, second)
+        source, changed = PATCH_MODULE._patch_basic_finite_progress_response(source)
+        self.assertTrue(changed)
+        second, changed = PATCH_MODULE._patch_basic_finite_progress_response(source)
+        self.assertFalse(changed)
+        self.assertEqual(source, second)
         basic_signature = "size_t AsyncBasicResponse::write_send_buffs(AsyncWebServerRequest *request, size_t len, uint32_t time)"
         with tempfile.TemporaryDirectory(prefix="fastbee-web-batch-") as directory:
             temporary = pathlib.Path(directory)
+            library = temporary / "ESPAsyncWebServer"
+            copy_web_members(verify_old_fixture(), library)
+            self.assertTrue(PATCH_MODULE.apply_to_library(library, log=lambda _: None))
+            write_progress_headers(temporary, library)
             (temporary / "production_response_batch.inc").write_text(
-                signature + " {" + braced_block(source, signature) + "}\n" +
+                progress_methods(source) + signature + " {" + braced_block(source, signature) + "}\n" +
                 basic_signature + " {" + braced_block(source, basic_signature) + "}", encoding="utf-8")
             executable = temporary / "batch.exe"
             environment = dict(os.environ)

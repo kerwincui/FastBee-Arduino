@@ -151,10 +151,10 @@ class MultiDeviceDeployTests(unittest.TestCase):
         self.assertNotIn('Resolve-ExternalConfig', self.source)
         self.assertNotIn('GetFolderPath("Desktop")', self.source)
         for source in (
-            'docs\\esp32c3-deployment-config.json',
+            'docs\\device-test-configs\\com4-esp32c3-f4r0\\config',
             'docs\\c6-rgb-led-f4r0',
-            'docs\\puzhong-esp32-config.json',
-            'docs\\ecm50a-s3-f16r8',
+            'docs\\device-test-configs\\com16-esp32-f4r0\\config',
+            'docs\\device-test-configs\\com15-esp32s3-f16r8\\config',
             'docs\\waveshare-esp32s3-relay6ch',
         ):
             self.assertIn(source, self.source)

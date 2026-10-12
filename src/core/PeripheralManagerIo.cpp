@@ -8,6 +8,8 @@
 #include "core/AsyncExecTypes.h"
 #include "core/ChipConfig.h"
 #include "core/I2CBusManager.h"
+#include "core/SpiBusInitializer.h"
+#include "peripherals/BoundedStreamRead.h"
 #include "systems/LoggerSystem.h"
 #include <driver/gpio.h>
 #include <Wire.h>
@@ -16,14 +18,6 @@
 
 namespace {
 constexpr uint32_t ENCODER_MIN_STALE_TIMEOUT_US = 1000000UL;
-
-bool isPrintablePayload(const uint8_t* data, size_t len) {
-    if (!data || len == 0 || len > 64) return false;
-    for (size_t i = 0; i < len; i++) {
-        if (data[i] < 32 || data[i] > 126) return false;
-    }
-    return true;
-}
 
 uint32_t saturatingAddUint32(uint32_t current, size_t amount) {
     const uint32_t remaining = UINT32_MAX - current;
@@ -41,7 +35,9 @@ uint16_t boundedUartAvailable(HardwareSerial* serial) {
 // ========== 通用数据读写接口 ==========
 
 bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t len) {
+    if (!data || !len) return false;
     RecursiveMutexGuard lock(_mutex);
+    if (!lock.isLocked()) return false;
     auto config = getPeripheral(id);
     if (!config || !config->enabled) {
         LOG_WARNINGF("writeData: Peripheral '%s' not found or disabled", id.c_str());
@@ -65,7 +61,7 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
             if (len >= 2) {
                 uint32_t dutyCycle = data[0] | (data[1] << 8);
                 if (len >= 4) {
-                    dutyCycle |= (data[2] << 16) | (data[3] << 24);
+                    dutyCycle |= (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
                 }
                 success = writePWM(id, dutyCycle);
             } else if (len == 1) {
@@ -90,25 +86,36 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
 
         // DAC 输出
         case PeripheralType::DAC:
-#if CHIP_HAS_DAC
-            if (len >= 1) {
-                uint8_t pin = config->getPrimaryPin();
-                if (pin == 25 || pin == 26) {
-                    dacWrite(pin, data[0]);
-                    success = true;
-                }
-            }
-#else
-            LOG_WARNING("DAC not supported on this chip");
-#endif
+            // The raw data API cannot supply trusted source/operation identity.
+            // Setup still uses checked writeManagedDac; ordinary commands must
+            // use submitOrdinaryScalar and cannot silently adopt an idle target.
+            success = false;
             break;
 
         // UART 发送
-        case PeripheralType::UART:
+        case PeripheralType::UART: {
+            auto state = runtimeStates.find(id);
+            if (state == runtimeStates.end() || state->second.memorySuspended) {
+                if (state != runtimeStates.end()) state->second.lastError = "UART_NOT_READY";
+                break;
+            }
             if (HardwareSerial* serial = getUartSerial(id)) {
-                success = (serial->write(data, len) == len);
+                const size_t accepted = serial->write(data, len);
+                success = accepted == len;
+                state->second.lastError = success ? "" : "UART_WRITE_INCOMPLETE";
+                // Count even a partially accepted write. This is a local driver
+                // acknowledgement, not evidence of peer receipt or execution.
+                const size_t bounded = accepted < len ? accepted : len;
+                state->second.state.comm.bytesSent = saturatingAddUint32(state->second.state.comm.bytesSent, bounded);
+                if (bounded) state->second.lastActivity = millis();
+                state->second.state.comm.isConnected = true;
+                state->second.state.comm.rxAvailable = boundedUartAvailable(serial);
+            } else {
+                state->second.lastError = "UART_NOT_OWNED";
+                state->second.state.comm.isConnected = false;
             }
             break;
+        }
 
         // I2C 写入
         case PeripheralType::I2C:
@@ -124,6 +131,7 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
 
         // SPI 传输
         case PeripheralType::SPI: {
+            if (!data || len == 0) break;
             if (config->pinCount < 4 || config->pins[3] == 255 ||
                 !isValidPin(config->pins[3]) ||
                 isReservedPin(config->pins[3]) ||
@@ -131,8 +139,17 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
                 LOG_WARNINGF("writeData: SPI '%s' has no usable CS pin", id.c_str());
                 break;
             }
+            FastBee::SpiBusOperation operation(20);
+            String spiError;
+            if (!operation.locked()) spiError = "SPI_BUSY: write deferred";
+            if (!operation.locked() || !FastBee::SpiBusInitializer::instance().checkNamed(
+                    id, config->pins[2], config->pins[0], config->pins[1], config->pins[3], spiError)) {
+                auto state = runtimeStates.find(id);
+                if (state != runtimeStates.end()) state->second.lastError = spiError;
+                break;
+            }
             const uint8_t cs = config->pins[3];
-            SPI.beginTransaction(SPISettings(config->params.spi.frequency,
+            SPI.beginTransaction(SPISettings(config->params.spi.frequency ? config->params.spi.frequency : 1000000,
                 config->params.spi.msbFirst ? MSBFIRST : LSBFIRST,
                 config->params.spi.mode));
             digitalWrite(cs, LOW);
@@ -142,23 +159,15 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
             digitalWrite(cs, HIGH);
             SPI.endTransaction();
             success = true;
+            auto state = runtimeStates.find(id);
+            if (state != runtimeStates.end()) state->second.lastError = "";
             break;
         }
 
         case PeripheralType::RF_MODULE:
-            if (len > 0) {
-                if (isPrintablePayload(data, len)) {
-                    String code((const char*)data, len);
-                    success = sendRfCode(id, code);
-                } else {
-                    uint32_t code = 0;
-                    size_t n = len > 4 ? 4 : len;
-                    for (size_t i = 0; i < n; i++) {
-                        code |= ((uint32_t)data[i]) << (i * 8);
-                    }
-                    success = sendRfCode(id, String(code));
-                }
-            }
+            // Binary/printable legacy writeData has no authenticated actor,
+            // epoch or operation. It cannot fabricate an RF output grant.
+            success = false;
             break;
 
         default:
@@ -171,8 +180,9 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
         PeripheralRuntimeState& runtime = runtimeStates[id];
         runtime.lastActivity = millis();
         if (config->isCommunicationPeripheral()) {
-            runtime.state.comm.bytesSent = saturatingAddUint32(
-                runtime.state.comm.bytesSent, len);
+            if (config->type != PeripheralType::UART) {
+                runtime.state.comm.bytesSent = saturatingAddUint32(runtime.state.comm.bytesSent, len);
+            }
             if (config->type == PeripheralType::UART) {
                 HardwareSerial* serial = getUartSerial(id);
                 runtime.state.comm.isConnected = serial != nullptr;
@@ -185,7 +195,9 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
 }
 
 bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len) {
+    if (!buffer || !len) { len = 0; return false; }
     RecursiveMutexGuard lock(_mutex);
+    if (!lock.isLocked()) { len = 0; return false; }
     auto config = getPeripheral(id);
     if (!config || !config->enabled) {
         LOG_WARNINGF("readData: Peripheral '%s' not found or disabled", id.c_str());
@@ -218,7 +230,9 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
         case PeripheralType::GPIO_ANALOG_INPUT:
         case PeripheralType::ADC:
             if (maxLen >= 2) {
-                uint16_t value = readAnalog(id);
+                AnalogReadSample sample;
+                if (!readAnalogSample(id, sample)) break;
+                const uint16_t value = sample.raw;
                 buffer[0] = value & 0xFF;
                 buffer[1] = (value >> 8) & 0xFF;
                 len = 2;
@@ -227,15 +241,29 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
             break;
 
         // UART 接收
-        case PeripheralType::UART:
+        case PeripheralType::UART: {
+            auto state = runtimeStates.find(id);
+            if (state == runtimeStates.end() || state->second.memorySuspended) {
+                if (state != runtimeStates.end()) state->second.lastError = "UART_NOT_READY";
+                break;
+            }
             if (HardwareSerial* serial = getUartSerial(id)) {
-                len = 0;
-                while (serial->available() && len < maxLen) {
-                    buffer[len++] = serial->read();
-                }
-                success = true;
+                const uint32_t generation = getUartReceiveGeneration(id);
+                const auto receiveCurrent = [&] {
+                    return generation && getUartReceiveGeneration(id) == generation;
+                };
+                success = FastBee::readBufferedStreamChecked<256>(*serial, buffer, maxLen, len, receiveCurrent);
+                if (!receiveCurrent()) {
+                    success = false; len = 0;
+                    state->second.lastError = "UART_RX_FAULT_LATCHED: explicit UART restart required";
+                    state->second.state.comm.isConnected = false;
+                } else state->second.lastError = success ? "" : "UART_READ_FAILED";
+            } else {
+                state->second.lastError = "UART_NOT_OWNED";
+                state->second.state.comm.isConnected = false;
             }
             break;
+        }
 
         // I2C 读取
         case PeripheralType::I2C:
@@ -244,17 +272,18 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
                 TwoWire* wire = busLock.locked() ? getManagedI2cWire(id) : nullptr;
                 if (!wire) break;
                 size_t requestLen = (maxLen < 32) ? maxLen : 32;  // I2C 一次最多读取 32 字节
-                wire->requestFrom(config->params.i2c.address, (uint8_t)requestLen);
-                len = 0;
-                while (wire->available() && len < requestLen) {
-                    buffer[len++] = wire->read();
-                }
-                success = (len > 0);
+                const size_t received = wire->requestFrom(config->params.i2c.address, (uint8_t)requestLen);
+                if (received != requestLen) FastBee::discardBufferedStream(*wire);
+                else success = FastBee::readExactBufferedStream<32>(*wire, buffer, requestLen);
+                if (success) len = requestLen;
+                auto state = runtimeStates.find(id);
+                if (state != runtimeStates.end()) state->second.lastError = success ? "" : "I2C_READ_INCOMPLETE";
             }
             break;
 
         // SPI 读取（需要先发送才能读取）
         case PeripheralType::SPI: {
+            if (!buffer || maxLen == 0) break;
             if (config->pinCount < 4 || config->pins[3] == 255 ||
                 !isValidPin(config->pins[3]) ||
                 isReservedPin(config->pins[3]) ||
@@ -262,8 +291,17 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
                 LOG_WARNINGF("readData: SPI '%s' has no usable CS pin", id.c_str());
                 break;
             }
+            FastBee::SpiBusOperation operation(20);
+            String spiError;
+            if (!operation.locked()) spiError = "SPI_BUSY: read deferred";
+            if (!operation.locked() || !FastBee::SpiBusInitializer::instance().checkNamed(
+                    id, config->pins[2], config->pins[0], config->pins[1], config->pins[3], spiError)) {
+                auto state = runtimeStates.find(id);
+                if (state != runtimeStates.end()) state->second.lastError = spiError;
+                break;
+            }
             const uint8_t cs = config->pins[3];
-            SPI.beginTransaction(SPISettings(config->params.spi.frequency,
+            SPI.beginTransaction(SPISettings(config->params.spi.frequency ? config->params.spi.frequency : 1000000,
                 config->params.spi.msbFirst ? MSBFIRST : LSBFIRST,
                 config->params.spi.mode));
             digitalWrite(cs, LOW);
@@ -274,6 +312,8 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
             SPI.endTransaction();
             len = maxLen;
             success = true;
+            auto state = runtimeStates.find(id);
+            if (state != runtimeStates.end()) state->second.lastError = "";
             break;
         }
 
@@ -305,7 +345,7 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
     }
 
     // 更新运行时状态
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+    if (success && len > 0 && runtimeStates.find(id) != runtimeStates.end()) {
         PeripheralRuntimeState& runtime = runtimeStates[id];
         runtime.lastActivity = millis();
         if (config->isCommunicationPeripheral()) {
@@ -344,7 +384,7 @@ bool PeripheralManager::getEncoderReading(const String& id, EncoderReading& read
     }
 
     EncoderIsrSlot* slot = findEncoderSlot(id);
-    if (!slot) return false;
+    if (!encoderSlotReady(slot)) return false;
 
     int64_t count = 0;
     int64_t delta = 0;
@@ -403,6 +443,7 @@ bool PeripheralManager::resetEncoder(const String& id) {
     EncoderIsrSlot* slot = findEncoderSlot(id);
     auto stateIt = runtimeStates.find(id);
     if (!slot && configIt->second.enabled) return false;
+    if (slot && !encoderSlotReady(slot)) return false;
 
     portENTER_CRITICAL(&_encoderMux);
     if (slot) {
@@ -432,6 +473,7 @@ bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterrup
     // 线程安全（T4 修复）：旧实现在 getPeripheral 释放锁后继续解引用返回的裸指针，
     // 并发 removePeripheral 会使指针悬垂；改为持锁内直接访问容器
     RecursiveMutexGuard lock(_mutex);
+    if (!lock.isLocked()) return false;
     auto it = peripherals.find(peripheralId);
     if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
     PeripheralConfig& config = it->second;
@@ -440,8 +482,6 @@ bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterrup
     // 引脚验证（T3）：attach 前验证引脚合法性，避免向非法 GPIO 注册中断
     if (pin == 255 || !isValidPin(pin)) return false;
 
-    config.params.gpio.interruptCallback = callback;
-
     uint8_t mode = CHANGE;
     if (config.type == PeripheralType::GPIO_INTERRUPT_RISING) {
         mode = config.params.gpio.invertLogic ? FALLING : RISING;
@@ -449,7 +489,8 @@ bool PeripheralManager::attachInterrupt(const String& peripheralId, GPIOInterrup
         mode = config.params.gpio.invertLogic ? RISING : FALLING;
     }
 
-    ::attachInterruptArg(digitalPinToInterrupt(pin), isrHandler, (void*)(uintptr_t)pin, mode);
+    if (!config.enabled || !_managedPinIo.attach(config.id.c_str(), pin, isrHandler, (void*)(uintptr_t)pin, mode)) return false;
+    config.params.gpio.interruptCallback = callback;
 
     auto rs = runtimeStates.find(peripheralId);
     if (rs != runtimeStates.end()) {
@@ -480,6 +521,7 @@ bool PeripheralManager::detachInterrupt(uint8_t pin) {
 bool PeripheralManager::detachInterrupt(const String& peripheralId) {
     // 同 attachInterrupt：持锁内直接访问容器，避免锁外解引用裸指针
     RecursiveMutexGuard lock(_mutex);
+    if (!lock.isLocked()) return false;
     auto it = peripherals.find(peripheralId);
     if (it == peripherals.end() || !it->second.isGPIOPeripheral()) return false;
     PeripheralConfig& config = it->second;
@@ -487,7 +529,7 @@ bool PeripheralManager::detachInterrupt(const String& peripheralId) {
     uint8_t pin = config.getPrimaryPin();
     if (pin == 255 || !isValidPin(pin)) return false;
 
-    ::detachInterrupt(digitalPinToInterrupt(pin));
+    if (!_managedPinIo.detach(config.id.c_str(), pin)) return false;
     config.params.gpio.interruptCallback = nullptr;
 
     auto rs = runtimeStates.find(peripheralId);
@@ -507,6 +549,42 @@ bool PeripheralManager::detachInterrupt(const String& peripheralId) {
 // 静态槽位存储：ISR 只触碰固定内存，不做任何堆分配
 PeripheralManager::EncoderIsrSlot PeripheralManager::_encoderSlots[PeripheralManager::MAX_ENCODER_SLOTS];
 portMUX_TYPE PeripheralManager::_encoderMux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t PeripheralManager::_nextEncoderGeneration = 0;
+
+void PeripheralManager::snapshotEncoderResources(FastBee::EncoderResourceSnapshot& result) const {
+    result = FastBee::EncoderResourceSnapshot{};
+    RecursiveMutexGuard lock(_mutex, 0);
+    if (!lock.isLocked()) { result.status = FastBee::ResourceObservation::Busy; return; }
+    static_assert(MAX_ENCODER_SLOTS == FastBee::EncoderResourceSnapshot::CAPACITY, "snapshot capacity");
+    // Task mutations of identity/pins/used hold _mutex. The ISR only reads
+    // these fields; counters are intentionally omitted, so no ISR spinlock is
+    // acquired and no GPIO/interrupt API is invoked by this observation.
+    for (size_t i = 0; i < MAX_ENCODER_SLOTS; ++i) {
+        const auto& slot = _encoderSlots[i];
+        if (!slot.used) continue;
+        auto& lease = result.leases[result.count++];
+        lease.slot = static_cast<uint8_t>(i);
+        lease.pinA = slot.pinA; lease.pinB = slot.pinB;
+        // Do not invent a truncated identity if a malformed legacy slot exists.
+        const size_t length = slot.id.length();
+        if (length < sizeof(lease.id) && std::strlen(slot.id.c_str()) == length)
+            std::memcpy(lease.id, slot.id.c_str(), length);
+        FastBee::GpioResourceSnapshot::Lease phase;
+        if (_managedPinIo.observeGpio(slot.pinA, phase)) {
+            lease.interruptAttached = phase.interruptAttached;
+            lease.interruptCleanupPending = phase.interruptCleanupPending;
+            lease.fault = phase.fault;
+            lease.cleanupPending = phase.cleanupPending;
+        }
+        if (_managedPinIo.observeGpio(slot.pinB, phase)) {
+            lease.fault = lease.fault || phase.fault;
+            lease.cleanupPending = lease.cleanupPending || phase.cleanupPending;
+        }
+        lease.active = encoderSlotReady(&slot);
+        lease.fault = lease.fault || slot.fault;
+        lease.cleanupPending = lease.cleanupPending || slot.cleanupPending;
+    }
+}
 
 PeripheralManager::EncoderIsrSlot* PeripheralManager::findEncoderSlot(const String& id) {
     for (auto& slot : _encoderSlots) {
@@ -517,15 +595,22 @@ PeripheralManager::EncoderIsrSlot* PeripheralManager::findEncoderSlot(const Stri
 
 PeripheralManager::EncoderIsrSlot* PeripheralManager::allocEncoderSlot(const String& id,
                                                                        uint8_t pinA, uint8_t pinB) {
-    EncoderIsrSlot* slot = findEncoderSlot(id);
-    if (!slot) {
-        for (auto& s : _encoderSlots) {
-            if (!s.used) { slot = &s; break; }
-        }
+    if (id.length() == 0 || id.length() >= FastBee::ResourceConsumerIdentity::ID_CAPACITY ||
+        std::strlen(id.c_str()) != id.length() || findEncoderSlot(id) ||
+        _nextEncoderGeneration >= (UINT32_MAX >> 2)) return nullptr;
+    static_assert(MAX_ENCODER_SLOTS == 4 && sizeof(uintptr_t) >= sizeof(uint32_t), "encoder token capacity");
+    EncoderIsrSlot* slot = nullptr;
+    for (auto& s : _encoderSlots) {
+        if (!s.used) { slot = &s; break; }
     }
     if (!slot) return nullptr;
     slot->id = id;  // String 赋值在临界区外（关中断时不可 malloc）
+    if (slot->id != id) { slot->id = ""; return nullptr; }
     portENTER_CRITICAL(&_encoderMux);
+    slot->token = (++_nextEncoderGeneration << 2) | static_cast<uint32_t>(slot - _encoderSlots);
+    slot->active = false;
+    slot->fault = false;
+    slot->cleanupPending = false;
     slot->pinA = pinA;
     slot->pinB = pinB;
     slot->count = 0;
@@ -541,8 +626,13 @@ PeripheralManager::EncoderIsrSlot* PeripheralManager::allocEncoderSlot(const Str
 void PeripheralManager::releaseEncoderSlot(const String& id) {
     EncoderIsrSlot* slot = findEncoderSlot(id);
     if (!slot) return;
+    if (slot->active || _managedPinIo.hasGpio(slot->pinA) || _managedPinIo.hasGpio(slot->pinB)) return;
     portENTER_CRITICAL(&_encoderMux);
+    slot->active = false;
     slot->used = false;
+    slot->token = 0;
+    slot->fault = false;
+    slot->cleanupPending = false;
     slot->pinA = 255;
     slot->pinB = 255;
     slot->count = 0;
@@ -555,12 +645,11 @@ void PeripheralManager::releaseEncoderSlot(const String& id) {
 }
 
 void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
-    // arg 指向静态槽位：不做 String 拷贝/map 插入等堆分配（非 ISR-safe），
-    // 外设删除后槽位被标记 used=false，不存在悬垂解引用
-    EncoderIsrSlot* slot = static_cast<EncoderIsrSlot*>(arg);
-    if (!slot) return;
+    const uintptr_t token = reinterpret_cast<uintptr_t>(arg);
+    if (token == 0 || token != static_cast<uint32_t>(token) || (token >> 2) == 0) return;
+    EncoderIsrSlot* slot = &_encoderSlots[token & 3U];
     portENTER_CRITICAL_ISR(&_encoderMux);
-    if (slot->used) {
+    if (slot->used && slot->active && slot->token == token) {
         // CHANGE 同时包含 A 相上升沿和下降沿，因此必须联合读取 A/B；
         // 只看 B 相会在相邻边沿产生相反结论并导致计数错误。
         const bool phaseA = gpio_get_level(static_cast<gpio_num_t>(slot->pinA)) != 0;
@@ -571,8 +660,8 @@ void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
             slot->edgePeriodMicros = nowMicros - slot->lastEdgeMicros;
         }
         slot->lastEdgeMicros = nowMicros;
-        slot->count += step;
-        slot->delta += step;
+        if ((step > 0 && slot->count < INT64_MAX) || (step < 0 && slot->count > INT64_MIN)) slot->count += step;
+        if ((step > 0 && slot->delta < INT64_MAX) || (step < 0 && slot->delta > INT64_MIN)) slot->delta += step;
         slot->direction = step;
     }
     portEXIT_CRITICAL_ISR(&_encoderMux);

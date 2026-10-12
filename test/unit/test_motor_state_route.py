@@ -30,7 +30,7 @@ class MotorStateRouteTests(unittest.TestCase):
             binary = directory / 'route.exe'
             build = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
                 '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0', '-DARDUINOJSON_ENABLE_STD_STRING=1',
-                '-I' + str(directory), '-I' + str(ROOT / 'test/mocks'), '-I' + str(json_header.parent),
+                '-I' + str(directory), '-I' + str(ROOT / 'test/mocks'), '-I' + str(SOURCE / 'include'), '-I' + str(json_header.parent),
                 str(directory / 'harness.cpp'), '-o', str(binary)], capture_output=True, text=True,
                 encoding='utf8', env=env, timeout=60)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)

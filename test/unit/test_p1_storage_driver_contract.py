@@ -15,7 +15,14 @@ CACHE_SOURCE = (ROOT / "src/core/SensorDriverCache.cpp").read_text(encoding="utf
 
 class P1StorageDriverContractTests(unittest.TestCase):
     def test_sd_uses_real_bounded_sdspi_mount(self):
-        self.assertIn("SPI.begin(_status.sckPin, _status.misoPin", SD_SOURCE)
+        init = SD_SOURCE.index("if (!FastBee::SpiBusInitializer::instance().acquire(")
+        mount = SD_SOURCE.index("if (!SD.begin(", init)
+        checked = SD_SOURCE[init:mount]
+        self.assertIn("this, _status.sckPin, _status.misoPin, _status.mosiPin, _status.csPin, errorMsg", checked)
+        self.assertIn("setErrorLocked(errorMsg);", checked)
+        self.assertIn("return false;", checked)
+        self.assertLess(checked.index("return false;"), checked.index("pinMode("))
+        self.assertNotIn("SPI.begin(", SD_SOURCE)
         self.assertIn("SD.begin(_status.csPin, SPI, _status.frequency", SD_SOURCE)
         self.assertIn("SD.cardType() == CARD_NONE", SD_SOURCE)
         self.assertIn("MAX_FILE_BYTES = 16384", SD_HEADER)
@@ -33,7 +40,8 @@ class P1StorageDriverContractTests(unittest.TestCase):
 
     def test_sd_mount_and_mutations_are_serialized(self):
         self.assertIn("xSemaphoreCreateMutex", SD_SOURCE)
-        self.assertGreaterEqual(SD_SOURCE.count("SDMutexGuard guard(_mutex)"), 7)
+        self.assertGreaterEqual(SD_SOURCE.count("SDMutexGuard guard(mutexHandle())"), 7)
+        self.assertIn("_mutex.compare_exchange_strong", SD_SOURCE)
         self.assertIn("SD_BUSY", SD_SOURCE)
 
     def test_rfid_explicit_spi_and_safe_blocks_are_enforced(self):
@@ -42,13 +50,23 @@ class P1StorageDriverContractTests(unittest.TestCase):
             "sckPin, uint8_t mosiPin, uint8_t misoPin",
             normalized_header,
         )
-        self.assertIn("SPI.begin(sckPin, misoPin, mosiPin, ssPin)", RFID_SOURCE)
+        init = RFID_SOURCE.index("if (!FastBee::SpiBusInitializer::instance().acquire(")
+        probe = RFID_SOURCE.index("rfid->PCD_Init();", init)
+        checked = RFID_SOURCE[init:probe]
+        self.assertIn("this, useDefaults ? SCK", checked)
+        self.assertIn("useDefaults ? SCK : sckPin, useDefaults ? MISO : misoPin", checked)
+        self.assertIn("useDefaults ? MOSI : mosiPin, ssPin, _lastError", checked)
+        self.assertIn("delete rfid;", checked)
+        self.assertIn("return false;", checked)
+        self.assertIn("RFID_SPI_PINS_INVALID", RFID_SOURCE[:init])
+        self.assertIn("RFID_ALLOCATION_FAILED", RFID_SOURCE[:init])
+        self.assertNotIn("SPI.begin(", RFID_SOURCE)
         self.assertIn("block > 0 && block <= 62 && (block % 4) != 3", RFID_SOURCE)
         self.assertIn("RFID_BLOCK_FORBIDDEN", RFID_SOURCE)
 
     def test_rfid_write_requires_authentication_and_readback_verification(self):
         start = RFID_SOURCE.index("RFIDDriver::writeBlockVerified")
-        end = RFID_SOURCE.index("\nvoid RFIDDriver::stop()", start)
+        end = RFID_SOURCE.index("\nbool RFIDDriver::stop(", start)
         block = RFID_SOURCE[start:end]
         self.assertIn("authenticateBlock", block)
         self.assertIn("MIFARE_Write", block)

@@ -2,6 +2,7 @@
 #define DNS_MANAGER_H
 
 #include "core/FeatureFlags.h"
+#include "core/FeatureInstanceRegistry.h"
 
 #if FASTBEE_ENABLE_MDNS
 #include <ESPmDNS.h>
@@ -15,6 +16,8 @@ class DNSManager {
 public:
     DNSManager();
     ~DNSManager();
+    DNSManager(const DNSManager&) = delete;
+    DNSManager& operator=(const DNSManager&) = delete;
     
     /**
      * @brief 初始化 DNS 管理器
@@ -77,6 +80,7 @@ public:
     String getActualHostname() const;
     
 private:
+    static FastBee::FeatureInstanceSnapshot observeFeatureInstance(const void* context);
     bool mdnsStarted = false;
     String customDomain = "fastbee";
     bool mdnsEnabled = true;

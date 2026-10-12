@@ -1,5 +1,6 @@
 import { test, expect } from '../fixtures/base.fixture';
 import { enableOptionalUiFeatures } from '../fixtures/optional-features.fixture';
+const { MAPPING: privateNames } = require('../../../scripts/web-private-properties');
 
 // This suite loads published gzip assets through PageLoader/ModuleLoader and
 // the offline API. Suite 28 separately exercises source-level failure cases.
@@ -153,10 +154,11 @@ test.describe('Generic peripheral published Web integration', () => {
     await block.locator('.pe-sensor-channel-field').selectOption('current');
     await block.locator('.pe-sensor-property').fill('loadCurrent');
     await expect(block.locator('.pe-sensor-unit')).toHaveValue('A');
-    const payload = await authPage.evaluate(() => {
+    const payload = await authPage.evaluate(names => {
       const app = (window as any).AppState;
-      return JSON.parse(app._collectPeriphExecActions()[0].actionValue);
-    });
+      const key = names._collectPeriphExecActions in app ? names._collectPeriphExecActions : '_collectPeriphExecActions';
+      return JSON.parse(app[key]()[0].actionValue);
+    }, privateNames);
     expect(payload).toMatchObject({ periphId: 'offline_ina', sensorCategory: 'INA226', channelField: 'current', dataField: 'loadCurrent', unit: 'A', scaleFactor: 1, offset: 0 });
     for (const width of [1280, 390]) {
       await authPage.setViewportSize({ width, height: 844 });

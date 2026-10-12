@@ -3,6 +3,7 @@
  */
 (function() {
     'use strict';
+    Object.assign(AppState, window.PeriphExecRunValuePrompt);
 
     // MCU/芯片图标 SVG（内联，不依赖外部资源）
     var DEVICE_ICON_SVG = '<svg viewBox="0 0 80 80" width="80" height="80" fill="none" xmlns="http://www.w3.org/2000/svg">' +
@@ -61,7 +62,7 @@
         _eventsBound: false,
         _dcFullscreenEventsBound: false,
         _dcKeyboardEventsBound: false,
-        _periphExecRunPromptState: null,
+        _periphExecRunPromptState: AppState._periphExecRunPromptState || null,
         _dcPageLoadPromise: null,
         _dcRuntimeLoadPromise: null,
         _dcLifecycleGeneration: 0,
@@ -399,110 +400,11 @@
             }
         },
 
-        // ============ Periph-exec 运行值弹窗 ============
-        _ensurePeriphExecRunValueModal: function() {
-            var modal = document.getElementById('periph-exec-run-value-modal');
-            if (modal) return modal;
-            if (!document.body) return null;
-            modal = document.createElement('div');
-            modal.id = 'periph-exec-run-value-modal';
-            modal.className = 'modal is-hidden';
-            modal.innerHTML = '' +
-                '<div class="modal-content u-modal-content-700">' +
-                    '<div class="modal-header">' +
-                        '<h2 class="modal-title" id="periph-exec-run-value-modal-title"></h2>' +
-                        '<button type="button" id="close-periph-exec-run-value-modal" class="modal-close-btn">&times;</button>' +
-                    '</div>' +
-                    '<div class="modal-body">' +
-                        '<div class="fb-form">' +
-                            '<div class="fb-form-group">' +
-                                '<label for="periph-exec-run-value-input" id="periph-exec-run-value-label"></label>' +
-                                '<input type="text" id="periph-exec-run-value-input" class="" maxlength="128" autocomplete="off" spellcheck="false">' +
-                                '<small id="periph-exec-run-value-help" class="pe-help-text"></small>' +
-                            '</div>' +
-                            '<div id="periph-exec-run-value-error" class="message message-error is-hidden"></div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="modal-footer">' +
-                        '<button class="fb-btn" id="cancel-periph-exec-run-value-btn" type="button"></button>' +
-                        '<button class="fb-btn fb-btn-primary" id="confirm-periph-exec-run-value-btn" type="button"></button>' +
-                    '</div>' +
-                '</div>';
-            document.body.appendChild(modal);
-            var self = this;
-            var closePrompt = function() { self._resolvePeriphExecRunValuePrompt(null); };
-            modal.addEventListener('click', function(event) { if (event.target === modal) closePrompt(); });
-            var closeBtn = document.getElementById('close-periph-exec-run-value-modal');
-            if (closeBtn) closeBtn.addEventListener('click', function(event) { event.preventDefault(); closePrompt(); });
-            var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
-            if (cancelBtn) cancelBtn.addEventListener('click', function() { closePrompt(); });
-            var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
-            if (confirmBtn) confirmBtn.addEventListener('click', function() { self._submitPeriphExecRunValuePrompt(); });
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (input) input.addEventListener('keydown', function(event) { if (event.key === 'Enter') { event.preventDefault(); self._submitPeriphExecRunValuePrompt(); } });
-            return modal;
-        },
-
-        _setPeriphExecRunValuePromptError: function(message) {
-            var errorEl = document.getElementById('periph-exec-run-value-error');
-            if (!errorEl) return;
-            errorEl.textContent = message || '';
-            if (message) this.showElement(errorEl, 'block');
-            else this.hideElement(errorEl);
-        },
-
-        _resolvePeriphExecRunValuePrompt: function(value) {
-            var pending = this._periphExecRunPromptState;
-            this._periphExecRunPromptState = null;
-            this._setPeriphExecRunValuePromptError('');
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (input) input.value = '';
-            this.hideModal('periph-exec-run-value-modal');
-            if (pending && typeof pending.resolve === 'function') pending.resolve(value);
-        },
-
-        _submitPeriphExecRunValuePrompt: function() {
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (!input) { this._resolvePeriphExecRunValuePrompt(null); return; }
-            var value = String(input.value || '').trim();
-            if (!value.length) {
-                this._setPeriphExecRunValuePromptError('请输入要设置的值');
-                input.focus();
-                return;
-            }
-            this._resolvePeriphExecRunValuePrompt(value);
-        },
-
         promptPeriphExecRunValue: function(options) {
-            var opts = options || {};
-            var modal = this._ensurePeriphExecRunValueModal();
-            if (!modal) {
-                var fallbackValue = prompt('请输入要设置的值 (如: PWM占空比、PID参数等):', opts.defaultValue != null ? String(opts.defaultValue) : '');
-                if (fallbackValue === null) return Promise.resolve(null);
-                var normalizedValue = String(fallbackValue || '').trim();
-                if (!normalizedValue.length) { Notification.warning('请输入要设置的值', '执行失败'); return Promise.resolve(null); }
-                return Promise.resolve(normalizedValue);
-            }
-            var titleEl = document.getElementById('periph-exec-run-value-modal-title');
-            var labelEl = document.getElementById('periph-exec-run-value-label');
-            var helpEl = document.getElementById('periph-exec-run-value-help');
-            var input = document.getElementById('periph-exec-run-value-input');
-            var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
-            var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
-            if (titleEl) titleEl.textContent = opts.title || '输入执行值';
-            if (labelEl) labelEl.textContent = opts.label || '执行值';
-            var helpText = opts.helpText || '请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。';
-            if (opts.ruleName) helpText = opts.ruleName + ' - ' + helpText;
-            if (helpEl) helpEl.textContent = helpText;
-            if (cancelBtn) cancelBtn.textContent = '取消';
-            if (confirmBtn) confirmBtn.textContent = opts.confirmText || '执行一次';
-            if (input) { input.value = opts.defaultValue != null ? String(opts.defaultValue) : ''; input.placeholder = opts.placeholder || '例如: 80、25.5、1,0,0.5'; }
-            this._setPeriphExecRunValuePromptError('');
-            if (this._periphExecRunPromptState && typeof this._periphExecRunPromptState.resolve === 'function') this._periphExecRunPromptState.resolve(null);
-            return new Promise((resolve) => {
-                this._periphExecRunPromptState = { resolve: resolve };
-                this.showModal(modal);
-                setTimeout(function() { if (input) { input.focus(); input.select(); } }, 0);
+            return this._promptPeriphExecRunValue(options, {
+                fallbackMessage: '请输入要设置的值 (如: PWM占空比、PID参数等):',
+                warningTitle: '执行失败',
+                placeholder: '例如: 80、25.5、1,0,0.5'
             });
         },
 
@@ -753,12 +655,12 @@
                 return apiPost('/api/periph-exec/run', payload).then(function(res) {
                     if (!self._dcIsLifecycleActive(generation)) return;
                     var failed = res && ['failed', 'rejected', 'cancelled', 'timed_out'].includes(res.state);
-                    if (!res || !res.success || failed) Notification.error(res && (res.error || res.message || res.reason) || '执行失败');
-                    else Notification.success(res.state === 'success' ? '执行成功' : '执行已提交');
+                    if (!res || !res.success || failed) Notification.error(self._manualOutputMessage(res));
+                    else return self._observeManualOutput(res, () => self._dcIsLifecycleActive(generation));
                 });
             }).catch(function(err) {
                 if (!self._dcIsLifecycleActive(generation)) return;
-                Notification.error(err && err.data && (err.data.error || err.data.message) || err && err.message || '执行失败');
+                Notification.error(self._manualOutputMessage(err?.data || err));
             }).finally(function() {
                 if (self._dcRuleRuns.get(ruleId) === token) {
                     self._dcRuleRuns.delete(ruleId);

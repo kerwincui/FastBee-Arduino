@@ -1,0 +1,250 @@
+#include <Arduino.h>
+#include "network/LiteralStringMatch.h"
+#include <ArduinoJson.h>
+#include "core/ModbusOrdinaryControl.h"
+#include "core/SystemConstants.h"
+#include "protocols/MotorProtocol.h"
+#include "protocols/ModbusMotorReference.h"
+#include <cassert>
+#include <vector>
+#define pdMS_TO_TICKS(x) (x)
+// @types@
+using Context = FastBee::OrdinaryControlContext;
+using Target = FastBee::ModbusControlTarget;
+using Frame = FastBee::ModbusOutputFrame;
+using Result = FastBee::OrdinaryControlResult;
+struct ModbusSubDevice {
+    String deviceType = "pwm";
+    char sensorId[32] = "pwm";
+    bool enabled = true, ncMode = false;
+    uint8_t slaveAddress = 2, channelCount = 4, controlProtocol = 0, batchRegType = 0;
+    uint8_t pwmResolution = 8, motorDecimals = 0;
+    uint16_t coilBase = 100, batchRegister = 0, pwmRegBase = 200;
+    uint16_t pidAddrs[6]{300,301,302,303,304,305}, motorRegs[5]{1,2,3,4,5};
+    MotorProtocol motorProtocol;
+};
+struct Call { uint16_t address, value; };
+struct ModbusHandler {
+    struct SensorIdMatch {
+        uint8_t deviceIndex = 0; uint16_t channel = 1;
+        String action; bool matched = true;
+    } match;
+    ModbusSubDevice dev;
+    bool found = true, snapshotBusy = false, emptyId = false, unterminatedId = false;
+    bool held = false;
+    int snapshots = 0, mappingAt = -1, staleAt = -1;
+    unsigned drift = 0;
+    bool snapshotControlSensor(const String&, SensorIdMatch& out, ModbusSubDevice& copy, Target& target) {
+        assert(held); out=match;out.matched=found;copy=dev;
+        if(snapshotBusy)return false;
+        if(emptyId)copy.sensorId[0]='\0';
+        if(unterminatedId)std::memset(copy.sensorId,'x',sizeof(copy.sensorId));
+        target.kind=Target::Kind::Snapshot;target.instance=11;target.configuration=22;
+        target.slave=dev.slaveAddress;target.index=match.deviceIndex;
+        if(!dev.enabled)target={};
+        return true;
+    }
+    bool snapshotOrdinaryFrame(const Frame& frame, Target& target) {
+        assert(held && frame.valid() && frame.bytes[0]==dev.slaveAddress && frame.bytes[1]==6);
+        const int step=snapshots++;
+        if(step==mappingAt)return false;
+        target.kind=Target::Kind::Frame;target.instance=11;target.configuration=22;target.slave=2;
+        target.frameSlave=2;target.frameQuantity=1;target.function=6;target.first=frame.address();
+        if(step==staleAt) {
+            if(drift==0)++target.configuration;
+            if(drift==1)++target.instance;
+            if(drift==2)++target.slave;
+        }
+        return true;
+    }
+};
+struct Lease {
+    ModbusHandler* bus;
+    explicit Lease(ModbusHandler* value):bus(value){if(bus){assert(!bus->held);bus->held=true;}}
+    ~Lease(){if(bus){assert(bus->held);bus->held=false;}}
+    Lease(const Lease&)=delete;
+    ModbusHandler* get()const{return bus;}
+};
+struct ProtocolManager {
+    ModbusHandler bus;bool available=true;unsigned leases=0;
+    Lease acquireModbusHandler(int timeout){assert(timeout==2000);++leases;return Lease(available?&bus:nullptr);}
+};
+struct PeripheralManager {
+    Context expected;
+    std::vector<Call> calls;
+    int submissions=0, deniedAt=-1, failAt=-1;
+    bool inconsistent=false;
+    static PeripheralManager& getInstance(){static PeripheralManager object;return object;}
+    OneShotResult submitOrdinaryModbusFrame(ModbusHandler& bus, const Target& target,
+        const Frame& frame, const Context& context, Result& result) {
+        assert(bus.held && target.valid() && target.first==frame.address());
+        assert(context.request.actor.source==expected.request.actor.source &&
+            context.request.actor.identity==expected.request.actor.identity &&
+            context.request.operation==expected.request.operation &&
+            context.request.intent==expected.request.intent &&
+            context.request.holdMs==expected.request.holdMs &&
+            context.request.overrideConfirmed==expected.request.overrideConfirmed &&
+            context.request.reviewedGeneration==expected.request.reviewedGeneration);
+        assert(context.configEpoch==expected.configEpoch && context.ruleEpoch==expected.ruleEpoch &&
+            context.ruleBound==expected.ruleBound && context.operationDeadlineAt==expected.operationDeadlineAt &&
+            context.modbusMaintenance==expected.modbusMaintenance &&
+            !std::strcmp(context.reviewedTargetId,expected.reviewedTargetId));
+        assert(context.uartOrigin.configEpoch==expected.uartOrigin.configEpoch &&
+            context.uartOrigin.receiveGeneration==expected.uartOrigin.receiveGeneration &&
+            context.uartOrigin.required==expected.uartOrigin.required);
+        OneShotResult output;
+        const int step=submissions++;
+        if(step==deniedAt){output.error=ONESHOT_CONTROL_REJECTED;result.reason="CONTROL_CONFLICT";return output;}
+        calls.push_back({frame.address(),frame.word()});
+        output.outputAttempted=true;result.attempted=true;
+        output.error=step==failAt?ONESHOT_TIMEOUT:ONESHOT_SUCCESS;
+        result.accepted=output.error==ONESHOT_SUCCESS && !inconsistent;
+        result.reason=result.accepted?"CONTROL_ACKNOWLEDGED_TRANSPORT_ONLY":"CONTROL_RESULT_UNKNOWN";
+        return output;
+    }
+    OneShotResult submitOrdinaryModbusRelay(ModbusHandler&,const Target&,uint8_t,uint16_t,uint16_t,
+        const Context&,Result&){assert(false && "scalar routed through relay");return {};}
+    bool writeModbusReg(const String&,uint16_t,uint16_t){
+        assert(false && "context-free convenience write");return false;
+    }
+};
+struct MotorControlService {
+    static MotorControlService& instance(){static MotorControlService value;return value;}
+    bool snapshotTarget(const String&,Target&){assert(false && "scalar routed through motor");return false;}
+    bool submitMqtt(const String&,const String&,int,const String&,const String&,uint16_t,
+        uint32_t&,String&,const Context&){assert(false);return false;}
+};
+struct PeriphExecManager {
+    unsigned events=0;String payload;
+    static PeriphExecManager& getInstance(){static PeriphExecManager value;return value;}
+    void triggerEventById(const String& id,const String& data){assert(id=="mc:0");++events;payload=data;}
+};
+int main(int argc,char** argv) {
+    assert(argc==2);const String scenario=argv[1];
+    ProtocolManager protocols;auto* pm=&protocols;auto& bus=protocols.bus;auto& dev=bus.dev;
+    auto& manager=PeripheralManager::getInstance();auto& events=PeriphExecManager::getInstance();
+    String input="123",sensorId="pwm_ch1";bool invalidNumber=false,invalidConfig=false;
+    const bool pid=scenario.startsWith("pid_");
+    bool all=scenario.startsWith("all_");
+    if(all){bus.match.action="all";bus.match.channel=0;sensorId="pwm_all";}
+    if(pid){
+        dev.deviceType="pid";strcpy(dev.sensorId,"pid");sensorId="pid_property";input="65535";
+        if(scenario=="pid_all"){bus.match.action="all";bus.match.channel=1;}
+        if(scenario=="pid_sv"){bus.match.action="sv";bus.match.channel=1;}
+        if(scenario=="pid_p"){bus.match.action="p";bus.match.channel=3;}
+        if(scenario=="pid_i"){bus.match.action="i";bus.match.channel=4;}
+        if(scenario=="pid_d"){bus.match.action="d";bus.match.channel=5;}
+        if(scenario=="pid_pv"){bus.match.action="pv";bus.match.channel=0;invalidConfig=true;}
+        if(scenario=="pid_out"){bus.match.action="out";bus.match.channel=2;invalidConfig=true;}
+        if(scenario=="pid_bad_action"){bus.match.action="x";invalidConfig=true;}
+        if(scenario=="pid_bad_index"){bus.match.action="d";bus.match.channel=8;invalidConfig=true;}
+        if(scenario=="pid_mismatched_index"){bus.match.action="sv";bus.match.channel=5;invalidConfig=true;}
+        if(scenario=="pid_unmapped")bus.mappingAt=0;
+    }
+    if(scenario.startsWith("number_")){
+        invalidNumber=true;
+        if(scenario=="number_negative")input="-1";
+        if(scenario=="number_plus")input="+1";
+        if(scenario=="number_space")input=" 1";
+        if(scenario=="number_trailing")input="1 ";
+        if(scenario=="number_tab")input="1\t";
+        if(scenario=="number_empty")input="";
+        if(scenario=="number_text")input="1x";
+        if(scenario=="number_fraction")input="1.5";
+        if(scenario=="number_overflow")input="65536";
+        if(scenario=="number_wrap")input="4294967296";
+        if(scenario=="number_embedded")input=String("1\0x",3);
+    }
+    if(scenario=="pwm_max"){dev.pwmResolution=16;input="65535";}
+    if(scenario=="pwm_zero")input="0";
+    if(scenario=="pwm_leading_zero")input="00123";
+    if(scenario=="pwm_width_overflow"){input="256";invalidConfig=true;}
+    if(scenario=="pwm_invalid_width"){dev.pwmResolution=17;invalidConfig=true;}
+    if(scenario=="pwm_zero_width"){dev.pwmResolution=0;invalidConfig=true;}
+    if(scenario=="pwm_bad_channel"){bus.match.channel=4;invalidConfig=true;}
+    if(scenario=="pwm_bad_action"){bus.match.action="sv";invalidConfig=true;}
+    if(scenario=="pwm_disabled"){dev.enabled=false;invalidConfig=true;}
+    if(scenario=="pwm_zero_channels"){dev.channelCount=0;invalidConfig=true;}
+    if(scenario=="pwm_address_overflow"){dev.pwmRegBase=65534;invalidConfig=true;}
+    if(scenario=="pwm_last_address"){dev.pwmRegBase=65532;bus.match.channel=3;}
+    if(scenario=="mapping_busy")bus.snapshotBusy=true;
+    if(scenario=="unmatched")bus.found=false;
+    if(scenario=="unavailable")protocols.available=false;
+    if(scenario=="all_failed_first")manager.failAt=0;
+    if(scenario=="all_failed_middle")manager.failAt=1;
+    if(scenario=="all_failed_last")manager.failAt=3;
+    if(scenario=="all_denied_middle")manager.deniedAt=1;
+    if(scenario=="all_unmapped_middle")bus.mappingAt=1;
+    if(scenario=="all_stale_config" || scenario=="all_stale_instance" || scenario=="all_stale_slave"){
+        bus.staleAt=1;bus.drift=scenario=="all_stale_instance"?1:scenario=="all_stale_slave"?2:0;
+    }
+    if(scenario=="all_fallback_id")bus.emptyId=true;
+    if(scenario=="all_unterminated_id")bus.unterminatedId=true;
+    if(scenario=="all_single_channel")dev.channelCount=1;
+    if(scenario=="single_denied")manager.deniedAt=0;
+    if(scenario=="single_failed")manager.failAt=0;
+    if(scenario=="single_inconsistent")manager.inconsistent=true;
+    Context source;source.request.operation=123;
+    source.request.actor={FastBee::OrdinaryControl::Source::Mqtt,77};
+    source.configEpoch=91;source.operationDeadlineAt=123456;
+    if(scenario=="source_rule"){
+        source.request.actor.source=FastBee::OrdinaryControl::Source::Rule;source.ruleBound=true;source.ruleEpoch=92;
+        source.uartOrigin=FastBee::UartEventOrigin::captured(91,93);
+    }
+    manager.expected=source;
+    JsonDocument report;JsonArray items=report.to<JsonArray>();
+    // @callback@
+    const bool handled=callback(sensorId,input,items,source);
+    assert(!bus.held && protocols.leases==1);
+    if(scenario=="unavailable" || scenario=="unmatched"){
+        assert(!handled && items.size()==0 && manager.submissions==0 && !events.events);return 0;
+    }
+    assert(handled); // True prevents PeriphExec from trying another output route.
+    if(bus.snapshotBusy || invalidNumber || invalidConfig){
+        assert(items.size()==1 && manager.calls.empty() && manager.submissions==0 && bus.snapshots==0 && !events.events);
+        assert(items[0]["value"].isNull() && items[0]["attempted"]==false &&
+            items[0]["commandAcknowledged"]==false && items[0]["physicalOutputVerified"]==false);
+        const char* reason=bus.snapshotBusy?"CONTROL_MAPPING_UNCONFIRMED":
+            invalidNumber?"modbus_number_invalid":"modbus_config_invalid";
+        assert(items[0]["remark"]==reason);return 0;
+    }
+    const int steps=all?dev.channelCount:1;
+    const int stopped=manager.failAt>=0?manager.failAt:manager.deniedAt>=0?manager.deniedAt:
+        bus.mappingAt>=0?bus.mappingAt:bus.staleAt>=0?bus.staleAt:manager.inconsistent?0:-1;
+    const bool failed=stopped>=0;
+    const int expectedCalls=!failed?steps:
+        manager.failAt>=0 || manager.inconsistent?stopped+1:stopped;
+    const int expectedSubmissions=!failed?steps:
+        bus.mappingAt>=0 || bus.staleAt>=0?stopped:stopped+1;
+    assert(items.size()==static_cast<size_t>(steps) &&
+        manager.calls.size()==static_cast<size_t>(expectedCalls) &&
+        manager.submissions==expectedSubmissions && bus.snapshots==(failed?stopped+1:steps));
+    assert(events.events==(failed?0U:1U));
+    if(!failed){JsonDocument event;assert(!deserializeJson(event,events.payload.c_str()));assert(event["a"]==(pid?"pid":"pwm"));}
+    const uint16_t numeric=static_cast<uint16_t>(std::stoul(input.c_str()));
+    for(size_t i=0;i<manager.calls.size();++i){
+        const auto& call=manager.calls[i];
+        const uint16_t expectedAddress=pid?dev.pidAddrs[bus.match.action.isEmpty() || bus.match.action=="all"?1:bus.match.channel]:
+            static_cast<uint16_t>(dev.pwmRegBase+(all?i:bus.match.channel));
+        assert(call.address==expectedAddress && call.value==numeric);
+    }
+    for(int i=0;i<steps;++i){
+        const bool acknowledged=!failed || i<stopped;
+        const bool attempted=acknowledged || (i==stopped && (manager.failAt>=0 || manager.inconsistent));
+        JsonObject item=items[i];
+        assert(item["accepted"]==acknowledged && item["attempted"]==attempted &&
+            item["commandAcknowledged"]==acknowledged && item["physicalOutputVerified"]==false);
+        assert(item["requestedValue"].as<std::string>()==std::string(input.c_str()));
+        if(acknowledged)assert(item["value"].as<std::string>()==std::to_string(numeric));
+        else assert(item["value"].isNull());
+        assert(item["confirmationScope"]==(attempted?"register":"none"));
+        const char* reason=acknowledged?"modbus_command_acknowledged":i>stopped?"modbus_not_attempted":
+            bus.mappingAt>=0?"CONTROL_FRAME_MAPPING_UNCONFIRMED":bus.staleAt>=0?"CONTROL_TARGET_STALE":
+            manager.deniedAt>=0?"CONTROL_CONFLICT":"CONTROL_RESULT_UNKNOWN";
+        assert(item["remark"]==reason && item["controlTargetId"]=="mb:11:2");
+        std::string expectedId=sensorId.c_str();
+        if(all)expectedId=bus.emptyId || bus.unterminatedId?"pwm_all_ch"+std::to_string(i):
+            dev.channelCount==1?"pwm":"pwm_ch"+std::to_string(i);
+        assert(item["id"].as<std::string>()==expectedId);
+    }
+}

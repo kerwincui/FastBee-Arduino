@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "core/FeatureFlags.h"
+#include "core/FeatureOwnerLifetime.h"
 #include "core/ChipConfig.h"
 #include "core/MemoryBudget.h"
 #include "core/ResourceProfile.h"
@@ -143,6 +144,7 @@ public:
     }
 
 private:
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::WebServer};
     unsigned long getLastWebRequestAgeMs() const;
     static constexpr size_t MAX_RECOVERY_EVENTS = 8;
 

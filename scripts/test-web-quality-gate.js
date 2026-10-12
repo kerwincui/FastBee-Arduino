@@ -25,10 +25,12 @@ assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.runtimeBundleGzip, 16 * 1024);
 [
     'js/modules/periph-exec.js',
     'js/modules/periph-exec-form.js',
+    'js/modules/periph-exec-templates.js',
     'js/modules/periph-exec-sensor.js',
     'js/modules/periph-exec-effects.js',
     'js/modules/periph-exec-modbus.js',
     'js/modules/peripheral-save.js',
+    'js/modules/device-config-transfer.js',
     'js/modules/peripheral-io.js'
 ].forEach((asset) => {
     assert.ok(PAGE_BUNDLES.includes(asset), `${asset} must be covered by the runtime bundle budget`);
@@ -95,13 +97,13 @@ const panelManifest = {
 const panelBudgets = resolveWebAssetBudgets(panelManifest);
 assert.strictEqual(panelBudgets.totalGzip,
     DEFAULT_WEB_ASSET_BUDGETS.totalGzip + panelAllocation.lazyGzip + panelAllocation.sharedGzip - panelAllocation.reallocatedBaseGzip);
-assert.strictEqual(panelBudgets.totalGzip, 317 * 1024, 'combined ceiling includes only the bounded recovery reserve');
+assert.strictEqual(panelBudgets.totalGzip, 349 * 1024, 'combined ceiling includes the measured 32 KiB system-plan reserve');
 assert.strictEqual(panelBudgets.gzipFiles, 57);
 assert.strictEqual(panelBudgets.staticHtmlNodesTotal, 3320);
 ['bootGzip', 'singleAssetGzip', 'runtimeBundleGzip', 'singleHtmlNodes'].forEach((key) => {
     assert.strictEqual(panelBudgets[key], DEFAULT_WEB_ASSET_BUDGETS[key], `${key} must not be relaxed`);
 });
-assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.totalGzip, 281 * 1024, 'base ceiling includes exactly 2 KiB for recovery');
+assert.strictEqual(DEFAULT_WEB_ASSET_BUDGETS.totalGzip, 313 * 1024, 'base ceiling includes bounded recovery and system-plan reserves');
 [
     null,
     { ...panelManifest, compiledCapabilities: { screenPanel: false } },

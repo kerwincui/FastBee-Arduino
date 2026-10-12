@@ -394,12 +394,14 @@ void test_ec801e_mqtts_uses_secure_client() {
     std::string cell = readSrc("src/network/CellularAdapter.cpp");
     std::string mqttcpp = readSrc("src/protocols/MQTTClient.cpp");
     std::string pm = readSrc("src/protocols/ProtocolManager.cpp");
+    std::string secureIntent = readSrc("include/protocols/MqttSecureIntent.h");
     std::string route = readSrc("src/network/handlers/MqttRouteHandler.cpp");
     std::string pio = readSrc("platformio.ini");
     TEST_ASSERT_TRUE_MESSAGE(!hdr.empty(), "CellularAdapter.h must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!cell.empty(), "CellularAdapter.cpp must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!mqttcpp.empty(), "MQTTClient.cpp must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!pm.empty(), "ProtocolManager.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!secureIntent.empty(), "MqttSecureIntent.h must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!route.empty(), "MqttRouteHandler.cpp must be readable");
     TEST_ASSERT_TRUE_MESSAGE(!pio.empty(), "platformio.ini must be readable");
 
@@ -432,6 +434,10 @@ void test_ec801e_mqtts_uses_secure_client() {
         qsslPos != std::string::npos && softwareTlsPos != std::string::npos && softwareTlsPos < qsslPos,
         "getSecureClient() must prefer software TLS because tested EC801E firmware rejects QSSLCFG");
     TEST_ASSERT_TRUE_MESSAGE(
+        secureBody.find("return nullptr;") != std::string::npos &&
+        secureBody.find("return getClient()") == std::string::npos,
+        "getSecureClient() must refuse plaintext fallback when both TLS providers are absent");
+    TEST_ASSERT_TRUE_MESSAGE(
         cell.find("new (std::nothrow) QuectelSslClient(*_serial, 1, 4, 1)") != std::string::npos,
         "EC801E QSSL must use nothrow alloc with PDP context 1, client 4, and SSL context 1");
     TEST_ASSERT_TRUE_MESSAGE(
@@ -463,10 +469,13 @@ void test_ec801e_mqtts_uses_secure_client() {
         cell.find("+CCHOPEN=") == std::string::npos,
         "EC801E MQTTS must not use the SIMCom CCH secure-socket command path");
     TEST_ASSERT_TRUE_MESSAGE(
-        pm.find("getSecureClient()") != std::string::npos &&
-        pm.find("scheme") != std::string::npos &&
-        pm.find("mqtts") != std::string::npos,
-        "ProtocolManager must select cellular secure client for mqtts");
+        pm.find("#include \"protocols/MqttSecureIntent.h\"") != std::string::npos &&
+        pm.find("FastBee::mqttRequiresTls(cfg)") != std::string::npos &&
+        secureIntent.find("mqttRequiresTls(JsonVariantConst mqtt)") != std::string::npos &&
+        pm.find("wantsMqtts && netMgr->getNetworkType() == NetworkType::NET_4G") != std::string::npos &&
+        pm.find("cell->getSecureClient()") != std::string::npos &&
+        pm.find("mqttClient->setTransportClient(transport, true)") != std::string::npos,
+        "ProtocolManager must use shared secure intent and explicitly trust the cellular TLS client");
     TEST_ASSERT_TRUE_MESSAGE(
         route.find("getSecureClient()") != std::string::npos,
         "MQTT test route must use cellular secure client for mqtts");

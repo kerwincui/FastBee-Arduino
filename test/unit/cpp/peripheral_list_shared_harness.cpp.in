@@ -1,0 +1,211 @@
+// Full original/current listing method. Hardware/HTTP admission are explicit
+// ordered seams; serializers, config types, filters, sorting and paging are real.
+#include "peripheral_shared_probe.h"
+#include "core/PeripheralConfig.h"
+#include "core/SensorDriverMetadata.h"
+#include "core/RtcBootSeedConfig.h"
+#include "network/FixedJsonField.h"
+#include <algorithm>
+#include <climits>
+#include <map>
+#include <utility>
+
+// ESP32 flash literals retain their text in this host-only String fixture.
+#ifndef F
+#define F(value) value
+#endif
+
+struct ListScenario {
+    bool auth = true, critical = false, forceCompact = false, lowItems = false;
+    bool lowResponse = false, streamFailure = false, runtime = true, encoder = true;
+    bool degraded = false, feature = false;
+    std::map<std::string, String> params;
+};
+static ListScenario listScenario;
+struct ListParameter { String stored; const String& value() const { return stored; } };
+struct AsyncWebServerRequest {
+    std::map<std::string, ListParameter> params;
+    bool hasParam(const char* key) const { sharedEffect(std::string("has:") + key); return params.count(key) != 0; }
+    ListParameter* getParam(const char* key) { sharedEffect(std::string("get:") + key); return &params.at(key); }
+    void send(int status, const char* type, const String& body) {
+        sharedEffect(std::string("send:") + type); sharedResult->status = status;
+        ++sharedResult->sends; sharedResult->bytes = std::string(body);
+    }
+};
+struct ListContext {
+    bool requireAuth(AsyncWebServerRequest*) {
+        sharedEffect("auth"); if (!listScenario.auth) sharedResult->status = 401; return listScenario.auth;
+    }
+    String getParamValue(AsyncWebServerRequest* request, const char* key, const char* fallback) {
+        sharedEffect(std::string("param:") + key);
+        auto found = request->params.find(key); return found == request->params.end() ? String(fallback) : found->second.stored;
+    }
+};
+static std::vector<PeripheralConfig> listEntries;
+static PeripheralConfig* localSnapshotOwner;
+class PeripheralManager {
+public:
+    static PeripheralManager& getInstance() { static PeripheralManager instance; sharedEffect("manager"); return instance; }
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& output) {
+        sharedEffect("snapshot:" + std::string(id));
+        for (const auto& item : listEntries) if (item.id == id) { output = item; localSnapshotOwner = &output; return true; }
+        return false;
+    }
+    template<class Visitor> void forEachPeripheral(Visitor visitor) {
+        sharedEffect("iterate"); for (const auto& item : listEntries) visitor(item);
+    }
+    bool getRuntimeStateSnapshot(const String& id, PeripheralRuntimeState& output) {
+        sharedEffect("runtime:" + std::string(id));
+        if (!listScenario.runtime) return false;
+        output.status = PeripheralStatus::PERIPHERAL_RUNNING; output.memorySuspended = listScenario.degraded;
+        output.state.encoder.count = INT32_MIN; output.state.encoder.delta = INT32_MAX;
+        output.state.encoder.direction = -1; output.state.encoder.frequencyHz = 1.25f; output.state.encoder.rpm = -12.5f;
+        return true;
+    }
+    bool getEncoderReading(const String& id, EncoderReading& output) {
+        sharedEffect("encoder:" + std::string(id)); if (!listScenario.encoder) return false;
+        output.count = INT32_MAX; output.delta = INT32_MIN; output.direction = 1;
+        output.frequencyHz = 123.5f; output.rpm = 99.75f; return true;
+    }
+    size_t getPeripheralCount() const { sharedEffect("count"); return listEntries.size(); }
+};
+enum class MemoryGuardLevel { CRITICAL };
+namespace HandlerUtils {
+bool rejectHeavyRequestOnPressure(AsyncWebServerRequest*, const char* name, MemoryGuardLevel, int retry) {
+    assert(std::string(name) == "Peripheral list" && retry == 5); sharedEffect("pressure");
+    if (listScenario.critical) sharedResult->status = 503;
+    return listScenario.critical;
+}
+void sendJsonError(AsyncWebServerRequest*, int status, const char* message, int retry = 0) {
+    sharedEffect("error:" + std::to_string(retry)); sharedResult->status = status;
+    ++sharedResult->sends; sharedResult->bytes = message;
+}
+bool memoryDegradationActive() { sharedEffect("degraded"); return listScenario.degraded; }
+void appendMemoryDegradationStatus(String& header) { sharedEffect("memory-header"); header += ",\"fixtureMemory\":false"; }
+bool sendJsonListChunked(AsyncWebServerRequest*, const String& header, std::vector<String>&& items) {
+    sharedEffect("chunked"); if (listScenario.streamFailure) return false;
+    sharedResult->status = 200; ++sharedResult->sends; sharedResult->bytes = std::string(header);
+    // Consume after all scratch DOMs have gone, with the same ordered fragments.
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i) sharedResult->bytes += ',';
+        sharedResult->bytes += std::string(items[i]);
+    }
+    sharedResult->bytes += "]}"; return true;
+}
+}
+struct ListEsp {
+    size_t getFreeHeap() const { sharedEffect("free-heap"); return listScenario.lowResponse ? 3000u : 50000u; }
+    size_t getMaxAllocHeap() const { sharedEffect("max-heap"); return 24000u; }
+} listEsp;
+static bool shouldForceCompactList() { sharedEffect("force-compact"); return listScenario.forceCompact; }
+static bool isListMemoryCriticallyLow() { sharedEffect("low-items"); return listScenario.lowItems; }
+namespace FastBee {
+namespace ResourceProfile { constexpr size_t MAX_PERIPHERALS = 32; constexpr const char* NAME = "host-profile"; }
+class RuntimeFeatureManager {
+public:
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    bool shouldEnable(const char* name) { sharedEffect(std::string("feature:") + name); return listScenario.feature; }
+};
+@CONFIG_SERIALIZERS@
+}
+@LIST_HELPERS@
+#define JsonDocument SharedDocument
+#define ESP listEsp
+#define LOG_ERRORF(...) sharedEffect("error-log")
+@LIST_METHODS@
+#undef LOG_ERRORF
+#undef ESP
+#undef JsonDocument
+
+static void populateList(unsigned style) {
+    listEntries.clear(); localSnapshotOwner = nullptr;
+    const PeripheralType types[] = {PeripheralType::UART, PeripheralType::ENCODER, PeripheralType::ADC,
+        PeripheralType::GPIO_DIGITAL_INPUT, PeripheralType::PWM_SERVO, PeripheralType::SENSOR_GENERIC,
+        PeripheralType::SDIO, PeripheralType::DS1302_RTC, PeripheralType::LCD1602,
+        PeripheralType::RFID_MFRC522, PeripheralType::GPIO_DIGITAL_OUTPUT, PeripheralType::IO_EXPANDER,
+        PeripheralType::PCA9685_PWM, PeripheralType::SCREEN_DISPLAY, PeripheralType::MODBUS_DEVICE};
+    if (style == 2) return;
+    for (unsigned index = 0; index < sizeof(types) / sizeof(types[0]); ++index) {
+        PeripheralConfig config; config.type = types[index]; config.id = String(index);
+        config.name = style == 1 ? String(std::string(250, 'x')) + String(index) : String("节点 \"\\\n ") + String(14-index);
+        config.enabled = index % 3 != 0; config.pinCount = 3;
+        config.pins[0] = 4; config.pins[1] = 255; config.pins[2] = 5;
+        if (config.type == PeripheralType::SENSOR_GENERIC) {
+            std::strcpy(config.params.sensor.driver, "ADS1115"); config.params.sensor.scanMask = 10;
+            std::strcpy(config.params.sensor.busPeripheralId, "bus\"quoted");
+        }
+        if (config.type == PeripheralType::IO_EXPANDER) {
+            std::strcpy(config.params.ioExpander.driver, "MCP23017");
+            std::strcpy(config.params.ioExpander.busPeripheralId, "bus");
+            std::strcpy(config.params.ioExpander.resetPeripheralId, "reset");
+        }
+        if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) config.params.gpio.passive = true;
+        if (config.type == PeripheralType::DS1302_RTC) {
+            config.params.ds1302.bootSeed = true; config.params.ds1302.utcOffsetMinutes = 480;
+        }
+        listEntries.push_back(config);
+    }
+}
+template<class Route> static SharedResult runList(const ListScenario& scenario, unsigned style,
+        size_t fault = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    SharedResult result; DocumentProbeAllocator allocator(fault, persistent);
+    sharedResult = &result; sharedAllocator = &allocator; listScenario = scenario; populateList(style);
+    AsyncWebServerRequest request;
+    for (const auto& pair : scenario.params) request.params.emplace(pair.first, ListParameter{pair.second});
+    ListContext context;
+    poisonSharedInputs = [&] { if (localSnapshotOwner) { *localSnapshotOwner = PeripheralConfig(); localSnapshotOwner = nullptr; } };
+    { Route route{&context}; route.handleGetPeripherals(&request); }
+    poisonSharedInputs = {}; listEntries.clear(); assert(allocator.blocks.empty());
+    result.events = allocator.events; result.allocations = allocator.eligible; result.failures = allocator.failures;
+    sharedResult = nullptr; sharedAllocator = nullptr; return result;
+}
+static SharedResult compareList(const ListScenario& scenario, unsigned style,
+        size_t fault = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    const auto expected = runList<ListOracle>(scenario, style, fault, persistent);
+    assert(runList<ListCurrent>(scenario, style, fault, persistent) == expected);
+    assert(runList<ListDraft>(scenario, style, fault, persistent) == expected);
+    return expected;
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode(argv[1]);
+    if (mode == "values") {
+        for (unsigned style = 0; style < 3; ++style) {
+            for (unsigned flags = 0; flags < 32; ++flags) {
+                ListScenario scenario; scenario.runtime = flags & 1; scenario.encoder = flags & 2;
+                scenario.degraded = flags & 4; scenario.feature = flags & 8; scenario.forceCompact = flags & 16;
+                for (const char* compact : {"0", "1"}) {
+                    scenario.params = {{"compact", compact}, {"pageSize", "50"}};
+                    compareList(scenario, style);
+                }
+            }
+            for (int index = -1; index < 15; ++index) {
+                ListScenario scenario; scenario.params = {{"id", String(index)}};
+                for (bool runtime : {false,true}) for (bool encoder : {false,true}) {
+                    scenario.runtime=runtime; scenario.encoder=encoder; compareList(scenario,style);
+                }
+            }
+            for (const char* category : {"communication","gpio","analog","debug","special","unknown"}) {
+                ListScenario scenario; scenario.params={{"category",category},{"enabledOnly","1"},{"page","2147483647"},{"pageSize","3"}};
+                compareList(scenario,style);
+            }
+            for (const char* type : {"1","38","51","invalid"}) {
+                ListScenario scenario; scenario.params={{"type",type},{"page","0"},{"pageSize","-1"}}; compareList(scenario,style);
+            }
+            for (unsigned failure=0; failure<5; ++failure) {
+                ListScenario scenario; scenario.auth=failure!=0; scenario.critical=failure==1;
+                scenario.lowItems=failure==2; scenario.lowResponse=failure==3; scenario.streamFailure=failure==4;
+                compareList(scenario,style);
+            }
+        }
+    } else if (mode == "oom") {
+        for (int selected=-1; selected<15; ++selected) {
+            ListScenario scenario; if (selected>=0) scenario.params={{"id",String(selected)}};
+            else scenario.params={{"pageSize","20"}};
+            const auto baseline=compareList(scenario,1); assert(baseline.allocations>0);
+            for (bool persistent:{false,true}) for(size_t fault=0;fault<baseline.allocations;++fault) {
+                auto result=compareList(scenario,1,fault,persistent); assert(result.failures>0);
+            }
+        }
+    } else assert(false);
+    std::cout << "PASS list " << mode << '\n';
+}

@@ -85,7 +85,102 @@ assert.deepStrictEqual(extractCiFirmwareEnvironments(ciFixture), ['esp32-F4R0', 
 const criticalIssues = [];
 validateCriticalRegressionContracts(criticalIssues);
 assert.deepStrictEqual(criticalIssues, []);
-assert.equal(CRITICAL_REGRESSION_CONTRACTS.length, 13);
+assert.ok(CRITICAL_REGRESSION_CONTRACTS.length > 0);
+assert.equal(new Set(CRITICAL_REGRESSION_CONTRACTS.map((contract) => contract.name)).size,
+    CRITICAL_REGRESSION_CONTRACTS.length);
+
+const newlyRegisteredContractNames = [
+    'panel navigation cancellation excludes genuine device request failures',
+    'log route waits for concurrent flush and preserves lock ownership',
+    'S3 fixed slab actual storage diagnostics',
+    'S3 worker budget and actual pool lifetime',
+    'historical raw device metrics contract and HTTP completeness',
+    'fixed slab PSRAM storage capability and ownership'
+];
+for (const name of newlyRegisteredContractNames) {
+    const contract = CRITICAL_REGRESSION_CONTRACTS.find((item) => item.name === name);
+    assert.ok(contract, `missing registered contract: ${name}`);
+    for (const [file, markers] of Object.entries(contract.files)) {
+        const missingRegisteredFileIssues = [];
+        validateCriticalRegressionContracts(missingRegisteredFileIssues, (rel) => {
+            if (rel === file) throw new Error('not found');
+            return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+        });
+        assert.ok(missingRegisteredFileIssues.some((issue) =>
+            issue.includes(name) && issue.includes(`missing ${file}`)));
+
+        const marker = markers[0];
+        assert.ok(marker, `missing marker registration: ${file}`);
+        const missingRegisteredMarkerIssues = [];
+        validateCriticalRegressionContracts(missingRegisteredMarkerIssues, (rel) => {
+            const source = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+            return rel === file ? source.replace(marker, 'removed_new_contract_marker') : source;
+        });
+        assert.ok(missingRegisteredMarkerIssues.some((issue) =>
+            issue.includes(name) && issue.includes(marker)));
+    }
+}
+
+for (const marker of [
+    'def test_original_add_failure_empty_send_stalls_at_30s_and_wrap',
+    'def test_actual_basic_deadlines_recovery_duplicate_ack_and_ownership',
+    'def test_original_basic_fails_the_bounded_regression'
+]) {
+    const issues = [];
+    validateCriticalRegressionContracts(issues, (rel) => {
+        const source = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+        return rel === 'test/unit/test_web_basic_progress.py'
+            ? source.replace(marker, 'def removed_basic_progress_contract') : source;
+    });
+    assert.ok(issues.some((issue) => issue.includes('Basic finite responses') && issue.includes(marker)));
+}
+
+const missingBasicHarnessIssues = [];
+validateCriticalRegressionContracts(missingBasicHarnessIssues, (rel) => {
+    if (rel === 'test/unit/cpp/web_basic_progress_harness.cpp') throw new Error('not found');
+    return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+});
+assert.ok(missingBasicHarnessIssues.some((issue) => issue.includes('Basic finite responses') &&
+    issue.includes('missing test/unit/cpp/web_basic_progress_harness.cpp')));
+
+const finiteProgressMarkers = [
+    'def test_actual_finite_progress_paths',
+    'def test_original_and_false_progress_mutations_are_detected',
+    'def test_partial_progress_upgrades_are_rejected',
+    'def test_four_file_partial_install_and_write_failure_preserve_originals',
+    'def test_fixed_pre_finite_fixture_upgrades_and_is_idempotent'
+];
+for (const marker of finiteProgressMarkers) {
+    const missingFiniteProgressIssues = [];
+    validateCriticalRegressionContracts(missingFiniteProgressIssues, (rel) => {
+        const source = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+        return rel === 'test/unit/test_web_finite_progress.py'
+            ? source.replace(marker, 'def removed_finite_progress_contract')
+            : source;
+    });
+    assert.ok(missingFiniteProgressIssues.some((issue) =>
+        issue.includes('static resource transport integrity') && issue.includes(marker)));
+}
+
+const missingFiniteHarnessIssues = [];
+validateCriticalRegressionContracts(missingFiniteHarnessIssues, (rel) => {
+    if (rel === 'test/unit/cpp/web_finite_progress_harness.cpp') throw new Error('not found');
+    return fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+});
+assert.ok(missingFiniteHarnessIssues.some((issue) =>
+    issue.includes('static resource transport integrity') &&
+    issue.includes('missing test/unit/cpp/web_finite_progress_harness.cpp')));
+
+const finiteOwnershipMarker = 'assert(TransportClock::_fastbee_accepted_count==0);';
+const missingFiniteOwnershipIssues = [];
+validateCriticalRegressionContracts(missingFiniteOwnershipIssues, (rel) => {
+    const source = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    return rel === 'test/unit/cpp/web_finite_progress_harness.cpp'
+        ? source.replace(finiteOwnershipMarker, '/* removed accepted-client release assertion */')
+        : source;
+});
+assert.ok(missingFiniteOwnershipIssues.some((issue) =>
+    issue.includes('static resource transport integrity') && issue.includes(finiteOwnershipMarker)));
 
 const peripheralWorkspaceMarker = 'def test_workspace_only_exposes_peripheral_configuration';
 const missingPeripheralWorkspaceIssues = [];

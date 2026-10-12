@@ -31,7 +31,11 @@ export const genericPeripheralTypes = {
       ], touchOptions: [{ backend: 'none', label: 'No touch' }, { backend: 'gt911', label: 'GT911 I2C', addresses: [93, 20] }],
       configLimits: { widthMin: 128, widthMax: 320, heightMin: 128, heightMax: 320, bufferLinesMin: 1, bufferLinesMax: 64, i2cFrequencies: [100000, 400000], rgbFrequencyMin: 1000000, rgbFrequencyMax: 16000000 } },
     { value: 38, name: '通用传感器', implemented: true, configurable: true, featureActive: true, feature: 'i2cSensors', pinRoles: ['SDA', 'SCL'], diagnostics: 'i2c-sensor', drivers: sensorDrivers.map(driver => driver.name), driverDescriptors: sensorDrivers },
-    { value: 55, name: '通用 IO 扩展器', implemented: true, configurable: true, featureActive: true, feature: 'ioExpander', pinRoles: ['SDA', 'SCL'], channelCount: 8, drivers: ['PCF8574'], driverDescriptors: [{ name: 'PCF8574', defaultAddress: 0x20, addressMin: 0x20, addressMax: 0x27, minIntervalMs: 20, channelCount: 8, channels: [], params: [] }] },
+    { value: 55, name: '通用 IO 扩展器', implemented: true, configurable: true, featureActive: true, feature: 'ioExpander', pinRoles: ['SDA', 'SCL'], channelCount: 8, drivers: ['PCF8574'], driverDescriptors: [{ name: 'PCF8574', defaultAddress: 0x20, addressMin: 0x20, addressMax: 0x27, minIntervalMs: 20, maxIntervalMs: 1000, defaultIntervalMs: 20, channelCount: 8, channels: [], params: [], configSchemaVersion: 1, configFields: [
+      { key: 'address', type: 'integer', unit: '', default: 32, min: 32, max: 39, required: false },
+      { key: 'sampleInterval', type: 'integer', unit: 'ms', default: 20, min: 20, max: 1000, required: false },
+      { key: 'busPeripheralId', type: 'reference', unit: '', maxBytes: 40, required: false },
+    ] }] },
   ],
 };
 

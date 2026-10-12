@@ -1,0 +1,138 @@
+#include <Arduino.h>
+#undef malloc
+#undef free
+#include <ArduinoJson.h>
+#include <cassert>
+#include <cstdlib>
+#include <cstdio>
+#include <string>
+#include <vector>
+#include <map>
+#include <iostream>
+
+static std::vector<std::string> trace;
+struct PeripheralConfig { unsigned token = 0; };
+struct PeripheralManager {
+    bool exists = true;
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& config) {
+        trace.push_back("snapshot:" + std::string(id.c_str(), id.length()));
+        config.token = 73; // Preserve output mutation even on a failed lookup.
+        return exists;
+    }
+};
+struct Log {
+    void warningf(const char* format, const char* id) {
+        char text[512]; std::snprintf(text, sizeof(text), format, id); trace.emplace_back(text);
+    }
+} LOGGER;
+struct LCDManager {
+    bool initialized = false;
+    static LCDManager& getInstance() {
+        trace.emplace_back("lcd:get"); static LCDManager value; return value;
+    }
+    bool isInitialized() { trace.emplace_back("lcd:initialized"); return initialized; }
+    void invalidateSensorEntry(const String& id) {
+        trace.push_back("lcd:invalidate:" + std::string(id.c_str(), id.length()));
+    }
+};
+struct FaultAllocator : ArduinoJson::Allocator {
+    unsigned calls = 0;
+    int failAfter = -1;
+    std::map<void*, size_t> blocks;
+    bool denied() { return failAfter >= 0 && calls++ >= static_cast<unsigned>(failAfter); }
+    void* allocate(size_t bytes) override {
+        void* p = denied() ? nullptr : std::malloc(bytes);
+        if (p) blocks[p] = bytes;
+        return p;
+    }
+    void deallocate(void* p) override {
+        if (p) assert(blocks.erase(p) == 1);
+        std::free(p);
+    }
+    void* reallocate(void* p, size_t bytes) override {
+        if (!p) return bytes ? allocate(bytes) : nullptr;
+        const auto block = blocks.find(p);
+        assert(block != blocks.end());
+        // ArduinoJson requires shrinking reallocations to succeed. Inject OOM
+        // only when memory grows, retaining the allocation on any failure.
+        if (bytes <= block->second) { block->second = bytes; return p; }
+        if (denied()) return nullptr;
+        void* next = std::realloc(p, bytes);
+        if (next) { blocks.erase(block); blocks[next] = bytes; }
+        return next;
+    }
+};
+static FaultAllocator* activeAllocator = nullptr;
+// The callers keep both real documents and their original lifetimes.
+struct FaultDocument : ArduinoJson::JsonDocument {
+    FaultDocument() : ArduinoJson::JsonDocument(activeAllocator) { assert(activeAllocator); }
+};
+
+// @functions@
+
+struct Result {
+    bool parsed, overflow;
+    std::string json;
+    unsigned allocationCalls;
+    bool operator==(const Result& other) const {
+        return parsed == other.parsed && overflow == other.overflow &&
+               json == other.json && allocationCalls == other.allocationCalls;
+    }
+};
+static Result copyResult(bool original, const char* input, int failure, bool bound) {
+    FaultAllocator allocator;
+    allocator.failAfter = failure;
+    activeAllocator = &allocator;
+    Result result{};
+    {
+        FaultDocument destination;
+        JsonArray output = bound ? destination.to<JsonArray>() : JsonArray();
+        if (bound) output.add("prefix");
+        FaultDocument taskDoc;
+        result.parsed = original ? appendModbusPollReadingsOracle(taskDoc, String(input), output)
+                                 : appendModbusPollReadings(taskDoc, String(input), output);
+        result.overflow = destination.overflowed();
+        serializeJson(destination, result.json);
+        result.allocationCalls = allocator.calls;
+    }
+    assert(allocator.blocks.empty());
+    activeAllocator = nullptr;
+    return result;
+}
+int main() {
+    unsigned comparisons = 0;
+    const char* ids[] = {"", "adc", "sensor-with-long-id-0123456789", "设备"};
+    for (bool exists : {false, true}) for (const char* id : ids) {
+        PeripheralManager pm; pm.exists = exists;
+        PeripheralConfig before, after;
+        trace.clear();
+        const bool oldOk = loadSensorReadSnapshotOracle(pm, id, before);
+        const auto oldTrace = trace;
+        trace.clear();
+        const bool newOk = loadSensorReadSnapshot(pm, id, after);
+        assert(oldOk == newOk && before.token == after.token && trace == oldTrace);
+        ++comparisons;
+    }
+    for (bool initialized : {false, true}) for (const char* id : ids) {
+        LCDManager::getInstance().initialized = initialized;
+        trace.clear(); invalidateSensorReadDisplayOracle(id, "temperature");
+        const auto oldTrace = trace;
+        trace.clear(); invalidateSensorReadDisplay(id, "temperature");
+        assert(trace == oldTrace);
+        ++comparisons;
+    }
+    const char* inputs[] = {
+        "[]", "[1,2]", "[{\"id\":\"x\",\"value\":1.5},null,true,\"text\"]",
+        "[[1,2],{\"deep\":{\"value\":\"long-value-012345678901234567890\"}}]",
+        "{}", "{\"not\":\"an-array\"}", "null", "true", "12", "\"scalar\"",
+        "[{\"x\":1},", "bad", ""
+    };
+    for (const char* input : inputs) for (bool bound : {false, true}) {
+        for (int failure = -1; failure <= 40; ++failure) {
+            assert(copyResult(true, input, failure, bound) == copyResult(false, input, failure, bound));
+            ++comparisons;
+        }
+    }
+    std::cout << "executor read dedup comparisons passed: " << comparisons << "\n";
+}
+

@@ -17,17 +17,19 @@ class FeatureStatusStreamingContractTests(unittest.TestCase):
         end = ROUTE.index("void FeatureRouteHandler::handleConfig", start)
         return ROUTE[start:end]
 
-    def test_status_uses_bounded_per_item_chunked_response(self):
+    def test_status_uses_bounded_snapshot_response(self):
         body = self._status_body()
-        self.assertIn("getFeatureStatusJson(i, itemDoc.to<JsonObject>())", body)
-        self.assertIn("HandlerUtils::sendJsonListChunked", body)
+        self.assertIn("FastBee::FeatureStatusResponse", body)
+        self.assertIn("new (std::nothrow)", body)
+        self.assertNotIn("std::vector<String>", body)
         self.assertNotIn("getStatusJson(", body)
         self.assertNotIn("HandlerUtils::sendJsonStream", body)
 
     def test_serialization_failure_is_not_returned_as_http_200(self):
         body = self._status_body()
-        self.assertIn("itemDoc.overflowed()", body)
-        self.assertRegex(body, r"written\s*!=\s*expectedSize")
+        self.assertIn("!response->_sourceValid()", body)
+        self.assertLess(body.index("!response->_sourceValid()"), body.index("request->send(response)"))
+        self.assertIn("delete response", body)
         self.assertIn("sendJsonError(request, 503", body)
 
     def test_streamed_and_full_status_share_active_logic(self):

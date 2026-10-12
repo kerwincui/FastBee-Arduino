@@ -347,10 +347,10 @@ class SecP0SecurityContractTests(unittest.TestCase):
             SYSTEM_ROUTE, "/api/config/transfer/import", "HTTP_POST"
         )
         inline_parse_at = inline_route.find(
-            "deserializeJson(importedConfig, content)"
+            "deserializeJson(importedConfig, content.c_str(), content.length())"
         )
         inline_commit_at = inline_route.find(
-            "configStorage.saveJSONConfig(path, importedConfig)"
+            "configStorage.saveImportedJSONConfig(path, importedConfig)"
         )
         self.assertGreaterEqual(inline_parse_at, 0)
         self.assertGreaterEqual(inline_commit_at, 0)
@@ -363,29 +363,32 @@ class SecP0SecurityContractTests(unittest.TestCase):
         )
         staged_path_at = chunk_route.find('String stagedPath = path + ".import.tmp"')
         staged_write_at = chunk_route.find(
-            'LittleFS.open(stagedPath, index == 0 ? "w" : "a")'
+            'LittleFS.open(stagedPath, "a")'
         )
         final_parse_at = chunk_route.find(
             "deserializeJson(importedConfig, staged)"
         )
         final_commit_at = chunk_route.find(
-            "configStorage.saveJSONConfig(path, importedConfig)"
+            "configStorage.saveImportedJSONConfig(path, importedConfig)"
         )
-        staged_cleanup_at = chunk_route.find(
-            "LittleFS.remove(stagedPath)", final_commit_at
+        committed_at = chunk_route.find(
+            "ordinaryImport.committed()", final_commit_at
         )
         for position in (
             staged_path_at,
             staged_write_at,
             final_parse_at,
             final_commit_at,
-            staged_cleanup_at,
+            committed_at,
         ):
             self.assertGreaterEqual(position, 0)
         self.assertLess(staged_path_at, staged_write_at)
         self.assertLess(staged_write_at, final_parse_at)
         self.assertLess(final_parse_at, final_commit_at)
-        self.assertLess(final_commit_at, staged_cleanup_at)
+        self.assertLess(final_commit_at, committed_at)
+        self.assertNotIn("LittleFS.remove(stagedPath)", chunk_route)
+        self.assertNotIn("cleanupStaleConfigFiles()", chunk_route)
+        self.assertIn("if (!replay && index == total - 1)", chunk_route)
         self.assertNotIn('LittleFS.open(path, index == 0 ? "w" : "a")', chunk_route)
         self.assertNotIn("LittleFS.remove(path)", chunk_route)
 

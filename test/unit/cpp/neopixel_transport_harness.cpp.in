@@ -1,0 +1,190 @@
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include "peripherals/NeoPixelTransport.h"
+
+#define ESP32 1
+#define ESP_IDF_VERSION_VAL(a,b,c) (((a) << 16) | ((b) << 8) | (c))
+#define ESP_IDF_VERSION ESP_IDF_VERSION_VAL(5,5,0)
+#define ESP_ARDUINO_VERSION_VAL(a,b,c) ESP_IDF_VERSION_VAL(a,b,c)
+#define ESP_ARDUINO_VERSION ESP_ARDUINO_VERSION_VAL(3,3,8)
+using boolean = bool;
+using TickType_t = unsigned;
+constexpr int pdTRUE = 1;
+#define pdMS_TO_TICKS(ms) ((ms) / 10U)
+constexpr unsigned RMT_WAIT_FOR_EVER = ~0U;
+constexpr int RMT_TX_MODE = 1, RMT_MEM_NUM_BLOCKS_1 = 1, ESP32_BUS_TYPE_RMT_TX = 7;
+constexpr int MALLOC_CAP_INTERNAL = 1, MALLOC_CAP_8BIT = 2;
+using portMUX_TYPE = std::mutex;
+#define portMUX_INITIALIZER_UNLOCKED {}
+#define portENTER_CRITICAL(m) (m)->lock()
+#define portEXIT_CRITICAL(m) (m)->unlock()
+struct Semaphore { std::mutex mutex; };
+using SemaphoreHandle_t = Semaphore*;
+static std::atomic<unsigned> creates{0}, deletes{0}, takes{0}, gives{0}, waiting{0};
+static std::atomic<bool> holdCreation{false};
+static bool failMutex = false, busyMutex = false;
+static thread_local bool held = false;
+SemaphoreHandle_t xSemaphoreCreateMutex() {
+    ++creates;
+    if (holdCreation) { ++waiting; while (holdCreation) std::this_thread::yield(); }
+    return failMutex ? nullptr : new Semaphore;
+}
+void vSemaphoreDelete(SemaphoreHandle_t handle) { ++deletes; delete handle; }
+int xSemaphoreTake(SemaphoreHandle_t handle, unsigned timeout) {
+    assert(timeout == 5); ++takes;
+    if (busyMutex || !handle->mutex.try_lock()) return 0;
+    assert(!held); held = true; return pdTRUE;
+}
+void xSemaphoreGive(SemaphoreHandle_t handle) { assert(held); held = false; ++gives; handle->mutex.unlock(); }
+struct rmt_data_t { unsigned duration0:15; unsigned level0:1; unsigned duration1:15; unsigned level1:1; };
+static_assert(sizeof(rmt_data_t) == 4);
+static unsigned allocs = 0, frees = 0, inits = 0, deinits = 0, writes = 0, latches = 0;
+static bool failAlloc = false, failInit = false, failWrite = false, failDeinit = false, active = false;
+static int busToken = 1, foreignBusToken = 2, busPin = -1;
+static void* bus = nullptr;
+static rmt_data_t* lastBuffer = nullptr;
+static unsigned lastSymbols = 0, lastTimeout = 0;
+void* heap_caps_malloc(size_t bytes, int caps) {
+    assert(held && caps == (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (failAlloc) return nullptr;
+    ++allocs; return std::malloc(bytes);
+}
+void neoFree(void* pointer) {
+    assert(held);
+    if (pointer) { assert(!active || pointer != lastBuffer); ++frees; }
+    std::free(pointer);
+}
+bool rmtInit(uint8_t pin, int mode, int blocks, int frequency) {
+    assert(held && mode == RMT_TX_MODE && blocks == 1 && frequency == 10000000); ++inits;
+    if (failInit) return false;
+    busPin = pin; bus = &busToken; return true;
+}
+void* perimanGetPinBus(uint8_t pin, int type) { assert(held && type == ESP32_BUS_TYPE_RMT_TX); return pin == busPin ? bus : nullptr; }
+bool rmtDeinit(uint8_t pin) {
+    assert(held && pin == busPin && !active); ++deinits;
+    if (failDeinit) return false;
+    bus = nullptr; busPin = -1; return true;
+}
+bool rmtWrite(uint8_t pin, rmt_data_t* symbols, unsigned count, unsigned timeout) {
+    assert(held && pin == busPin && !active); ++writes;
+    lastBuffer = symbols; lastSymbols = count; lastTimeout = timeout;
+    assert(timeout == 10 && timeout != RMT_WAIT_FOR_EVER);
+    active = failWrite; return !failWrite;
+}
+void delayMicroseconds(unsigned micros) { assert(held && micros >= 300); ++latches; }
+#define free neoFree
+// Exact upstream declaration: a drift in either parameter must fail compilation.
+extern "C" void espShow(uint16_t pin, uint8_t *pixels, uint32_t numBytes, uint8_t type);
+#include "patched-esp.c"
+#undef free
+
+static void balanced() { assert(!held && takes == gives); }
+static const uint8_t data[] = {0x80, 0x00, 0xff};
+static void ok() {
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_OK);
+    assert(inits == 1 && writes == 1 && latches == 1 && lastSymbols == 24);
+    assert(lastBuffer[0].duration0 == 8 && lastBuffer[0].duration1 == 4);
+    assert(lastBuffer[1].duration0 == 4 && lastBuffer[1].duration1 == 8);
+    assert(fastbeeNeoPixelWrite(4, data, 3, false) == FASTBEE_NEO_OK);
+    assert(lastBuffer[0].duration0 == 12 && lastBuffer[1].duration1 == 20);
+    assert(allocs == 1 && inits == 1 && !fastbeeNeoPixelPinRetained(4));
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_OK && frees == 1 && deinits == 1);
+    balanced();
+}
+static void initFail() {
+    failInit = true;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_INIT_FAILED);
+    balanced(); assert(fastbeeNeoPixelPinRetained(4)); failInit = false;
+    assert(fastbeeNeoPixelWrite(5, data, 3, true) == FASTBEE_NEO_QUARANTINED);
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_QUARANTINED);
+    assert(inits == 1 && writes == 0 && deinits == 0 && frees == 0); balanced();
+}
+static void timeout() {
+    failWrite = true;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_WRITE_FAILED);
+    balanced(); assert(active && fastbeeNeoPixelPinRetained(4));
+    rmt_data_t copy[24]; std::memcpy(copy, lastBuffer, sizeof copy);
+    uint8_t larger[30]{};
+    for (int late = 0; late < 2; ++late) {
+        assert(fastbeeNeoPixelWrite(5, larger, 30, true) == FASTBEE_NEO_QUARANTINED);
+        assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_QUARANTINED);
+        espShow(5, larger, 0, true); // Unrelated destructor must not release owner.
+        assert(std::memcmp(copy, lastBuffer, sizeof copy) == 0);
+        assert(allocs == 1 && frees == 0 && writes == 1 && deinits == 0);
+        active = false; // A late SDK completion still cannot prove clean reuse.
+    }
+    balanced();
+}
+static void releaseFail() {
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_OK);
+    failDeinit = true;
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_RELEASE_FAILED);
+    assert(fastbeeNeoPixelPinRetained(4) && frees == 0 && fastbee_neo_pin == 4);
+    assert(fastbeeNeoPixelWrite(5, data, 3, true) == FASTBEE_NEO_QUARANTINED);
+    failDeinit = false;
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_QUARANTINED && deinits == 1); balanced();
+}
+static void wrongOwner() {
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_OK);
+    assert(fastbeeNeoPixelRelease(5) == FASTBEE_NEO_INVALID);
+    assert(frees == 0 && deinits == 0);
+    bus = &foreignBusToken;
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_OWNER_CHANGED);
+    assert(frees == 0 && deinits == 0 && fastbeeNeoPixelPinRetained(4)); balanced();
+}
+static void allocation() {
+    assert(fastbeeNeoPixelWrite(4, nullptr, 3, true) == FASTBEE_NEO_INVALID);
+    assert(fastbeeNeoPixelWrite(4, data, UINT32_MAX, true) == FASTBEE_NEO_INVALID);
+    assert(allocs == 0 && creates == 0);
+    failMutex = true;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_NO_MEMORY);
+    failMutex = false; failAlloc = true;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_NO_MEMORY);
+    assert(inits == 0 && !fastbeeNeoPixelPinRetained(4)); failAlloc = false;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_OK);
+    auto* old = lastBuffer; uint8_t larger[30]{}; failAlloc = true;
+    assert(fastbeeNeoPixelWrite(4, larger, 30, true) == FASTBEE_NEO_NO_MEMORY);
+    assert(fastbee_neo_data == old && frees == 0 && writes == 1); failAlloc = false;
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_OK); balanced();
+}
+static void concurrentInit() {
+    holdCreation = true; std::thread threads[4];
+    for (auto& thread : threads) thread = std::thread([] { espInit(); });
+    while (waiting != 4) std::this_thread::yield();
+    holdCreation = false; for (auto& thread : threads) thread.join();
+    assert(creates == 4 && deletes == 3);
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_OK); balanced();
+}
+static void busy() {
+    busyMutex = true;
+    assert(fastbeeNeoPixelWrite(4, data, 3, true) == FASTBEE_NEO_BUSY);
+    assert(fastbeeNeoPixelRelease(4) == FASTBEE_NEO_BUSY);
+    assert(inits == 0 && writes == 0 && allocs == 0 && gives == 0);
+}
+static void compatibility() {
+    uint8_t pixels[] = {0x80};
+    espShow(260, pixels, 1, 1);
+    espShow(260, nullptr, 0, 0);
+    assert(inits == 0 && writes == 0 && allocs == 0 && takes == 0);
+    espShow(4, pixels, 1, 1);
+    assert(writes == 1 && lastBuffer[0].duration0 == 8);
+    espShow(4, pixels, 1, 0);
+    assert(writes == 2 && lastBuffer[0].duration0 == 12);
+    espShow(4, nullptr, 0, 0);
+    assert(deinits == 1 && frees == 1); balanced();
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); std::string mode(argv[1]);
+    if (mode == "ok") ok(); else if (mode == "init") initFail();
+    else if (mode == "timeout") timeout(); else if (mode == "release") releaseFail();
+    else if (mode == "owner") wrongOwner(); else if (mode == "allocation") allocation();
+    else if (mode == "concurrent") concurrentInit(); else if (mode == "busy") busy();
+    else if (mode == "compatibility") compatibility();
+    else assert(false);
+}

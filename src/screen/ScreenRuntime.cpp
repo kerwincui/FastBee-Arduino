@@ -48,6 +48,7 @@ namespace Screen {
 namespace {
 
 constexpr uint32_t SNAPSHOT_INTERVAL_MS = 500;
+constexpr uint32_t MOTOR_PENDING_SNAPSHOT_INTERVAL_MS = 100;
 constexpr uint32_t START_TIMEOUT_MS = 5000;
 constexpr uint32_t STOP_TIMEOUT_MS = 2000;
 constexpr uint32_t TOUCH_POLL_MS = 20;
@@ -62,8 +63,20 @@ constexpr size_t SCREEN_INTERNAL_RESERVE_PSRAM = 20U * 1024U;
 constexpr size_t SCREEN_INTERNAL_RESERVE_NO_PSRAM = 16U * 1024U;
 constexpr size_t SCREEN_PSRAM_RESERVE = 8U * 1024U;
 
+uint32_t snapshotIntervalMs(const ScreenPanelSnapshot& snapshot) {
+    if (snapshot.activePageIndex >= snapshot.pageCount) return SNAPSHOT_INTERVAL_MS;
+    const char* pageId = snapshot.pages[snapshot.activePageIndex].id;
+    for (size_t index = 0; index < snapshot.cardCount; ++index) {
+        const auto& card = snapshot.cards[index];
+        if (card.pending && card.visualType == ScreenVisualType::MOTOR_CONTROL &&
+            std::strcmp(card.pageId, pageId) == 0) return MOTOR_PENDING_SNAPSHOT_INTERVAL_MS;
+    }
+    return SNAPSHOT_INTERVAL_MS;
+}
+
 struct RuntimeState {
     SemaphoreHandle_t mutex = nullptr;
+    std::atomic<SemaphoreHandle_t> observationMutex{nullptr};
     SemaphoreHandle_t started = nullptr;
     TaskHandle_t task = nullptr;
     std::atomic<bool> stopRequested{false};
@@ -76,11 +89,29 @@ struct RuntimeState {
     ScreenSystemActionCapabilities systemActionCapabilities{};
     size_t allocated = 0;
     String lastError;
+    std::atomic<bool> backlightChanging{true};
+    BacklightResourceSnapshot backlightResources;
 };
+
+std::atomic<RuntimeState*> runtimeObserverState{nullptr};
 
 RuntimeState& runtimeState() {
     static RuntimeState value;
+    runtimeObserverState.store(&value, std::memory_order_release);
     return value;
+}
+
+bool ensureRuntimeSynchronization(RuntimeState& state) {
+    // First-start callers must not publish different lifetime mutexes. Failed
+    // allocations may be retried by a later business start, never by a query.
+    static std::atomic_flag initializing = ATOMIC_FLAG_INIT;
+    if (initializing.test_and_set(std::memory_order_acquire)) return false;
+    if (!state.mutex) state.mutex = xSemaphoreCreateMutex();
+    if (!state.started) state.started = xSemaphoreCreateBinary();
+    const bool ready = state.mutex && state.started;
+    if (ready) state.observationMutex.store(state.mutex, std::memory_order_release);
+    initializing.clear(std::memory_order_release);
+    return ready;
 }
 
 class StateLock {
@@ -97,6 +128,24 @@ private:
     RuntimeState& _state;
     bool _locked;
 };
+
+void publishBacklightResources() {
+    BacklightResourceSnapshot snapshot;
+    ScreenDevice::instance().snapshotBacklightResource(snapshot); // Screen task only.
+    auto& state = runtimeState();
+    StateLock lock;
+    if (!lock.locked()) return; // Keep changing=true instead of publishing stale data.
+    snapshot.sampledAt = millis();
+    state.backlightResources = snapshot;
+    state.backlightChanging.store(false, std::memory_order_release);
+}
+
+bool deactivateScreenDeviceResources(String* error) {
+    runtimeState().backlightChanging.store(true, std::memory_order_release);
+    const bool stopped = ScreenDevice::instance().deactivate(error);
+    publishBacklightResources();
+    return stopped;
+}
 
 void* allocatePreferred(size_t bytes) {
     if (bytes == 0) return nullptr;
@@ -1341,8 +1390,8 @@ private:
             !strcmp(card.value, "stop") ? "停止" : !strcmp(card.value, "setSpeed") ? "设速" : "设脉冲";
         if (card.pending) snprintf(commandStatus, sizeof(commandStatus), "正在发送指令");
         else if (card.motorCommandKnown) snprintf(commandStatus, sizeof(commandStatus), "%s%s", actionName,
-            card.motorCommandSuccess ? "已应答，运动状态未知" : "未确认，请勿继续启动");
-        else snprintf(commandStatus, sizeof(commandStatus), "运行状态未确认");
+            card.motorCommandSuccess ? "指令已应答" : "指令失败");
+        else snprintf(commandStatus, sizeof(commandStatus), "就绪");
         canvas.text(rect.x + 12, rect.y + 36, commandStatus, palette.muted, rect.w - 24, 1);
         const uint8_t precision = std::min<uint8_t>(card.motorPrecision, 6);
         const double speedScale = std::pow(10.0, precision);
@@ -1389,13 +1438,16 @@ private:
         canvas.roundedRect(stop.x, stop.y, stop.w, stop.h, 7,
             controlPressed(card, stop) ? blend565(stopColor, palette.card, 185) : stopColor, stopColor);
         canvas.text(stop.x + (stop.w - 48) / 2, stop.y + (stop.h - 24) / 2, "停止", rgb565(255, 255, 255), stop.w - 12, 2);
-        const char* safety = card.error[0] ? card.error : !card.motorKnown ? "参数未读回，禁止启动；停止仍可请求" :
-            !card.motorPulse ? "脉冲必须大于零；请设置后读取确认" :
-            !card.motorSoftLimitEnabled ? "软限位未启用，请先完成行程标定" :
+        const char* safety = !strcmp(card.error, "TRAVEL_RANGE_EXCEEDED") ? "已到软件限位，请反向或核对位置" :
+            card.motorUiFeedback[0] ? card.motorUiFeedback : card.error[0] ? card.error :
+            card.motorReadError[0] ? "电机通信失败，请检查控制器电源与接线" :
+            !card.motorSoftLimitEnabled ? "点动模式：点击正转或反转即可运行" :
             !card.motorReferenceKnown ? "软限位已配置，参考位置未确认" :
-            !card.motorStationaryConfirmed ? "运动结束未确认；停止仍可请求" :
+            !card.motorKnown ? "启动前自动读取参数；停止仍可请求" :
+            !card.motorPulse ? "启动时自动设置默认点动参数" :
+            !card.motorStationaryConfirmed ? "换向时自动先停止，再启动" :
             !card.motorForwardReady && !card.motorReverseReady ? "行程或脉冲读回不满足启动条件" :
-            "软限位按可能位置范围保护，仍需实体限位";
+            "软限位已启用；无实际位置反馈";
         canvas.text(rect.x + 12, rect.y + rect.h - 15, safety, palette.warning, rect.w - 24, 1);
     }
 
@@ -1709,7 +1761,8 @@ private:
         canvas.text(dialog.x + 14, dialog.y + 44, detail, palette.muted,
                     dialog.w - 28, 1);
         if (motor) {
-            char idle[64]; snprintf(idle, sizeof(idle), "闲置 %u 秒后再次确认", static_cast<unsigned>(snapshot.controlConfirmIdleSeconds));
+            char idle[64];
+            snprintf(idle, sizeof(idle), "闲置 %u 秒后再次确认", static_cast<unsigned>(snapshot.controlConfirmIdleSeconds));
             canvas.text(dialog.x + 14, dialog.y + 68, idle, palette.muted, dialog.w - 28, 1);
             char values[64]; snprintf(values, sizeof(values), "速度 %.*f   脉冲 %u", card->motorPrecision,
                 card->motorSpeedInput / std::pow(10.0, std::min<uint8_t>(card->motorPrecision, 6)), card->motorPulseInput);
@@ -1844,18 +1897,24 @@ void signalStarted(bool success, const String& error) {
 }
 
 void finishTask() {
-    {
-        StateLock lock;
-        if (lock.locked()) {
-            RuntimeState& state = runtimeState();
-            state.running = false;
-            state.sleeping = false;
-            state.pendingSystemAction = ScreenSystemAction::NONE;
-            state.pendingSystemValue = 0;
-            state.systemActionCapabilities = {};
-            state.allocated = 0;
-            state.task = nullptr;
+    // Never delete the task while its published handle still points to it.
+    // A contended state lock is retryable, just like backend cleanup.
+    for (;;) {
+        {
+            StateLock lock;
+            if (lock.locked()) {
+                RuntimeState& state = runtimeState();
+                state.running = false;
+                state.sleeping = false;
+                state.pendingSystemAction = ScreenSystemAction::NONE;
+                state.pendingSystemValue = 0;
+                state.systemActionCapabilities = {};
+                state.allocated = 0;
+                state.task = nullptr;
+                break;
+            }
         }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     vTaskDelete(nullptr);
 }
@@ -1877,14 +1936,21 @@ struct TouchGesture {
 };
 
 bool dispatchCardAction(ScreenPanelCardSnapshot& card,
-                        bool discardUnsavedRestartHistory = false) {
+                        bool discardUnsavedRestartHistory = false,
+                        uint32_t displayedRevision = 0) {
     if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
         const char* actions[] = {"", "forward", "reverse", "setSpeed", "setPulse"};
         const uint8_t selected = card.motorConfirmAction;
         card.motorConfirmAction = 0;
-        if (!selected || selected > 4 || card.pending) return false;
-        if (selected <= 2 && (!card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty)) return false;
-        if (selected <= 2 && !(selected == 1 ? card.motorForwardReady : card.motorReverseReady)) return false;
+        if (!selected || selected > 4) return false;
+        const char* blocked = selected <= 2 ? screenMotorStartBlockReason(card, selected == 1) :
+            card.pending ? "请等待指令完成" : nullptr;
+        if (blocked) {
+            strlcpy(card.error, blocked, sizeof(card.error));
+            screenRememberMotorFeedback(card, millis());
+            return false;
+        }
+        card.motorUiFeedback[0] = '\0';
         String action(actions[selected]);
         if (selected > 2) action += ":" + String(card.motorConfirmValue);
         uint32_t operation = 0; String error;
@@ -1892,6 +1958,7 @@ bool dispatchCardAction(ScreenPanelCardSnapshot& card,
             card.pending = true; card.error[0] = '\0'; return true;
         }
         strlcpy(card.error, error.c_str(), sizeof(card.error));
+        screenRememberMotorFeedback(card, millis());
         return false;
     }
     ScreenActionKind kind = ScreenActionKind::TRIGGER;
@@ -1915,9 +1982,10 @@ bool dispatchCardAction(ScreenPanelCardSnapshot& card,
         String error;
         if (!ScreenPanelManager::instance().dispatchAction(
                 card.id, ScreenActionKind::SET_NUMBER, String(value),
-                operationId, error)) {
+                operationId, error, card.controlRef, displayedRevision)) {
             LOG_WARNINGF("ScreenRuntime: numeric action '%s' rejected: %s",
                          card.id, error.c_str());
+            strlcpy(card.error, error.c_str(), sizeof(card.error));
             return false;
         }
         return true;
@@ -1925,7 +1993,9 @@ bool dispatchCardAction(ScreenPanelCardSnapshot& card,
     uint32_t operationId = 0;
     String error;
     if (!ScreenPanelManager::instance().dispatchAction(
-            card.id, kind, target, operationId, error)) {
+            card.id, kind, kind == ScreenActionKind::SET_BOOLEAN ? String(target ? "on" : "off") :
+                kind == ScreenActionKind::SYSTEM_ACTION ? String(target ? "true" : "false") : String(),
+            operationId, error, card.controlRef, displayedRevision)) {
         LOG_WARNINGF("ScreenRuntime: action '%s' rejected: %s",
                      card.id, error.c_str());
         strlcpy(card.error, error.c_str(), sizeof(card.error));
@@ -1955,14 +2025,9 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
         if (screenRectContains(layout.stop(), x, y)) action = "stop";
         for (unsigned col = 0; col < 2; ++col) {
             if (screenRectContains(layout.direction(col), x, y)) {
-                if (card.pending || !card.motorKnown || !card.motorPulse || card.motorSpeedDirty || card.motorPulseDirty) {
-                    strlcpy(card.error, card.pending ? "请等待指令完成" : !card.motorKnown ? "请先读取并确认速度和脉冲" :
-                        !card.motorPulse ? "单次脉冲必须大于零" : "请先应用修改后的参数", sizeof(card.error)); return true;
-                }
-                if (!(col ? card.motorReverseReady : card.motorForwardReady)) {
-                    strlcpy(card.error, !card.motorSoftLimitEnabled ? "请先完成行程标定" :
-                        !card.motorReferenceKnown ? "请在Web确认实测参考位置" :
-                        !card.motorStationaryConfirmed ? "请现场确认运动已结束" : "行程或读回不满足启动条件", sizeof(card.error));
+                if (const char* blocked = screenMotorStartBlockReason(card, col == 0)) {
+                    strlcpy(card.error, blocked, sizeof(card.error));
+                    screenRememberMotorFeedback(card, now);
                     return true;
                 }
                 action = col ? "reverse" : "forward";
@@ -1978,14 +2043,15 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
                 if (col < 2) {
                     const int step = row ? card.motorPulseStep : card.motorSpeedStep;
                     value = std::max(0, std::min(65535, static_cast<int>(value) + (col ? step : -step)));
-                    dirty = true; card.error[0] = '\0'; return true;
+                    dirty = true; card.error[0] = '\0'; card.motorUiFeedback[0] = '\0'; return true;
                 }
                 action = String(row ? "setPulse:" : "setSpeed:") + String(value);
             }
         }
         if (action.isEmpty()) return true;
+        card.motorUiFeedback[0] = '\0';
         const bool motion = action == "forward" || action == "reverse";
-        if (motion && (!controlSession || !controlSession->allows(card.controlRef))) {
+        if (motion && card.requiresConfirmation && (!controlSession || !controlSession->allows(card.controlRef))) {
             if (confirmationCardId && confirmationCapacity) {
                 card.motorConfirmAction = action == "forward" ? 1 : action == "reverse" ? 2 : action.startsWith("setSpeed:") ? 3 : 4;
                 card.motorConfirmValue = card.motorConfirmAction == 3 ? card.motorSpeedInput : card.motorPulseInput;
@@ -1994,7 +2060,10 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
             return true;
         }
         uint32_t operation = 0; String error;
-        if (!ScreenPanelManager::instance().dispatchAction(card.id, ScreenActionKind::MOTOR_COMMAND, action, operation, error, card.controlRef)) strlcpy(card.error, error.c_str(), sizeof(card.error));
+        if (!ScreenPanelManager::instance().dispatchAction(card.id, ScreenActionKind::MOTOR_COMMAND, action, operation, error, card.controlRef)) {
+            strlcpy(card.error, error.c_str(), sizeof(card.error));
+            screenRememberMotorFeedback(card, now);
+        }
         else { card.pending = true; card.error[0] = '\0'; if (controlSession) controlSession->used(card.controlRef, now); }
         return true;
     }
@@ -2097,7 +2166,7 @@ void handleTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
                         snapshot.cards[i].kind == ScreenCardKind::SYSTEM &&
                         strcmp(snapshot.cards[i].error,
                                "history_save_failed") == 0;
-                    if (dispatchCardAction(snapshot.cards[i], discardHistory) && controlSession &&
+                    if (dispatchCardAction(snapshot.cards[i], discardHistory, snapshot.revision) && controlSession &&
                         snapshot.cards[i].visualType == ScreenVisualType::MOTOR_CONTROL)
                         controlSession->approve(snapshot.cards[i].controlRef, now);
                     break;
@@ -2139,7 +2208,7 @@ void handleTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
         strlcpy(confirmationCardId, card.id, confirmationCapacity);
         return;
     }
-    dispatchCardAction(card);
+    dispatchCardAction(card, false, snapshot.revision);
 }
 
 void changePage(ScreenPanelSnapshot& snapshot, int direction) {
@@ -2162,14 +2231,16 @@ void runScreenTask() {
         signalStarted(false, "SCREEN_DISPLAY_NOT_CONFIGURED");
         return;
     }
-    if (!device.activate(error)) {
+    state.backlightChanging.store(true, std::memory_order_release);
+    const bool activated = device.activate(error);
+    publishBacklightResources();
+    if (!activated) {
         signalStarted(false, error);
         return;
     }
 
     void* snapshotMemory = allocatePreferred(sizeof(ScreenPanelSnapshot));
     if (!snapshotMemory) {
-        device.deactivate();
         signalStarted(false, "SCREEN_SNAPSHOT_ALLOCATION_FAILED");
         return;
     }
@@ -2179,7 +2250,6 @@ void runScreenTask() {
     if (!ScreenPanelManager::instance().getActiveSnapshot(*snapshot, snapshotCache)) {
         snapshot->~ScreenPanelSnapshot();
         heap_caps_free(snapshotMemory);
-        device.deactivate();
         signalStarted(false, "SCREEN_SNAPSHOT_UNAVAILABLE");
         return;
     }
@@ -2188,7 +2258,6 @@ void runScreenTask() {
     if (!config || !renderer.begin(device.display(), *config, error)) {
         snapshot->~ScreenPanelSnapshot();
         heap_caps_free(snapshotMemory);
-        device.deactivate();
         signalStarted(false, error.isEmpty() ?
                       String("SCREEN_RENDER_INIT_FAILED") : error);
         return;
@@ -2209,6 +2278,10 @@ void runScreenTask() {
     uint32_t idleSleepSeconds = snapshot->idleSleepSeconds;
     bool sleeping = false;
     bool forceRender = true;
+    bool touchWakePending = false;
+    bool touchWakeContactDown = false;
+    uint8_t touchWakeAttempts = 0;
+    uint32_t touchWakeNextAttemptMs = 0;
     bool renderRetryPending = false;
     uint32_t lastRenderAttemptMs = 0;
     bool brightnessOverridden = false;
@@ -2386,19 +2459,13 @@ void runScreenTask() {
             touch && touch->ready() && touch->poll(point)) {
             lastInteractionMs = now;
             if (sleeping) {
-                if (point.pressed && device.display()->setBrightness(
-                        brightnessOverridden ? appliedBrightness : snapshot->brightnessPercent) &&
-                    device.display()->setSleep(false)) {
-                    sleeping = false;
-                    controlSession.reset();
-                    confirmationCardId[0] = '\0';
-                    gesture = TouchGesture{};
-                    gesture.suppressUntilRelease = true;
-                    renderer.invalidate();
-                    updateRuntimeState(true, false,
-                                       snapshotBytes + renderer.bufferBytes() + framebufferBytes);
-                    forceRender = true;
+                if (point.pressed && !touchWakeContactDown && !touchWakePending) {
+                    touchWakePending = true;
+                    touchWakeAttempts = 0;
+                    touchWakeNextAttemptMs = now;
+                    LOGGER.infof("ScreenRuntime: touch wake requested x=%u y=%u", point.x, point.y);
                 }
+                touchWakeContactDown = point.pressed;
             } else if (gesture.suppressUntilRelease) {
                 if (!point.pressed) gesture.suppressUntilRelease = false;
             } else if (point.pressed) {
@@ -2482,6 +2549,39 @@ void runScreenTask() {
             }
         }
 
+        // Retry a touch wake after a short tap has already ended. A held
+        // contact cannot restart the bounded budget after a permanent failure.
+        if (touchWakePending && sleeping &&
+            static_cast<int32_t>(now - touchWakeNextAttemptMs) >= 0) {
+            ++touchWakeAttempts;
+            const bool brightnessSet = device.display()->setBrightness(
+                brightnessOverridden ? appliedBrightness : snapshot->brightnessPercent);
+            if (brightnessSet && device.display()->setSleep(false)) {
+                sleeping = false;
+                touchWakePending = false;
+                controlSession.reset();
+                confirmationCardId[0] = '\0';
+                gesture = TouchGesture{};
+                gesture.suppressUntilRelease = touchWakeContactDown;
+                lastInteractionMs = now;
+                renderer.invalidate();
+                updateRuntimeState(true, false,
+                                   snapshotBytes + renderer.bufferBytes() + framebufferBytes);
+                forceRender = true;
+                LOGGER.infof("ScreenRuntime: touch wake applied attempt=%u", touchWakeAttempts);
+            } else {
+                touchWakePending = touchWakeAttempts < 3;
+                touchWakeNextAttemptMs = now + 100U;
+                LOG_WARNINGF("ScreenRuntime: touch wake failed stage=%s attempt=%u retry=%u",
+                             brightnessSet ? "backlight-on" : "brightness",
+                             touchWakeAttempts, touchWakePending ? 1U : 0U);
+            }
+        }
+        if (!sleeping) {
+            touchWakePending = false;
+            touchWakeContactDown = false;
+        }
+
         const bool requestedRefresh = state.refreshRequested.exchange(
             false, std::memory_order_acq_rel);
         if (requestedRefresh && gesture.down && gesture.slider < 0) {
@@ -2496,9 +2596,9 @@ void runScreenTask() {
         }
 #if FASTBEE_SCREEN_WORKER_ISOLATION == 1
         if (isolation.allowSnapshot(isolationPhase) &&
-            (isolationPhaseFrame || requestedRefresh || now - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS)) {
+            (isolationPhaseFrame || requestedRefresh || now - lastSnapshotMs >= snapshotIntervalMs(*snapshot))) {
 #else
-        if (forceRender || (!gesture.down && (requestedRefresh || now - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS))) {
+        if (forceRender || (!gesture.down && (requestedRefresh || now - lastSnapshotMs >= snapshotIntervalMs(*snapshot)))) {
 #endif
             // A failed refresh keeps the last good screen and retries at the
             // same bounded interval, rather than parsing at the touch rate.
@@ -2550,6 +2650,7 @@ void runScreenTask() {
                     }
                 }
                 for (auto& card : snapshot->cards) {
+                    screenExpireMotorFeedback(card, now);
                     if (card.kind == ScreenCardKind::SYSTEM) {
                         const auto caps = device.display()->capabilities();
                         const bool noBuzzer = !strcmp(card.systemActionId, "touch-beep") && !caps.buzzer;
@@ -2564,7 +2665,7 @@ void runScreenTask() {
                         card.numericValue = brightnessOverridden ? appliedBrightness : snapshot->brightnessPercent;
                         if (!device.display()->capabilities().brightnessContinuous) strlcpy(card.error, "仅支持开关背光", sizeof(card.error));
                     }
-                    if (card.visualType == ScreenVisualType::MOTOR_CONTROL && !card.pending && !card.error[0]) {
+                    if (card.visualType == ScreenVisualType::MOTOR_CONTROL && !card.pending && card.motorKnown) {
                         if (card.motorSpeed == card.motorSpeedInput) card.motorSpeedDirty = false;
                         if (card.motorPulse == card.motorPulseInput) card.motorPulseDirty = false;
                         if (card.motorKnown && !card.motorSpeedDirty) card.motorSpeedInput = card.motorSpeed;
@@ -2694,7 +2795,6 @@ void runScreenTask() {
     renderer.end();
     snapshot->~ScreenPanelSnapshot();
     heap_caps_free(snapshotMemory);
-    device.deactivate();
 }
 
 void screenTask(void*) {
@@ -2702,6 +2802,26 @@ void screenTask(void*) {
     // the worker first so its cached JSON and error strings release memory on
     // startup failure and every stop/reconfigure cycle.
     runScreenTask();
+    {
+        // Keep the task handle and backend alive until checked cleanup succeeds.
+        // stop() can time out truthfully; a busy shared bus never frees a lease
+        // owner or its GPIO from underneath an in-flight transaction.
+        String cleanupError;
+        {
+            StateLock lock;
+            if (lock.locked()) {
+                runtimeState().running = false;
+                runtimeState().systemActionCapabilities = {};
+            }
+        }
+        while (!deactivateScreenDeviceResources(&cleanupError)) {
+            {
+                StateLock lock;
+                if (lock.locked()) runtimeState().lastError = cleanupError;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    } // FreeRTOS deletion does not unwind cleanupError.
     finishTask();
 }
 
@@ -2711,7 +2831,51 @@ void screenTask(void*) {
 
 ScreenRuntime& ScreenRuntime::instance() {
     static ScreenRuntime runtime;
+#if FASTBEE_ENABLE_SCREEN_UI && defined(ARDUINO_ARCH_ESP32)
+    (void)runtimeState(); // Owner path constructs state, never an observer query.
+#endif
+    static const FeatureInstanceObserver observer{"screenPanel", [](const void* context) {
+        return static_cast<const ScreenRuntime*>(context)->observeFeatureInstance();
+    }, &runtime};
+    FeatureInstanceRegistry::instance().registerObserver(&observer);
     return runtime;
+}
+
+void ScreenRuntime::snapshotBacklightResources(BacklightResourceSnapshot& result) {
+    result = {};
+#if FASTBEE_ENABLE_SCREEN_UI && defined(ARDUINO_ARCH_ESP32)
+    const auto* state = runtimeObserverState.load(std::memory_order_acquire);
+    if (!state) return; // Never construct the runtime or synchronization to observe.
+    const auto mutex = state->observationMutex.load(std::memory_order_acquire);
+    if (!mutex) return;
+    if (xSemaphoreTake(mutex, 0) != pdTRUE) { result.status = ResourceObservation::Busy; return; }
+    if (state->backlightChanging.load(std::memory_order_acquire)) result.status = ResourceObservation::Busy;
+    else result = state->backlightResources;
+    xSemaphoreGive(mutex);
+#endif
+}
+
+FeatureInstanceSnapshot ScreenRuntime::observeFeatureInstance() const {
+#if FASTBEE_ENABLE_SCREEN_UI && defined(ARDUINO_ARCH_ESP32)
+    auto& state = runtimeState();
+    const auto mutex = state.observationMutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTake(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    FeatureInstanceSnapshot snapshot;
+    if (state.running && !state.task) snapshot = FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::InvalidSnapshot, FeatureInstanceScope::ServiceLifecycle);
+    else snapshot = FeatureInstanceSnapshot::lifecycle(
+        state.task && state.stopRequested.load(std::memory_order_acquire) ? FeatureInstanceState::Retiring :
+        state.running ? FeatureInstanceState::Running :
+        (state.task || state.allocated) ? FeatureInstanceState::Allocated : FeatureInstanceState::Stopped);
+    xSemaphoreGive(mutex);
+    return snapshot;
+#else
+    return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::BackendUnavailable, FeatureInstanceScope::ServiceLifecycle);
+#endif
 }
 
 bool ScreenRuntime::start(String& error) {
@@ -2720,9 +2884,7 @@ bool ScreenRuntime::start(String& error) {
     return false;
 #else
     RuntimeState& state = runtimeState();
-    if (!state.mutex) state.mutex = xSemaphoreCreateMutex();
-    if (!state.started) state.started = xSemaphoreCreateBinary();
-    if (!state.mutex || !state.started) {
+    if (!ensureRuntimeSynchronization(state)) {
         error = "SCREEN_RUNTIME_SYNC_ALLOCATION_FAILED";
         return false;
     }

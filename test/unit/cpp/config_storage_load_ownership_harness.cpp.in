@@ -1,0 +1,111 @@
+#include <ArduinoJson.h>
+#include <cassert>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <string>
+#include <cstring>
+#include <limits>
+
+extern "C" void* __real_malloc(size_t);
+extern "C" void* __real_realloc(void*, size_t);
+extern "C" void __real_free(void*);
+struct Allocation { void* pointer; size_t bytes; };
+static Allocation allocations[32768];
+static bool tracking = false;
+static size_t liveBytes = 0, peakBytes = 0;
+static void forget(void* pointer) {
+    if (!pointer) return;
+    for (auto& a : allocations) if (a.pointer == pointer) {
+        liveBytes -= a.bytes; a = {}; return;
+    }
+}
+static void record(void* pointer, size_t size) {
+    if (!tracking || !pointer) return;
+    for (auto& a : allocations) if (!a.pointer) {
+        a = {pointer, size}; liveBytes += size;
+        if (liveBytes > peakBytes) peakBytes = liveBytes;
+        return;
+    }
+    std::abort();
+}
+extern "C" void* __wrap_malloc(size_t size) {
+    void* p = __real_malloc(size); record(p, size); return p;
+}
+extern "C" void __wrap_free(void* p) { forget(p); __real_free(p); }
+extern "C" void* __wrap_realloc(void* p, size_t size) {
+    void* next = __real_realloc(p, size);
+    if (next || !size) { forget(p); record(next, size); }
+    return next;
+}
+struct CountingAllocator : ArduinoJson::Allocator {
+    size_t calls = 0, deallocations = 0;
+    bool fail = false;
+    void* allocate(size_t size) override { ++calls; return fail ? nullptr : __wrap_malloc(size); }
+    void deallocate(void* p) override { if(p) ++deallocations; __wrap_free(p); }
+    void* reallocate(void* p, size_t size) override { ++calls; return fail ? nullptr : __wrap_realloc(p, size); }
+};
+using String = std::string;
+constexpr int FILE_READ = 0;
+struct File {
+    const std::string* text; size_t index = 0;
+    explicit operator bool() const { return text; }
+    int read() { return text && index < text->size() ? static_cast<unsigned char>((*text)[index++]) : -1; }
+    size_t readBytes(char* output, size_t count) {
+        size_t n = 0; for(; n<count; ++n) {int c=read(); if(c<0) break; output[n]=static_cast<char>(c);} return n;
+    }
+    void close() {}
+};
+struct Filesystem {
+    std::map<String, String> files;
+    File open(const String& path, int) {auto i=files.find(path); return {i==files.end()?nullptr:&i->second};}
+} LittleFS;
+@ORACLE@
+@PRODUCTION@
+
+static std::string largeJson() {
+    std::string text="{\"rows\":[";
+    for(int i=0;i<240;++i) {
+        if(i) text+=',';
+        text+="{\"id\":"+std::to_string(i)+",\"label\":\"configuration-point-"+std::to_string(i)+"-abcdefghijklmnop\",\"enabled\":true}";
+    }
+    return text+"]}";
+}
+static size_t peakFor(bool before) {
+    assert(liveBytes==0); peakBytes=0; tracking=true;
+    {
+        JsonDocument out; out["old"]="valid";
+        assert(before ? verifyJsonFileBefore("large", &out) : verifyJsonFile("large", &out));
+        assert(out["rows"].size()==240);
+        assert(out["rows"][239]["id"]==239);
+        assert(!out.overflowed());
+    }
+    tracking=false; assert(liveBytes==0); return peakBytes;
+}
+int main() {
+    LittleFS.files["large"]=largeJson(); LittleFS.files["broken"]="{\"candidate\":[1,2,";
+    const size_t copyPeak=peakFor(true), ownershipPeak=peakFor(false);
+    assert(ownershipPeak < copyPeak); // real default allocator duplicate DOM regression
+    CountingAllocator customAllocator;
+    {
+        JsonDocument out(&customAllocator); out["old"]="valid";
+        assert(verifyJsonFile("large", &out));
+        assert(out.allocator()==&customAllocator && customAllocator.calls>0);
+        assert(out["rows"].size()==240);
+        const size_t priorCalls=customAllocator.calls;
+        out["after"]="still-custom";
+        assert(out.allocator()==&customAllocator && customAllocator.calls>=priorCalls);
+        std::string valid; serializeJson(out, valid);
+        assert(!verifyJsonFile("broken", &out));
+        std::string after; serializeJson(out, after); assert(after==valid);
+        assert(!verifyJsonFile("missing", &out)); after.clear(); serializeJson(out, after); assert(after==valid);
+        customAllocator.fail=true;
+        assert(!verifyJsonFile("large", &out)); after.clear(); serializeJson(out, after); assert(after==valid);
+        assert(!out.overflowed() && out.allocator()==&customAllocator);
+        customAllocator.fail=false;
+        assert(verifyJsonFile("large", &out)); assert(out["rows"].size()==240);
+    }
+    assert(customAllocator.deallocations>0);
+    assert(verifyJsonFile("large")); assert(!verifyJsonFile("broken"));
+    std::cout<<"{\"cases\":7,\"copyPeakBytes\":"<<copyPeak<<",\"ownershipPeakBytes\":"<<ownershipPeak<<",\"customAllocator\":true,\"failurePreservesOld\":true,\"deviceAccess\":false}"<<std::endl;
+}

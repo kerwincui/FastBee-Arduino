@@ -19,7 +19,7 @@ class I2cClientRetirementTests(unittest.TestCase):
         pm = (ROOT / "src/core/PeripheralManager.cpp").read_text(encoding="utf-8")
         lcd = (ROOT / "src/peripherals/LCDManager.cpp").read_text(encoding="utf-8")
         lcd1602 = (ROOT / "src/peripherals/drivers/LCD1602Driver.cpp").read_text(encoding="utf-8")
-        route = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(encoding="utf-8")
+        route = (ROOT / "src/network/handlers/PeripheralReadRoutes.cpp").read_text(encoding="utf-8")
         snippets = [definition(pm, "std::map<String, std::unique_ptr<uint8_t>>& i2cOwners()")]
         for method in ("setupHardware", "teardownHardware"):
             body = definition(pm, "bool PeripheralManager::" + method + "(")
@@ -28,7 +28,7 @@ class I2cClientRetirementTests(unittest.TestCase):
                             "(const PeripheralConfig& config) {\n" + branch + "\nreturn false;\n}")
         snippets += [definition(lcd, signature) for signature in (
             "void abortManagedLcdTransfer()", "LCDManager::~LCDManager()",
-            "void LCDManager::deinitialize()")]
+            "bool LCDManager::deinitialize(const String& expectedId)")]
         snippets += [definition(route, "struct ScanLease") + ";",
                      definition(lcd1602, "void LCD1602Driver::end()")]
         # Exclude LCD command initialization after address detection; the real

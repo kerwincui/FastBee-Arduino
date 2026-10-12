@@ -9,6 +9,7 @@ async function setup(page:any){
  await page.clock.install();
  await page.setContent('<div id="device-control-page" class="active"><div id="dc-content"></div></div>');
  await page.evaluate(()=>{const w=window as any;w.AppState={};w.escapeHtml=(x:any)=>String(x??'');});
+ await page.addScriptTag({path:resolve(sourceRoot,'web-src/js/utils.js')});
  for(const file of ['core','render','modbus-ops','modbus-ctrl'])
   await page.addScriptTag({path:resolve(sourceRoot,'web-src/modules/runtime/device-control/'+file+'.js')});
  await page.evaluate((fixture:any)=>{

@@ -43,7 +43,7 @@ class PeripheralResourcePlannerTests(unittest.TestCase):
         self.assertIn('"pz-esp32-v1.2"', board)
         self.assertIn('"Espressif ESP32-C6-DevKitC-1 User Guide', board)
 
-    def test_focused_cpp_harness(self):
+    def compile_and_run(self, target=None):
         compiler = shutil.which("g++") or shutil.which("clang++")
         if compiler is None:
             self.skipTest("A C++17 compiler is required for the focused planner harness")
@@ -61,9 +61,11 @@ class PeripheralResourcePlannerTests(unittest.TestCase):
                 f"-I{MOCKS}",
                 f"-I{ROOT / 'test/mocks'}",
                 f"-I{ROOT / 'include'}",
+                *(["-D" + target + "=1"] if target else []),
                 str(HARNESS),
                 str(BOARD_SOURCE),
                 str(SOURCE),
+                str(ROOT / "src/core/PeripheralNetworkResources.cpp"),
                 "-o",
                 str(executable),
             ]
@@ -93,6 +95,12 @@ class PeripheralResourcePlannerTests(unittest.TestCase):
                 0,
                 f"Focused planner harness failed:\n{executed.stdout}\n{executed.stderr}",
             )
+
+    def test_focused_cpp_harness(self):
+        self.compile_and_run()
+
+    def test_c3_compiled_profile_and_resource_limits(self):
+        self.compile_and_run("CONFIG_IDF_TARGET_ESP32C3")
 
 
 if __name__ == "__main__":

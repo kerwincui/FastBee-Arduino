@@ -6,6 +6,9 @@
  */
 
 #include "utils/TimeUtils.h"
+#include "utils/TimeSyncValidation.h"
+#include "utils/SystemTimeQuality.h"
+#include "utils/SystemTimeZone.h"
 #include "utils/StringUtils.h"
 #include "core/FeatureFlags.h"
 #include <Ticker.h>
@@ -15,6 +18,7 @@
 #include <WiFiClientSecure.h>
 #include <map>
 #include <new>
+#include <atomic>
 
 // 定时器管理
 std::map<int, Ticker*> timers;
@@ -26,6 +30,18 @@ extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start"
 extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 constexpr time_t MIN_VALID_TLS_TIME = 1577836800;  // 2020-01-01 UTC
+
+std::atomic_flag httpTimeSyncBusy = ATOMIC_FLAG_INIT;
+class HttpTimeSyncGuard {
+public:
+    HttpTimeSyncGuard() : locked_(!httpTimeSyncBusy.test_and_set(std::memory_order_acquire)) {}
+    ~HttpTimeSyncGuard() { if (locked_) httpTimeSyncBusy.clear(std::memory_order_release); }
+    bool locked() const { return locked_; }
+    HttpTimeSyncGuard(const HttpTimeSyncGuard&) = delete;
+    HttpTimeSyncGuard& operator=(const HttpTimeSyncGuard&) = delete;
+private:
+    const bool locked_;
+};
 
 // 一次性回调可能递归创建下一个定时器；在用户回调仍执行时禁止回收
 // 外层 Ticker，避免底层 esp_timer 回调栈上的自删除。
@@ -71,6 +87,7 @@ void cleanupInactiveTimers() {
 }
 
 bool TimeUtils::initialize(const TimeZone& timezone, const String& ntpServer) {
+    FastBee::SystemTimeQuality::installSntpObserver();
     // 配置时区
     if (!setTimeZone(timezone)) {
         return false;
@@ -81,20 +98,25 @@ bool TimeUtils::initialize(const TimeZone& timezone, const String& ntpServer) {
         return syncNTPFromHTTP(ntpServer);
     }
     
+    // Capture before configuration; a fast SNTP callback can complete before
+    // syncNTP enters its wait loop.
+    const uint32_t syncSequence = FastBee::SystemTimeQuality::sequence();
     // 配置NTP
-    configTime(timezone.offset * 60, timezone.dst ? 3600 : 0, 
-               ntpServer.c_str(), "time.nist.gov", "time.google.com");
+    if (!FastBee::SystemTimeZone::startSntp(nullptr, ntpServer.c_str(),
+            "time.nist.gov", "time.google.com")) return false;
     
     // 等待时间同步
-    return syncNTP();
+    return syncNTP(10000, syncSequence);
 }
 
-bool TimeUtils::syncNTP(unsigned long timeout) {
+bool TimeUtils::syncNTP(unsigned long timeout, uint32_t afterSequence) {
+    const uint32_t initialSequence = afterSequence == UINT32_MAX
+        ? FastBee::SystemTimeQuality::sequence() : afterSequence;
     unsigned long startTime = millis();
     
     while (millis() - startTime < timeout) {
-        time_t now = getTimestamp();
-        if (now > 1000000000) { // 有效的时间戳
+        const auto status = FastBee::SystemTimeQuality::snapshot();
+        if (status.synced && status.sequence != initialSequence) {
             return true;
         }
         delay(100);
@@ -104,7 +126,14 @@ bool TimeUtils::syncNTP(unsigned long timeout) {
 }
 
 bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTimestampMs, unsigned long timeout) {
-    const double deviceSendTime = static_cast<double>(millis());
+    outTimestampMs = 0;
+    if (!timeout || timeout > UINT16_MAX) return false;
+    // UI and background sync share clients; do not race their sockets or apply
+    // an older response after a newer one. No wait, allocation or network on busy.
+    HttpTimeSyncGuard syncGuard;
+    if (!syncGuard.locked()) return false;
+    // The bounded request interval starts after any TLS bootstrap below.
+    uint32_t deviceSendTime = 0;
     String fullUrl = url;
     const bool useTls = fullUrl.startsWith("https://");
 
@@ -117,7 +146,6 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
     } else {
         fullUrl += "?deviceSendTime=";
     }
-    fullUrl += String((unsigned long)deviceSendTime);
 
     HTTPClient http;
     static WiFiClient plainClient;
@@ -125,13 +153,16 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
     bool beginOk = false;
 
     if (useTls) {
-        // Certificate validation needs a plausible wall clock. Bootstrap it
-        // with SNTP while preserving the configured POSIX timezone.
-        if (getTimestamp() < MIN_VALID_TLS_TIME) {
-            const char* currentTz = getenv("TZ");
-            String timezone = currentTz ? currentTz : "UTC0";
-            configTzTime(timezone.c_str(), "pool.ntp.org", "time.nist.gov", "time.google.com");
-            if (!syncNTP(timeout)) {
+        // RTC boot seeding provides a calendar, not a network sync record.
+        // Bootstrap unknown/RTC/stale time with the existing SNTP flow while
+        // preserving the configured POSIX timezone and TLS certificate checks.
+        if (getTimestamp() < MIN_VALID_TLS_TIME ||
+                !FastBee::SystemTimeQuality::snapshot().synced) {
+            FastBee::SystemTimeQuality::installSntpObserver();
+            const uint32_t bootstrapSequence = FastBee::SystemTimeQuality::sequence();
+            if (!FastBee::SystemTimeZone::startSntp(nullptr, "pool.ntp.org",
+                    "time.nist.gov", "time.google.com")) return false;
+            if (!syncNTP(timeout, bootstrapSequence)) {
                 return false;
             }
         }
@@ -142,10 +173,11 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
         }
         secureClient.setCACertBundle(x509_crt_bundle_start, caBundleSize);
         secureClient.setHandshakeTimeout(30);
-        beginOk = http.begin(secureClient, fullUrl);
-    } else {
-        beginOk = http.begin(plainClient, fullUrl);
     }
+    deviceSendTime = static_cast<uint32_t>(millis());
+    const uint32_t syncSequence = FastBee::SystemTimeQuality::sequence();
+    fullUrl += String(static_cast<unsigned long>(deviceSendTime));
+    beginOk = useTls ? http.begin(secureClient, fullUrl) : http.begin(plainClient, fullUrl);
 
     if (!beginOk) {
         return false;
@@ -159,32 +191,44 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
     int httpCode = http.GET();
     bool success = false;
 
-    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-        const double deviceRecvTime = static_cast<double>(millis());
+    if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
+        const uint32_t deviceRecvTime = static_cast<uint32_t>(millis());
         
         double serverRecvTime = 0;
         double serverSendTime = 0;
         
         FastBeeJsonDoc doc;
-        DeserializationError parseErr = deserializeJson(doc, payload);
+        DeserializationError parseErr = deserializeJson(doc, payload.c_str(), payload.length());
         if (!parseErr) {
-            serverRecvTime = doc["serverRecvTime"] | 0.0;
-            serverSendTime = doc["serverSendTime"] | 0.0;
-            if (serverRecvTime == 0) {
-                serverRecvTime = doc["data"]["serverTime"] | 0.0;
+            const auto readTimestamp = [](JsonVariantConst value) -> double {
+                if (value.is<double>()) return value.as<double>();
+                if (value.is<const char*>()) {
+                    const JsonString text = value.as<JsonString>();
+                    double parsed = 0;
+                    if (FastBee::parseTimeMilliseconds(text.c_str(), text.size(), parsed)) return parsed;
+                }
+                return 0;
+            };
+            serverRecvTime = readTimestamp(doc["serverRecvTime"]);
+            serverSendTime = readTimestamp(doc["serverSendTime"]);
+            // Fallback only for an absent pair, never rescue a partial/invalid pair.
+            if (!doc.containsKey("serverRecvTime") && !doc.containsKey("serverSendTime")) {
+                serverRecvTime = readTimestamp(doc["data"]["serverTime"]);
                 serverSendTime = serverRecvTime;
             }
         }
 
-        if (serverRecvTime == 0) {
+        if (parseErr) {
             auto extractTag = [&](const String& tag) -> double {
                 String open  = "<" + tag + ">";
                 String close = "</" + tag + ">";
                 int s = payload.indexOf(open);
                 int e = payload.indexOf(close, s);
                 if (s >= 0 && e > s) {
-                    return payload.substring(s + open.length(), e).toDouble();
+                    const String token = payload.substring(s + open.length(), e);
+                    double parsed = 0;
+                    if (FastBee::parseTimeMilliseconds(token.c_str(), token.length(), parsed)) return parsed;
                 }
                 return 0.0;
             };
@@ -192,13 +236,13 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
             serverSendTime = extractTag("serverSendTime");
         }
 
-        if (serverRecvTime > 1000000000000.0 && serverSendTime > 1000000000000.0) {
-            const double nowMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0;
-            outTimestampMs = (long long)nowMs;
-            time_t sec = (time_t)(outTimestampMs / 1000);
-            struct timeval tv = { sec, (suseconds_t)((outTimestampMs % 1000) * 1000) };
-            settimeofday(&tv, nullptr);
-            success = true;
+        long long timestampMs = 0;
+        if (FastBee::estimateHttpTimeMilliseconds<time_t>(serverRecvTime, serverSendTime,
+                deviceSendTime, deviceRecvTime, timeout, timestampMs)) {
+            success = FastBee::SystemTimeQuality::applyMilliseconds(timestampMs,
+                useTls ? FastBee::SystemTimeQuality::Source::Https : FastBee::SystemTimeQuality::Source::Http,
+                useTls, syncSequence);
+            if (success) outTimestampMs = timestampMs;
         }
     }
 
@@ -217,10 +261,11 @@ time_t TimeUtils::getTimestamp() {
     return now;
 }
 
-unsigned long TimeUtils::getTimestampMs() {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return (unsigned long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+uint64_t TimeUtils::getTimestampMs() {
+    struct timeval tv{};
+    if (gettimeofday(&tv, nullptr) != 0 || tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000)
+        return 0;
+    return static_cast<uint64_t>(tv.tv_sec) * 1000ULL + static_cast<uint64_t>(tv.tv_usec) / 1000ULL;
 }
 
 unsigned long TimeUtils::getUptime() {
@@ -232,31 +277,36 @@ String TimeUtils::formatTime(time_t timestamp, TimeFormat format) {
         timestamp = getTimestamp();
     }
     
-    struct tm* timeinfo = localtime(&timestamp);
-    char buffer[64];
+    struct tm timeinfo{};
+    // A literal Z denotes UTC. Human/date/time formats retain configured local
+    // time. Reentrant conversion avoids another task replacing this calendar.
+    if (!(format == ISO8601 ? gmtime_r(&timestamp, &timeinfo)
+                           : localtime_r(&timestamp, &timeinfo))) return String();
+    char buffer[64]{};
+    size_t length = 0;
     
     switch (format) {
         case ISO8601:
-            strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
             break;
         case RFC822:
-            strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S %Z", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S %Z", &timeinfo);
             break;
         case HUMAN_READABLE:
-            strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
             break;
         case TIME_ONLY:
-            strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%H:%M:%S", &timeinfo);
             break;
         case DATE_ONLY:
-            strftime(buffer, sizeof(buffer), "%Y-%m-%d", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%Y-%m-%d", &timeinfo);
             break;
         default:
-            strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+            length = strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
             break;
     }
     
-    return String(buffer);
+    return length ? String(buffer) : String();
 }
 
 String TimeUtils::formatCurrentTime(TimeFormat format) {
@@ -264,38 +314,59 @@ String TimeUtils::formatCurrentTime(TimeFormat format) {
 }
 
 time_t TimeUtils::parseTime(const String& timeString, TimeFormat format) {
-    struct tm timeinfo = {0};
-    
-    switch (format) {
-        case ISO8601:
-            sscanf(timeString.c_str(), "%d-%d-%dT%d:%d:%dZ",
-                   &timeinfo.tm_year, &timeinfo.tm_mon, &timeinfo.tm_mday,
-                   &timeinfo.tm_hour, &timeinfo.tm_min, &timeinfo.tm_sec);
-            timeinfo.tm_year -= 1900;
-            timeinfo.tm_mon -= 1;
-            break;
-            
-        case HUMAN_READABLE:
-        case DATE_ONLY:
-            sscanf(timeString.c_str(), "%d-%d-%d",
-                   &timeinfo.tm_year, &timeinfo.tm_mon, &timeinfo.tm_mday);
-            timeinfo.tm_year -= 1900;
-            timeinfo.tm_mon -= 1;
-            break;
-            
-        case TIME_ONLY:
-            sscanf(timeString.c_str(), "%d:%d:%d",
-                   &timeinfo.tm_hour, &timeinfo.tm_min, &timeinfo.tm_sec);
-            // 使用当前日期
-            time_t now = getTimestamp();
-            struct tm* nowinfo = localtime(&now);
-            timeinfo.tm_year = nowinfo->tm_year;
-            timeinfo.tm_mon = nowinfo->tm_mon;
-            timeinfo.tm_mday = nowinfo->tm_mday;
-            break;
+    // Exact fixed formats only: no trailing suffix, partial parse, normalized
+    // invalid date or process-global timezone mutation to parse a UTC Z value.
+    const size_t size = timeString.length();
+    const char* text = timeString.c_str();
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    const auto digits = [&](size_t at, size_t count, int& value) {
+        value = 0;
+        if (at + count > size) return false;
+        for (size_t i = 0; i < count; ++i) {
+            const char ch = text[at + i];
+            if (ch < '0' || ch > '9') return false;
+            value = value * 10 + (ch - '0');
+        }
+        return true;
+    };
+    if (format == TIME_ONLY) {
+        if (size != 8 || text[2] != ':' || text[5] != ':' ||
+            !digits(0,2,hour) || !digits(3,2,minute) || !digits(6,2,second)) return 0;
+        const time_t now = getTimestamp();
+        struct tm current{};
+        if (!localtime_r(&now, &current)) return 0;
+        year = current.tm_year + 1900; month = current.tm_mon + 1; day = current.tm_mday;
+    } else {
+        if (format != ISO8601 && format != HUMAN_READABLE && format != DATE_ONLY) return 0;
+        const size_t expected = format == ISO8601 ? 20 : format == DATE_ONLY ? 10 : 19;
+        if (size != expected || text[4] != '-' || text[7] != '-' ||
+            !digits(0,4,year) || !digits(5,2,month) || !digits(8,2,day)) return 0;
+        if (format != DATE_ONLY &&
+            (text[10] != (format == ISO8601 ? 'T' : ' ') || text[13] != ':' || text[16] != ':' ||
+             !digits(11,2,hour) || !digits(14,2,minute) || !digits(17,2,second))) return 0;
+        if (format == ISO8601 && text[19] != 'Z') return 0;
     }
-    
-    return mktime(&timeinfo);
+    if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 ||
+        day > getDaysInMonth(year, month) || hour > 23 || minute > 59 || second > 59) return 0;
+    if (format == ISO8601) {
+        // Gregorian days since 1970-01-01; UTC is independent of local DST/TZ.
+        const int64_t priorYear = year - 1;
+        int64_t days = 365LL * (year - 1970) + priorYear / 4 - 1969 / 4
+            - priorYear / 100 + 1969 / 100 + priorYear / 400 - 1969 / 400;
+        for (int m = 1; m < month; ++m) days += getDaysInMonth(year, m);
+        const int64_t epoch = (days + day - 1) * 86400 + hour * 3600 + minute * 60 + second;
+        if (epoch > std::numeric_limits<time_t>::max()) return 0;
+        return static_cast<time_t>(epoch);
+    }
+    struct tm local{};
+    local.tm_year = year - 1900; local.tm_mon = month - 1; local.tm_mday = day;
+    local.tm_hour = hour; local.tm_min = minute; local.tm_sec = second; local.tm_isdst = -1;
+    const time_t result = mktime(&local);
+    struct tm roundtrip{};
+    if (result < 0 || !localtime_r(&result, &roundtrip) || roundtrip.tm_year != year - 1900 ||
+        roundtrip.tm_mon != month - 1 || roundtrip.tm_mday != day || roundtrip.tm_hour != hour ||
+        roundtrip.tm_min != minute || roundtrip.tm_sec != second) return 0;
+    return result;
 }
 
 struct tm TimeUtils::getTimeStruct(time_t timestamp) {
@@ -303,30 +374,43 @@ struct tm TimeUtils::getTimeStruct(time_t timestamp) {
         timestamp = getTimestamp();
     }
     
-    struct tm timeinfo;
-    localtime_r(&timestamp, &timeinfo);
+    struct tm timeinfo{};
+    if (!localtime_r(&timestamp, &timeinfo)) return {};
     return timeinfo;
 }
 
 bool TimeUtils::setTimeZone(const TimeZone& timezone) {
-    // 设置时区环境变量
-    String tzString = StringUtils::format("UTC%s%d", 
-                                         timezone.offset >= 0 ? "+" : "",
-                                         timezone.offset / 60);
+    // POSIX offsets have the opposite sign to a user-facing UTC offset.
+    // Preserve minute offsets (e.g. UTC+05:30), and reject before mutation.
+    if (timezone.offset < -14 * 60 || timezone.offset > 14 * 60) return false;
+    const int minutes = timezone.offset < 0 ? -timezone.offset : timezone.offset;
+    char offset[24]{};
+    snprintf(offset, sizeof(offset), "UTC%c%d:%02d",
+             timezone.offset >= 0 ? '-' : '+', minutes / 60, minutes % 60);
+    String tzString(offset);
     
     if (timezone.dst) {
         tzString += "DST";
     }
     
-    setenv("TZ", tzString.c_str(), 1);
-    tzset();
-    
-    return true;
+    return FastBee::SystemTimeZone::setPosix(tzString.c_str());
 }
 
 TimeUtils::TimeZone TimeUtils::getCurrentTimeZone() {
-    // 简化实现，返回UTC
-    return TimeZone("UTC", 0, false);
+    FastBee::TimeZoneGuard guard;
+    if (!guard.held()) return TimeZone("unknown", 0, false);
+    const time_t now = getTimestamp();
+    struct tm local{}, utc{};
+    if (!localtime_r(&now, &local) || !gmtime_r(&now, &utc)) return TimeZone("unknown", 0, false);
+    const auto yearDays = [](int year) { return 365 + (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)); };
+    int dayDelta = local.tm_yday - utc.tm_yday;
+    if (local.tm_year > utc.tm_year) dayDelta += yearDays(utc.tm_year + 1900);
+    if (local.tm_year < utc.tm_year) dayDelta -= yearDays(local.tm_year + 1900);
+    const int minutes = dayDelta * 1440 + (local.tm_hour - utc.tm_hour) * 60 + local.tm_min - utc.tm_min;
+    const char* active = getenv("TZ");
+    // Return an effective fixed-offset snapshot. Do not append a second DST
+    // hour when round-tripping it; a bool cannot represent seasonal TZ rules.
+    return TimeZone(active ? active : "UTC0", minutes, false);
 }
 
 time_t TimeUtils::addSeconds(time_t timestamp, long seconds) {

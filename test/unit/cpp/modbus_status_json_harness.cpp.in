@@ -1,0 +1,395 @@
+// Compile the actual complete response method and original frozen method.
+// JSON allocator and real send admission are exercised. Protocol/HTTP/heap,
+// String (std::string), cache snapshots and delay/hardware appenders are fakes;
+// this fixture cannot transmit Modbus traffic or access a device.
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
+#include "protocols/ModbusReadDiagnostics.h"
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <new>
+#include <string>
+#include <utility>
+#include <vector>
+using String = std::string;
+@CONSTANTS@
+#undef assert
+#define assert(expr) do { if (!(expr)) { std::cerr << __LINE__ << ": " << #expr << "\n"; std::exit(1); } } while (0)
+struct Allocation {
+    char kind;
+    size_t bytes;
+    bool accepted;
+    bool operator==(const Allocation& other) const {
+        return kind==other.kind && bytes==other.bytes && accepted==other.accepted;
+    }
+};
+class TrackingAllocator : public ArduinoJson::Allocator {
+public:
+    std::map<void*,size_t> blocks;
+    std::vector<Allocation> trace;
+    int failAt=-1;
+    bool persistent=false;
+    size_t attempts=0;
+    bool admit(char kind,size_t bytes) {
+        const size_t index=attempts++;
+        const bool accepted=failAt<0 || (index!=static_cast<size_t>(failAt) &&
+            !(persistent && index>static_cast<size_t>(failAt)));
+        trace.push_back({kind,bytes,accepted}); return accepted;
+    }
+    void* allocate(size_t bytes) override {
+        if(!admit('a',bytes)) return nullptr;
+        void* pointer=std::malloc(bytes); assert(pointer); blocks[pointer]=bytes; return pointer;
+    }
+    void deallocate(void* pointer) override {
+        if(pointer) { assert(blocks.erase(pointer)==1); std::free(pointer); }
+    }
+    void* reallocate(void* pointer,size_t bytes) override {
+        if(!pointer) return allocate(bytes);
+        if(bytes<=blocks.at(pointer)) {
+            // AJ StringBuilder requires shrinking reallocations to succeed.
+            trace.push_back({'s',bytes,true}); blocks[pointer]=bytes; return pointer;
+        }
+        if(!admit('r',bytes)) return nullptr;
+        auto entry=blocks.extract(pointer);
+        void* changed=std::realloc(pointer,bytes); assert(changed);
+        entry.key()=changed; entry.mapped()=bytes; blocks.insert(std::move(entry)); return changed;
+    }
+};
+static TrackingAllocator* activeAllocator=nullptr;
+static uint32_t nowMs=1000000, dramFree=65536, dramLargest=32768;
+static bool authenticated=true, pressure=false;
+static unsigned leases=0, acquireCount=0, documentCount=0, hardwareCount=0;
+static unsigned delayCount=0, sendCount=0, responseCount=0;
+static size_t requestedThreshold=0;
+static bool observedOverflow=false;
+static std::string rawDocument;
+uint32_t millis() { return nowMs; }
+#define pdMS_TO_TICKS(value) (value)
+struct Parameter { String text; const String& value() const { return text; } };
+struct AsyncWebServerResponse { int code=0; String body; };
+struct AsyncWebServerRequest {
+    std::map<String,Parameter> params;
+    int code=0;
+    String body;
+    AsyncWebServerResponse response;
+    bool hasParam(const char* name) const { return params.count(name)!=0; }
+    Parameter* getParam(const char* name) { return &params.at(name); }
+    AsyncWebServerResponse* beginResponse(int value,const char*,const String& text) {
+        response={value,text}; return &response;
+    }
+};
+struct Esp { size_t getMaxAllocHeap() const { return 100000; } } ESP;
+namespace FastBee {
+namespace MemoryBudget {
+uint32_t dramFree() { return ::dramFree; }
+uint32_t dramLargest() { return ::dramLargest; }
+}
+JsonDocument makeJsonDocument(size_t reserve) {
+    assert(activeAllocator && reserve==32768); ++documentCount; return JsonDocument(activeAllocator);
+}
+class JsonDocumentResponse : public AsyncWebServerResponse {
+public: explicit JsonDocumentResponse(JsonDocument&&) { assert(false); }
+};
+}
+namespace HandlerUtils {
+void sendJsonError(AsyncWebServerRequest* request,int code,const char* message,int) {
+    request->code=code; request->body=message; ++responseCount;
+}
+bool sendJsonFromPsramBuffer(AsyncWebServerRequest* request,JsonDocument& doc,size_t length) {
+    request->code=200; serializeJson(doc,request->body); assert(request->body.size()==length);
+    ++responseCount; return true;
+}
+bool checkLowMemory(AsyncWebServerRequest*,size_t) { return false; }
+bool checkResponseMemory(AsyncWebServerRequest*,size_t) { return false; }
+void sendWithClose(AsyncWebServerRequest* request,AsyncWebServerResponse* response) {
+    request->code=response->code; request->body=response->body; ++responseCount;
+}
+@SEND@
+void sendJsonStream(AsyncWebServerRequest* request,JsonDocument& doc) {
+    ++sendCount; observedOverflow=doc.overflowed(); serializeJson(doc,rawDocument);
+    sendJsonStreamProduction(request,doc);
+}
+}
+enum ModbusMode : uint8_t { MODBUS_SLAVE=0,MODBUS_MASTER=1 };
+// Same field widths/buffers consumed by the route. Other driver state is absent.
+struct RegisterMapping {
+    uint8_t regOffset=0,dataType=0,wordOrder=0;
+    float scaleFactor=1.0f;
+    uint8_t decimalPlaces=1;
+    char sensorId[Protocols::MODBUS_SENSOR_ID_MAX_LEN]{},unit[8]{};
+};
+struct PollTask {
+    uint8_t slaveAddress=1,functionCode=3;
+    uint16_t startAddress=0,quantity=10,pollInterval=30;
+    bool enabled=true;
+    char name[Protocols::MODBUS_POLL_LABEL_MAX_LEN]{};
+    RegisterMapping mappings[Protocols::MODBUS_MAX_MAPPINGS_PER_TASK]{};
+    uint8_t mappingCount=0;
+};
+struct ModbusHandler {
+    struct PollTaskCache {
+        uint16_t values[Protocols::MODBUS_ONESHOT_BUFFER_SIZE]{};
+        uint8_t count=0;
+        unsigned long timestamp=0;
+        bool valid=false;
+        uint8_t lastError=0;
+    };
+    ModbusMode mode=MODBUS_MASTER;
+    uint8_t workMode=1,retries=2;
+    uint16_t responseTimeout=1000,interDelay=100;
+    uint32_t total=100,success=91,failed=4,timeouts=5,lastAge=2;
+    std::vector<PollTask> tasks;
+    std::vector<PollTaskCache> caches;
+    std::vector<bool> cachePresent;
+    String status="running",tx="01 03 copied debug tx",rx="01 03 copied debug rx";
+    bool debug=true;
+    ModbusMode getMode() const { return mode; }
+    uint8_t getWorkMode() const { return workMode; }
+    String getStatus() const { return status; }
+    uint8_t getPollTaskCount() const { return static_cast<uint8_t>(tasks.size()); }
+    PollTask getPollTask(uint8_t index) const { return tasks.at(index); }
+    const PollTaskCache* getTaskCache(uint8_t index) const {
+        return cachePresent.at(index)?&caches.at(index):nullptr;
+    }
+    uint32_t getTotalPollCount() const { return total; }
+    uint32_t getSuccessPollCount() const { return success; }
+    uint32_t getFailedPollCount() const { return failed; }
+    uint32_t getTimeoutPollCount() const { return timeouts; }
+    uint32_t getLastPollAgeSec() const { return lastAge; }
+    uint16_t getResponseTimeout() const { return responseTimeout; }
+    uint8_t getMaxRetries() const { return retries; }
+    uint16_t getInterPollDelay() const { return interDelay; }
+    void getCoilDelayStatus(JsonObject object) {
+        assert(leases==1); ++delayCount; object["fixtureDelaySnapshot"]=true;
+    }
+    void appendUartHardwareSnapshot(JsonObject object) {
+        assert(leases==1); ++hardwareCount; object["supported"]=false;
+        object["error"]="FIXTURE_NO_UART_REGISTERS";
+    }
+    bool getDebugSnapshot(String& outputTx,String& outputRx) {
+        if(!debug) return false;
+        outputTx=tx; outputRx=rx; return true;
+    }
+};
+struct ProtocolManager {
+    ModbusHandler* handler=nullptr;
+    struct Lease {
+        ModbusHandler* value;
+        explicit Lease(ModbusHandler* pointer):value(pointer) { ++leases; }
+        Lease(const Lease&)=delete;
+        ~Lease() { assert(leases==1); --leases; }
+        ModbusHandler* get() const { return value; }
+    };
+    Lease acquireModbusHandler(unsigned timeout) {
+        assert(timeout==2000); ++acquireCount; return Lease(handler);
+    }
+};
+struct WebHandlerContext {
+    ProtocolManager* protocolManager=nullptr;
+    bool requireAuth(AsyncWebServerRequest* request) {
+        if(authenticated) return true;
+        request->code=401; request->body="unauthorized"; ++responseCount; return false;
+    }
+    bool getParamBool(AsyncWebServerRequest* request,const char* key,bool fallback) {
+        return request->hasParam(key)?request->getParam(key)->value()=="1":fallback;
+    }
+    void sendError(AsyncWebServerRequest* request,int code,const char* message) {
+        request->code=code; request->body=message; ++responseCount;
+    }
+};
+bool rejectModbusHeavyRequest(AsyncWebServerRequest* request,const char* label,size_t threshold) {
+    assert(std::strcmp(label,"Modbus status")==0); requestedThreshold=threshold;
+    if(pressure) { request->code=503;request->body="pressure";++responseCount; }
+    return pressure;
+}
+struct ModbusRouteHandler {
+    WebHandlerContext* ctx;
+    struct Cache { bool valid=true; } _statusCache;
+    void handleGetModbusStatus(AsyncWebServerRequest*);
+};
+struct LegacyModbusRouteHandler {
+    WebHandlerContext* ctx;
+    struct Cache { bool valid=true; } _statusCache;
+    void handleGetModbusStatus(AsyncWebServerRequest*);
+};
+@CURRENT@
+@LEGACY@
+struct Outcome {
+    int code=0;
+    String body,raw;
+    bool overflow=false,cacheValid=true;
+    unsigned acquires=0,documents=0,hardware=0,delays=0,sends=0,responses=0;
+    size_t threshold=0,attempts=0;
+    std::vector<Allocation> allocations;
+    bool operator==(const Outcome& other) const {
+        return code==other.code && body==other.body && raw==other.raw && overflow==other.overflow &&
+            cacheValid==other.cacheValid && acquires==other.acquires && documents==other.documents &&
+            hardware==other.hardware && delays==other.delays && sends==other.sends &&
+            responses==other.responses && threshold==other.threshold && attempts==other.attempts &&
+            allocations==other.allocations;
+    }
+};
+static void resetCounters() {
+    assert(leases==0); acquireCount=documentCount=hardwareCount=delayCount=sendCount=responseCount=0;
+    requestedThreshold=0; observedOverflow=false; rawDocument.clear();
+}
+static void fillBus(ModbusHandler& bus) {
+    bus.tasks.resize(Protocols::MODBUS_MAX_POLL_TASKS);
+    bus.caches.resize(bus.tasks.size()); bus.cachePresent.assign(bus.tasks.size(),true);
+    for(size_t i=0;i<bus.tasks.size();++i) {
+        auto& task=bus.tasks[i]; auto& cache=bus.caches[i];
+        task.slaveAddress=static_cast<uint8_t>(247-i); task.functionCode=static_cast<uint8_t>(1+i%4);
+        task.startAddress=static_cast<uint16_t>(65535-i); task.quantity=32;
+        task.pollInterval=static_cast<uint16_t>(5+i); task.enabled=i!=1;
+        std::snprintf(task.name,sizeof(task.name),"task-%zu-quote\"",i);
+        task.mappingCount=Protocols::MODBUS_MAX_MAPPINGS_PER_TASK;
+        for(uint8_t j=0;j<task.mappingCount;++j) {
+            auto& mapping=task.mappings[j];
+            mapping.regOffset=static_cast<uint8_t>(task.mappingCount-j);
+            mapping.dataType=static_cast<uint8_t>(j%5); mapping.wordOrder=j%2;
+            mapping.scaleFactor=j%2?-1.25f:0.001f; mapping.decimalPlaces=j%7;
+            std::snprintf(mapping.sensorId,sizeof(mapping.sensorId),"sensor-%zu-%u",i,j);
+            if(j%2) std::strcpy(mapping.unit,"mV");
+        }
+        task.mappings[2].sensorId[0]=0; // omitted; stable sort still applies.
+        cache.count=255; cache.valid=true; cache.lastError=0; cache.timestamp=nowMs-1000;
+        for(uint8_t j=0;j<Protocols::MODBUS_ONESHOT_BUFFER_SIZE;++j)
+            cache.values[j]=static_cast<uint16_t>(65535-j);
+    }
+    bus.cachePresent[0]=false;
+    bus.caches[2].timestamp=0;
+    bus.caches[3].valid=false; bus.caches[3].lastError=255;
+    bus.caches[4].timestamp=1;
+}
+static Outcome exercise(bool legacy,const std::string& scenario,int failAt,bool persistent,bool diagnostics) {
+    resetCounters(); authenticated=true; pressure=false; dramFree=65536; dramLargest=32768;
+    TrackingAllocator allocator; allocator.failAt=failAt; allocator.persistent=persistent;
+    activeAllocator=&allocator;
+    Outcome outcome;
+    {
+        ModbusHandler bus; fillBus(bus);
+        ProtocolManager manager; manager.handler=&bus;
+        WebHandlerContext context; context.protocolManager=&manager;
+        AsyncWebServerRequest request; request.params["full"].text="1";
+        if(scenario=="absent") { manager.handler=nullptr; request.params["hardware"].text="1"; }
+        if(scenario=="slave") bus.mode=MODBUS_SLAVE;
+        if(scenario=="default") request.params.clear();
+        if(scenario=="compact") request.params["compact"].text="1";
+        if(scenario=="low-free") dramFree=12287;
+        if(scenario=="low-largest") dramLargest=6143;
+        if(scenario=="hardware") request.params["hardware"].text="1";
+        if(scenario=="zero") bus.total=bus.success=bus.failed=bus.timeouts=0;
+        if(scenario=="warnings") {
+            bus.tasks[0].pollInterval=1; bus.responseTimeout=4000; bus.retries=3; bus.interDelay=1;
+            bus.timeouts=25; bus.lastAge=900;
+        }
+        if(scenario=="failure-rate") { bus.timeouts=0; bus.failed=15; }
+        if(scenario=="empty") { bus.tasks.clear();bus.caches.clear();bus.cachePresent.clear(); }
+        if(scenario=="denied") authenticated=false;
+        if(scenario=="no-manager") context.protocolManager=nullptr;
+        if(scenario=="pressure") pressure=true;
+        if(scenario=="no-debug") bus.debug=false;
+        if(diagnostics) {
+            JsonDocument doc(&allocator); doc["success"]=true;
+            ModbusReadDiagnostics trace; trace.reason="REQUEST_REASON_LONG_OWNED_TEXT";
+            trace.attempts=65535;trace.txLength=255;trace.txWritten=7;
+            trace.rxBuffered=31;trace.totalRxBuffered=0xffffffffU;trace.uartReady=true;
+            trace.uartBaudRate=115200;trace.rxOverflow=true;trace.crcValid=false;trace.addressMatched=true;
+            trace.txPrefixLength=sizeof(trace.txPrefix); trace.rxPrefixLength=sizeof(trace.rxPrefix);
+            for(uint8_t i=0;i<trace.txPrefixLength;++i)trace.txPrefix[i]=static_cast<uint8_t>(i);
+            for(uint8_t i=0;i<trace.rxPrefixLength;++i)trace.rxPrefix[i]=static_cast<uint8_t>(255-i);
+            if(legacy) { legacyAddModbusReadDiagnostics(doc,trace);legacyAddModbusDebug(doc,&bus); }
+            else { addModbusReadDiagnostics(doc,trace);addModbusDebug(doc,&bus); }
+            bus.tx.assign(100,'X');bus.rx.assign(100,'Y'); // serialized snapshots own these Strings.
+            HandlerUtils::sendJsonStream(&request,doc);
+            outcome.cacheValid=true;
+        } else if(legacy) {
+            LegacyModbusRouteHandler handler{&context,{}};
+            handler.handleGetModbusStatus(&request); outcome.cacheValid=handler._statusCache.valid;
+        } else {
+            ModbusRouteHandler handler{&context,{}};
+            handler.handleGetModbusStatus(&request); outcome.cacheValid=handler._statusCache.valid;
+        }
+        outcome.code=request.code;outcome.body=request.body;
+    }
+    assert(leases==0 && allocator.blocks.empty());
+    outcome.raw=rawDocument;outcome.overflow=observedOverflow;outcome.acquires=acquireCount;
+    outcome.documents=documentCount;outcome.hardware=hardwareCount;outcome.delays=delayCount;
+    outcome.sends=sendCount;outcome.responses=responseCount;outcome.threshold=requestedThreshold;
+    outcome.attempts=allocator.attempts;outcome.allocations=allocator.trace;activeAllocator=nullptr;
+    if(outcome.overflow) assert(outcome.code==503 && outcome.responses==1);
+    return outcome;
+}
+static void verifyMeaning(const Outcome& value,const std::string& scenario,bool diagnostics) {
+    if(scenario=="denied") { assert(value.code==401 && !value.acquires && !value.documents);return; }
+    if(scenario=="no-manager") { assert(value.code==500 && !value.acquires && !value.documents);return; }
+    if(scenario=="pressure") { assert(value.code==503 && value.acquires==1 && !value.documents);return; }
+    assert(value.code==200 && !value.overflow && value.responses==1);
+    JsonDocument doc; assert(!deserializeJson(doc,value.body)); assert(doc["success"]==true);
+    if(diagnostics) {
+        assert(doc["diagnostic"]["txPrefix"]=="00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F");
+        assert(doc["diagnostic"]["rxPrefix"].as<String>().rfind("FF FE FD FC",0)==0);
+        assert(doc["diagnostic"]["totalRxBuffered"].as<uint32_t>()==0xffffffffU);
+        if(scenario=="no-debug") assert(doc["debug"].isNull());
+        else assert(doc["debug"]["tx"]=="01 03 copied debug tx" && doc["debug"]["rx"]=="01 03 copied debug rx");
+        return;
+    }
+    assert(!value.cacheValid && value.documents==1 && value.acquires==1);
+    if(scenario=="absent") {
+        assert(doc["data"]["status"]=="stopped" && doc["data"]["tasks"].size()==0);
+        assert(doc["data"]["uartHardware"]["error"]=="MODBUS_NOT_RUNNING");
+        assert(!value.delays && !value.hardware);return;
+    }
+    assert(value.delays==1 && value.hardware==(scenario=="hardware"?1U:0U));
+    if(scenario=="slave") { assert(doc["data"]["mode"]=="slave" && doc["data"]["tasks"].isNull());return; }
+    if(scenario=="default" || scenario=="compact" || scenario=="low-free" || scenario=="low-largest") {
+        assert(doc["data"]["compact"]==true && doc["data"]["tasks"].size()==0 && value.threshold==4096);return;
+    }
+    assert(doc["data"]["compact"]==false && value.threshold==8192);
+    if(scenario=="empty") { assert(doc["data"]["tasks"].size()==0);return; }
+    auto tasks=doc["data"]["tasks"].as<JsonArray>();
+    assert(tasks.size()==Protocols::MODBUS_MAX_POLL_TASKS);
+    assert(tasks[0]["cachedData"].isNull() && tasks[0]["status"]=="pending");
+    assert(tasks[1]["status"]=="disabled" && tasks[2]["status"]=="pending");
+    assert(tasks[3]["status"]=="error" && tasks[4]["status"]=="stale");
+    assert(tasks[5]["cachedData"]["values"].size()==Protocols::MODBUS_ONESHOT_BUFFER_SIZE);
+    assert(tasks[5]["cachedData"]["values"][0]==65535);
+    auto mappings=tasks[0]["mappings"].as<JsonArray>();
+    assert(mappings.size()==Protocols::MODBUS_MAX_MAPPINGS_PER_TASK-1);
+    unsigned prior=0; for(JsonObject mapping:mappings) {
+        assert(mapping["regOffset"].as<unsigned>()>prior);prior=mapping["regOffset"].as<unsigned>();
+    }
+    assert(mappings[0]["unit"]=="mV" && mappings[1]["unit"].isNull());
+    if(scenario=="zero") assert(doc["data"]["health"]["successRate"]==0);
+    if(scenario=="warnings") assert(doc["data"]["health"]["warningCount"]==7);
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];
+    const bool diagnostics=mode.rfind("diagnostics",0)==0, faults=mode.find("oom")!=std::string::npos;
+    const std::vector<std::string> scenarios=diagnostics?std::vector<std::string>{"full","no-debug"}:
+        std::vector<std::string>{"full","default","compact","low-free","low-largest","absent","slave",
+            "hardware","zero","warnings","failure-rate","empty","denied","no-manager","pressure"};
+    size_t injected=0;bool early=false,late=false;
+    for(const auto& scenario:scenarios) {
+        const auto original=exercise(true,scenario,-1,false,diagnostics);
+        const auto candidate=exercise(false,scenario,-1,false,diagnostics);
+        assert(original==candidate);verifyMeaning(candidate,scenario,diagnostics);
+        if(!faults)continue;
+        for(size_t i=0;i<original.attempts;++i) for(bool persistent:{false,true}) {
+            const auto before=exercise(true,scenario,static_cast<int>(i),persistent,diagnostics);
+            const auto after=exercise(false,scenario,static_cast<int>(i),persistent,diagnostics);
+            assert(before==after);assert(after.overflow && after.code==503);
+            JsonDocument partial;assert(!deserializeJson(partial,after.raw));
+            early=early||partial["success"]!=true;late=late||partial["success"]==true;
+            ++injected;
+        }
+    }
+    if(faults)assert(injected>0 && early && late);
+    std::cout<<mode<<": scenarios="<<scenarios.size()<<", allocation-fault comparisons="<<injected<<"\n";
+}

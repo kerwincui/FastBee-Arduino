@@ -31,6 +31,15 @@ class PeriphExecLazyResultsTests(unittest.TestCase):
 #include <string>
 #include <utility>
 #include <vector>
+#include "core/UartEventOrigin.h"
+#include "core/NativeOutputControl.h"
+#include "core/SensorConfigEpoch.h"
+struct PeripheralManager {
+ static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+ bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+  return origin.unbound() || origin.matches(FastBee::SensorConfigEpoch::current(), 71);
+ }
+};
 using String=std::string;
 constexpr size_t ASYNC_EXEC_ACTION_TRACE_LIMIT=4;
 constexpr size_t ASYNC_EXEC_RESULT_HISTORY_LIMIT=6;
@@ -63,14 +72,16 @@ public:
  bool ensureResultHistoryCapacity();
  bool recordResult(const AsyncExecResult& result);
  bool beginOperation(const PeriphExecRule& rule, bool asyncExecution,
-                     uint8_t queuePosition, AsyncExecResult& operation);
+                     uint8_t queuePosition, AsyncExecResult& operation,
+                     const FastBee::UartEventOrigin& uartOrigin = {},
+                     const FastBee::OrdinaryControlContext& control = {});
  std::vector<AsyncExecResult> getRecentResults();
 };
 '''
         for signature in (
             "bool PeriphExecManager::ensureResultHistoryCapacity()",
             "bool PeriphExecManager::recordResult(const AsyncExecResult& result)",
-            "bool PeriphExecManager::beginOperation(const PeriphExecRule& rule, bool asyncExecution, uint8_t queuePosition, AsyncExecResult& operation)",
+            "bool PeriphExecManager::beginOperation(const PeriphExecRule& rule, bool asyncExecution, uint8_t queuePosition, AsyncExecResult& operation, const FastBee::UartEventOrigin& uartOrigin, const FastBee::OrdinaryControlContext& control)",
             "std::vector<AsyncExecResult> PeriphExecManager::getRecentResults()",
         ):
             marker = signature.split("(")[0]
@@ -81,6 +92,10 @@ int main(){
  PeriphExecRule rule;
  AsyncExecResult admitted;
  assert(arrayAttempts==0 && m.getRecentResults().empty());
+ const auto stale=FastBee::UartEventOrigin::captured(FastBee::SensorConfigEpoch::current(),70);
+ assert(!m.beginOperation(rule,true,1,admitted,stale));
+ assert(admitted.errorCode==AsyncExecError::UART_SOURCE_UNCONFIRMED && arrayAttempts==0);
+ assert(m._nextOperationId==0 && m.getRecentResults().empty());
  FastBee::MemoryBudget::available=11999; free8=11999;
  assert(!m.beginOperation(rule,true,1,admitted));
  assert(arrayAttempts==0 && admitted.operationId==0 && m._nextOperationId==0);
@@ -158,6 +173,24 @@ int main(){
  assert(!busy.beginOperation(rule,true,1,admitted));
  assert(!busy.recordResult(terminal));
  assert(arrayAttempts==previousAttempts && busy.executionResults.size()==0);
+ lockAllowed=true;
+ PeriphExecManager sourceBound;
+ const auto origin=FastBee::UartEventOrigin::captured(FastBee::SensorConfigEpoch::current(),71);
+ FastBee::OrdinaryControlContext control;
+ control.request.actor.source=FastBee::OrdinaryControl::Source::Rule;
+ control.request.actor.identity=99; control.request.operation=123;
+ control.configEpoch=origin.configEpoch; control.uartOrigin=origin;
+ assert(sourceBound.beginOperation(rule,true,1,admitted,origin,control));
+ assert(admitted.ordinaryControl.request.actor.identity==99);
+ assert(admitted.ordinaryControl.request.operation==123);
+ assert(admitted.ordinaryControl.configEpoch==origin.configEpoch);
+ assert(admitted.uartOrigin.matches(origin.configEpoch,71));
+ assert(admitted.peripheralConfigEpoch==origin.configEpoch);
+ const auto history=sourceBound.getRecentResults();
+ FastBee::SensorConfigEpoch::advance();
+ assert(!sourceBound.beginOperation(rule,false,0,admitted,origin));
+ assert(sourceBound.getRecentResults().size()==history.size() && sourceBound._nextOperationId==1);
+ assert(sourceBound.getRecentResults()[0].uartOrigin.configEpoch==origin.configEpoch);
 }
 '''
         compiler = shutil.which("g++") or "D:/msys64/ucrt64/bin/g++.exe"
@@ -168,6 +201,7 @@ int main(){
             environment = dict(os.environ)
             environment["PATH"] = str(Path(compiler).parent) + os.pathsep + environment.get("PATH", "")
             build = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                                    '-I'+str(ROOT/'include'),
                                     str(source), "-o", str(executable)], capture_output=True,
                                    text=True, timeout=60, env=environment)
             self.assertEqual(0, build.returncode, build.stdout + build.stderr)
@@ -186,6 +220,7 @@ int main(){
                 source.write_text(prefix + "\n".join(production) + mutant + checks,
                                   encoding="utf-8")
                 build = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                                        '-I'+str(ROOT/'include'),
                                         str(source), "-o", str(executable)], capture_output=True,
                                        text=True, timeout=60, env=environment)
                 self.assertEqual(0, build.returncode, build.stdout + build.stderr)
@@ -195,6 +230,7 @@ int main(){
 
     def test_startup_and_worker_pause_do_not_allocate_or_discard_result_history(self):
         source = (ROOT / "src/core/PeriphExecManager.cpp").read_text(encoding="utf-8")
+        source += '\n' + (ROOT / 'src/core/PeriphExecWorkers.cpp').read_text(encoding="utf-8")
         initialize = braced_block(source, "bool PeriphExecManager::initialize()")
         self.assertNotIn("executionResults.reserve", initialize)
         self.assertNotIn("executionResults.ensureCapacity", initialize)

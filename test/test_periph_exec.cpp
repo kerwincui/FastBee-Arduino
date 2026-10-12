@@ -3319,7 +3319,7 @@ void test_reportable_output_source_contract() {
     TEST_ASSERT_TRUE_MESSAGE(reportableCall.find("PeripheralType::NEO_PIXEL") != std::string::npos,
         "CALL_PERIPHERAL NeoPixel control must be reportable");
 
-    size_t bootCallEnd = exec.find("bool looksLikeHexPayload", bootCallStart);
+    size_t bootCallEnd = exec.find("PeriphExecExecutor::PeriphExecExecutor", bootCallStart);
     TEST_ASSERT_NOT_EQUAL_MESSAGE(std::string::npos, bootCallEnd,
         "boot-readable CALL_PERIPHERAL helper boundary missing");
     std::string bootReadableCall = exec.substr(bootCallStart, bootCallEnd - bootCallStart);

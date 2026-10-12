@@ -3,10 +3,11 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
+#include "core/ChipConfig.h"
 #define FASTBEE_UART_GPIO_SNAPSHOT_SUPPORTED 0
 #if defined(ESP32)
 #include <esp_idf_version.h>
-#if defined(CONFIG_IDF_TARGET_ESP32S3) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
+#if CHIP_HAS_UART_GPIO_SNAPSHOT_REGISTERS && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
 #undef FASTBEE_UART_GPIO_SNAPSHOT_SUPPORTED
 #define FASTBEE_UART_GPIO_SNAPSHOT_SUPPORTED 1
 #include <driver/gpio.h>

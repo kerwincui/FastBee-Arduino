@@ -1,0 +1,314 @@
+#include <ArduinoJson.h>
+#include "network/TlsTransportObservation.h"
+#include "protocols/MqttReconnectLifetime.h"
+#include "protocols/MqttSecureIntent.h"
+#include <cassert>
+#include <atomic>
+#include <cstdint>
+#include <cstdlib>
+#include <mutex>
+#include <new>
+#include <string>
+using String = std::string;
+#define LOG_WARNING(...) ((void)0)
+#define LOG_INFO(...) ((void)0)
+#define LOG_ERROR(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+#define ets_printf(...) ((void)0)
+using SemaphoreHandle_t = std::recursive_mutex*;
+using TickType_t = uint32_t;
+constexpr int pdTRUE = 1;
+constexpr uint32_t portMAX_DELAY = UINT32_MAX;
+static bool passive = false, failAllocation = false, failPacketBuffer = false;
+static int ioCalls = 0, allocations = 0, deallocations = 0, bindings = 0;
+int xSemaphoreTakeRecursive(SemaphoreHandle_t mutex, uint32_t wait) {
+    assert(!passive); if (!wait) return mutex->try_lock(); mutex->lock(); return pdTRUE;
+}
+void xSemaphoreGiveRecursive(SemaphoreHandle_t mutex) { assert(!passive); mutex->unlock(); }
+@GUARD@
+
+using FastBee::FeatureInstanceState;
+static FastBee::FeatureInstanceSnapshot observe() {
+    passive = true;
+    const auto value = FastBee::FeatureInstanceRegistry::instance().observe("mqtts");
+    passive = false;
+    assert(!value.countKnown() && value.initializedCount == 0);
+    return value;
+}
+static void repeat(FeatureInstanceState state) {
+    const auto a = allocations, d = deallocations, i = ioCalls, b = bindings;
+    for (int n = 0; n < 1000; ++n) assert(observe().state == state);
+    assert(a == allocations && d == deallocations && i == ioCalls && b == bindings);
+}
+struct Client { virtual ~Client() = default; virtual void stop() { assert(!passive); ++ioCalls; } };
+struct WiFiClient : Client {};
+struct WiFiClientSecure : Client {
+    WiFiClientSecure() { assert(observe().state == FeatureInstanceState::Busy); }
+    ~WiFiClientSecure() override { assert(observe().state == FeatureInstanceState::Retiring); }
+    static void* operator new(size_t size, const std::nothrow_t&) noexcept {
+        assert(!passive); ++allocations;
+        return failAllocation ? nullptr : std::malloc(size);
+    }
+    static void operator delete(void* p) noexcept { assert(!passive); ++deallocations; std::free(p); }
+    static void operator delete(void* p, const std::nothrow_t&) noexcept { operator delete(p); }
+    void setCACertBundle(const uint8_t*, size_t) { assert(!passive); ++ioCalls; }
+    void setHandshakeTimeout(int) { assert(!passive); ++ioCalls; }
+};
+static const uint8_t bundle[4] = {1,2,3,4};
+static const uint8_t* x509_crt_bundle_start = bundle;
+static const uint8_t* x509_crt_bundle_end = bundle + sizeof(bundle);
+void ensureMbedtlsAllocatorForMqtts() { assert(!passive); }
+using byte = uint8_t;
+bool psramFound() { return true; }
+struct Socket {
+    Client* current = nullptr;
+    void setClient(Client& client) { assert(!passive); ++bindings; current = &client; }
+    void setServer(const char*, uint16_t) {}
+    bool setBufferSize(uint16_t bytes) { assert(bytes == 1024); return !failPacketBuffer; }
+    void setKeepAlive(uint16_t) {}
+    void setSocketTimeout(uint16_t) {}
+    template<class Callback> void setCallback(Callback) {}
+};
+struct MQTTClient {
+    std::recursive_mutex mutex;
+    SemaphoreHandle_t _publishMutex = &mutex;
+    FastBee::MqttReconnectLifetime _reconnectLifetime;
+    std::atomic<bool> _beginAttempted{false};
+    FastBee::TlsTransportObservation _tlsOwner;
+    WiFiClient wifiClient;
+    WiFiClientSecure* _wifiClientSecure = nullptr;
+    Client* _externalClient = nullptr;
+    bool _externalClientSecure = false, stopped = @INITIAL_STOPPED@, configLoad = true;
+    bool _mqttsMemoryBackoffActive = false, _lastMqttsTlsMemoryFailure = false;
+    bool _reconnectPending = false, _reconnectRunning = false;
+    uint32_t _taskStartupDelayMs = 0;
+    std::atomic<bool> _tlsTransportAllocated{false};
+    std::atomic<uint32_t> ntpConnectionEpoch{0};
+    int lastErrorCode = 0, notifications = 0;
+    struct { String scheme = "mqtt", server = "broker.invalid"; uint16_t port = 1883, keepAlive = 60; } config;
+    Socket mqttClient;
+    bool loadMqttConfig() { return configLoad; }
+    void _notifyStatusChange() { ++notifications; }
+    void mqttCallback(char*, byte*, unsigned) {}
+    bool setTransportClient(Client*, bool secure = false);
+    bool validateTransportSecurity();
+    bool loadLegacySecurity(JsonVariantConst);
+    bool begin(uint32_t taskStartupDelayMs = 0);
+    bool reconnect();
+    void ensureTlsTransport();
+    void releaseTlsTransport();
+};
+struct CellularTrackedClient : Client {};
+struct CellularSoftwareTlsClient : Client {};
+struct QuectelSslClient : Client {};
+struct CellularAdapter {
+    CellularTrackedClient* _trackedClient = nullptr;
+    CellularSoftwareTlsClient* _softwareTlsClient = nullptr;
+    QuectelSslClient* _qsslClient = nullptr;
+    Client* getClient();
+    Client* getSecureClient();
+};
+enum class NetworkType { NET_WIFI, NET_ETHERNET, NET_4G, NET_OTHER };
+struct FBNetworkManager {
+    NetworkType type = NetworkType::NET_WIFI;
+    bool online = true;
+    CellularAdapter* cell = nullptr;
+    Client* plain = nullptr;
+    int plainSelections = 0;
+    NetworkType getNetworkType() { return type; }
+    bool isNetworkConnected() { return online; }
+    CellularAdapter* getCellularAdapter() { return cell; }
+    Client* getActiveClient() { ++plainSelections; return plain; }
+};
+struct FastBeeFramework {
+    FBNetworkManager* network = nullptr;
+    static FastBeeFramework* getInstance() { static FastBeeFramework fw; return &fw; }
+    FBNetworkManager* getNetworkManager() { return network; }
+};
+struct ConfigStorage {
+    bool loads = true; String scheme = "mqtt";
+    bool omitScheme = false; int port = 1883;
+    String historicalJson;
+    static ConfigStorage& getInstance() { static ConfigStorage storage; return storage; }
+    bool loadProtocolSection(const char*, JsonDocument& doc) {
+        if (!loads) return false;
+        if (!historicalJson.empty()) return !deserializeJson(doc, historicalJson);
+        if (!omitScheme) doc["mqtt"]["scheme"] = scheme;
+        doc["mqtt"]["port"] = port; return true;
+    }
+};
+struct WebHandlerContext { FBNetworkManager* networkManager = nullptr; };
+@METHODS@
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    FBNetworkManager net;
+    FastBeeFramework::getInstance()->network = &net;
+    CellularTrackedClient plain; CellularSoftwareTlsClient software; QuectelSslClient qssl;
+    CellularAdapter cell;
+    cell._trackedClient = &plain; cell._softwareTlsClient = &software; cell._qsslClient = &qssl;
+    net.cell = &cell; net.plain = &plain;
+    auto& storage = ConfigStorage::getInstance();
+    if (mode == "select") {
+        assert(cell.getSecureClient() == &software);
+        cell._softwareTlsClient = nullptr;
+        assert(cell.getSecureClient() == &qssl);
+        cell._qsslClient = nullptr;
+        assert(cell.getSecureClient() == nullptr && cell.getClient() == &plain);
+        cell._softwareTlsClient = &software;
+        storage.scheme = "mqtts";
+        for (auto type : {NetworkType::NET_WIFI, NetworkType::NET_ETHERNET, NetworkType::NET_4G}) {
+            net.type = type; MQTTClient mqtt;
+            const bool selected = configureMqttTransport(&mqtt);
+            if (type == NetworkType::NET_4G) {
+                assert(selected == bool(FASTBEE_ENABLE_CELLULAR));
+                assert(!selected || (mqtt._externalClient == &software && mqtt._externalClientSecure));
+            } else assert(selected && !mqtt._externalClient && !mqtt._externalClientSecure);
+        }
+        assert(net.plainSelections == 0);
+        net.type = NetworkType::NET_4G; storage.omitScheme = true; storage.port = 8883;
+        MQTTClient legacy;
+        assert(configureMqttTransport(&legacy) == bool(FASTBEE_ENABLE_CELLULAR));
+        assert(!FASTBEE_ENABLE_CELLULAR || (legacy._externalClient == &software && legacy._externalClientSecure));
+        assert(net.plainSelections == 0);
+        storage.omitScheme = false;
+        net.type = NetworkType::NET_4G; storage.scheme = "mqtt"; MQTTClient mqtt;
+        assert(configureMqttTransport(&mqtt) && mqtt._externalClient == &plain && !mqtt._externalClientSecure);
+    } else if (mode == "selection_failure") {
+        storage.scheme = "mqtts"; net.type = NetworkType::NET_4G;
+        cell._softwareTlsClient = nullptr; cell._qsslClient = nullptr;
+        MQTTClient mqtt;
+        assert(!configureMqttTransport(&mqtt) && !mqtt._externalClient && bindings == 0);
+        net.online = false;
+        assert(!configureMqttTransport(&mqtt));
+        net.online = true; storage.loads = false;
+        assert(!configureMqttTransport(&mqtt));
+        storage.loads = true; net.type = NetworkType::NET_OTHER;
+        assert(!configureMqttTransport(&mqtt) && net.plainSelections == 0);
+        assert(!configureMqttTransport(nullptr));
+    } else if (mode == "frozen_transport") {
+        MQTTClient mqtt;
+        assert(mqtt.setTransportClient(&software, true));
+        assert(!mqtt.setTransportClient(nullptr, true) && mqtt._externalClient == &software && mqtt._externalClientSecure);
+        assert(mqtt.setTransportClient(&plain) && !mqtt._externalClientSecure);
+        assert(mqtt.begin());
+        assert(!mqtt.setTransportClient(&software, true) && mqtt._externalClient == &plain && !mqtt._externalClientSecure);
+        mqtt.config.scheme = "mqtts";
+        assert(!mqtt.reconnect() && mqtt.lastErrorCode == -15 && ioCalls == 0);
+    } else if (mode == "begin_and_reconnect_guard") {
+        MQTTClient unsafe;
+        assert(unsafe.setTransportClient(&plain));
+        unsafe.config.scheme = "mqtts"; // Config changed after transport selection.
+        assert(!unsafe.begin() && unsafe.lastErrorCode == -15 && ioCalls == 0);
+        assert(unsafe.stopped && !unsafe.reconnect() && unsafe.notifications == 0 && ioCalls == 0);
+        MQTTClient secure;
+        assert(secure.setTransportClient(&software, true)); secure.config.scheme = "mqtts";
+        assert(secure.begin() && secure.reconnect());
+        MQTTClient internal; internal.config.scheme = "mqtts"; assert(internal.begin());
+        MQTTClient plainAllowed; assert(plainAllowed.setTransportClient(&plain) && plainAllowed.begin());
+    } else if (mode == "begin_packet_oom") {
+        MQTTClient mqtt; mqtt.config.scheme = "mqtts"; failPacketBuffer = true;
+        assert(mqtt.stopped && !mqtt.begin() && mqtt.stopped && mqtt.lastErrorCode == -11);
+        failPacketBuffer = false;
+        assert(!mqtt.begin() && mqtt.stopped); // A failed one-shot object cannot be revived.
+        MQTTClient replacement; replacement.config.scheme = "mqtts";
+        assert(replacement.stopped && replacement.begin() && !replacement.stopped);
+    } else if (mode == "begin_config_failure") {
+        MQTTClient mqtt; mqtt.configLoad = false;
+        assert(mqtt.stopped && !mqtt.begin() && mqtt.stopped && bindings == 0);
+    } else if (mode == "internal_tls") {
+        MQTTClient mqtt; repeat(FeatureInstanceState::Stopped);
+        mqtt.ensureTlsTransport();
+        assert(mqtt._tlsTransportAllocated && mqtt.mqttClient.current == mqtt._wifiClientSecure);
+        repeat(FeatureInstanceState::Allocated);
+        mqtt.ensureTlsTransport(); assert(allocations == 1);
+        mqtt.releaseTlsTransport();
+        assert(!mqtt._tlsTransportAllocated && !mqtt._wifiClientSecure && mqtt.mqttClient.current == &mqtt.wifiClient);
+        repeat(FeatureInstanceState::Stopped); assert(deallocations == 1);
+    } else if (mode == "allocation_failure") {
+        MQTTClient mqtt; failAllocation = true;
+        mqtt.ensureTlsTransport(); assert(!mqtt._wifiClientSecure && bindings == 0);
+        repeat(FeatureInstanceState::Stopped);
+        failAllocation = false; mqtt.ensureTlsTransport(); mqtt.releaseTlsTransport();
+        repeat(FeatureInstanceState::Stopped);
+    } else if (mode == "bundle_failure") {
+        MQTTClient mqtt; x509_crt_bundle_end = bundle;
+        mqtt.ensureTlsTransport();
+        assert(!mqtt._wifiClientSecure && bindings == 0 && deallocations == 1);
+        repeat(FeatureInstanceState::Stopped);
+    } else if (mode == "overlap") {
+        MQTTClient mqtt; mqtt.ensureTlsTransport();
+        FastBee::TlsTransportObservation cellularTls;
+        cellularTls.allocating(); repeat(FeatureInstanceState::Busy);
+        cellularTls.allocated(); mqtt.releaseTlsTransport();
+        repeat(FeatureInstanceState::Allocated);
+        cellularTls.retiring(); repeat(FeatureInstanceState::Retiring);
+        cellularTls.released(); repeat(FeatureInstanceState::Stopped);
+    } else if (mode == "lost_owner") {
+        { FastBee::TlsTransportObservation lost; lost.allocating(); lost.allocated(); }
+        repeat(FeatureInstanceState::Unobserved);
+        FastBee::TlsTransportObservation later; later.allocating(); later.released();
+        repeat(FeatureInstanceState::Unobserved);
+    } else if (mode == "capacity") {
+        FastBee::TlsTransportObservation owners[9];
+        for (auto& owner : owners) { owner.allocating(); owner.allocated(); }
+        repeat(FeatureInstanceState::Unobserved);
+        for (auto& owner : owners) owner.released();
+        repeat(FeatureInstanceState::Unobserved);
+    } else if (mode == "historical_secure") {
+        storage.historicalJson = R"({"mqtt":{"scheme":"mqtt","port":1883,"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":9883}})";
+        const auto original = storage.historicalJson;
+        JsonDocument doc; assert(storage.loadProtocolSection("mqtt", doc));
+        MQTTClient restored;
+        assert(restored.loadLegacySecurity(doc["mqtt"]));
+        assert(restored.config.scheme == "mqtts" && restored.config.port == 9883);
+        for (auto type : {NetworkType::NET_WIFI, NetworkType::NET_ETHERNET, NetworkType::NET_4G}) {
+            net.type = type; MQTTClient mqtt;
+            assert(configureMqttTransport(&mqtt) == (type != NetworkType::NET_4G || FASTBEE_ENABLE_CELLULAR));
+        }
+        assert(net.plainSelections == 0 && storage.historicalJson == original);
+    } else if (mode == "historical_invalid") {
+        for (const char* invalid : {
+            R"({"mqtt":{"scheme":"mqtt","port":1883,"downgraded_by_memory":true}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtt","downgraded_original_port":8883}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":"8883"}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":false}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":0}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":-1}})",
+            R"({"mqtt":{"downgraded_by_memory":true,"downgraded_original_scheme":"mqtts","downgraded_original_port":65536}})"}) {
+            storage.historicalJson = invalid;
+            JsonDocument doc; assert(storage.loadProtocolSection("mqtt", doc));
+            assert(FastBee::mqttRequiresTls(doc["mqtt"]) && FastBee::mqttLegacySecurePort(doc["mqtt"]) == 0);
+            for (auto type : {NetworkType::NET_WIFI, NetworkType::NET_ETHERNET, NetworkType::NET_4G}) {
+                net.type = type; MQTTClient mqtt;
+                // WiFi chooses the internal provider before the real config loader
+                // validates historical metadata; the other providers validate here.
+                assert(configureMqttTransport(&mqtt) == (type == NetworkType::NET_WIFI));
+                assert(!mqtt.loadLegacySecurity(doc["mqtt"]));
+                assert(net.plainSelections == 0);
+            }
+        }
+    } else if (mode == "secure_intent_compatibility") {
+        JsonDocument doc; MQTTClient mqtt;
+        doc["port"] = 8883;
+        assert(FastBee::mqttRequiresTls(doc.as<JsonVariantConst>()));
+        assert(mqtt.loadLegacySecurity(doc.as<JsonVariantConst>()) && mqtt.config.scheme == "mqtts");
+        doc["scheme"] = "mqtt";
+        assert(!FastBee::mqttRequiresTls(doc.as<JsonVariantConst>()));
+        assert(mqtt.loadLegacySecurity(doc.as<JsonVariantConst>()) && mqtt.config.scheme == "mqtt");
+        doc["scheme"] = "mqtts"; doc["port"] = 9883;
+        assert(FastBee::mqttRequiresTls(doc.as<JsonVariantConst>()));
+        assert(mqtt.loadLegacySecurity(doc.as<JsonVariantConst>()) && mqtt.config.port == 9883);
+    } else if (mode == "legacy_selector") {
+        WebHandlerContext ctx{&net}; WiFiClient fallback; String error;
+        assert(selectMqttTestClient(&ctx, fallback, error, "mqtt") == &fallback);
+        assert(selectMqttTestClient(&ctx, fallback, error, "mqtts") == nullptr && !error.empty());
+        net.type = NetworkType::NET_ETHERNET;
+        assert(selectMqttTestClient(&ctx, fallback, error, "mqtts") == nullptr && net.plainSelections == 0);
+        net.type = NetworkType::NET_4G;
+        assert(selectMqttTestClient(&ctx, fallback, error, "mqtts") == (FASTBEE_ENABLE_CELLULAR ? &software : nullptr));
+        cell._softwareTlsClient = nullptr; cell._qsslClient = nullptr;
+        assert(selectMqttTestClient(&ctx, fallback, error, "mqtts") == nullptr && !error.empty() && net.plainSelections == 0);
+    } else assert(false);
+}

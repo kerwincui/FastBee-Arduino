@@ -21,9 +21,20 @@ class MdnsMemoryDisableTests(unittest.TestCase):
             'void DNSManager::stopMDNS()', 'void DNSManager::setMDNSEnabled(bool enabled)',
             'bool DNSManager::checkMDNSHealth()'))
         bodies += '\n' + definition(network, 'bool FBNetworkManager::shouldRunMDNS() const')
+        lifecycle = dns[dns.index('namespace {'):dns.index('\nFastBee::FeatureInstanceSnapshot DNSManager::observeFeatureInstance')]
         harness = r'''
 #include <cassert>
 #include <string>
+#include <atomic>
+#include <mutex>
+#include "core/FeatureInstanceRegistry.h"
+using SemaphoreHandle_t=std::recursive_mutex*;
+constexpr int pdTRUE=1,portMAX_DELAY=-1;
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(){return new std::recursive_mutex;}
+int xSemaphoreTakeRecursive(SemaphoreHandle_t mutex,int timeout){if(timeout==0)return mutex->try_lock();mutex->lock();return pdTRUE;}
+void xSemaphoreGiveRecursive(SemaphoreHandle_t mutex){mutex->unlock();}
+void vSemaphoreDelete(SemaphoreHandle_t mutex){delete mutex;}
+// @lifecycle@
 #define FASTBEE_ENABLE_ETHERNET 0
 #define LOG_INFO(...) ((void)0)
 #define LOG_WARNING(...) ((void)0)
@@ -58,11 +69,13 @@ if(mode=="reenable"){dns.mdnsStarted=true;dns.setMDNSEnabled(false);dns.setMDNSE
 if(mode=="two-gates"){for(int a=0;a<2;++a)for(int b=0;b<2;++b){network.wifiConfig.enableMDNS=a;FastBee::RuntimeFeatureManager::instance().enabled=b;assert(network.shouldRunMDNS()==(a&&b));}}
 }
 '''
+        harness = harness.replace('// @lifecycle@', lifecycle)
         cls.temp=tempfile.TemporaryDirectory(prefix='fastbee-mdns-disable-')
         cls.addClassCleanup(cls.temp.cleanup)
         path=Path(cls.temp.name); (path/'test.cpp').write_text(harness,encoding='utf-8')
         cls.exe=path/'test.exe'
-        built=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror',str(path/'test.cpp'),'-o',str(cls.exe)],capture_output=True,text=True,timeout=60)
+        built=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-pthread',
+                              '-I'+str(ROOT/'include'),str(path/'test.cpp'),'-o',str(cls.exe)],capture_output=True,text=True,timeout=60)
         if built.returncode: raise AssertionError(built.stdout+built.stderr)
 
 

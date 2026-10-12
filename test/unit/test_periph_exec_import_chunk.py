@@ -7,6 +7,7 @@ import unittest
 from test.unit.test_screen_panel_contract import braced_block
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+SUPPORT = pathlib.Path(os.environ.get('FASTBEE_TEST_SUPPORT_ROOT', ROOT))
 
 
 class ImportChunkRouteTests(unittest.TestCase):
@@ -37,7 +38,10 @@ class ImportChunkRouteTests(unittest.TestCase):
             env = dict(os.environ)
             env['PATH'] = str(pathlib.Path(compiler).parent) + os.pathsep + env.get('PATH', '')
             compiled = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I'+str(temporary),
-                                       str(ROOT / 'test/unit/cpp/periph_exec_import_chunk_harness.cpp'), '-o', str(exe)],
+                                       '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0', '-DARDUINOJSON_ENABLE_STD_STRING=1',
+                                       '-I'+str(ROOT / 'include'), '-I'+str(SUPPORT / '.pio/libdeps/native/ArduinoJson/src'),
+                                       str(ROOT / 'test/unit/cpp/periph_exec_import_chunk_harness.cpp'),
+                                       str(ROOT / 'src/network/FixedJsonField.cpp'), '-o', str(exe)],
                                       capture_output=True, text=True, timeout=60, env=env)
             self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10, env=env)
@@ -50,7 +54,10 @@ class ImportChunkRouteTests(unittest.TestCase):
             self.assertNotEqual(mutant, body)
             (temporary / 'production_import_chunk.inc').write_text(signature + ' {' + mutant + '}\n', encoding='utf-8')
             compiled = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I'+str(temporary),
-                                       str(ROOT / 'test/unit/cpp/periph_exec_import_chunk_harness.cpp'), '-o', str(exe)],
+                                       '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0', '-DARDUINOJSON_ENABLE_STD_STRING=1',
+                                       '-I'+str(ROOT / 'include'), '-I'+str(SUPPORT / '.pio/libdeps/native/ArduinoJson/src'),
+                                       str(ROOT / 'test/unit/cpp/periph_exec_import_chunk_harness.cpp'),
+                                       str(ROOT / 'src/network/FixedJsonField.cpp'), '-o', str(exe)],
                                       capture_output=True, text=True, timeout=60, env=env)
             self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10, env=env)

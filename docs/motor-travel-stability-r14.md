@@ -1,5 +1,9 @@
 # COM8: communication and slide-travel acceptance
 
+Historical R14 record: deployment and integration statements below describe
+that checkpoint. The subsequent local transport integration is documented in
+motor-travel-interlock-r18.md; it is not a new device acceptance or deployment.
+
 ## Current boundaries
 
 - Target: COM8, 192.168.5.18, MAC E8:3D:C1:F7:65:44. Do not scan other

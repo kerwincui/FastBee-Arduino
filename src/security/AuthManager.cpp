@@ -1,7 +1,9 @@
 #include "./security/AuthManager.h"
+#include "network/LiteralStringMatch.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
 #include <esp_random.h>
+#include "security/OutputActorIdentity.h"
 
 #if FASTBEE_ENABLE_AUTH
 
@@ -423,6 +425,11 @@ AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccess
         return result;
     }
     
+    // verifySession holds the sessions mutex. New managers and reloaded
+    // sessions also consume the same boot-local sequence, so an old output
+    // lease can never be inherited by a different session with a reused ID.
+    if (!session.outputActor) session.outputActor = FastBee::nextOutputActorIdentity();
+    result.outputActor = session.outputActor;
     if (updateAccessTime) {
         session.lastAccessTime = currentTime;
         session.expireTime = currentTime + securityConfig.sessionTimeout;
@@ -677,7 +684,7 @@ bool AuthManager::loadSessionsFromStorage() {
     }
     
     FastBeeJsonDocLarge doc;
-    DeserializationError error = deserializeJson(doc, jsonStr);
+    DeserializationError error = deserializeJson(doc, jsonStr.c_str(), jsonStr.length());
     if (error) {
         char buf[72];
         snprintf(buf, sizeof(buf), "AuthManager: Failed to parse session data: %s", error.c_str());
@@ -792,7 +799,7 @@ String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request,
     }
 
     for (const auto& header : request->getHeaders()) {
-        if (!header.name().equalsIgnoreCase("Authorization")) continue;
+        if (!FastBee::stringEqualsIgnoreCaseLiteral(header.name(), "Authorization")) continue;
         String authHeader = header.value();
         authHeader.trim();
         if (authHeader.startsWith("Bearer ")) {
@@ -819,7 +826,7 @@ String AuthManager::extractSessionIdFromCookie(AsyncWebServerRequest* request,
     }
 
     for (const auto& header : request->getHeaders()) {
-        if (!header.name().equalsIgnoreCase("Cookie")) continue;
+        if (!FastBee::stringEqualsIgnoreCaseLiteral(header.name(), "Cookie")) continue;
         String cookieHeader = header.value();
         String token = readSessionCookieValue(cookieHeader, cookieName);
         if (token.isEmpty() && cookieName != "sessionId") token = readSessionCookieValue(cookieHeader, "sessionId");

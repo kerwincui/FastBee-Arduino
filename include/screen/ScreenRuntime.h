@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
+#include "core/FeatureInstanceRegistry.h"
+#include "core/RuntimeResourceSnapshot.h"
 
 namespace FastBee {
 namespace Screen {
@@ -34,6 +36,8 @@ struct ScreenSystemActionCapabilities {
 class ScreenRuntime {
 public:
     static ScreenRuntime& instance();
+    FeatureInstanceSnapshot observeFeatureInstance() const;
+    static void snapshotBacklightResources(BacklightResourceSnapshot& result);
 
     bool start(String& error);
     // Requests task-owned renderer/backend shutdown and waits for completion.

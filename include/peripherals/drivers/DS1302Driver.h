@@ -5,6 +5,7 @@
 #if FASTBEE_ENABLE_DS1302
 
 #include <Arduino.h>
+#include <atomic>
 
 /**
  * @brief DS1302 实时时钟驱动
@@ -37,6 +38,9 @@ struct DS1302DateTime {
     uint8_t minute;     // 分 (0-59)
     uint8_t second;     // 秒 (0-59)
     uint8_t dayOfWeek;  // 星期 (1-7, 1=周一)
+
+    // Validate the complete 2000-2099 calendar before formatting or writing.
+    bool isValid() const;
     
     /**
      * @brief 格式化为字符串
@@ -46,7 +50,7 @@ struct DS1302DateTime {
     String toString(const char* format = "YYYY-MM-DD HH:MM:SS") const;
     
     /**
-     * @brief 获取 Unix 时间戳（从 2000-01-01 起算）
+     * @brief 获取 Unix 时间戳（1970 epoch）；无效日期返回 0
      */
     uint32_t toUnixTimestamp() const;
 };
@@ -54,6 +58,13 @@ struct DS1302DateTime {
 /**
  * @brief 涓流充电控制参数
  */
+struct DS1302ClockSnapshot {
+    DS1302DateTime dateTime{};
+    bool valid = false;
+    bool running = false;
+    bool mode24 = true;
+};
+
 enum class DS1302TrickleCharge : uint8_t {
     TRICKLE_DISABLED = 0x00,   // 禁用涓流充电（避免与 esp32-hal-gpio.h 的 DISABLED 宏冲突）
     DIODE_1_2K = 0xA5,         // 1二极管 + 2K电阻
@@ -87,13 +98,17 @@ public:
      * @return 日期时间结构体
      */
     DS1302DateTime readDateTime();
+    // Calendar, CH and hour mode from one burst; caller serializes driver access.
+    DS1302ClockSnapshot readClockSnapshot();
     
     /**
      * @brief 设置日期时间
      * @param dt 日期时间结构体
      * @return 设置是否成功
      */
-    bool setDateTime(const DS1302DateTime& dt);
+    // The default retains the legacy Web behavior (start in 24-hour mode).
+    // Typed rule writes explicitly preserve the observed CH state.
+    bool setDateTime(const DS1302DateTime& dt, bool running = true);
     
     /**
      * @brief 检查时钟是否正在运行
@@ -156,6 +171,10 @@ public:
     bool readRamBurst(uint8_t* data, uint8_t len);
     
     bool isInitialized() const { return _initialized; }
+    // Caller holds the peripheral-manager mutex across lookup and I/O.
+    bool usesPins(uint8_t ce, uint8_t io, uint8_t sclk) const {
+        return _initialized && _cePin == ce && _ioPin == io && _sclkPin == sclk;
+    }
     
 private:
     DS1302Driver() = default;
@@ -166,7 +185,7 @@ private:
     uint8_t _cePin = 255;
     uint8_t _ioPin = 255;
     uint8_t _sclkPin = 255;
-    bool _initialized = false;
+    std::atomic<bool> _initialized{false};
     
     // DS1302 寄存器地址
     static constexpr uint8_t REG_SECONDS = 0x80;

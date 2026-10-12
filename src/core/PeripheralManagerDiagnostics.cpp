@@ -11,53 +11,11 @@
 #include "PeripheralManagerConfigHelpers.h"
 #include <driver/gpio.h>
 #include <cstdlib>
+#if FASTBEE_ENABLE_NEOPIXEL
+#include "peripherals/NeoPixelTransport.h"
+#endif
 
 using namespace FastBee::PeripheralManagerConfigDetail;
-
-namespace {
-bool parseRfCodeText(String text, uint32_t& code, uint8_t& inferredBits) {
-    text.trim();
-    text.replace(" ", "");
-    text.replace("_", "");
-    if (text.isEmpty()) return false;
-
-    inferredBits = 0;
-    if (text.startsWith("0b") || text.startsWith("0B")) {
-        text.remove(0, 2);
-        if (text.length() == 0 || text.length() > RF_MAX_BIT_LENGTH) return false;
-        uint32_t value = 0;
-        for (size_t i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (c != '0' && c != '1') return false;
-            value = (value << 1) | (c == '1' ? 1UL : 0UL);
-        }
-        code = value;
-        inferredBits = (uint8_t)text.length();
-        return true;
-    }
-
-    int base = 10;
-    if (text.startsWith("0x") || text.startsWith("0X")) {
-        base = 16;
-        text.remove(0, 2);
-    } else {
-        for (size_t i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-                base = 16;
-                break;
-            }
-        }
-    }
-
-    if (text.isEmpty()) return false;
-    char* endPtr = nullptr;
-    unsigned long parsed = strtoul(text.c_str(), &endPtr, base);
-    if (!endPtr || *endPtr != '\0') return false;
-    code = (uint32_t)parsed;
-    return true;
-}
-}  // namespace
 
 String PeripheralManager::generateUniqueId(PeripheralType type) {
     static int counter = 0;
@@ -147,6 +105,10 @@ bool PeripheralManager::isInputOnlyPin(uint8_t pin) const {
 }
 
 bool PeripheralManager::checkPinConflict(uint8_t pin, const String& excludeId) const {
+#if FASTBEE_ENABLE_NEOPIXEL
+    // A rolled-back configuration must not erase a quarantined SDK resource.
+    if (fastbeeNeoPixelProjectPinRetained(pin)) return true;
+#endif
     // 加固：基于 peripherals 真实数据扫描，避免 pinToPeripheral 缓存不一致导致的
     // “实际未占用但被误报占用”或“已占用但被误报空闲”
     // 语义：只有“启用”的非 Modbus 外设才算占用引脚；禁用的外设让出引脚，
@@ -180,6 +142,10 @@ void PeripheralManager::rebuildPinMapping() {
 
 // 获取引脚冲突详细信息
 String PeripheralManager::getPinConflictInfo(uint8_t pin, const String& excludeId) const {
+#if FASTBEE_ENABLE_NEOPIXEL
+    if (fastbeeNeoPixelProjectPinRetained(pin))
+        return String("GPIO") + String(pin) + " 由 NeoPixel 待清理对象保留，需排障并受控重启";
+#endif
     // 检查是否为无效引脚
     if (!isValidPin(pin)) {
         return String("GPIO") + String(pin) + " 不是有效的 GPIO 引脚";
@@ -328,6 +294,8 @@ void PeripheralManager::printStatus() const {
 }
 
 void PeripheralManager::performMaintenance() {
+    retireControlOutputs();
+    serviceOrdinaryControlExpiry();
     pollIoExpanders();
     // 处理ISR中断事件队列
     processInterruptQueue();
@@ -413,6 +381,10 @@ bool PeripheralManager::handleInterrupt() {
         if (it == peripherals.end()) return true;
         PeripheralConfig& config = it->second;
 
+        // A queued edge cannot resurrect a failed or retired native handler.
+        if (isGpioDigitalInputType(config.type) && (!config.enabled ||
+            !_managedPinIo.interruptCurrent(config.id.c_str(), pin))) return true;
+
         // 按类型差异化去抖：高速边沿外设（RF/IR）窗口为 0，逐边沿派发；
         // GPIO 中断类在窗口内合并，避免重复的状态读取与回调触发
         uint16_t window = isGpioInterruptInputType(config.type)
@@ -462,73 +434,12 @@ bool PeripheralManager::handleInterrupt() {
     return true;
 }
 
-bool PeripheralManager::sendRfCode(const String& id, const String& codeText,
-                                   uint8_t bitLength, uint16_t pulseWidth, uint8_t repeat) {
-    RecursiveMutexGuard lock(_mutex);
-    PeripheralConfig* config = getPeripheral(id);
-    if (!config || !config->enabled || config->type != PeripheralType::RF_MODULE) {
-        LOG_WARNINGF("RF send: peripheral '%s' not found, disabled, or not RF_MODULE", id.c_str());
-        return false;
-    }
-    if (config->params.rf.mode != RF_MODE_TX) {
-        LOG_WARNINGF("RF send: peripheral '%s' is not configured as TX", id.c_str());
-        return false;
-    }
-    if (config->pinCount < 1 || config->pins[0] == 255) {
-        LOG_WARNINGF("RF send: peripheral '%s' has no data pin", id.c_str());
-        return false;
-    }
-
-    uint32_t code = 0;
-    uint8_t inferredBits = 0;
-    if (!parseRfCodeText(codeText, code, inferredBits)) {
-        LOG_WARNINGF("RF send: invalid code '%s'", codeText.c_str());
-        return false;
-    }
-
-    uint8_t bits = bitLength ? bitLength : (inferredBits ? inferredBits : config->params.rf.bitLength);
-    bits = clampRfBitLength(bits);
-    uint16_t pulse = clampRfPulseWidth(pulseWidth ? pulseWidth : config->params.rf.pulseWidth);
-    uint8_t reps = clampRfRepeat(repeat ? repeat : config->params.rf.repeat);
-    uint8_t pin = config->pins[0];
-    const bool activeHigh = config->params.rf.activeHigh;
-    const uint8_t onLevel = activeHigh ? HIGH : LOW;
-    const uint8_t offLevel = activeHigh ? LOW : HIGH;
-
-    auto sendPulse = [&](uint8_t highPulses, uint8_t lowPulses) {
-        digitalWrite(pin, onLevel);
-        delayMicroseconds((uint32_t)pulse * highPulses);
-        digitalWrite(pin, offLevel);
-        delayMicroseconds((uint32_t)pulse * lowPulses);
-    };
-
-    for (uint8_t r = 0; r < reps; r++) {
-        sendPulse(1, 31); // sync
-        for (int8_t bit = (int8_t)bits - 1; bit >= 0; bit--) {
-            if ((code >> bit) & 0x1) {
-                sendPulse(3, 1);
-            } else {
-                sendPulse(1, 3);
-            }
-        }
-        digitalWrite(pin, offLevel);
-        delay(1);
-        yield();
-    }
-
-    if (runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-        runtimeStates[id].state.comm.bytesSent += 4;
-    }
-    LOG_INFOF("RF send: '%s' code=0x%lX bits=%u pulse=%uus repeat=%u",
-              id.c_str(), (unsigned long)code, bits, (unsigned)pulse, reps);
-    return true;
-}
-
 bool PeripheralManager::readRfLevel(const String& id, bool& level) {
+    level = false;
     RecursiveMutexGuard lock(_mutex);
     PeripheralConfig* config = getPeripheral(id);
-    if (!config || !config->enabled || config->type != PeripheralType::RF_MODULE) {
+    if (!config || !config->enabled || config->type != PeripheralType::RF_MODULE ||
+        config->params.rf.mode != RF_MODE_RX) {
         return false;
     }
     if (config->pinCount < 1 || config->pins[0] == 255) {
@@ -539,24 +450,6 @@ bool PeripheralManager::readRfLevel(const String& id, bool& level) {
     if (runtimeStates.find(id) != runtimeStates.end()) {
         runtimeStates[id].lastActivity = millis();
         runtimeStates[id].state.gpio.currentState = level ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
-    }
-    return true;
-}
-
-bool PeripheralManager::readRadarState(const String& id, bool& detected) {
-    RecursiveMutexGuard lock(_mutex);
-    PeripheralConfig* config = getPeripheral(id);
-    if (!config || !config->enabled || config->type != PeripheralType::RADAR_SENSOR) {
-        return false;
-    }
-    if (config->pinCount < 1 || config->pins[0] == 255) {
-        return false;
-    }
-    bool physicalHigh = digitalRead(config->pins[0]) == HIGH;
-    detected = config->params.radar.activeHigh ? physicalHigh : !physicalHigh;
-    if (runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-        runtimeStates[id].state.gpio.currentState = detected ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
     return true;
 }

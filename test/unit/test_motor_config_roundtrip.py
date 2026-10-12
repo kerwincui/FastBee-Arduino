@@ -22,7 +22,7 @@ function probe(minified) {
   const zero = {deviceType:'motor', slaveAddress:8, motorRegs:[0,1,2,5,0], motorMinPosition:0,
     motorMaxPosition:0, motorCurrentPosition:0, motorMoveStep:0, motorLastPulse:0, motorDecimals:0};
   app._modbusDevices = [JSON.parse(JSON.stringify(zero))]; app._openEditModal(0);
-  const opened = {max:element('mdev-edit-motor-max-pos').value, step:element('mdev-edit-motor-move-step').value};
+  const opened = {max:element('mdev-edit-motor-max-pos').value, limits:element('mdev-edit-motor-limits').checked};
   app._saveEditModal(); const savedZero = JSON.parse(JSON.stringify(app._modbusDevices[0]));
   app._modbusDevices = [{...zero, motorMinPosition:-100, motorCurrentPosition:-50}];
   app._openEditModal(0); app._saveEditModal(); const negativeRange = JSON.parse(JSON.stringify(app._modbusDevices[0]));
@@ -30,14 +30,16 @@ function probe(minified) {
   app._saveEditModal(); const newMotor = JSON.parse(JSON.stringify(app._modbusDevices[0]));
   const invalid = [];
   for (const [field,value] of [['max-pos',''],['max-pos','bad'],['max-pos','0.5'],['max-pos','2147483648'],
-    ['min-pos','-2147483649'],['pulse','-1'],['fwd','65536'],['last-pulse','65536'],['move-step','-1'],['min-pos','10']]) {
+    ['min-pos','-2147483649'],['pulse','-1'],['fwd','65536'],['min-pos','10']]) {
     app._modbusDevices = [JSON.parse(JSON.stringify(zero))]; app._openEditModal(0);
+    element('mdev-edit-motor-limits').checked=true;app._onMotorLimitToggle();
     const before = JSON.stringify(app._modbusDevices); const count=warnings.length;
     element('mdev-edit-motor-'+field).value=value; app._saveEditModal();
     invalid.push(JSON.stringify(app._modbusDevices)===before && warnings.length===count+1 && app._editingDeviceIdx===0);
   }
   app._modbusDevices = [JSON.parse(JSON.stringify(zero))]; app._openEditModal(0);
-  element('mdev-edit-motor-max-pos').value='10'; element('mdev-edit-motor-cur-pos').value='20';
+  element('mdev-edit-motor-limits').checked=true;
+  element('mdev-edit-motor-max-pos').value='10'; element('mdev-edit-motor-min-pos').value='20';
   const before = JSON.stringify(app._modbusDevices); app._saveEditModal();
   const outsideRejected = JSON.stringify(app._modbusDevices)===before;
   app._modbusDevices=[]; app._openEditModal(-1); element('mdev-edit-type').value='motor';
@@ -57,11 +59,22 @@ function probe(minified) {
     invalidProtocol.push(before===JSON.stringify(app._modbusDevices)&&warnings.length===n+1);
   }
   app._modbusDevices=[JSON.parse(JSON.stringify(genericSaved))];app._openEditModal(0);
-  element('mdev-edit-motor-profile').value='yf53';app._onMotorProtocolPreset();
+  element('mdev-edit-name').value='Renamed custom motor';
   const unchangedBeforeSave=JSON.stringify(app._modbusDevices[0])===JSON.stringify(genericSaved);
-  app._saveEditModal();const preset=JSON.parse(JSON.stringify(app._modbusDevices[0]));
+  app._saveEditModal();const editedCustom=JSON.parse(JSON.stringify(app._modbusDevices[0]));
+  const legacy=[];
+  for(const limited of [false,true]) {
+    app._modbusDevices=[{...zero,motorRegs:[0,1,2,5,7],motorMinPosition:limited?-100:0,motorMaxPosition:limited?200:0}];
+    app._openEditModal(0);element('mdev-edit-name').value='Renamed legacy motor';
+    app._saveEditModal();const ordinary=JSON.parse(JSON.stringify(app._modbusDevices[0]));
+    app._openEditModal(0);element('mdev-edit-motor-read-fc').value='4';
+    element('mdev-edit-motor-write-fc').value='16';
+    element('mdev-edit-motor-read-speed').value='300';element('mdev-edit-motor-read-pulse').value='301';
+    app._saveEditModal();const advanced=JSON.parse(JSON.stringify(app._modbusDevices[0]));
+    legacy.push({limited,ordinary,advanced});
+  }
   return {opened,savedZero,negativeRange,newMotor,invalid,outsideRejected,newInvalidCount,
-    genericSaved,invalidProtocol,unchangedBeforeSave,preset};
+    genericSaved,invalidProtocol,unchangedBeforeSave,editedCustom,legacy};
 }
 process.stdout.write(JSON.stringify({source:probe(false),minified:probe(true)}));
 """
@@ -78,11 +91,13 @@ class MotorConfigRoundtripTests(unittest.TestCase):
     def test_zero_limits_steps_and_register_addresses_are_preserved(self):
         for build, result in self.results.items():
             with self.subTest(build=build):
-                self.assertEqual({'max':0, 'step':0}, result['opened'])
+                self.assertEqual({'max':0, 'limits':False}, result['opened'])
                 saved = result['savedZero']
                 self.assertEqual([0,1,2,5,0], saved['motorRegs'])
-                for field in ('motorMinPosition','motorMaxPosition','motorCurrentPosition','motorMoveStep','motorLastPulse'):
+                for field in ('motorMinPosition','motorMaxPosition'):
                     self.assertEqual(0, saved[field])
+                for field in ('motorCurrentPosition','motorMoveStep','motorLastPulse'):
+                    self.assertNotIn(field, saved)
 
     def test_valid_negative_range_with_zero_upper_bound_is_preserved(self):
         for build, result in self.results.items():
@@ -90,14 +105,14 @@ class MotorConfigRoundtripTests(unittest.TestCase):
                 saved = result['negativeRange']
                 self.assertEqual(-100, saved['motorMinPosition'])
                 self.assertEqual(0, saved['motorMaxPosition'])
-                self.assertEqual(-50, saved['motorCurrentPosition'])
+                self.assertNotIn('motorCurrentPosition', saved)
 
     def test_new_motor_never_enables_an_invented_travel_range(self):
         for build, result in self.results.items():
             with self.subTest(build=build):
                 self.assertEqual(0, result['newMotor']['motorMinPosition'])
                 self.assertEqual(0, result['newMotor']['motorMaxPosition'])
-                self.assertEqual(0, result['newMotor']['motorMoveStep'])
+                self.assertNotIn('motorMoveStep', result['newMotor'])
 
     def test_invalid_motor_fields_do_not_mutate_or_create_device_drafts(self):
         for build, result in self.results.items():
@@ -115,20 +130,30 @@ class MotorConfigRoundtripTests(unittest.TestCase):
                     'pulseReadRegister':65535,'forwardValue':17,'reverseValue':34,'stopValue':0,
                     'finitePulseMove':True}, saved['motorProtocol'])
                 self.assertTrue(all(result['invalidProtocol']))
-                self.assertFalse(result['newMotor']['motorProtocol']['finitePulseMove'])
+                self.assertTrue(result['newMotor']['motorProtocol']['finitePulseMove'])
 
-    def test_yf53_preset_is_explicit_and_does_not_mutate_identity_or_limits(self):
+    def test_name_edit_does_not_reset_existing_protocol_identity_or_limits(self):
         for build, result in self.results.items():
             with self.subTest(build=build):
                 self.assertTrue(result['unchangedBeforeSave'])
-                preset = result['preset']
-                self.assertEqual([0,1,2,5,7], preset['motorRegs'])
-                self.assertEqual(8, preset['slaveAddress'])
-                self.assertEqual(0, preset['motorMaxPosition'])
-                self.assertEqual(3, preset['motorProtocol']['readFunction'])
-                self.assertEqual(6, preset['motorProtocol']['writeFunction'])
-                self.assertEqual(1, preset['motorProtocol']['stopValue'])
-                self.assertFalse(preset['motorProtocol']['finitePulseMove'])
+                edited = result['editedCustom']
+                self.assertEqual('Renamed custom motor', edited['name'])
+                for key in ('motorRegs','slaveAddress','motorMinPosition','motorMaxPosition','motorProtocol'):
+                    self.assertEqual(result['genericSaved'][key], edited[key])
+
+    def test_legacy_mapping_is_preserved_until_advanced_settings_change(self):
+        for build, result in self.results.items():
+            for legacy in result['legacy']:
+                with self.subTest(build=build, limited=legacy['limited']):
+                    ordinary, advanced = legacy['ordinary'], legacy['advanced']
+                    self.assertNotIn('motorProtocol', ordinary)
+                    self.assertEqual('Renamed legacy motor', ordinary['name'])
+                    self.assertEqual(4, advanced['motorProtocol']['readFunction'])
+                    self.assertEqual(16, advanced['motorProtocol']['writeFunction'])
+                    self.assertEqual(300, advanced['motorProtocol']['speedReadRegister'])
+                    self.assertEqual(301, advanced['motorProtocol']['pulseReadRegister'])
+                    for key in ('motorRegs','slaveAddress','motorMinPosition','motorMaxPosition'):
+                        self.assertEqual(ordinary[key], advanced[key])
 
 if __name__ == '__main__':
     unittest.main()

@@ -28,7 +28,8 @@ class OtaConfigPersistenceTests(unittest.TestCase):
                  "-DUSE_NATIVE_STDLIB=1", f"-I{temporary}",
                  f"-I{ROOT / 'test/unit/cpp/ota_config_mocks'}", f"-I{ROOT / 'test/mocks'}", f"-I{ROOT / 'include'}",
                  f"-I{ROOT / '.pio/libdeps/native/ArduinoJson/src'}",
-                 str(ROOT / "test/unit/cpp/ota_config_persistence_harness.cpp"), "-o", str(executable)],
+                 str(ROOT / "test/unit/cpp/ota_config_persistence_harness.cpp"),
+                 str(ROOT / "src/network/FixedJsonField.cpp"), "-o", str(executable)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=environment)
             self.assertEqual(0, build.returncode, build.stdout + build.stderr)
             run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=15, env=environment)

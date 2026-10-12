@@ -1,0 +1,257 @@
+// Actual complete preflight and run-once methods; external services are seams.
+#include "document_json_probe.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "core/PeripheralExecution.h"
+#include "core/PeripheralConfig.h"
+#include "core/ResourceProfile.h"
+#include "core/AsyncExecTypes.h"
+#include "core/RtcAction.h"
+#include "core/UartAction.h"
+#include "core/SdStatusAction.h"
+#include "core/PeripheralActionContract.h"
+#include "core/ActionValueContract.h"
+#include "network/FixedJsonField.h"
+#include <iostream>
+#include <climits>
+static DocumentProbeAllocator* activeAllocator=nullptr;
+static std::vector<std::string> calls,documents;
+struct JsonShape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string result = "object{";
+        for (JsonPairConst field : object) {
+            result += std::string(field.key().c_str(), field.key().size());
+            result += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            result += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return result + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string result = "array[";
+        for (JsonVariantConst value : array) result += ArduinoJson::detail::accept(value, *this) + ";";
+        return result + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        assert(false); return "unsupported";
+    }
+};
+static std::string shape(JsonVariantConst value) {
+    JsonShape visitor;return ArduinoJson::detail::accept(value,visitor);
+}
+static std::string capture(const JsonDocument& doc) {
+    return std::to_string(doc.size())+":"+std::to_string(doc.nesting())+":"+std::to_string(doc.overflowed())+
+        ":"+shape(doc.as<JsonVariantConst>())+":"+documentBytes(doc);
+}
+struct TrackedDocument:JsonDocument {
+    TrackedDocument():JsonDocument(activeAllocator){assert(activeAllocator);}
+    ~TrackedDocument(){documents.push_back(capture(*this));}
+};
+struct AsyncWebServerResponse {
+    int status=0;std::string body;std::map<std::string,std::string> headers;
+    void addHeader(const char* key,const char* value){headers[key]=value;calls.push_back(std::string("header:")+key);}
+};
+struct AsyncWebServerRequest {
+    std::map<std::string,String> params;
+    AsyncWebServerResponse response;
+    unsigned sends=0;
+    AsyncWebServerResponse* beginResponse(int code,const char*,const String& body) {
+        calls.push_back("begin-response");response.status=code;response.body=body.c_str();return &response;
+    }
+};
+struct WebHandlerContext {
+    bool auth=true,developer=true;
+    bool requireAuth(AsyncWebServerRequest* request) {
+        calls.push_back("auth");if(!auth){request->response.status=401;++request->sends;}return auth;
+    }
+    bool requireDeveloperMode(AsyncWebServerRequest* request) {
+        calls.push_back("developer");if(!developer){request->response.status=403;++request->sends;}return developer;
+    }
+    String getParamValue(AsyncWebServerRequest* request,const char* key,const char* fallback) {
+        calls.push_back(std::string("param:")+key);const auto it=request->params.find(key);
+        return it==request->params.end()?String(fallback):it->second;
+    }
+    void sendError(AsyncWebServerRequest* request,int code,const char* message) {
+        calls.push_back("error");request->response.status=code;request->response.body=message;++request->sends;
+    }
+    void sendBadRequest(AsyncWebServerRequest* request,const char* message){sendError(request,400,message);}
+};
+namespace HandlerUtils {
+void sendJsonStream(AsyncWebServerRequest* request,const JsonDocument& doc) {
+    calls.push_back("stream");request->response.status=200;request->response.body=documentBytes(doc);++request->sends;
+}
+void sendWithClose(AsyncWebServerRequest* request,AsyncWebServerResponse*){calls.push_back("send-close");++request->sends;}
+}
+struct PeripheralManager {
+    std::map<String,PeripheralConfig> entries;
+    static PeripheralManager& getInstance(){static PeripheralManager value;return value;}
+    bool getPeripheralSnapshot(const String& id,PeripheralConfig& out){
+        calls.push_back(std::string("peripheral:")+id.c_str());const auto it=entries.find(id);
+        if(it==entries.end()){return false;}
+        out=it->second;return true;
+    }
+    void finishOrdinaryControl(const FastBee::OrdinaryControlContext&,bool cancelled){
+        calls.push_back(cancelled?"finish-cancelled":"finish");
+    }
+};
+struct PeriphExecManager {
+    std::map<String,PeriphExecRule> rules;
+    bool submitted=true;
+    String rejection="rule_not_found";
+    AsyncExecResult result;
+    static PeriphExecManager& getInstance(){static PeriphExecManager value;return value;}
+    bool getRuleSnapshot(const String& id,PeriphExecRule& out){
+        calls.push_back(std::string("rule:")+id.c_str());const auto it=rules.find(id);
+        if(it==rules.end()){return false;}
+        out=it->second;return true;
+    }
+    size_t getRuleCount(){calls.push_back("rule-count");return rules.size();}
+    bool runOnce(const String& id,const String& value,String* reason,AsyncExecResult* out,
+                 const FastBee::OrdinaryControlContext* control){
+        calls.push_back(std::string("run:")+id.c_str()+":"+value.c_str()+":"+std::to_string(control->configEpoch));
+        *reason=rejection;*out=result;return submitted;
+    }
+};
+namespace FastBee {
+static bool beginAllowed=true,featureAllowed=true;
+struct SensorConfigEpoch {static uint32_t current(){calls.push_back("epoch");return UINT32_MAX;}};
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance(){static RuntimeFeatureManager value;return value;}
+    bool shouldEnable(const char* feature){calls.push_back(std::string("feature:")+feature);return featureAllowed;}
+};
+bool beginHttpRuleOutput(WebHandlerContext&,AsyncWebServerRequest* request,uint32_t epoch,OrdinaryControlContext& control){
+    calls.push_back("begin-control");control.configEpoch=epoch;
+    if(!beginAllowed){request->response.status=409;++request->sends;}return beginAllowed;
+}
+void appendRuleActionContracts(JsonObject target,const PeriphExecRule& rule){
+    calls.push_back("contracts");target["contractFixture"]=true;
+    JsonArray items=target["actionContracts"].to<JsonArray>();
+    for(size_t i=0;i<rule.actions.size()&&i<MAX_ACTIONS_PER_RULE;++i){
+        JsonObject item=items.add<JsonObject>();item["actionType"]=rule.actions[i].actionType;
+        item["detail"]=std::string(33+i,'c');
+    }
+}
+namespace OC=OrdinaryControl;
+@ORDINARY_WRITER@
+}
+const EventDef* findStaticEvent(const char* id){
+    calls.push_back(std::string("event:")+id);static EventDef event{};
+    return std::strcmp(id,"known")==0?&event:nullptr;
+}
+bool validateRemoteChannelRuleAction(const ExecAction& action,String& code,String& message){
+    calls.push_back("remote-validation");
+    if(action.targetPeriphId=="known")return true;
+    code="REMOTE_TARGET_UNKNOWN";message="fixture target missing";return false;
+}
+struct HandlerBase {
+    WebHandlerContext* ctx;
+    explicit HandlerBase(WebHandlerContext* context):ctx(context){}
+    static void parseRuleFromJson(JsonObject&,PeriphExecRule&);
+};
+struct PeriphExecRouteHandlerOracle:HandlerBase {
+    using HandlerBase::HandlerBase;
+    void handlePreflightRuleJson(AsyncWebServerRequest*,JsonVariant&);
+    void handleRunOnce(AsyncWebServerRequest*);
+};
+struct PeriphExecRouteHandlerCurrent:HandlerBase {
+    using HandlerBase::HandlerBase;
+    void handlePreflightRuleJson(AsyncWebServerRequest*,JsonVariant&);
+    void handleRunOnce(AsyncWebServerRequest*);
+};
+static bool isDigit(char value){return value>='0' && value<='9';}
+@SUPPORT_METHODS@
+@SHARED_WRITERS@
+#define JsonDocument TrackedDocument
+@ROUTE_METHODS@
+#undef JsonDocument
+struct Outcome {
+    int status=0;unsigned sends=0;
+    std::string body;
+    std::map<std::string,std::string> headers;
+    std::vector<std::string> calls,documents;
+    std::vector<DocumentProbeAllocator::Event> allocations;
+    size_t eligible=0,failures=0;
+    bool operator==(const Outcome& other)const{
+        return status==other.status&&sends==other.sends&&body==other.body&&headers==other.headers&&
+            calls==other.calls&&documents==other.documents&&allocations==other.allocations&&
+            eligible==other.eligible&&failures==other.failures;
+    }
+};
+template<class Handler>
+static Outcome run(unsigned kind,unsigned scenario,size_t failAt=SIZE_MAX,bool persistent=false) {
+    DocumentProbeAllocator allocator(failAt,persistent);activeAllocator=&allocator;
+    calls.clear();documents.clear();
+    WebHandlerContext context;AsyncWebServerRequest request;Handler handler(&context);
+    auto& manager=PeriphExecManager::getInstance();manager.rules.clear();
+    auto& peripherals=PeripheralManager::getInstance();peripherals.entries.clear();
+    FastBee::beginAllowed=true;FastBee::featureAllowed=scenario%2==0;
+    PeripheralConfig target;target.id="known";target.name="name-\"\\\n";
+    target.type=scenario%2?PeripheralType::UART:PeripheralType::GPIO_DIGITAL_OUTPUT;
+    target.enabled=scenario%3!=0;peripherals.entries.emplace("known",target);
+    if(kind==0){
+        JsonDocument input;JsonObject payload=input.to<JsonObject>();
+        payload["operation"]=scenario%5==0?"UPDATE":scenario%5==1?"ADD":scenario%5==2?"invalid":"add";
+        JsonObject rule=payload["rule"].to<JsonObject>();
+        rule["id"]=scenario%5==0?"existing":"new";
+        rule["name"]=scenario%7?std::string(20+scenario,'n'):"";
+        rule["execMode"]=scenario%3;rule["protocolType"]=scenario%7;
+        rule["allowPanelControl"]=scenario%2==0;
+        JsonObject trigger=rule["triggers"].to<JsonArray>().add<JsonObject>();
+        trigger["triggerType"]=scenario%7;trigger["triggerPeriphId"]="known";
+        trigger["eventId"]=scenario%2?"known":"missing";trigger["timerMode"]=scenario%3;
+        trigger["intervalSec"]=scenario%2?0:86401;trigger["timePoint"]=scenario%2?"23:59":"29:99";
+        trigger["operatorType"]=scenario%11;trigger["pollResponseTimeout"]=scenario%2?99:5001;
+        trigger["pollMaxRetries"]=4;trigger["pollInterPollDelay"]=19;
+        JsonObject action=rule["actions"].to<JsonArray>().add<JsonObject>();
+        action["actionType"]=scenario%41;action["targetPeriphId"]=scenario%3?"known":"";
+        action["actionValue"]=scenario%4==0?"12":scenario%4==1?"webServer":scenario%4==2?"":std::string(80,'x');
+        action["useReceivedValue"]=scenario%2;action["syncDelayMs"]=scenario%2?10001:0;
+        PeriphExecRule existing;existing.id="existing";existing.name="before";manager.rules.emplace("existing",existing);
+        context.auth=scenario!=80;context.developer=scenario!=81;
+        if(scenario==82)input.set(17);
+        JsonVariant variant=input.as<JsonVariant>();handler.handlePreflightRuleJson(&request,variant);
+    }else{
+        request.params["id"]=scenario==30?"":"rule-id";request.params["value"]="value-\"\\\n";
+        context.auth=scenario!=31;context.developer=scenario!=32;FastBee::beginAllowed=scenario!=33;
+        manager.submitted=scenario%2==0;manager.result={};
+        static const char* reasons[]={"rule_not_found","already_running","CONTROL_CONFLICT","no_task_slot",
+                                     "context_pool_exhausted","worker_queue_full","action_order_invalid","other"};
+        manager.rejection=reasons[scenario%8];
+        auto& result=manager.result;result.operationId=scenario%3?UINT32_MAX:0;
+        result.status=static_cast<AsyncExecStatus>(scenario%9);result.asyncExecution=scenario%3!=0;
+        result.queuedAt=ULONG_MAX;result.deadlineAt=ULONG_MAX-1;result.peripheralConfigEpoch=UINT32_MAX;
+        result.queuePosition=UINT8_MAX;
+        auto& control=result.ordinaryControlResult;
+        std::strcpy(control.targetId,"target-\"\\\n");control.reason="CONTROL_FIXTURE";
+        control.evaluated=scenario%2;control.attempted=scenario%3;control.attemptKnown=scenario%4;
+        control.operation=UINT64_MAX;control.generation=UINT64_MAX;control.holdRemainingMs=UINT32_MAX;
+        control.backendOperationId=UINT32_MAX;control.acknowledgedSteps=UINT16_MAX;
+        handler.handleRunOnce(&request);
+    }
+    assert(allocator.blocks.empty());
+    Outcome result{request.response.status,request.sends,request.response.body,request.response.headers,
+        calls,documents,allocator.events,allocator.eligible,allocator.failures};
+    activeAllocator=nullptr;return result;
+}
+int main(int argc,char** argv){
+    assert(argc==2);const std::string mode=argv[1];
+    const unsigned kind=mode.find("preflight")==0?0:1;size_t cases=0;
+    if(mode=="preflight"||mode=="runonce"){
+        for(unsigned i=0;i<(kind==0?84U:48U);++i){
+            assert(run<PeriphExecRouteHandlerOracle>(kind,i)==run<PeriphExecRouteHandlerCurrent>(kind,i));++cases;
+        }
+    }else if(mode=="preflight-oom"||mode=="runonce-oom"){
+        for(unsigned i:{3U,4U,5U,6U,7U,18U,19U,33U,37U,39U}){
+            auto baseline=run<PeriphExecRouteHandlerOracle>(kind,i);
+            assert(baseline==run<PeriphExecRouteHandlerCurrent>(kind,i));
+            for(bool persistent:{false,true})for(size_t at=0;at<=baseline.eligible+1;++at){
+                assert(run<PeriphExecRouteHandlerOracle>(kind,i,at,persistent)==
+                       run<PeriphExecRouteHandlerCurrent>(kind,i,at,persistent));++cases;
+            }
+        }
+    }else return 2;
+    std::cout<<"PASS "<<mode<<" "<<cases<<" cases\n";
+}

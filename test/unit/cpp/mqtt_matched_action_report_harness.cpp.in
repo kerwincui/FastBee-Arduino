@@ -1,0 +1,110 @@
+#include <Arduino.h>
+#include "core/ActionReportPayload.h"
+#include "core/PeripheralExecution.h"
+#include <cassert>
+#include <string>
+#include <vector>
+struct Logger {
+    unsigned failures=0;
+    void warning(const char*){++failures;}
+} LOGGER;
+struct MatchedItem { String itemId="requested-property",itemValue="dangerous-requested-state"; };
+struct RejectAllocator : ArduinoJson::Allocator {
+    void* allocate(size_t) override { return nullptr; }
+    void deallocate(void*) override {}
+    void* reallocate(void*,size_t) override { return nullptr; }
+};
+String renderMatched(const std::vector<ActionExecResult>& results, const MatchedItem& mi, JsonDocument& reportDoc) {
+    JsonArray reportArr=reportDoc.to<JsonArray>();
+    // @loop@
+    // @empty@
+    String output;
+    serializeJson(reportDoc,output);
+    return output;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string scenario=argv[1];
+    MatchedItem mi;
+    ActionExecResult captured;
+    assert(FastBee::captureLiteralReportIdentity(captured,"original-device","original-property"));
+    FastBee::completeCapturedReport(captured,"17",true,"CONTROL_ACKNOWLEDGED_TRANSPORT_ONLY");
+    std::vector<ActionExecResult> results;
+    bool invalid=false;
+    if(scenario=="empty_success")FastBee::completeCapturedReport(captured,"",true,"successful_empty");
+    if(scenario=="failed_empty")FastBee::completeCapturedReport(captured,"",false,"CONTROL_CONFLICT");
+    if(scenario=="failed_stale")FastBee::completeCapturedReport(captured,"stale-good-value",false,"CONTROL_RESULT_UNKNOWN");
+    if(scenario=="captured_modbus") {
+        const char sensor[16]="old-relay";
+        assert(FastBee::captureModbusReportIdentity(captured,"modbus:1",sensor,4,2));
+        FastBee::completeCapturedReport(captured,"1",true,"modbus_command_acknowledged");
+        captured.targetPeriphId="modbus:9"; // New mapping cannot replace frozen field.
+    }
+    if(scenario=="colon_value")FastBee::completeCapturedReport(captured,"12:34:56",true,"rtc_calendar_unzoned");
+    if(scenario=="peripheral_id") {
+        assert(FastBee::captureLiteralReportIdentity(captured,"captured-peripheral"));
+        FastBee::completeCapturedReport(captured,"0",true,"digital_output_acknowledged");
+    }
+    if(scenario=="success_default_reason")captured.remark="";
+    if(scenario=="failure_default_reason"){captured.remark="";captured.success=false;}
+    if(scenario=="truncated_field"){captured.dataField="other";invalid=true;}
+    if(scenario=="lost_field"){captured.dataField="";invalid=true;}
+    if(scenario=="legacy"){captured.reportIdentity=FastBee::ActionReportIdentity::Legacy;invalid=true;}
+    if(scenario=="invalid_identity"){captured.reportIdentity=FastBee::ActionReportIdentity::Invalid;invalid=true;}
+    if(scenario=="embedded_value"){
+        FastBee::completeCapturedReport(captured,String("1\0other",7),true,"unconfirmed");invalid=true;
+    }
+    const bool sample=scenario=="sample" || scenario=="sample_stale" || scenario=="sample_invalid_unit";
+    if(sample) {
+        captured.hasSensorSample=true;captured.sampleUnit="degC";captured.sampleUnitBytes=4;
+        captured.sensorSample={UINT64_C(4294967396),UINT64_C(4294967896),2000,FastBee::SensorSampleQuality::Good};
+        if(scenario=="sample_stale"){
+            captured.sensorSample.quality=FastBee::SensorSampleQuality::Stale;
+            captured.success=false;captured.remark="sensor_sample_stale";
+        }
+        if(scenario=="sample_invalid_unit"){captured.sampleUnit="";invalid=true;}
+    }
+    if(scenario=="invalid_after_prefix"){
+        results.push_back(captured);captured.dataField="";invalid=true;
+    }
+    if(scenario!="no_actions" && scenario!="no_actions_allocation")results.push_back(captured);
+    if(scenario=="mixed_results"){
+        ActionExecResult failure;
+        assert(FastBee::captureLiteralReportIdentity(failure,"second-device","second-property"));
+        FastBee::completeCapturedReport(failure,"must-not-report",false,"CONTROL_RESULT_UNKNOWN");
+        results.push_back(failure);
+    }
+    const bool failAllocation=scenario=="allocation" || scenario=="no_actions_allocation";
+    RejectAllocator allocator;
+    JsonDocument normal,failed(&allocator);
+    const String output=renderMatched(results,mi,failAllocation?failed:normal);
+    if(invalid || failAllocation){
+        assert(output.isEmpty() && LOGGER.failures==1);return 0;
+    }
+    assert(!output.isEmpty() && LOGGER.failures==0);
+    JsonDocument decoded;assert(!deserializeJson(decoded,output.c_str()));
+    JsonArray rows=decoded.as<JsonArray>();
+    if(scenario=="no_actions"){
+        assert(rows.size()==1 && rows[0]["id"]=="requested-property" &&
+            rows[0]["value"]=="" && rows[0]["remark"]=="no actions");return 0;
+    }
+    assert(rows.size()==(scenario=="mixed_results"?2U:1U));
+    const char* id=scenario=="captured_modbus"?"old-relay_ch2":
+        scenario=="peripheral_id"?"captured-peripheral":"original-property";
+    assert(rows[0]["id"]==id);
+    if(captured.success)assert(rows[0]["value"].as<std::string>()==std::string(captured.actualValue.c_str()));
+    else assert(rows[0]["value"]=="");
+    const char* reason=captured.remark.isEmpty()?(captured.success?"success":"failed"):captured.remark.c_str();
+    assert(rows[0]["remark"]==reason);
+    assert(rows[0]["value"]!="dangerous-requested-state");
+    if(sample){
+        assert(rows[0]["sample"]["sampledAtMs"].as<uint64_t>()==UINT64_C(4294967396));
+        assert(rows[0]["sample"]["capturedAtMs"].as<uint64_t>()==UINT64_C(4294967896));
+        assert(rows[0]["sample"]["maxAgeMs"]==2000 &&
+            rows[0]["sample"]["unit"]=="degC" &&
+            rows[0]["sample"]["freshnessAtReceipt"]=="unverified" &&
+            rows[0]["sample"]["clock"]=="boot_monotonic_ms");
+        assert(rows[0]["sample"]["qualityAtCapture"]==(captured.success?"good":"stale"));
+    } else assert(rows[0]["sample"].isNull());
+    if(scenario=="mixed_results")assert(rows[1]["id"]=="second-property" &&
+        rows[1]["value"]=="" && rows[1]["remark"]=="CONTROL_RESULT_UNKNOWN");
+}

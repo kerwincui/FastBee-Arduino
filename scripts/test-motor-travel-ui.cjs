@@ -14,6 +14,8 @@ const context = vm.createContext({ AppState: app, document: { getElementById: el
     Notification: { error: value => messages.push(value), success: value => messages.push(value) },
     apiPostPriority: async (url, params) => { posts.push({ url, params }); return { success: true }; }
 });
+context.window = context;
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../web-src/js/utils.js'), 'utf8'), context);
 vm.runInContext(source, context);
 const ready = { motorRef: 'motor.19.test', travelToken: 'boot-1', softLimitEnabled: true,
     referenceKnown: false, stationaryConfirmed: false, parametersKnown: true, pulse: 20, speed: 10 };

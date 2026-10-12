@@ -1,0 +1,74 @@
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include "core/UartPortLease.h"
+template<class... T> void logMessage(T&&...) {}
+#define LOG_INFO(...) logMessage(__VA_ARGS__)
+#define LOG_INFOF(...) logMessage(__VA_ARGS__)
+#define LOG_ERROR(...) logMessage(__VA_ARGS__)
+struct TestLock { bool available=true; };
+struct MotorBusGuard {
+    TestLock* gate; bool held;
+    explicit MotorBusGuard(TestLock* g):gate(g),held(g&&g->available) { if(held) gate->available=false; }
+    ~MotorBusGuard() { if(held) gate->available=true; }
+};
+struct Serial { int begins=0,ends=0; void end(){++ends;} };
+constexpr int MODBUS_MASTER=1;
+struct ModbusConfig {
+    int mode=MODBUS_MASTER,slaveAddress=1,txPin=7,rxPin=8,dePin=255; uint32_t baudRate=9600;
+    struct { uint8_t taskCount=0; int responseTimeout=500; } master;
+};
+class ModbusHandler {
+public:
+    TestLock gate; TestLock* _oneShotSemaphore=&gate;
+    FastBee::UartPortLease _uartLease;
+    bool isInitialized=false,pinsOk=true,serialOk=true;
+    struct { int resets=0; void reset(){++resets;} } _motorTravel;
+    ModbusConfig config;
+    int _slaveBackoff[3]{},_slaveBackoffSkips=0,_slaveBackoffEvictions=0;
+    Serial serial; Serial* modbusSerial=&serial; int pins=0,invalidations=0;
+    void invalidatePollObservations(){++invalidations;}
+    unsigned delayInvalidations = 0;
+    void retireOrdinaryDelayWork() { assert(gate.available); }
+    void invalidateCoilDelayTasksLocked(const char* reason) {
+        assert(_oneShotSemaphore && !gate.available);
+        assert(!std::strcmp(reason, "CONFIGURATION_REPLACED") || !std::strcmp(reason, "HANDLER_STOPPED"));
+        ++delayInvalidations;
+    }
+    void sanitizeConfig(ModbusConfig&) {}
+    bool initializePins(){++pins; return pinsOk;}
+    bool initializeSerial(){++serial.begins; return serialOk;}
+    void publishPollObservations(uint8_t,bool) {}
+    bool begin(const ModbusConfig&); void end();
+};
+// @production@
+int main() {
+    const uint8_t port=CHIP_UART_COUNT>=3?2:1;
+    ModbusConfig config; FastBee::UartPortLease cellular;
+    assert(cellular.acquire(port));
+    ModbusHandler rejected; assert(!rejected.begin(config));
+    assert(rejected.pins==0 && rejected.serial.begins==0 && rejected._motorTravel.resets==0);
+    rejected.end(); assert(rejected.serial.ends==0 && cellular.owned());
+    assert(cellular.releaseAfterStop());
+    ModbusHandler handler; handler.pinsOk=false;
+    assert(!handler.begin(config) && FastBee::UartPortLease::available(port));
+    handler.pinsOk=true; handler.serialOk=false;
+    assert(!handler.begin(config) && handler.serial.ends==1 && !handler.isInitialized);
+    assert(FastBee::UartPortLease::available(port));
+    handler.serialOk=true; assert(handler.begin(config) && handler._uartLease.owned());
+    assert(!cellular.acquire(port));
+    const int ends=handler.serial.ends,resets=handler._motorTravel.resets;
+    const unsigned delayed = handler.delayInvalidations;
+    handler.gate.available=false; handler.end();
+    assert(handler._uartLease.owned() && handler.isInitialized);
+    assert(handler.serial.ends==ends && handler._motorTravel.resets==resets);
+    assert(handler.delayInvalidations == delayed);
+    handler.gate.available=true; handler.end();
+    assert(!handler.isInitialized && !handler._uartLease.owned());
+    assert(handler.delayInvalidations == delayed + 1);
+    assert(handler.serial.ends==ends+1 && cellular.acquire(port));
+    handler.end(); assert(handler.serial.ends==ends+1 && cellular.owned());
+    assert(cellular.releaseAfterStop());
+    for(int i=0;i<1000;++i) { assert(handler.begin(config)); handler.end(); }
+    assert(FastBee::UartPortLease::available(port));
+}

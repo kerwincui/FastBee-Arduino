@@ -12,6 +12,8 @@
 #define CELLULAR_ADAPTER_H
 
 #include "core/FeatureFlags.h"
+#include "core/FeatureOwnerLifetime.h"
+#include "network/TlsTransportObservation.h"
 
 #if FASTBEE_ENABLE_CELLULAR
 
@@ -19,6 +21,7 @@
 #include <HardwareSerial.h>
 #include "network/WiFiManager.h"
 #include "core/interfaces/INetworkAdapter.h"
+#include "core/UartPortLease.h"
 
 // TinyGSM 配置 - 在 include 之前定义
 // EC801E-CN 的 AT 指令集与 SIM7600 系列（LTE Cat-4）兼容
@@ -190,10 +193,13 @@ public:
     bool reconnect();
 
 private:
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::Cellular};
     HardwareSerial* _serial = nullptr;
+    FastBee::UartPortLease _uartLease;
     TinyGsm* _modem = nullptr;
     TinyGsmClient* _gsmClient = nullptr;
     CellularTrackedClient* _trackedClient = nullptr;
+    FastBee::TlsTransportObservation _softwareTlsOwner, _qsslOwner;
     CellularSoftwareTlsClient* _softwareTlsClient = nullptr;
     QuectelSslClient* _qsslClient = nullptr;
     

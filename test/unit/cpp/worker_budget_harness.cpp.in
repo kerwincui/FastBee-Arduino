@@ -1,0 +1,181 @@
+
+#include <cassert>
+#include <cstdint>
+#include <cstddef>
+#include <cstdio>
+#include <deque>
+#include <vector>
+#define CHIP_IS_CLASSIC_ESP32 0
+#define ESP_PLATFORM 1
+#define CHIP_IS_ESP32C3 0
+#define CHIP_IS_ESP32S3 1
+#define CHIP_DUAL_CORE 1
+#define BOARD_HAS_PSRAM 1
+#define FASTBEE_USE_PSRAM 1
+#define SIMPLE_TASK_STACK 4096
+#define ASYNC_TASK_PRIORITY 1
+#define pdTRUE 1
+#define pdPASS 1
+#define portMAX_DELAY 0xffffffffU
+#define pdMS_TO_TICKS(x) (x)
+using BaseType_t=int;
+using TickType_t=uint32_t;
+struct Queue {std::deque<void*> data;};
+struct Semaphore {};
+using QueueHandle_t=Queue*;
+using SemaphoreHandle_t=Semaphore*;
+using TaskHandle_t=void*;
+struct PeriphExecManager;
+struct AsyncExecContext {
+    PeriphExecManager* manager=nullptr;
+    SemaphoreHandle_t taskSlot=nullptr;
+    struct {struct {const char* c_str()const{return "fixture";}} name;} ruleCopy;
+};
+struct PeriphExecManager {int done=0,canceled=0;
+    void executeWorkerJob(AsyncExecContext*){++done;}
+    void cancelWorkerJob(AsyncExecContext*){++canceled;}};
+struct Logger {template<class... T>void errorf(const char*,T...){}
+    template<class... T>void warningf(const char*,T...){}
+    template<class... T>void infof(const char*,T...){}void error(const char*){}void warning(const char*){}} LOGGER;
+struct Esp {int getFreeHeap(){return 123456;}int getMaxAllocHeap(){return 65536;}} ESP;
+namespace FastBee {struct MemoryBudget {static uint32_t free,largest;
+    static uint32_t dram8Free(){return free;}static uint32_t dram8Largest(){return largest;}};
+uint32_t MemoryBudget::free=100000,MemoryBudget::largest=65536;}
+struct Task {void (*entry)(void*);void* arg;bool exited;};
+std::vector<Task> tasks;
+bool allowExit=true,queueCreateOk=true,semaphoreCreateOk=true;
+int failCreate=-1,failSendAt=-1,sendCalls=0,queuesDeleted=0,semaphoresDeleted=0;
+uint32_t ticks=0;
+uint32_t millis(){return ticks;}
+QueueHandle_t xQueueCreate(size_t,size_t){return queueCreateOk?new Queue:nullptr;}
+SemaphoreHandle_t xSemaphoreCreateCounting(size_t,size_t){return semaphoreCreateOk?new Semaphore:nullptr;}
+void vQueueDelete(QueueHandle_t q){++queuesDeleted;delete q;}
+void vSemaphoreDelete(SemaphoreHandle_t s){++semaphoresDeleted;delete s;}
+int xQueueSend(QueueHandle_t q,AsyncExecContext** ptr,uint32_t){
+    if(sendCalls++==failSendAt)return 0;
+    q->data.push_back(*ptr);return pdTRUE;}
+int xQueueReceive(QueueHandle_t q,AsyncExecContext** ptr,uint32_t){
+    if(q->data.empty())return 0;
+    *ptr=static_cast<AsyncExecContext*>(q->data.front());q->data.pop_front();return pdTRUE;}
+unsigned uxQueueMessagesWaiting(QueueHandle_t q){return q->data.size();}
+int xTaskCreatePinnedToCore(void(*fn)(void*),const char*,uint32_t,void* arg,int,TaskHandle_t* out,int){
+    if(static_cast<int>(tasks.size())==failCreate)return 0;
+    tasks.push_back({fn,arg,false});*out=reinterpret_cast<void*>(tasks.size());return pdPASS;}
+int xSemaphoreTake(SemaphoreHandle_t,uint32_t wait){
+    ticks+=wait;
+    if(allowExit)for(auto& t:tasks)if(!t.exited){t.exited=true;t.entry(t.arg);return pdTRUE;}
+    return 0;}
+int xSemaphoreGive(SemaphoreHandle_t){return pdTRUE;}
+TickType_t xTaskGetTickCount(){return ticks;}
+void vTaskDelay(uint32_t t){ticks+=t;}
+void vTaskDelete(void*){}
+void reset(){tasks.clear();allowExit=queueCreateOk=semaphoreCreateOk=true;
+    failCreate=failSendAt=-1;sendCalls=queuesDeleted=semaphoresDeleted=0;ticks=0;
+    FastBee::MemoryBudget::free=100000;FastBee::MemoryBudget::largest=65536;}
+
+
+#include <atomic>
+#include <utility>
+namespace FastBee {struct InternalAtomicWord {std::atomic<uint32_t> word{0};
+    explicit InternalAtomicWord(uint32_t v):word(v){}std::atomic<uint32_t>* get(){return &word;}
+    const std::atomic<uint32_t>* get()const{return &word;}};}
+@LIFETIME@
+enum class NetworkType {NET_WIFI,NET_ETHERNET,NET_4G};
+constexpr int WIFI_OFF=0;
+struct Wifi {int mode=1;int getMode(){return mode;}} WiFi;
+struct INetworkManager {virtual ~INetworkManager()=default;};
+struct FBNetworkManager:INetworkManager {
+    FastBee::MqttClientLifetime _networkTransitionLifetime;
+    NetworkType type=NetworkType::NET_WIFI;bool active=false;
+    NetworkType getNetworkType(){return type;}
+    void* getActiveAdapter(){return active?this:nullptr;}
+@NETWORK_API@
+};
+struct FastBeeFramework {INetworkManager* network=nullptr;static bool exists;
+    static FastBeeFramework* getInstance(){static FastBeeFramework f;return exists?&f:nullptr;}
+    INetworkManager* getNetworkManager(){return network;}};
+bool FastBeeFramework::exists=true;
+namespace FastBee {struct RuntimeFeatureManager {bool ready=false;
+    static RuntimeFeatureManager& instance(){static RuntimeFeatureManager f;return f;}
+    bool networkReady(){return ready;}};}
+@BASELINE@
+// Test-only scalar convenience; production consumes the held outer lease.
+static bool workerNetworkBaselineReady(){return static_cast<bool>(acquireWorkerNetworkBaseline());}
+
+@POLICY@
+@POOL_HEADER@
+@POOL_SOURCE@
+@ADMISSION@
+
+int main(){
+    // Compile the actual baseline helper and the actual SDK lease algorithm.
+    FBNetworkManager network;auto* fw=FastBeeFramework::getInstance();
+    assert(!workerNetworkBaselineReady());fw->network=&network;
+    assert(!workerNetworkBaselineReady());FastBee::RuntimeFeatureManager::instance().ready=true;
+    WiFi.mode=WIFI_OFF;assert(!workerNetworkBaselineReady());
+    WiFi.mode=1;assert(workerNetworkBaselineReady()); // Offline STA driver, no WL_CONNECTED requirement.
+    WiFi.mode=2;assert(workerNetworkBaselineReady()); // AP without Internet.
+    {FastBee::MqttClientLifetime::Write changing(network._networkTransitionLifetime);
+        assert(changing);assert(!workerNetworkBaselineReady());}
+    assert(workerNetworkBaselineReady());
+    {auto baseline=acquireWorkerNetworkBaseline();assert(baseline);
+        FastBee::MqttClientLifetime::Write changing(network._networkTransitionLifetime);
+        assert(!changing);}
+    {FastBee::MqttClientLifetime::Write changing(network._networkTransitionLifetime);assert(changing);}
+    for(auto type:{NetworkType::NET_ETHERNET,NetworkType::NET_4G}){
+        network.type=type;network.active=false;assert(!workerNetworkBaselineReady());
+        network.active=true;assert(workerNetworkBaselineReady());}
+    FastBeeFramework::exists=false;assert(!workerNetworkBaselineReady());FastBeeFramework::exists=true;
+    fw->network=nullptr;assert(!workerNetworkBaselineReady());fw->network=&network;
+    // A later fresh lease cannot replace the failed outer admission window.
+    assert(workerNetworkBaselineReady());assert(!hasWorkerPoolMemoryHeadroom(false));
+    assert(!hasWorkerPoolMemoryHeadroom(false,false));
+    {auto baseline=acquireWorkerNetworkBaseline();assert(baseline);
+        assert(hasWorkerPoolMemoryHeadroom(false,static_cast<bool>(baseline)));}
+    using B=FastBee::WorkerPoolBudget;
+    static_assert(PeriphExecWorkerPool::WORKER_COUNT==2,"maximum unchanged");
+    static_assert(PeriphExecWorkerPool::WORKER_STACK==12288,"stack unchanged");
+    static_assert(B::POST_WORKER_FREE==45056,"capture and Web peak kept separate");
+    assert(!B::canAdd(61440,36864,12288,false,0,2,false));
+    assert(B::canAdd(61440,36864,12288,true,0,2,false));
+    assert(!B::canAdd(61439,36864,12288,true,0,2,false));
+    assert(!B::canAdd(61440,36863,12288,true,0,2,false));
+    assert(!B::canAdd(100000,65536,12288,true,1,2,false));
+    assert(B::canAdd(61440,36864,12288,true,1,2,true));
+    assert(!B::canAdd(100000,65536,12288,true,2,2,true));
+    assert(!B::canAdd(UINT32_MAX,UINT32_MAX,UINT32_MAX,true,0,2,true));
+    // Invalid begin must not allocate any RTOS objects.
+    reset();{PeriphExecWorkerPool p;assert(!p.begin(0));assert(!p.begin(3));assert(!p.hasLiveResources());}
+    reset();queueCreateOk=false;{PeriphExecWorkerPool p;assert(!p.begin(1));assert(!p.hasLiveResources());}
+    reset();semaphoreCreateOk=false;{PeriphExecWorkerPool p;assert(!p.begin(1));assert(!p.hasLiveResources());assert(queuesDeleted==1);}
+    reset();failCreate=0;{PeriphExecWorkerPool p;assert(!p.begin(1));assert(!p.hasLiveResources());assert(tasks.empty());}
+    // One-worker ordinary exit posts exactly one sentinel and frees objects.
+    reset();{PeriphExecWorkerPool p;assert(p.begin(1));assert(p.workerCount()==1);
+        assert(p.shutdown());assert(sendCalls==1);assert(queuesDeleted==1);assert(semaphoresDeleted==1);}
+    // Growth requires real concurrent demand, fresh largest and free budgets.
+    reset();{PeriphExecWorkerPool p;assert(p.begin(1));assert(!p.tryGrow(false,true));assert(!p.tryGrow(true,false));
+        FastBee::MemoryBudget::free=61439;assert(!p.tryGrow(true,true));
+        FastBee::MemoryBudget::free=61440;FastBee::MemoryBudget::largest=36863;assert(!p.tryGrow(true,true));
+        FastBee::MemoryBudget::largest=36864;failCreate=1;assert(!p.tryGrow(true,true));assert(p.workerCount()==1&&p.isStarted());
+        failCreate=-1;assert(!p.tryGrow(true,true));ticks=9999;assert(!p.tryGrow(true,true));
+        ticks=10000;assert(p.tryGrow(true,true));assert(p.workerCount()==2);assert(!p.tryGrow(true,true));
+        assert(p.shutdown());assert(sendCalls==2);assert(queuesDeleted==1);}
+    // Partial begin failure never frees a queue touched by an unretired worker.
+    reset();failCreate=1;allowExit=false;{PeriphExecWorkerPool p;assert(!p.begin(2));
+        assert(p.workerCount()==1&&p.hasLiveResources()&&!p.isStarted());assert(queuesDeleted==0);
+        assert(!p.begin(1));assert(!p.shutdown(10));assert(sendCalls==1);
+        allowExit=true;assert(p.shutdown());assert(sendCalls==1&&queuesDeleted==1);}
+    // Partial sentinel send retries only remaining sentinels, no duplicate wake.
+    reset();{PeriphExecWorkerPool p;assert(p.begin(2));allowExit=false;failSendAt=1;
+        assert(!p.shutdown(10));assert(sendCalls==2&&queuesDeleted==0);
+        failSendAt=-1;allowExit=true;assert(p.shutdown());assert(sendCalls==3&&queuesDeleted==1);}
+    // Failed allocation backoff uses unsigned subtraction across millis wrap.
+    reset();{PeriphExecWorkerPool p;assert(p.begin(1));failCreate=1;ticks=UINT32_MAX-999;
+        assert(!p.tryGrow(true,true));failCreate=-1;ticks=8999;assert(!p.tryGrow(true,true));
+        ticks=9000;assert(p.tryGrow(true,true));assert(p.shutdown());}
+    // Queued work is canceled and its owned context returned before retirement.
+    reset();{PeriphExecWorkerPool p;PeriphExecManager manager;AsyncExecContext a;a.manager=&manager;
+        assert(p.begin(1));assert(p.enqueue(&a));assert(p.pendingCount()==1);
+        assert(p.shutdown());assert(manager.canceled==1&&manager.done==0);assert(sendCalls==2);}
+    puts("PASS: policy boundaries + actual pool one/two lifecycle and failure retention");
+}

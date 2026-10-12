@@ -44,6 +44,29 @@ test('fresh run must observe real eight hours and ignores preexisting uptime', a
   c.complete(108800, 'end', true); m.finishReport(r, {completed: true}); assert.equal(r.status, 'PASS');
 });
 
+test('late initial success and elapsed cleanup do not complete a measured window', async () => {
+  const [m] = await modules, r = m.createReport(600), c = new m.CoverageTracker(r, 0);
+  for (let t = 30; t <= 570; t += 60) c.complete(t, String(t), true);
+  c.complete(600, 'wall-deadline', true);
+  assert.equal(r.samples >= r.minimumRequiredSamples, true);
+  assert.equal(r.durationComplete, true); assert.equal(r.actualSampleSpanSeconds, 570);
+  assert.equal(r.coveragePassed, false);
+  c.update(630); assert.equal(r.actualSampleSpanSeconds, 570); assert.equal(r.coveragePassed, false);
+  c.complete(630, 'measured-deadline', true);
+  assert.equal(r.actualSampleSpanSeconds, 600); assert.equal(r.coveragePassed, true);
+  assert.equal(r.firstSuccessfulSampleAt, '30');
+});
+
+test('finish rejects legacy or forged coverage without the actual requested sample span', async () => {
+  const [m] = await modules;
+  for (const span of [undefined, 0, 86399.999, NaN, Infinity]) {
+    const r = m.createReport(86400);
+    Object.assign(r, {durationComplete: true, coveragePassed: true, samples: 1441, actualSampleSpanSeconds: span});
+    m.finishReport(r, {completed: true});
+    assert.equal(r.status, 'FAIL');
+  }
+});
+
 test('trailing stall and never-successful observer cannot pass', async () => {
   const [m] = await modules;
   for (const initial of [false, true]) {
@@ -184,14 +207,15 @@ test('SSE failure counters deduplicate snapshots and never turn PASS after recov
   assert.deepEqual(m.recordSseFailures(report, failed), {streamErrors: 0, jsonErrors: 0});
   assert.deepEqual(m.recordSseFailures(report, []), {streamErrors: 0, jsonErrors: 0});
   assert.deepEqual(m.recordSseFailures(report, [...failed, {errors: 1, invalidJson: []}]), {streamErrors: 1, jsonErrors: 0});
-  Object.assign(report, {durationComplete: true, coveragePassed: true, samples: 6, measurementStatus: 'PASS'});
+  Object.assign(report, {durationComplete: true, coveragePassed: true, actualSampleSpanSeconds: 300,
+    samples: 6, measurementStatus: 'PASS'});
   m.finishReport(report, {completed: true});
   assert.equal(report.sseStreamErrors, 3); assert.equal(report.sseJsonErrors, 1);
   assert.equal(report.measurementStatus, 'PASS'); assert.equal(report.stabilityStatus, 'FAIL');
   assert.equal(report.status, 'FAIL');
 });
 
-async function simulate(mode, seconds = 300) {
+async function simulate(mode, seconds = 300, reportIO) {
   const [evidence, sampler] = await modules;
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'fastbee-soak-offline-')), output = path.join(folder, 'run');
   let clock = 100000, evaluations = 0, peripheralClicks = 0, routeHandler;
@@ -203,7 +227,9 @@ async function simulate(mode, seconds = 300) {
     }}; },
     async evaluate() {
       evaluations++;
+      if (mode === 'slow-first-sample' && evaluations === 2) clock += 17;
       const data = row(evidence.EXPECTED_CARDS);
+      if (mode === 'slow-first-sample') data.cards.at(-1).value = '5.8';
       if (mode === 'sse-recovered') {
         data.cards.at(-1).value = '5.8';
         data.sseConnections = [{errors: 1, invalidJson: [{at: 1, event: 'sensor-data'}]}];
@@ -222,7 +248,7 @@ async function simulate(mode, seconds = 300) {
   const chromium = {launch: async () => ({newContext: async () => context, close: async () => {}})};
   try {
     const report = await sampler.runBrowserSoak({url: 'http://offline.invalid', 'expected-mac': '14:C1:9F:C1:52:D8', seconds, out: output},
-      {chromium, now: () => clock, sleep: async delay => {
+      {chromium, reportIO, now: () => clock, sleep: async delay => {
         clock += delay;
         if (mode === 'closed-idle') page.emit('close');
         if (mode === 'crashed-idle') page.emit('crash');
@@ -241,6 +267,13 @@ test('runner persists all failed attempts and identifies successful-sample outag
   assert.ok(rows.every(r => r.complete === false && r.error)); assert.equal(report.samplingGaps, 1);
   assert.equal(report.stabilityStatus, 'FAIL'); assert.equal(report.measurementStatus, 'FAIL');
   assert.equal(report.durationComplete, true); assert.equal(report.coveragePassed, false); assert.equal(events.length, 6);
+});
+
+test('runner waits a full successful-sample window after the first delayed snapshot', async () => {
+  const {report, rows} = await simulate('slow-first-sample');
+  assert.equal(report.status, 'PASS'); assert.equal(report.actualSampleSpanSeconds, 300);
+  assert.equal(report.observedSeconds, 317); assert.equal(report.coveragePassed, true);
+  assert.equal(rows.length, 7);
 });
 
 test('runner rejects numeric cached DOM after 401 and does not re-login', async () => {
@@ -303,4 +336,78 @@ test('page closure or crash while waiting stops without extending the observatio
     assert.equal(report.coveragePassed, false); assert.ok(report.observerLostAt);
     assert.ok(report.terminatedAt); assert.equal(report.completedAt, undefined);
   }
+});
+
+
+test('report replacement retries transient Windows errors and retains cumulative counters', async () => {
+  const [, sampler] = await modules;
+  const report = {status: 'RUNNING'};
+  const writes = [], waits = [], failures = ['EPERM', 'EACCES', 'EBUSY'];
+  let calls = 0;
+  sampler.publishBrowserSoakReport('offline-report', report, {
+    platform: 'win32', writeFile: (file, data) => writes.push({file, report: JSON.parse(data)}),
+    rename: (from, to) => {
+      assert.equal(path.basename(from), 'report.pending');
+      assert.equal(path.basename(to), 'report.json');
+      if (calls++ < 3) throw Object.assign(new Error('replacement busy'), {code: failures[calls - 1]});
+    }, wait: ms => waits.push(ms),
+  });
+  assert.equal(calls, 4);
+  assert.deepEqual(waits, [50, 50, 50]);
+  assert.equal(report.reportPublishRetries, 3);
+  assert.equal(report.reportPublishFailures, 0);
+  assert.deepEqual(report.reportPublishErrorCounts, {EPERM: 1, EACCES: 1, EBUSY: 1});
+  assert.deepEqual(writes.at(-1).report, report);
+  assert.ok(writes.every(row => path.basename(row.file) === 'report.pending'));
+});
+
+test('exhausted replacement keeps the prior report and cannot be overwritten as PASS', async () => {
+  const [, sampler] = await modules;
+  const report = {status: 'RUNNING'}, stored = new Map([['report.json', 'previous valid report']]);
+  let calls = 0, waits = 0;
+  const io = {platform: 'win32', writeFile: (file, data) => stored.set(path.basename(file), data),
+    rename: () => { calls++; throw Object.assign(new Error('busy'), {code: 'EPERM'}); },
+    wait: () => { waits++; }};
+  assert.throws(() => sampler.publishBrowserSoakReport('offline-report', report, io), {code: 'EPERM'});
+  assert.equal(calls, 4); assert.equal(waits, 3);
+  assert.equal(stored.get('report.json'), 'previous valid report');
+  assert.equal(JSON.parse(stored.get('report.pending')).reportPublishFailures, 1);
+  assert.equal(report.reportPublishErrorCounts.EPERM, 4);
+  report.status = report.stabilityStatus = 'PASS';
+  io.rename = (from, to) => stored.set(path.basename(to), stored.get(path.basename(from)));
+  sampler.publishBrowserSoakReport('offline-report', report, io);
+  assert.equal(report.status, 'FAIL'); assert.equal(report.stabilityStatus, 'FAIL');
+  assert.equal(JSON.parse(stored.get('report.json')).reportPublishFailures, 1);
+});
+
+test('non-Windows and non-transient replacement errors fail without retries', async () => {
+  const [, sampler] = await modules;
+  for (const [platform, code] of [['linux', 'EPERM'], ['win32', 'ENOSPC']]) {
+    const report = {status: 'RUNNING'}; let calls = 0, waits = 0;
+    assert.throws(() => sampler.publishBrowserSoakReport('offline-report', report, {
+      platform, writeFile() {}, rename() { calls++; throw Object.assign(new Error('write failed'), {code}); },
+      wait() { waits++; },
+    }), {code});
+    assert.equal(calls, 1); assert.equal(waits, 0);
+    assert.equal(report.reportPublishFailures, 1); assert.equal(report.status, 'FAIL');
+  }
+});
+
+test('bounded report retry preserves real runner coverage and observation failures', async () => {
+  const waits = []; let calls = 0;
+  const {report, rows} = await simulate('failure', 300, {
+    platform: 'win32',
+    rename(from, to) {
+      if (++calls === 2) throw Object.assign(new Error('replacement busy'), {code: 'EPERM'});
+      fs.renameSync(from, to);
+    },
+    wait: ms => waits.push(ms),
+  });
+  assert.deepEqual(waits, [50]);
+  assert.equal(report.reportPublishRetries, 1);
+  assert.equal(report.reportPublishFailures, 0);
+  assert.equal(report.reportPublishErrorCounts.EPERM, 1);
+  assert.equal(rows.length, 6); assert.equal(report.samples, 0);
+  assert.equal(report.actualSampleSpanSeconds, 0); assert.equal(report.durationComplete, true);
+  assert.equal(report.coveragePassed, false); assert.equal(report.status, 'FAIL');
 });

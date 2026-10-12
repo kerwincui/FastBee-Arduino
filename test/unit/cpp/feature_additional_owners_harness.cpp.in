@@ -1,0 +1,332 @@
+#define millis originalMockMillis
+#define delay originalMockDelay
+#include <Arduino.h>
+#undef millis
+#undef delay
+#include "core/FeatureInstanceRegistry.h"
+#include "core/DisplayOutputTypes.h"
+#include "core/RuntimeResourceSnapshot.h"
+#include "core/SensorSampleMetadata.h"
+#include "core/Ds18b20Address.h"
+#include "peripherals/NeoPixelTransport.h"
+#include <cassert>
+#include <cmath>
+#include <functional>
+#include <mutex>
+#include <new>
+#include <thread>
+
+using namespace FastBee;
+using std::isnan;
+using std::isinf;
+using TickType_t = unsigned;
+constexpr TickType_t portMAX_DELAY = ~0U;
+constexpr int pdTRUE = 1, OUTPUT = 1, INPUT = 0, INPUT_PULLUP = 2;
+constexpr uint32_t SENSOR_BUS_LOCK_TIMEOUT_MS = 3000, DHT_STALE_CACHE_WINDOW_MS = 10000;
+constexpr uint32_t SENSOR_FAILURE_BACKOFF_INITIAL_MS = 5000, SENSOR_FAILURE_BACKOFF_MAX_MS = 60000;
+constexpr float DEVICE_DISCONNECTED_C = -127;
+#define FASTBEE_ENABLE_DS18B20 1
+#define pdMS_TO_TICKS(ms) (ms)
+#define LOG_INFO(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+static thread_local bool querying = false;
+static thread_local unsigned heldLocks = 0;
+struct Semaphore { std::mutex mutex; };
+using SemaphoreHandle_t = Semaphore*;
+static Semaphore pool[16];
+static std::atomic<unsigned> attempts{0}, allocations{0}, deletedLocks{0}, gpioOps{0}, sensorOps{0};
+static std::atomic<bool> failMutex{false}, holdCreation{false}, creationEntered{false};
+static std::atomic<unsigned> creationWaiters{0};
+SemaphoreHandle_t xSemaphoreCreateMutex() {
+    assert(!querying); ++attempts;
+    if (holdCreation) {
+        ++creationWaiters; creationEntered = true;
+        while (holdCreation) std::this_thread::yield();
+    }
+    if (failMutex) return nullptr;
+    const auto slot = allocations.fetch_add(1); assert(slot < 16); return &pool[slot];
+}
+void vSemaphoreDelete(SemaphoreHandle_t handle) { assert(!querying && handle); ++deletedLocks; }
+int xSemaphoreTake(SemaphoreHandle_t handle, TickType_t timeout) {
+    assert(handle); if (querying) assert(timeout == 0);
+    if (!timeout) { if (!handle->mutex.try_lock()) return 0; }
+    else handle->mutex.lock();
+    ++heldLocks; return pdTRUE;
+}
+void xSemaphoreGive(SemaphoreHandle_t handle) { assert(handle && heldLocks); --heldLocks; handle->mutex.unlock(); }
+// @guard@
+static uint64_t clockMs = 10000;
+unsigned long millis() { return static_cast<uint32_t>(clockMs); }
+int64_t esp_timer_get_time() { assert(!querying); return static_cast<int64_t>(clockMs * 1000); }
+void delay(unsigned long ms) { assert(!querying && (ms == 2 ? heldLocks != 0 : heldLocks == 0)); clockMs += ms; }
+static std::function<void()> gpioHook, sensorHook;
+void delayMicroseconds(unsigned int) { assert(!querying && heldLocks); }
+void pinMode(uint8_t, int) { assert(!querying && heldLocks); ++gpioOps; }
+void digitalWrite(uint8_t, int) { assert(!querying && heldLocks); ++gpioOps; if (gpioHook) gpioHook(); }
+static bool sevenNack = false;
+int digitalRead(uint8_t) { assert(!querying && heldLocks); ++gpioOps; return sevenNack ? HIGH : LOW; }
+static float dsTemperature = DEVICE_DISCONNECTED_C;
+static unsigned oneWireDeleted = 0, dallasDeleted = 0;
+struct DHT {};
+struct OneWire {
+    explicit OneWire(uint8_t) { assert(!querying && heldLocks); }
+    ~OneWire() { assert(!querying && heldLocks); ++oneWireDeleted; }
+};
+struct DallasTemperature {
+    explicit DallasTemperature(OneWire*) { assert(!querying && heldLocks); }
+    ~DallasTemperature() { assert(!querying && heldLocks); ++dallasDeleted; }
+    void begin() { assert(!querying && heldLocks); ++sensorOps; }
+    void setWaitForConversion(bool wait) { assert(!wait && !querying && heldLocks); }
+    int getDeviceCount() { assert(!querying && heldLocks); return 0; }
+    void requestTemperatures() { assert(!querying && heldLocks); ++sensorOps; if (sensorHook) sensorHook(); }
+    bool getAddress(uint8_t* address, uint8_t) {
+        assert(!querying && heldLocks);
+        const uint8_t rom[8] = {0x28,0,0,0,0,0,0,0x1e};
+        std::memcpy(address, rom, 8); return true;
+    }
+    float getTempC(const uint8_t*) { assert(!querying && heldLocks); return dsTemperature; }
+};
+bool sensor_pin_valid(uint8_t pin) { return pin < 40; }
+struct Logger {
+    template<class... T> void errorf(const char*, T...) {}
+    template<class... T> void warningf(const char*, T...) {}
+    template<class... T> void infof(const char*, T...) {}
+    template<class... T> void debugf(const char*, T...) {}
+} LOGGER;
+static bool featureEnabled = true, budgetDenied = false;
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    bool shouldEnable(const char*) { assert(!querying); return featureEnabled; }
+};
+struct FeatureBudgetRegistry {
+    static FeatureBudgetRegistry& instance() { static FeatureBudgetRegistry value; return value; }
+    bool isDenied(const char*) { assert(!querying); return budgetDenied; }
+};
+}
+template<class T> using SensorNodeAllocator = std::allocator<T>;
+// @types@
+// @sensor@
+// @seven@
+
+constexpr int NEO_GRB = 1, NEO_KHZ800 = 2, MALLOC_CAP_8BIT = 1, MALLOC_CAP_INTERNAL = 2;
+static uint32_t freeHeap = 65536;
+static unsigned neoAllocations = 0, neoDeletions = 0, neoIo = 0;
+static bool failNeoAllocation = false, failNeoPixels = false, failNeoBegin = false;
+static FastBeeNeoPixelResult neoWriteResult = FASTBEE_NEO_OK, neoReleaseResult = FASTBEE_NEO_OK;
+static std::function<void()> neoAllocationHook, neoDeleteHook;
+uint32_t heap_caps_get_free_size(int) { assert(!querying); return freeHeap; }
+struct Adafruit_NeoPixel {
+    static void* operator new(size_t bytes, const std::nothrow_t&) noexcept {
+        assert(!querying); if (neoAllocationHook) neoAllocationHook();
+        if (failNeoAllocation) return nullptr;
+        ++neoAllocations; return ::operator new(bytes, std::nothrow);
+    }
+    static void operator delete(void* ptr) noexcept { ::operator delete(ptr); }
+    static void operator delete(void* ptr, const std::nothrow_t&) noexcept { ::operator delete(ptr); }
+    uint16_t count;
+    uint8_t pixels[900]{};
+    Adafruit_NeoPixel(uint16_t size, uint8_t, int) : count(size) { assert(!querying); }
+    ~Adafruit_NeoPixel() { assert(!querying); ++neoDeletions; if (neoDeleteHook) neoDeleteHook(); }
+    bool begin() { assert(!querying); ++neoIo; return !failNeoBegin; }
+    uint8_t* getPixels() { assert(!querying); return failNeoPixels ? nullptr : pixels; }
+    uint16_t numPixels() { assert(!querying); return count; }
+    void setPixelColor(uint16_t index, uint32_t) { assert(!querying && index < count); }
+};
+FastBeeNeoPixelResult fastbeeNeoPixelWrite(uint8_t, const uint8_t*, uint32_t, bool) {
+    assert(!querying); ++neoIo; return neoWriteResult;
+}
+FastBeeNeoPixelResult fastbeeNeoPixelRelease(uint8_t) {
+    assert(!querying); ++neoIo; return neoReleaseResult;
+}
+bool fastbeeNeoPixelPinRetained(uint8_t) { return false; }
+// @neo@
+
+static FeatureInstanceSnapshot observe(const char* key) {
+    assert(!querying); querying = true;
+    const auto snapshot = FeatureInstanceRegistry::instance().observe(key);
+    querying = false; return snapshot;
+}
+static void expect(const char* key, FeatureInstanceState state) {
+    const auto snapshot = observe(key);
+    assert(snapshot.state == state && !snapshot.countKnown() && snapshot.initializedCount == 0);
+    if (state != FeatureInstanceState::Unobserved) assert(snapshot.scope == FeatureInstanceScope::ServiceLifecycle);
+}
+static void cold() {
+    assert(!fastbeeNeoPixelProjectPinRetained(255));
+    for (const auto key : {"ds18b20", "sevenSegment", "neopixel"}) expect(key, FeatureInstanceState::Unobserved);
+    assert(attempts == 0 && gpioOps == 0 && sensorOps == 0 && neoAllocations == 0);
+}
+static void ds18() {
+    auto& owner = SensorDriver::getInstance(); expect("ds18b20", FeatureInstanceState::Stopped);
+    assert(isnan(owner.readDS18B20(4, 0))); expect("ds18b20", FeatureInstanceState::Allocated);
+    featureEnabled = false;
+    const auto before = sensorOps.load();
+    for (unsigned i = 0; i < 1000; ++i) expect("ds18b20", FeatureInstanceState::Allocated);
+    assert(sensorOps == before); owner.release(4); expect("ds18b20", FeatureInstanceState::Stopped);
+    assert(oneWireDeleted == 1 && dallasDeleted == 1);
+}
+static void ds18_invalid() {
+    auto& owner = SensorDriver::getInstance();
+    owner._ds18b20Instances[4] = {};
+    expect("ds18b20", FeatureInstanceState::Unobserved);
+    assert(observe("ds18b20").reason == FeatureInstanceReason::InvalidSnapshot);
+    owner.releaseAll(); expect("ds18b20", FeatureInstanceState::Stopped);
+    assert(oneWireDeleted == 0 && dallasDeleted == 0);
+}
+static void ds18_retry() {
+    failMutex = true; auto& owner = SensorDriver::getInstance();
+    expect("ds18b20", FeatureInstanceState::Unobserved);
+    assert(observe("ds18b20").reason == FeatureInstanceReason::SynchronizationUnavailable);
+    const auto before = attempts.load(); observe("ds18b20"); assert(attempts == before);
+    failMutex = false; assert(isnan(owner.readDS18B20(4, 0)));
+    expect("ds18b20", FeatureInstanceState::Allocated); owner.releaseAll();
+}
+static void ds18_busy() {
+    auto& owner = SensorDriver::getInstance();
+    std::atomic<bool> entered{false}, resume{false}, releasing{false}, released{false};
+    sensorHook = [&] { entered = true; while (!resume) std::this_thread::yield(); };
+    std::thread reader([&] { assert(isnan(owner.readDS18B20(4, 0))); });
+    while (!entered) std::this_thread::yield();
+    expect("ds18b20", FeatureInstanceState::Busy);
+    std::thread release([&] { releasing = true; owner.release(4); released = true; });
+    while (!releasing) std::this_thread::yield();
+    for (unsigned i = 0; i < 1000; ++i) { expect("ds18b20", FeatureInstanceState::Busy); assert(!released); }
+    resume = true; reader.join(); release.join(); sensorHook = {};
+    expect("ds18b20", FeatureInstanceState::Stopped); assert(oneWireDeleted == 1 && dallasDeleted == 1);
+}
+static void seven() {
+    auto& owner = SevenSegmentDriver::instance(); expect("sevenSegment", FeatureInstanceState::Stopped);
+    assert(!owner.begin("", 4, 5));
+    sevenNack = true;
+    assert(!owner.begin("led", 4, 5)); expect("sevenSegment", FeatureInstanceState::Allocated);
+    assert(!owner.release("led") && owner.exists("led"));
+    sevenNack = false;
+    assert(owner.write("led", 4, 5, DisplayOutputCommand::Number, "12.3", 0).acknowledged);
+    assert(owner.write("led", 4, 5, DisplayOutputCommand::Text, "test", 0).acknowledged);
+    assert(owner.write("led", 4, 5, DisplayOutputCommand::Brightness, "", 2).acknowledged);
+    assert(owner.write("led", 4, 5, DisplayOutputCommand::Clear, "", 0).acknowledged);
+    featureEnabled = false;
+    const auto before = gpioOps.load();
+    for (unsigned i = 0; i < 1000; ++i) expect("sevenSegment", FeatureInstanceState::Allocated);
+    assert(gpioOps == before); assert(owner.release("led"));
+    expect("sevenSegment", FeatureInstanceState::Stopped); assert(!owner.exists("led"));
+}
+static void seven_retry() {
+    failMutex = true; auto& owner = SevenSegmentDriver::instance();
+    expect("sevenSegment", FeatureInstanceState::Unobserved);
+    assert(observe("sevenSegment").reason == FeatureInstanceReason::SynchronizationUnavailable);
+    assert(!owner.begin("led", 4, 5) &&
+        !owner.write("led", 4, 5, DisplayOutputCommand::Clear, "", 0).acknowledged); assert(gpioOps == 0);
+    failMutex = false; SevenSegmentDriver::instance();
+    expect("sevenSegment", FeatureInstanceState::Stopped); assert(owner.begin("led", 4, 5));
+}
+static void seven_first() {
+    holdCreation = true;
+    std::thread threads[4];
+    for (auto& worker : threads) worker = std::thread([] { SevenSegmentDriver::instance(); });
+    while (creationWaiters < 4) std::this_thread::yield();
+    holdCreation = false; for (auto& worker : threads) worker.join();
+    assert(allocations == 4 && deletedLocks == 3); expect("sevenSegment", FeatureInstanceState::Stopped);
+}
+static void seven_busy() {
+    auto& owner = SevenSegmentDriver::instance(); assert(owner.begin("led", 4, 5));
+    std::atomic<bool> entered{false}, resume{false};
+    gpioHook = [&] { entered = true; while (!resume) std::this_thread::yield(); };
+    std::thread writer([&] {
+        assert(owner.write("led", 4, 5, DisplayOutputCommand::Text, "test", 0).acknowledged);
+    });
+    while (!entered) std::this_thread::yield();
+    for (unsigned i = 0; i < 1000; ++i) {
+        expect("sevenSegment", FeatureInstanceState::Busy);
+        assert(!owner.release("led")); // Bounded refusal preserves the running writer/instance.
+        assert(!owner.quiescent("led"));
+    }
+    resume = true; writer.join(); gpioHook = {};
+    expect("sevenSegment", FeatureInstanceState::Allocated); assert(owner.exists("led"));
+    assert(owner.quiescent("led") && owner.release("led"));
+    expect("sevenSegment", FeatureInstanceState::Stopped); assert(!owner.exists("led"));
+}
+static void neo() {
+    neoAllocationHook = [] { expect("neopixel", FeatureInstanceState::Busy); };
+    neoDeleteHook = [] { expect("neopixel", FeatureInstanceState::Retiring); };
+    assert(getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Allocated);
+    featureEnabled = false;
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Allocated);
+    const auto before = neoIo;
+    for (unsigned i = 0; i < 1000; ++i) expect("neopixel", FeatureInstanceState::Allocated);
+    assert(neoIo == before && neoAllocations == 1);
+    assert(!getNeoPixelInstance(5, 2, "rgb")); expect("neopixel", FeatureInstanceState::Allocated);
+    assert(releaseNeoPixelInstance(4)); expect("neopixel", FeatureInstanceState::Stopped);
+    assert(neoDeletions == 1);
+}
+static void neo_failure() {
+    featureEnabled = false; assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Stopped);
+    featureEnabled = true; budgetDenied = true; assert(!getNeoPixelInstance(4, 2, "rgb"));
+    budgetDenied = false; freeHeap = 1; assert(!getNeoPixelInstance(4, 2, "rgb"));
+    freeHeap = 65536; failNeoAllocation = true;
+    neoAllocationHook = [] { expect("neopixel", FeatureInstanceState::Busy); };
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Stopped);
+    assert(neoAllocations == 0 && neoIo == 0);
+    failNeoAllocation = false; assert(getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Allocated);
+}
+static void neo_busy() {
+    std::atomic<bool> entered{false}, resume{false};
+    neoAllocationHook = [&] { entered = true; while (!resume) std::this_thread::yield(); };
+    std::thread writer([] { assert(getNeoPixelInstance(4, 2, "rgb")); });
+    while (!entered) std::this_thread::yield();
+    for (unsigned i = 0; i < 1000; ++i) expect("neopixel", FeatureInstanceState::Busy);
+    resume = true; writer.join(); neoAllocationHook = {};
+    expect("neopixel", FeatureInstanceState::Allocated);
+    entered = false; resume = false; featureEnabled = false;
+    neoDeleteHook = [&] { entered = true; while (!resume) std::this_thread::yield(); };
+    std::thread retiring([] { assert(releaseNeoPixelInstance(4)); });
+    while (!entered) std::this_thread::yield();
+    for (unsigned i = 0; i < 1000; ++i) expect("neopixel", FeatureInstanceState::Retiring);
+    resume = true; retiring.join(); neoDeleteHook = {}; expect("neopixel", FeatureInstanceState::Stopped);
+}
+static void neo_sdk_failure() {
+    failNeoBegin = true;
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Stopped);
+    assert(neoDeletions == 1);
+    failNeoBegin = false; failNeoPixels = true;
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Stopped);
+    assert(neoDeletions == 2);
+    failNeoPixels = false; neoWriteResult = FASTBEE_NEO_WRITE_FAILED;
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::CleanupPending);
+    const auto before = neoIo;
+    neoWriteResult = FASTBEE_NEO_OK; // Late completion cannot reset quarantine.
+    assert(!getNeoPixelInstance(4, 2, "rgb") && !getNeoPixelInstance(5, 2, "rgb"));
+    assert(!releaseNeoPixelInstance(4) && neoDeletions == 2 && neoIo == before);
+}
+static void neo_retire_failure() {
+    assert(getNeoPixelInstance(4, 2, "rgb"));
+    neoReleaseResult = FASTBEE_NEO_RELEASE_FAILED;
+    assert(!getNeoPixelInstance(5, 3, "rgb")); expect("neopixel", FeatureInstanceState::CleanupPending);
+    assert(neoDeletions == 0 && g_neopixelPin == 4 && g_neopixelCount == 2);
+}
+static void neo_retryable() {
+    neoWriteResult = FASTBEE_NEO_NO_MEMORY;
+    assert(!getNeoPixelInstance(4, 2, "rgb")); expect("neopixel", FeatureInstanceState::Allocated);
+    neoWriteResult = FASTBEE_NEO_OK;
+    auto* strip = getNeoPixelInstance(4, 2, "rgb"); assert(strip && showNeoPixelChecked(strip));
+    neoReleaseResult = FASTBEE_NEO_BUSY;
+    assert(!releaseNeoPixelInstance(4)); expect("neopixel", FeatureInstanceState::CleanupPending);
+    assert(fastbeeNeoPixelProjectPinRetained(4) && !fastbeeNeoPixelProjectPinRetained(5));
+    const auto io = neoIo;
+    neoReleaseResult = FASTBEE_NEO_OK; assert(!releaseNeoPixelInstance(4));
+    assert(neoIo == io && neoDeletions == 0);
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode = argv[1];
+    if (mode == "cold") cold(); else if (mode == "ds18") ds18();
+    else if (mode == "ds18_invalid") ds18_invalid(); else if (mode == "ds18_busy") ds18_busy();
+    else if (mode == "ds18_retry") ds18_retry(); else if (mode == "seven") seven();
+    else if (mode == "seven_busy") seven_busy(); else if (mode == "seven_retry") seven_retry();
+    else if (mode == "seven_first") seven_first(); else if (mode == "neo") neo();
+    else if (mode == "neo_failure") neo_failure(); else if (mode == "neo_busy") neo_busy();
+    else if (mode == "neo_sdk_failure") neo_sdk_failure();
+    else if (mode == "neo_retire_failure") neo_retire_failure();
+    else if (mode == "neo_retryable") neo_retryable();
+    else assert(false);
+}

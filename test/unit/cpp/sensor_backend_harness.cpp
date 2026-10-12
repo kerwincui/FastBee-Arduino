@@ -1,5 +1,7 @@
 #include "core/DriverRegistry.h"
 #include "core/SensorDriverCache.h"
+#include "core/FeatureInstanceRegistry.h"
+#include <freertos/semphr.h>
 #include "core/SensorConfigSupport.h"
 #include "core/RuntimeFeatureManager.h"
 #include "peripherals/drivers/INA226Driver.h"
@@ -11,6 +13,7 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <esp_timer.h>
 
 using namespace FastBee;
 static unsigned reads = 0, inits = 0, deinits = 0;
@@ -60,7 +63,13 @@ static void metadataTests() {
 }
 
 static void cacheTests() {
+    sensorTestWrapBase = 0;
+    assert(FeatureInstanceRegistry::instance().observe("i2cSensors").state == FeatureInstanceState::Unobserved);
+    const auto coldMutexCount = sensorTestMutexCreates.load();
     auto& cache = SensorDriverCache::instance();
+    const auto cold = FeatureInstanceRegistry::instance().observe("i2cSensors");
+    assert(cold.state == FeatureInstanceState::NotInitialized && cold.initializedCount == 0);
+    assert(sensorTestMutexCreates == coldMutexCount);
     auto& registry = DriverRegistry::getInstance();
     assert(registry.registerDriver("Counted", createCounted));
     // Exercise concurrent first use too, before the cache has any mutex.
@@ -103,6 +112,7 @@ static void cacheTests() {
     sensorTestNow = 0xfffffff0U;
     assert(cache.readChannel("wrap", "Counted", 1, "{}", "first", value, unit, error, 100));
     sensorTestNow = 25;
+    sensorTestWrapBase = UINT64_C(0x100000000);
     assert(cache.readChannel("wrap", "Counted", 1, "{}", "second", value, unit, error, 100));
     assert(reads == before + 1);
     sensorTestNow = 200;
@@ -133,11 +143,13 @@ static void cacheTests() {
     assert(cache.readChannel("unplugged", "Counted", 1, "{}", "second", value, unit, error, 1000));
     assert(inits == initBefore + 2);
     cache.releaseAll();
+    sensorTestWrapBase = 0;
 }
 
 static void collectionFreshnessTests() {
     auto& cache = SensorDriverCache::instance();
     cache.releaseAll();
+    sensorTestWrapBase = 0;
     float value; String unit, error; uint32_t timestamp;
     const unsigned before = reads;
     sensorTestNow = 10050; // previous dispatch at 10000, conversion completed 50 ms later
@@ -180,6 +192,7 @@ static void collectionFreshnessTests() {
     assert(cache.readChannel("wrap-collection", "Counted", 1, "{}", "first", value,
         unit, error, 10000, &timestamp, 0, &firstRound));
     sensorTestNow = 0; nextRound = 0;
+    sensorTestWrapBase = UINT64_C(0x100000000);
     assert(cache.readChannel("wrap-collection", "Counted", 1, "{}", "first", value,
         unit, error, 10000, &timestamp, 0, &nextRound));
     assert(timestamp == 0 && reads == before + 5); // zero is a real collection time after wrap
@@ -189,6 +202,7 @@ static void collectionFreshnessTests() {
     assert(timestamp == 0 && reads == before + 5);
     cache.releaseAll();
 
+    sensorTestWrapBase = 0;
     sensorTestNow = 30000; nextRound = sensorTestNow;
     const unsigned concurrentBefore = reads;
     std::thread first([&] { float v; String u, e; uint32_t stamp;
@@ -615,6 +629,43 @@ static void configurationTests() {
     assert(parseSensorConfig(changed.as<JsonObjectConst>(), sensor, error));
     assert(validateSensorConfig(sensor, error));
     assert(sensor.params.sensor.address == 0x68 && sensor.params.sensor.mode == 1);
+    // Full production config parser and the shared thermostat mode parser
+    // must retain the same numeric, legacy textual, and fallback semantics.
+    for (const char* token : {"0", "\"0\"", "\"accel\"", "\"ACCEL\"",
+                              "1", "\"1\"", "\"gyro\"", "\"GyRo\"", "\" 1 \""}) {
+        JsonDocument value; assert(!deserializeJson(value, token));
+        JsonDocument modeConfig;
+        modeConfig["driver"] = "MPU6050"; modeConfig["mode"].set(value.as<JsonVariantConst>());
+        auto parsed = directConfig();
+        assert(parseSensorConfig(modeConfig.as<JsonObjectConst>(), parsed, error));
+        uint8_t shared = 99;
+        assert(parseSensorMode(value.as<JsonVariantConst>(), 0, shared));
+        assert(shared == parsed.params.sensor.mode);
+        const bool gyro = token[0] == '1' || std::strstr(token, "1") ||
+            !std::strcmp(token, "\"gyro\"") || !std::strcmp(token, "\"GyRo\"");
+        assert(shared == (gyro ? 1 : 0));
+    }
+    for (const char* token : {"true", "[]", "{}", "\"invalid\"", "2", "-1", "0.5", "\"1junk\""}) {
+        JsonDocument value; assert(!deserializeJson(value, token));
+        JsonDocument modeConfig;
+        modeConfig["driver"] = "MPU6050"; modeConfig["mode"].set(value.as<JsonVariantConst>());
+        auto parsed = sensor;
+        assert(!parseSensorConfig(modeConfig.as<JsonObjectConst>(), parsed, error));
+        assert(error == "SENSOR_MODE_INVALID" && parsed.params.sensor.mode == 1);
+        uint8_t shared = 99;
+        assert(!parseSensorMode(value.as<JsonVariantConst>(), 1, shared) && shared == 99);
+    }
+    for (bool explicitNull : {false, true}) {
+        JsonDocument modeConfig;
+        modeConfig["driver"] = "MPU6050";
+        if (explicitNull) modeConfig["mode"] = nullptr;
+        auto parsed = sensor;
+        assert(parseSensorConfig(modeConfig.as<JsonObjectConst>(), parsed, error));
+        assert(parsed.params.sensor.mode == 1); // same driver retains saved mode
+        parsed = directConfig();
+        assert(parseSensorConfig(modeConfig.as<JsonObjectConst>(), parsed, error));
+        assert(parsed.params.sensor.mode == 0); // a new driver uses the default
+    }
     changed["driver"] = "BMP280"; changed.remove("mode");
     assert(parseSensorConfig(changed.as<JsonObjectConst>(), sensor, error));
     assert(sensor.params.sensor.address == 0x76 && sensor.params.sensor.mode == 0);
@@ -628,16 +679,97 @@ static void configurationTests() {
 
 static void registryCapacityTests() {
     auto& registry = DriverRegistry::getInstance();
-    // Seven production names and the counted test driver fill all eight slots.
+    // Exercise the real configured capacity instead of mirroring an old limit.
+    assert(registry.getCapacity() == MAX_SENSOR_DRIVERS);
+    assert(registry.getAvailableSlots() == MAX_SENSOR_DRIVERS - registry.getDriverCount());
+    static char names[MAX_SENSOR_DRIVERS][24] = {};
+    size_t added = 0;
+    while (registry.getAvailableSlots() > 0) {
+        snprintf(names[added], sizeof(names[added]), "capacity-test-%u", unsigned(added));
+        assert(registry.registerDriver(names[added], createCounted));
+        ++added;
+    }
     assert(registry.getDriverCount() == MAX_SENSOR_DRIVERS);
+    assert(registry.getAvailableSlots() == 0);
     const auto failures = registry.getRegistrationFailureCount();
     assert(!registry.registerDriver("extra7", createCounted));
     assert(registry.getRegistrationFailureCount() == failures + 1);
     assert(!registry.getDriverEntry(MAX_SENSOR_DRIVERS));
 }
 
+static void instanceObservationTests() {
+    auto& cache = SensorDriverCache::instance();
+    auto observe = [] { return FeatureInstanceRegistry::instance().observe("i2cSensors"); };
+    static const SensorDriverMetadata observedMetadata = [] {
+        auto metadata = *sensorDriverMetadata("SHT31");
+        metadata.name = "ObservedCounted"; return metadata;
+    }();
+    assert(DriverRegistry::getInstance().registerDriver("ObservedCounted", createCounted, &observedMetadata));
+    cache.releaseAll();
+    float value; String unit, error;
+    failRead = failInit = nanRead = false;
+    assert(cache.readChannel("not-i2c", "Counted", 1, "{}", "first", value, unit, error));
+    assert(observe().state == FeatureInstanceState::NotInitialized); // Do not count unrelated drivers.
+    cache.releaseAll();
+    assert(cache.readChannel("observed", "ObservedCounted", 1, "{}", "first", value, unit, error));
+    const auto initialReads = reads, initialInits = inits, mutexes = sensorTestMutexCreates.load();
+    for (unsigned i=0; i<1000; ++i) {
+        const auto result = observe();
+        assert(result.state == FeatureInstanceState::Initialized && result.initializedCount == 1);
+    }
+    assert(reads == initialReads && inits == initialInits && sensorTestMutexCreates == mutexes);
+    RuntimeFeatureManager::instance().enabled = false;
+    assert(observe().initializedCount == 1); // Changing admission does not pretend to free an instance.
+    assert(!cache.readChannel("observed", "ObservedCounted", 1, "{}", "first", value, unit, error));
+    assert(observe().state == FeatureInstanceState::NotInitialized);
+    RuntimeFeatureManager::instance().enabled = true;
+    failInit = true;
+    assert(!cache.readChannel("init-fail", "ObservedCounted", 1, "{}", "first", value, unit, error));
+    assert(observe().initializedCount == 0);
+    cache.releaseAll(); failInit = false;
+    assert(cache.readChannel("read-fail", "ObservedCounted", 1, "{}", "first", value, unit, error));
+    sensorTestNow += 1000; failRead = true;
+    assert(!cache.readChannel("read-fail", "ObservedCounted", 1, "{}", "first", value, unit, error));
+    assert(observe().state == FeatureInstanceState::NotInitialized);
+    failRead = false; cache.releaseAll();
+    pauseRead = true; readEntered = false; resumeRead = false;
+    std::thread reader([&] { float v; String u,e;
+        assert(cache.readChannel("busy", "ObservedCounted", 1, "{}", "first", v,u,e));
+    });
+    while (!readEntered.load()) std::this_thread::yield();
+    const auto busy = observe();
+    assert(busy.state == FeatureInstanceState::Busy && !busy.countKnown());
+    resumeRead = true; reader.join(); pauseRead = false;
+    assert(observe().initializedCount == 1);
+    cache.releaseAll();
+    for (unsigned i=0; i<SensorDriverCache::MAX_ENTRIES+2; ++i) {
+        assert(cache.readChannel(String("obs")+String(i), "ObservedCounted", 1, "{}", "first", value,unit,error));
+        assert(observe().initializedCount == std::min<size_t>(i+1,SensorDriverCache::MAX_ENTRIES));
+    }
+    cache.releaseAll();
+    assert(observe().state == FeatureInstanceState::NotInitialized && observe().initializedCount == 0);
+}
+
+static void monotonicSampleTests() {
+    auto& cache=SensorDriverCache::instance();cache.releaseAll();
+    float value;String unit,error;uint32_t timestamp;SensorSampleMetadata metadata;
+    sensorTestNow=100;sensorTestWrapBase=0;
+    assert(cache.readChannel("long-run","Counted",1,"{}","first",value,unit,error,1000,&timestamp,0,nullptr,&metadata));
+    assert(metadata.sampledAtMs==100 && metadata.quality==SensorSampleQuality::Good);
+    const auto before=reads;
+    sensorTestNow=200;
+    assert(cache.readChannel("long-run","Counted",1,"{}","first",value,unit,error,1000,&timestamp,0,nullptr,&metadata));
+    assert(metadata.sampledAtMs==100 && metadata.capturedAtMs==200 && reads==before);
+    sensorTestWrapBase=UINT64_C(0x100000000);sensorTestNow=200;
+    SensorReading snapshot;bool stale=false;
+    assert(cache.getSnapshot("long-run",snapshot,stale,error) && stale && !snapshot.success);
+    assert(cache.readChannel("long-run","Counted",1,"{}","first",value,unit,error,1000,&timestamp,0,nullptr,&metadata));
+    assert(reads==before+1 && metadata.sampledAtMs==sensorTestWrapBase+200);
+    cache.releaseAll();sensorTestWrapBase=0;
+}
 int main() {
     metadataTests(); cacheTests(); collectionFreshnessTests(); configEpochTests(); calibrationTests(); inaTests();
-    shtPublicDriverTests(); legacyFrameTests(); bmpTests(); mpuTests(); configurationTests(); registryCapacityTests();
+    shtPublicDriverTests(); legacyFrameTests(); bmpTests(); mpuTests(); configurationTests(); instanceObservationTests(); registryCapacityTests();
+    monotonicSampleTests();
     std::cout << "sensor backend behavior checks passed\n";
 }

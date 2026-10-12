@@ -5,6 +5,9 @@
 #include "core/I2CBusManager.h"
 #include "core/RuntimeFeatureManager.h"
 #include "systems/LoggerSystem.h"
+#include <cmath>
+#include <cstdio>
+#include <cstring>
 
 // PCF8574 LCD 背光控制位
 #define LCD_BACKLIGHT 0x08
@@ -58,7 +61,19 @@ static const uint8_t ROW_OFFSETS[] = {0x00, 0x40, 0x14, 0x54};
 LCD1602Driver& LCD1602Driver::getInstance()
 {
     static LCD1602Driver instance;
+    static const FastBee::FeatureInstanceObserver observer{"lcd1602", [](const void* context) {
+        return static_cast<const LCD1602Driver*>(context)->observeFeatureInstance();
+    }, &instance};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
     return instance;
+}
+
+FastBee::FeatureInstanceSnapshot LCD1602Driver::observeFeatureInstance() const {
+    const bool initialized = _initialized.load(std::memory_order_acquire);
+    // Only the atomic initialization flag is observable here. In particular,
+    // false does not prove pending I2C retirement or heap cleanup completed.
+    return {initialized ? FastBee::FeatureInstanceState::Initialized :
+        FastBee::FeatureInstanceState::NotInitialized, static_cast<uint16_t>(initialized ? 1 : 0)};
 }
 
 LCD1602Driver::~LCD1602Driver()
@@ -79,7 +94,7 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
     LOG_INFO("LCD1602: Initializing...");
     
     // 如果已初始化，先停止
-    if (_initialized) {
+    if (_initialized || _busAcquired) {
         end();
     }
     
@@ -89,6 +104,16 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
         return false;
     }
     
+    // Match PeripheralManager admission for direct driver calls too.
+    if (!((config.cols == 16 && config.rows == 2) ||
+          (config.cols == 20 && config.rows == 4)) ||
+        (config.i2cAddress != 0 &&
+         !((config.i2cAddress >= 0x20 && config.i2cAddress <= 0x27) ||
+           (config.i2cAddress >= 0x38 && config.i2cAddress <= 0x3F)))) {
+        LOG_ERROR("LCD1602: Invalid dimensions or I2C address");
+        return false;
+    }
+    _writeFailed = false;
     _sdaPin = sdaPin;
     _sclPin = sclPin;
     _cols = config.cols;
@@ -98,7 +123,7 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
     
     String busError;
     if (!FastBee::I2CBusManager::instance().acquire(
-            this, _sdaPin, _sclPin, 100000, busError)) {
+            this, _sdaPin, _sclPin, 100000, busError, FastBee::ResourceConsumerRole::Display)) {
         LOG_ERRORF("LCD1602: I2C lease failed: %s", busError.c_str());
         _sdaPin = 255;
         _sclPin = 255;
@@ -119,37 +144,49 @@ bool LCD1602Driver::begin(uint8_t sdaPin, uint8_t sclPin, const LCD1602Config& c
         LOG_INFOF("LCD1602: Auto-detected I2C address 0x%02X", _address);
     }
     
+    // Reserve after optional address detection, before sending any LCD data.
+    // Address-only probes do not establish ownership or prove device identity.
+    {
+        FastBee::I2CBusLock admission(100);
+        if (!admission.locked() || !FastBee::I2CBusManager::instance().claimAddress(
+                this, _address, busError)) {
+            end();
+            return false;
+        }
+    }
+
     // 初始化 LCD（4位模式）
-    // 上电延迟
-    delay(50);
-    
-    // 发送初始化序列（按照 HD44780 规范）
-    _expanderWrite(0x03 | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT));
-    delay(5);
-    _expanderWrite(0x03 | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT));
-    delay(5);
-    _expanderWrite(0x03 | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT));
-    delay(1);
-    
-    // 设置为 4 位模式
-    _expanderWrite(0x02 | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT));
-    delay(1);
-    
-    // 功能设置：4位模式，2行，5x8点阵
-    _sendCommand(LCD_FUNCTIONSET | LCD_4BITMODE | 
-                 (_rows > 1 ? LCD_2LINE : LCD_1LINE) | LCD_5x8DOTS);
-    
-    // 显示控制：开显示，关光标，关闪烁
-    _sendCommand(LCD_DISPLAYCONTROL | LCD_DISPLAYON | LCD_CURSOROFF | LCD_BLINKOFF);
-    
-    // 清屏
-    clear();
-    
-    // 输入模式：左到右，无移位
-    _sendCommand(LCD_ENTRYMODESET | LCD_ENTRYLEFT | LCD_ENTRYSHIFTDECREMENT);
-    
-    // 归位
-    home();
+    const bool ready = [&]() {
+        FastBee::I2CBusLock lock(100);
+        if (!lock.locked()) return _failWrite();
+        const uint8_t light = _backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT;
+        // Arduino LiquidCrystal 1.0.7 / HD44780 four-bit initialization:
+        // 3,3,3,2 are DATA nibbles (PCF P4..P7), each clocked with E.
+        if (!_expanderWrite(light)) return false; // RS/RW/E initially low.
+        delay(50);
+        if (!_write4bits(0x30 | light)) return false;
+        delay(5);
+        if (!_write4bits(0x30 | light)) return false;
+        delay(5);
+        if (!_write4bits(0x30 | light)) return false;
+        delay(1);
+        if (!_write4bits(0x20 | light)) return false;
+        delay(1);
+        if (!_sendCommand(LCD_FUNCTIONSET | LCD_4BITMODE | LCD_2LINE | LCD_5x8DOTS) ||
+            !_sendCommand(LCD_DISPLAYCONTROL | LCD_DISPLAYON | LCD_CURSOROFF | LCD_BLINKOFF) ||
+            !_sendCommand(LCD_CLEARDISPLAY)) return false;
+        _waitMicroseconds(2000);
+        // Public clear()/home() are guarded by _initialized, still false here.
+        if (!_sendCommand(LCD_ENTRYMODESET | LCD_ENTRYLEFT | LCD_ENTRYSHIFTDECREMENT) ||
+            !_sendCommand(LCD_RETURNHOME)) return false;
+        _waitMicroseconds(2000);
+        return true;
+    }();
+    if (!ready) {
+        LOG_ERROR("LCD1602: Initialization write failed");
+        end();
+        return false;
+    }
     
     _initialized = true;
     LOG_INFOF("LCD1602: Initialized %dx%d at 0x%02X (SDA=%d, SCL=%d)", 
@@ -180,26 +217,41 @@ void LCD1602Driver::end()
 
 // ========== 文本显示 ==========
 
-void LCD1602Driver::clear()
+bool LCD1602Driver::clear()
 {
-    if (!_initialized) return;
-    _sendCommand(LCD_CLEARDISPLAY);
+    if (!_initialized) return false;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
+    if (!_sendCommand(LCD_CLEARDISPLAY)) return false;
     _waitMicroseconds(2000);
+    return true;
 }
 
 void LCD1602Driver::home()
 {
     if (!_initialized) return;
-    _sendCommand(LCD_RETURNHOME);
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) { _failWrite(); return; }
+    if (!_sendCommand(LCD_RETURNHOME)) return;
     _waitMicroseconds(2000);
 }
 
-void LCD1602Driver::setCursor(uint8_t col, uint8_t row)
+bool LCD1602Driver::setCursor(uint8_t col, uint8_t row)
 {
-    if (!_initialized) return;
+    if (!_initialized) return false;
     if (row >= _rows) row = _rows - 1;
     if (col >= _cols) col = _cols - 1;
-    _sendCommand(LCD_SETDDRAMADDR | (col + ROW_OFFSETS[row]));
+    return _sendCommand(LCD_SETDDRAMADDR | (col + ROW_OFFSETS[row]));
+}
+
+bool LCD1602Driver::printAt(uint8_t col, uint8_t row, const String& text)
+{
+    if (!_initialized || col >= _cols || row >= _rows || text.isEmpty() ||
+        text.length() > 128 || text.length() != std::strlen(text.c_str())) return false;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
+    // Never print at an unconfirmed cursor; retain the first failed/partial byte.
+    return setCursor(col, row) && print(text);
 }
 
 bool LCD1602Driver::print(const String& text)
@@ -207,7 +259,7 @@ bool LCD1602Driver::print(const String& text)
     if (!_initialized) return false;
     
     for (unsigned int i = 0; i < text.length(); i++) {
-        _sendData(text.charAt(i));
+        if (!_sendData(text.charAt(i))) return false;
     }
     return true;
 }
@@ -229,25 +281,30 @@ bool LCD1602Driver::print(float value, uint8_t decimals)
 {
     if (!_initialized) return false;
 
-    // 显式格式化避免 String(float, uint8_t) 重载二义性
+    // Do not let large precision/value overflow a fixed stack buffer.
     char buf[32];
-    dtostrf(value, 0, decimals, buf);
+    if (!std::isfinite(value) || decimals > sizeof(buf) - 3) return false;
+    const int length = std::snprintf(buf, sizeof(buf), "%.*f",
+                                     static_cast<int>(decimals), static_cast<double>(value));
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(buf)) return false;
     return print(String(buf));
 }
 
 bool LCD1602Driver::printLine(uint8_t row, const String& text)
 {
     if (!_initialized || row >= _rows) return false;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
     
-    setCursor(0, row);
+    if (!setCursor(0, row)) return false;
     
     // 清空当前行
     for (uint8_t i = 0; i < _cols; i++) {
-        _sendData(' ');
+        if (!_sendData(' ')) return false;
     }
     
     // 回到行首并显示文本
-    setCursor(0, row);
+    if (!setCursor(0, row)) return false;
     
     // 限制显示长度
     String displayText = text;
@@ -293,24 +350,29 @@ void LCD1602Driver::noBlink()
 
 // ========== 背光控制 ==========
 
-void LCD1602Driver::backlightOn()
+bool LCD1602Driver::backlightOn()
 {
-    if (!_initialized) return;
+    if (!_initialized) return false;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
+    if (!_expanderWrite(LCD_BACKLIGHT)) return false;
     _backlightOn = true;
-    _expanderWrite(LCD_BACKLIGHT);
+    return true;
 }
 
-void LCD1602Driver::backlightOff()
+bool LCD1602Driver::backlightOff()
 {
-    if (!_initialized) return;
+    if (!_initialized) return false;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
+    if (!_expanderWrite(LCD_NOBACKLIGHT)) return false;
     _backlightOn = false;
-    _expanderWrite(LCD_NOBACKLIGHT);
+    return true;
 }
 
-void LCD1602Driver::setBacklight(bool on)
+bool LCD1602Driver::setBacklight(bool on)
 {
-    if (on) backlightOn();
-    else backlightOff();
+    return on ? backlightOn() : backlightOff();
 }
 
 // ========== 高级功能 ==========
@@ -329,12 +391,14 @@ void LCD1602Driver::noAutoscroll()
 
 void LCD1602Driver::createChar(uint8_t location, uint8_t charmap[])
 {
-    if (!_initialized || location > 7) return;
+    if (!_initialized || location > 7 || !charmap) return;
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) { _failWrite(); return; }
     
     location &= 0x7;
-    _sendCommand(LCD_SETCGRAMADDR | (location << 3));
+    if (!_sendCommand(LCD_SETCGRAMADDR | (location << 3))) return;
     for (uint8_t i = 0; i < 8; i++) {
-        _sendData(charmap[i]);
+        if (!_sendData(charmap[i])) return;
     }
 }
 
@@ -359,54 +423,67 @@ uint8_t LCD1602Driver::detectAddress()
 
 // ========== 内部方法 ==========
 
-void LCD1602Driver::_sendCommand(uint8_t cmd)
+bool LCD1602Driver::_sendCommand(uint8_t cmd)
 {
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
     // RS=0, RW=0
     uint8_t highNibble = (cmd & 0xF0) | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
     uint8_t lowNibble = ((cmd & 0x0F) << 4) | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
     
-    _write4bits(highNibble);
-    _write4bits(lowNibble);
+    return _write4bits(highNibble) && _write4bits(lowNibble);
 }
 
-void LCD1602Driver::_sendData(uint8_t data)
+bool LCD1602Driver::_sendData(uint8_t data)
 {
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
     // RS=1, RW=0
     uint8_t highNibble = (data & 0xF0) | LCD_RS | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
     uint8_t lowNibble = ((data & 0x0F) << 4) | LCD_RS | (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
     
-    _write4bits(highNibble);
-    _write4bits(lowNibble);
+    return _write4bits(highNibble) && _write4bits(lowNibble);
 }
 
-void LCD1602Driver::_pulseEnable()
+bool LCD1602Driver::_pulseEnable(uint8_t value)
 {
-    // 脉冲使能信号
-    uint8_t currentValue = (_backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
-    
-    _expanderWrite(currentValue & ~LCD_EN);
+    // Keep DATA/RS/backlight unchanged across both E edges.
     _waitMicroseconds(1);
-    _expanderWrite(currentValue | LCD_EN);
+    if (!_expanderWrite(value | LCD_EN)) return false;
     _waitMicroseconds(1);
-    _expanderWrite(currentValue & ~LCD_EN);
+    if (!_expanderWrite(value & ~LCD_EN)) return false;
     _waitMicroseconds(50);
+    return true;
 }
 
-void LCD1602Driver::_write4bits(uint8_t value)
+bool LCD1602Driver::_write4bits(uint8_t value)
 {
-    _expanderWrite(value);
-    _pulseEnable();
+    FastBee::I2CBusLock lock(100);
+    if (!lock.locked()) return _failWrite();
+    value &= ~(LCD_EN | LCD_RW);
+    return _expanderWrite(value) && _pulseEnable(value);
 }
 
-void LCD1602Driver::_expanderWrite(uint8_t value)
+bool LCD1602Driver::_expanderWrite(uint8_t value)
 {
+    if (_writeFailed) return false;
     FastBee::I2CBusLock lock(100);
     TwoWire* wire = lock.locked()
         ? FastBee::I2CBusManager::instance().wire(this) : nullptr;
-    if (!wire) return;
+    if (!wire) return _failWrite();
     wire->beginTransmission(_address);
-    wire->write(value);
-    wire->endTransmission();
+    const bool queued = wire->write(value) == 1;
+    // Always end a begun transaction, including a short buffer write.
+    const uint8_t status = wire->endTransmission();
+    if (!queued || status != 0) return _failWrite();
+    return true;
+}
+
+bool LCD1602Driver::_failWrite()
+{
+    _writeFailed = true;
+    _initialized = false;
+    return false;
 }
 
 void LCD1602Driver::_waitMicroseconds(uint16_t us)

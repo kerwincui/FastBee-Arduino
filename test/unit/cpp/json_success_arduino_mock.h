@@ -39,6 +39,7 @@ public:
     size_t write(uint8_t byte) {return concat(reinterpret_cast<char*>(&byte),1)?1:0;}
     size_t write(const uint8_t* data,size_t count) {return concat(reinterpret_cast<const char*>(data),count)?count:0;}
     size_t length() const {return value_.size();}
+    bool isEmpty() const {return value_.empty();}
     const char* c_str() const {return value_.c_str();}
     static void* operator new[](size_t size,const std::nothrow_t&) noexcept {
         return failArray?nullptr: ::operator new[](size,std::nothrow);

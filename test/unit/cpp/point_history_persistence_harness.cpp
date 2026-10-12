@@ -312,6 +312,24 @@ static void config_transaction() {
     assert(recovered->configure(true, {"sensor.temp"}, error));
     assert(!recovered->_configWriteInProgress && blockingPublications == published + 1);
 }
+static void config_integrity() {
+    auto history = fresh(); enable(*history);
+    const auto before = LittleFS.files.at(configPath);
+    String error;
+    const uint32_t revision = history->_configRevision;
+    LittleFS.mutateJsonOnClose = true;
+    assert(!history->configure(true, {"sensor.temp"}, error, true, &revision));
+    assert(LittleFS.files.at(configPath) == before);
+    assert(history->_configRevision == revision && history->_sourceAllowlist.size() == 2);
+    LittleFS.mutateJsonOnClose = false;
+    history->_configRevision = UINT32_MAX;
+    assert(!history->configure(false, {}, error));
+    assert(history->isEnabled() && history->_configRevision == UINT32_MAX);
+    assert(LittleFS.files.at(configPath) == before);
+    LittleFS.files[configPath] = R"({"schemaVersion":1,"revision":5,"enabled":true,"sourceAllowlist":["sensor.temp\u0000hidden"]})";
+    auto restarted = fresh(false);
+    assert(!restarted->isEnabled() && restarted->_sourceAllowlist.empty());
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const std::string name(argv[1]);
@@ -324,6 +342,7 @@ int main(int argc, char** argv) {
     else if (name == "revision") revision();
     else if (name == "capacity") capacity();
     else if (name == "config_transaction") config_transaction();
+    else if (name == "config_integrity") config_integrity();
     else failed_write(name);
     return 0;
 }

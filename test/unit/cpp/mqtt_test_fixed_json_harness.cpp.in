@@ -1,0 +1,160 @@
+// Complete real staging/backup and recovery/CAS methods; host filesystem only.
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <climits>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <tuple>
+#include <utility>
+#include <vector>
+#include <string>
+@ALLOCATOR@
+static DocumentProbeAllocator* mqttJsonAllocator=nullptr;
+static std::vector<std::string> boundaries;
+static uint32_t fixtureSequence=0;
+namespace FastBee {
+static uint32_t fixtureNextReportInstanceId() { return ++fixtureSequence; }
+}
+static std::string valueShape(JsonVariantConst value) {
+    std::string shape;
+    shape+=value.isNull()?'N':'-';shape+=value.is<bool>()?'B':'-';
+    shape+=value.is<int64_t>()?'I':'-';shape+=value.is<uint64_t>()?'U':'-';
+    shape+=value.is<double>()?'D':'-';
+    if(value.is<const char*>())shape+=value.as<JsonString>().isStatic()?'S':'s';
+    if(value.is<JsonObjectConst>()) for(JsonPairConst pair:value.as<JsonObjectConst>()) {
+        shape+=pair.key().isStatic()?'K':'k';
+        shape+=pair.key().c_str();shape+=valueShape(pair.value());
+    }
+    if(value.is<JsonArrayConst>())for(JsonVariantConst child:value.as<JsonArrayConst>())shape+=valueShape(child);
+    return shape;
+}
+static void recordDocument(const char* phase,const JsonDocument& document) {
+    std::string bytes;serializeJson(document,bytes);
+    boundaries.push_back(std::string(phase)+":"+std::to_string(document.size())+":"+
+        std::to_string(document.nesting())+":"+std::to_string(document.overflowed())+":"+
+        valueShape(document.as<JsonVariantConst>())+":"+bytes);
+}
+@RECOVERY_FIXTURE@
+#define nextReportInstanceId fixtureNextReportInstanceId
+@METHODS@
+#undef nextReportInstanceId
+
+struct Snapshot {
+    std::map<std::string,std::string> files;
+    std::string id;
+    unsigned writes,stops,restarts;
+    bool pending,connected,restored,blocked;
+    bool operator==(const Snapshot& other) const {
+        return std::tie(files,id,writes,stops,restarts,pending,connected,restored,blocked)==
+            std::tie(other.files,other.id,other.writes,other.stops,other.restarts,
+                     other.pending,other.connected,other.restored,other.blocked);
+    }
+};
+static Snapshot snapshot() {
+    return {disk,s_mqttTestId,ConfigStorage::getInstance().writes,pm.stops,pm.restarts,
+            s_mqttTestPendingRestore,s_mqttTestWasConnected,s_mqttTestJustRestored,s_mqttTestRestoreBlocked};
+}
+struct Outcome {
+    bool staged=false;
+    std::vector<Snapshot> states;
+    std::vector<std::string> documents;
+    std::vector<DocumentProbeAllocator::Event> allocations;
+    size_t faultable=0,eligible=0,failures=0;
+    bool operator==(const Outcome& other) const {
+        return staged==other.staged && states==other.states && documents==other.documents &&
+            allocations==other.allocations && faultable==other.faultable &&
+            eligible==other.eligible && failures==other.failures;
+    }
+};
+using Stage=decltype(&saveMqttTestConfigOracle);
+static Outcome run(Stage stage,unsigned value,size_t failAt=SIZE_MAX,bool persistent=false) {
+    auto& storage=ConfigStorage::getInstance();
+    storage.failSave=false;storage.failLoad=false;storage.writes=0;storage.duringLoad={};
+    disk.clear();boundaries.clear();fixtureSequence=0;s_mqttTestId="";
+    s_mqttTestPendingRestore=false;s_mqttTestWasConnected=false;
+    s_mqttTestJustRestored=false;s_mqttTestRestoreBlocked=false;
+    s_mqttTestStartTime=0;s_lastRestoreCheck=0;fakeNow=10000;
+    openWriteFailure=false;shortWrite=false;openReadFailure=false;removeFailure=false;
+    probe=Probe{};pm=ProtocolManager{};
+    const unsigned scenario=value%16;
+    disk[FileSystem::PROTOCOL_CONFIG_FILE]=R"({"mqtt":{"server":"old","password":"old-secret","autoReconnect":false,"enabled":true,"topics":[1,2],"unknown":{"preserve":true}},"sibling":{"revision":1}})";
+    if(scenario==1)openWriteFailure=true;
+    if(scenario==2)shortWrite=true;
+    if(scenario==3)openReadFailure=true;
+    if(scenario==4)disk[MQTT_TEST_BACKUP_PATH]="previous-evidence";
+    if(scenario==5)storage.failLoad=true;
+    if(scenario==6)storage.failSave=true;
+    if(scenario==7)removeFailure=true;
+    if(scenario==11)disk[FileSystem::PROTOCOL_CONFIG_FILE]=R"({"mqtt":{"server":"old","enabled":false}})";
+    if(scenario==12)disk[FileSystem::PROTOCOL_CONFIG_FILE]=R"({"mqtt":17,"sibling":{"preserve":true}})";
+    if(scenario==13)disk[FileSystem::PROTOCOL_CONFIG_FILE]=R"({"mqtt":{"server":"old","connectionTestOnly":true}})";
+    if(scenario==14)disk[MQTT_TEST_BACKUP_PATH]=R"({"mqtt":{"server":"legacy"}})";
+    if(scenario==15)disk[MQTT_TEST_BACKUP_PATH]="invalid";
+    DocumentProbeAllocator allocator(failAt,persistent);mqttJsonAllocator=&allocator;
+    Outcome result;
+    const bool extended=value>=16;
+    String server=extended?std::string(2048,'s'):std::string("probe");
+    String user=extended?"user-\"\\\n":"user",password=extended?std::string(1024,'p'):std::string("probe-secret");
+    String code=extended?"auth-code":"",secret=extended?"mqtt-secret":"",scheme=extended?"mqtts":"mqtt";
+    String clientId=value>=32?"":"client";
+    result.staged=stage(server,extended?INT_MAX:1883,user,password,code,
+                        extended?INT_MIN:0,secret,scheme,clientId);
+    result.states.push_back(snapshot());
+    server="after-stage";user="after-stage";password="after-stage";code="after-stage";secret="after-stage";
+    assert(snapshot()==result.states.back()); // Input String mutation cannot alter persisted records.
+    if(result.staged) {
+        s_mqttTestPendingRestore=true;s_mqttTestStartTime=fakeNow;probe.id=s_mqttTestId;
+        if(scenario==8) {
+            auto& bytes=disk[FileSystem::PROTOCOL_CONFIG_FILE];
+            const auto at=bytes.find("\"server\":");assert(at!=std::string::npos);
+            bytes.insert(at,"\"userConflict\":true,");
+        }
+        if(scenario==9)storage.failSave=true;
+        if(scenario==10) {
+            auto& bytes=disk[FileSystem::PROTOCOL_CONFIG_FILE];
+            const auto at=bytes.find("\"revision\":1");
+            assert(at!=std::string::npos);bytes.replace(at,12,"\"revision\":2");
+        }
+    }
+    MqttRouteHandler::checkPendingTestRestore();
+    result.states.push_back(snapshot());
+    result.faultable=allocator.eligible;
+    // A subsequent healthy recovery must preserve conflicts/corrupt evidence;
+    // previous failure counters and allocations are retained in the outcome.
+    allocator.failAt=SIZE_MAX;allocator.persistent=false;
+    storage.failLoad=false;storage.failSave=false;
+    openReadFailure=false;removeFailure=false;fakeNow+=22001;
+    MqttRouteHandler::checkPendingTestRestore();
+    result.states.push_back(snapshot());
+    assert(allocator.blocks.empty());
+    result.documents=boundaries;result.allocations=allocator.events;
+    result.eligible=allocator.eligible;result.failures=allocator.failures;
+    mqttJsonAllocator=nullptr;
+    return result;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];size_t cases=0;
+    if(mode=="values") {
+        for(unsigned i=0;i<48;++i) {
+            const auto before=run(saveMqttTestConfigOracle,i);
+            assert(before==run(saveMqttTestConfigCurrent,i));++cases;
+            if(i%16==0)assert(before.staged && before.states.back().writes==2 &&
+                              before.states.back().files.count(MQTT_TEST_BACKUP_PATH)==0);
+        }
+    } else if(mode=="allocation-faults") {
+        for(unsigned i:{0U,2U,6U,7U,8U,9U,10U,11U,16U,32U}) {
+            const auto baseline=run(saveMqttTestConfigOracle,i);
+            assert(baseline==run(saveMqttTestConfigCurrent,i));
+            for(bool persistent:{false,true})for(size_t at=0;at<=baseline.faultable+1;++at) {
+                assert(run(saveMqttTestConfigOracle,i,at,persistent)==
+                       run(saveMqttTestConfigCurrent,i,at,persistent));++cases;
+            }
+        }
+    } else {std::cerr<<"unknown mode\n";return 2;}
+    std::cout<<"PASS "<<mode<<" "<<cases<<" cases\n";
+}

@@ -10,7 +10,7 @@ const NON_PERIPHERAL_ACTIONS = new Set([6, 7, 8, 9, 15, 18, 21, 22, 23, 31, 32])
 const CONFIGS = [
     {
         environment: 'esp32c3-F4R0', port: 'COM4', ip: '192.168.5.55',
-        source: 'docs/esp32c3-deployment-config.json',
+        source: 'docs/device-test-configs/com4-esp32c3-f4r0/config',
         peripherals: { dht11: [38, [10]], led: [12, [8]], oled: [36, [5, 6]] }
     },
     {
@@ -20,12 +20,12 @@ const CONFIGS = [
     },
     {
         environment: 'esp32-F4R0', port: 'COM16', ip: '192.168.5.21',
-        source: 'docs/puzhong-esp32-config.json',
+        source: 'docs/device-test-configs/com16-esp32-f4r0/config',
         peripherals: { adc_pot: [26, [34]], relay: [12, [33]] }
     },
     {
         environment: 'esp32s3-F16R8', port: 'COM15', ip: '192.168.5.22',
-        source: 'docs/ecm50a-s3-f16r8',
+        source: 'docs/device-test-configs/com15-esp32s3-f16r8/config',
         peripherals: { ai_soil_temp: [26, [7]], ai_soil_humidity: [26, [6]], di1: [11, [4]], di2: [11, [5]], do1: [12, [15]], do2: [12, [16]], rs485: [1, [18, 17]] },
         modbus: {
             peripheralId: 'rs485', tasks: 5,
@@ -41,6 +41,15 @@ const CONFIGS = [
             rgb: [45, [38]], rs485: [1, [18, 17]]
         },
         modbus: { peripheralId: 'rs485', tasks: 1, devices: ['modbus_th'] }
+    },
+    {
+        environment: 'esp32s3-F16R8', port: 'COM8/COM9', fleetMapping: false,
+        source: 'docs/device-test-configs/com8-com9-esp32s3-touch/config',
+        peripherals: {
+            panel_i2c: [2, [15, 7]], rs485: [1, [43, 44]],
+            panel_display: [56, []], sht30: [38, []]
+        },
+        modbus: { peripheralId: 'rs485', tasks: 5, devices: ['motor_controller'] }
     }
 ];
 
@@ -168,7 +177,10 @@ function validatePeripherals(config, docs, issues) {
 
         (Array.isArray(rule?.triggers) ? rule.triggers : []).forEach((trigger) => {
             const target = String(trigger?.triggerPeriphId || '');
-            if (target && !ids.has(target) && !target.startsWith('modbus')) {
+            // PLATFORM_TRIGGER matches an incoming MQTT/Modbus item.id. It is
+            // a logical command ID and does not allocate a hardware peripheral.
+            const platformCommand = trigger?.triggerType === 0;
+            if (target && !platformCommand && !ids.has(target) && !target.startsWith('modbus')) {
                 issues.push(`${config.source}: rule ${ruleId} trigger references unknown peripheral ${target}`);
             }
         });
@@ -228,6 +240,7 @@ function validateFleetMappings(issues) {
     const entries = Array.isArray(fleet) ? fleet : (fleet.devices || []);
 
     CONFIGS.forEach((config) => {
+        if (config.fleetMapping === false) return;
         for (const token of [config.environment, config.port, config.ip, config.source.replace(/\//g, '\\')]) {
             if (!deployText.includes(token)) issues.push(`scripts/deploy-multi-device.ps1: missing ${config.environment} mapping token ${token}`);
         }
@@ -269,4 +282,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { fingerprintDocuments, loadConfigSet, stableJsonStringify };
+module.exports = { fingerprintDocuments, loadConfigSet, stableJsonStringify, validatePeripherals };

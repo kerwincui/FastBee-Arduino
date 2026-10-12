@@ -24,8 +24,15 @@ const WEB_SOURCE_DIRS = [
 // serialized relay recovery. The first COM15 repair measured 316.0 KiB total
 // and 277.8 KiB base/shared. Keep boot, individual asset, bundle and DOM
 // ceilings unchanged; filesystem capacity is checked again before deployment.
+// 2026-10-03: the authorized system plan adds transactional migration,
+// passive runtime-resource diagnostics, typed templates and quality/status
+// handling. The measured r9->r19-r2 increase is about 28 KiB after removing
+// unused code. Allocate a bounded 32 KiB common-resource reserve for that
+// scope, not a compression claim. Boot/per-asset/DOM limits are unchanged.
+// Evidence and acceptance boundaries: docs/system-improvement-web-resource-budget-20261003.md.
+const SYSTEM_PLAN_SHARED_RESERVE = 32 * 1024;
 const DEFAULT_WEB_ASSET_BUDGETS = Object.freeze({
-    totalGzip: 281 * 1024,
+    totalGzip: 281 * 1024 + SYSTEM_PLAN_SHARED_RESERVE,
     bootGzip: 66 * 1024,
     singleAssetGzip: 26 * 1024,
     runtimeBundleGzip: 16 * 1024,
@@ -46,7 +53,8 @@ const DEFAULT_WEB_ASSET_BUDGETS = Object.freeze({
 // Reserve 3 KiB from base/shared headroom: the resulting 276.5 KiB base/shared
 // ceiling still exceeds the measured base by 3763 B. The combined ceiling
 // was 315 KiB. The separately measured recovery reserve above makes the
-// current combined ceiling 317 KiB and base/shared ceiling 278.5 KiB.
+// pre-plan combined ceiling 317 KiB and base/shared ceiling 278.5 KiB.
+// The system-plan shared reserve above applies in addition to this history.
 const CAPABILITY_WEB_ASSET_BUDGETS = Object.freeze({
     screenPanel: Object.freeze({
         assets: Object.freeze([

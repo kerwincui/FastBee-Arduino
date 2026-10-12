@@ -7,6 +7,7 @@
  */
 
 #include "core/FastBeeFramework.h"
+#include "network/LiteralStringMatch.h"
 #include "core/SystemConstants.h"
 #include "core/FeatureFlags.h"
 #include "core/FeatureToggle.h"  // Phase D Task D.1: FeatureToggle
@@ -23,6 +24,10 @@
 #include "protocols/RemoteResourceManager.h"
 #endif
 #include "core/PeripheralManager.h"
+#if FASTBEE_ENABLE_MODBUS
+#include "core/MotorControlService.h"
+#include "protocols/ModbusMotorReference.h"
+#endif
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
@@ -57,6 +62,8 @@
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
 #include "utils/TimeUtils.h"
+#include "utils/SystemTimeQuality.h"
+#include "utils/SystemTimeZone.h"
 #include "utils/FileUtils.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -365,6 +372,8 @@ bool FastBeeFramework::initialize() {
     // 文件日志是可选的运行时功能。Logger 在 STEP2 早于功能配置初始化，
     // 因此配置加载完成后必须再次同步，避免统一镜像在无 PSRAM 设备上
     // 无条件打开 LittleFS 写盘和周期性文件轮转造成堆碎片。
+    LOGGER.enableLogViewer(
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("logViewer"));
     LOGGER.enableFileLogging(
         FastBee::RuntimeFeatureManager::instance().shouldEnable("fileLogging"));
     Serial.printf("[Boot] RuntimeFeatureManager: %lu ms\n", millis() - stepStart);
@@ -378,6 +387,7 @@ bool FastBeeFramework::initialize() {
     } else {
         Serial.println("[STEP2.5] Peripheral manager OK");
     }
+    PeripheralManager::getInstance().seedSystemClockFromRtcAtBoot();
     Serial.printf("[Boot] PeripheralManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("PeripheralManager");
 
@@ -675,13 +685,12 @@ bool FastBeeFramework::initialize() {
 
         // 注册网络切换前回调：在 restartNetwork() 销毁适配器之前停止 MQTT
         // 防止 protocol_handle 任务并发使用已释放的 Client 指针（use-after-free）
+#if FASTBEE_ENABLE_MQTT
         ProtocolManager* pm = protocolManager.get();
         netMgr->setPreNetworkSwitchCallback([pm]() {
-            if (pm) {
-                LOG_INFO("[Framework] Pre-network-switch: stopping MQTT to prevent use-after-free");
-                pm->stopMQTT();
-            }
+            return pm->prepareMqttNetworkSwitch();
         });
+#endif
     }
 
     // 步骤11.5: 初始化外设执行管理器
@@ -708,20 +717,20 @@ bool FastBeeFramework::initialize() {
 
         // MQTT 连接状态检查回调
         pem.setMqttIsConnectedCallback([pm]() -> bool {
-            MQTTClient* mqtt = pm->getMQTTClient();
+            auto mqtt = pm->acquireMQTTClient();
             return mqtt && mqtt->getIsConnected();
         });
 
         // MQTT 队列上报数据回调
-        pem.setMqttQueueReportCallback([pm](const String& reportData) -> bool {
-            MQTTClient* mqtt = pm->getMQTTClient();
-            if (!mqtt) return false;
-            return mqtt->queueReportData(reportData);
+        pem.setMqttQueueReportCallback([pm](const String& reportData, uint32_t instanceId) {
+            auto mqtt = pm->acquireMQTTClient();
+            if (!mqtt) return FastBee::ReportReplayResult::Rejected;
+            return FastBee::replayBoundReport(*mqtt.get(), instanceId, reportData);
         });
 
         // MQTT 设备事件上报回调（DEVICE_EVENT 主题）
         pem.setMqttEventPublishCallback([pm](const String& eventId, const String& eventName, const String& eventData) -> bool {
-            MQTTClient* mqtt = pm->getMQTTClient();
+            auto mqtt = pm->acquireMQTTClient();
             if (!mqtt) return false;
             return mqtt->publishDeviceEvent(eventId, eventName, eventData);
         });
@@ -736,18 +745,25 @@ bool FastBeeFramework::initialize() {
         });
 
         // Modbus 未匹配 sensorId 直接控制回调
-        pem.setModbusDirectControlCallback([pm](const String& sensorId, const String& value, JsonArray& reportArr) -> bool {
+        pem.setModbusDirectControlCallback([pm](const String& sensorId, const String& value, JsonArray& reportArr,
+            const FastBee::OrdinaryControlContext& control) -> bool {
             auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(2000));
             ModbusHandler* modbus = modbusLease.get();
             if (!modbus) return false;
 
             ModbusHandler::SensorIdMatch match;
-            if (!modbus->findBySensorIdEx(sensorId, match)) return false;
-
-            const ModbusSubDevice& dev = modbus->getSubDevice(match.deviceIndex);
-            char periphIdBuf[16];
-            snprintf(periphIdBuf, sizeof(periphIdBuf), "modbus:%d", match.deviceIndex);
-            String periphId(periphIdBuf);
+            ModbusSubDevice dev;
+            FastBee::ModbusControlTarget relayTarget;
+            if (!modbus->snapshotControlSensor(sensorId, match, dev, relayTarget)) {
+                JsonObject denied = reportArr.add<JsonObject>();
+                denied["id"] = sensorId; denied["value"] = nullptr;
+                denied["remark"] = "CONTROL_MAPPING_UNCONFIRMED";
+                denied["attempted"] = false; denied["commandAcknowledged"] = false;
+                denied["physicalOutputVerified"] = false;
+                return true; // Unknown match during a busy snapshot cannot authorize a fallback output.
+            }
+            if (!match.matched) return false;
+            const bool relaySnapshot = relayTarget.valid();
             bool writeOk = false;
             bool state = false;
             String devType(dev.deviceType);
@@ -755,66 +771,253 @@ bool FastBeeFramework::initialize() {
             PeripheralManager& periMgr = PeripheralManager::getInstance();
 
             auto tryParseBool = [](const String& v, bool& out) -> bool {
-                if (v == "1" || v.equalsIgnoreCase("true") || v.equalsIgnoreCase("on")) { out = true; return true; }
-                if (v == "0" || v.equalsIgnoreCase("false") || v.equalsIgnoreCase("off")) { out = false; return true; }
+                if (v.length() != strlen(v.c_str())) return false;
+                if (v == "1" || FastBee::stringEqualsIgnoreCaseLiteral(v, "true") || FastBee::stringEqualsIgnoreCaseLiteral(v, "on")) { out = true; return true; }
+                if (v == "0" || FastBee::stringEqualsIgnoreCaseLiteral(v, "false") || FastBee::stringEqualsIgnoreCaseLiteral(v, "off")) { out = false; return true; }
                 return false;
+            };
+
+            if (devType == "motor") {
+                uint32_t numeric = 0;
+                bool valid = dev.enabled && dev.motorProtocol.valid && !value.isEmpty() &&
+                    value.length() == std::strlen(value.c_str());
+                for (size_t i = 0; valid && i < value.length(); ++i) {
+                    const char digit = value.charAt(i);
+                    if (digit < '0' || digit > '9') valid = false;
+                    else { numeric = numeric * 10U + static_cast<uint32_t>(digit - '0'); valid = numeric <= 65535U; }
+                }
+                const char* action = nullptr;
+                uint16_t commandValue = static_cast<uint16_t>(numeric);
+                if (match.action.isEmpty()) action = "forward"; // Retain base-property legacy value semantics.
+                else if (match.action == "oper" && numeric <= 2) {
+                    action = numeric == 1 ? "forward" : numeric == 2 ? "reverse" : "stop";
+                    commandValue = 1;
+                } else if ((match.action == "spd" || match.action == "speed") && match.channel == 3) action = "setSpeed";
+                else if ((match.action == "pls" || match.action == "pulse") && match.channel == 4) action = "setPulse";
+                valid = valid && action;
+                uint32_t operationId = 0; String error;
+                bool accepted = false;
+                FastBee::ModbusControlTarget target;
+                if (valid) {
+                    const String ref = FastBee::motorControlReference(dev);
+                    auto& motors = MotorControlService::instance();
+                    if (ref.isEmpty() || !motors.snapshotTarget(ref, target)) error = "CONTROL_MOTOR_MAPPING_UNCONFIRMED";
+                    else {
+                        char requestId[64];
+                        snprintf(requestId, sizeof(requestId), "mqtt-%llu-%u-%s",
+                            static_cast<unsigned long long>(control.request.operation), match.deviceIndex, action);
+                        accepted = motors.submitMqtt(ref, String(action), commandValue, String(requestId), sensorId,
+                            static_cast<uint16_t>(numeric), operationId, error, control);
+                    }
+                } else error = "CONTROL_MOTOR_PARAMETER_INVALID";
+                JsonObject item = reportArr.add<JsonObject>();
+                item["id"] = sensorId; item["value"] = nullptr; item["requestedValue"] = value;
+                item["accepted"] = accepted; item["pending"] = accepted; item["operationId"] = operationId;
+                item["attemptKnown"] = !accepted;
+                if (accepted) item["attempted"] = nullptr; else item["attempted"] = false;
+                item["commandAcknowledged"] = false; item["physicalOutputVerified"] = false;
+                item["remark"] = accepted ? "modbus_motor_queued" : error;
+                if (target.valid()) { char key[41]; target.key(key); item["controlTargetId"] = key; }
+                // Only the actual shared worker emits the final acknowledged
+                // property/report and motor event. A rejected match is handled.
+                return true;
+            }
+
+
+            if (devType == "pwm" || devType == "pid") {
+                // Keep the original MQTT invocation and pinned handler. A PM
+                // convenience write would reacquire the same Protocol lease.
+                uint32_t numeric = 0;
+                bool numberValid = !value.isEmpty() && value.length() == std::strlen(value.c_str());
+                for (size_t i = 0; numberValid && i < value.length(); ++i) {
+                    const char digit = value.charAt(i);
+                    if (digit < '0' || digit > '9') numberValid = false;
+                    else {
+                        numeric = numeric * 10U + static_cast<uint32_t>(digit - '0');
+                        numberValid = numeric <= 65535U;
+                    }
+                }
+                const bool pwm = devType == "pwm";
+                const bool all = pwm && match.action == "all";
+                const bool pidDefault = match.action.isEmpty() || match.action == "all";
+                const bool pidWritable = pidDefault ||
+                    (match.action == "sv" && match.channel == 1) ||
+                    (match.action == "p" && match.channel == 3) ||
+                    (match.action == "i" && match.channel == 4) ||
+                    (match.action == "d" && match.channel == 5);
+                const bool configValid = dev.enabled && relaySnapshot &&
+                    (pwm ? dev.channelCount && dev.pwmResolution && dev.pwmResolution <= 16 &&
+                        uint32_t(dev.pwmRegBase) + dev.channelCount <= 65536U &&
+                        (all || (match.action.isEmpty() && match.channel < dev.channelCount)) &&
+                        numeric <= (dev.pwmResolution == 16 ? 65535U : (1U << dev.pwmResolution) - 1U)
+                    : pidWritable);
+                auto reportRegister = [&](const String& id, bool acknowledged, bool attempted,
+                                          const char* reason) {
+                    JsonObject item = reportArr.add<JsonObject>();
+                    item["id"] = id;
+                    if (acknowledged) item["value"] = String(numeric);
+                    else item["value"] = nullptr;
+                    item["requestedValue"] = value;
+                    item["accepted"] = acknowledged;
+                    item["attempted"] = attempted;
+                    item["commandAcknowledged"] = acknowledged;
+                    item["physicalOutputVerified"] = false;
+                    item["confirmationScope"] = attempted ? "register" : "none";
+                    item["remark"] = reason;
+                    if (relaySnapshot) {
+                        char targetId[41]; relayTarget.key(targetId);
+                        item["controlTargetId"] = targetId;
+                    }
+                };
+                if (!numberValid || !configValid) {
+                    reportRegister(sensorId, false, false,
+                        !numberValid ? "modbus_number_invalid" : "modbus_config_invalid");
+                    return true;
+                }
+                bool complete = true;
+                const unsigned steps = all ? dev.channelCount : 1;
+                for (unsigned step = 0; step < steps; ++step) {
+                    const uint16_t address = pwm
+                        ? static_cast<uint16_t>(uint32_t(dev.pwmRegBase) + (all ? step : match.channel))
+                        : dev.pidAddrs[pidDefault ? 1 : match.channel];
+                    bool acknowledged = false, attempted = false;
+                    const char* reason = "modbus_not_attempted";
+                    if (complete) {
+                        FastBee::ModbusOutputFrame frame;
+                        FastBee::ModbusControlTarget target;
+                        FastBee::OrdinaryControlResult result;
+                        if (!frame.single(dev.slaveAddress, 6, address, static_cast<uint16_t>(numeric)) ||
+                            !modbus->snapshotOrdinaryFrame(frame, target)) {
+                            reason = "CONTROL_FRAME_MAPPING_UNCONFIRMED";
+                        } else if (target.instance != relayTarget.instance ||
+                                   target.configuration != relayTarget.configuration ||
+                                   target.slave != relayTarget.slave) {
+                            reason = "CONTROL_TARGET_STALE";
+                        } else {
+                            const OneShotResult output = periMgr.submitOrdinaryModbusFrame(
+                                *modbus, target, frame, control, result);
+                            attempted = output.outputAttempted;
+                            acknowledged = output.error == ONESHOT_SUCCESS && result.accepted;
+                            reason = acknowledged ? "modbus_command_acknowledged" : result.reason;
+                        }
+                        if (!acknowledged) complete = false;
+                    }
+                    String reportId = sensorId;
+                    if (all) {
+                        char capturedId[sizeof(dev.sensorId) + 9]{};
+                        const char* end = static_cast<const char*>(std::memchr(dev.sensorId, '\0', sizeof(dev.sensorId)));
+                        if (end && end != dev.sensorId) {
+                            if (dev.channelCount > 1) snprintf(capturedId, sizeof(capturedId), "%s_ch%u", dev.sensorId, step);
+                            else snprintf(capturedId, sizeof(capturedId), "%s", dev.sensorId);
+                        }
+                        reportId = capturedId;
+                        if (reportId.isEmpty()) reportId = sensorId + "_ch" + String(step);
+                    }
+                    reportRegister(reportId, acknowledged, attempted, reason);
+                }
+                if (complete) {
+                    char eventId[16], eventData[160];
+                    snprintf(eventId, sizeof(eventId), "mc:%d", match.deviceIndex);
+                    snprintf(eventData, sizeof(eventData), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
+                        match.deviceIndex, match.channel, pwm ? "pwm" : "pid");
+                    PeriphExecManager::getInstance().triggerEventById(String(eventId), String(eventData));
+                }
+                return true; // Also handled on rejection; never trigger a fallback output.
+            }
+
+            // true means handled; false would let the caller try another output
+            // path. A matched relay failure must therefore still return true.
+            const bool relay = devType == "relay";
+            const bool relayAll = match.action == "all";
+            const bool relayBoolValid = !relay || tryParseBool(value, state);
+            const bool relayConfigValid = !relay || (dev.enabled && dev.channelCount &&
+                relaySnapshot &&
+                dev.controlProtocol <= 1 && (relayAll || match.action.isEmpty()) &&
+                (relayAll || match.channel < dev.channelCount) &&
+                (relayAll && dev.batchRegister
+                    ? dev.batchRegType <= 1 && (dev.batchRegType == 1 || dev.channelCount <= 16)
+                    : static_cast<uint32_t>(dev.coilBase) + (relayAll ? dev.channelCount - 1 : match.channel) <= 65535U));
+            auto reportRelay = [&](const String& id, bool acknowledged, bool attempted,
+                                   bool batch, const char* remark) {
+                JsonObject item = reportArr.add<JsonObject>();
+                item["id"] = id;
+                if (acknowledged) item["value"] = state ? "1" : "0";
+                else item["value"] = nullptr; // Unknown is not the requested state.
+                item["requestedValue"] = relayBoolValid ? String(state ? "1" : "0") : value;
+                item["remark"] = remark;
+                item["commandAcknowledged"] = acknowledged;
+                item["attempted"] = attempted;
+                item["confirmationScope"] = attempted ? (batch ? "batch" : "channel") : "none";
+                item["physicalOutputVerified"] = false;
+                if (relay) {
+                    char targetId[41]; relayTarget.key(targetId);
+                    item["controlTargetId"] = targetId;
+                }
+            };
+            if (!relayBoolValid || !relayConfigValid) {
+                reportRelay(sensorId, false, false, false,
+                    relayBoolValid ? "modbus_config_invalid" : "modbus_boolean_invalid");
+                return true;
+            }
+            bool relayAttempted = false;
+            FastBee::OrdinaryControlResult relayControl;
+            auto writeRelay = [&](uint16_t address, bool reg, uint16_t registerValue) {
+                const bool physical = dev.ncMode ? !state : state;
+                const OneShotResult result = periMgr.submitOrdinaryModbusRelay(*modbus, relayTarget,
+                    reg ? 6 : 5, address, reg ? registerValue : physical ? 0xff00 : 0,
+                    control, relayControl);
+                relayAttempted = result.outputAttempted;
+                return result.error == ONESHOT_SUCCESS;
             };
 
             if (match.action.isEmpty()) {
                 if (devType == "relay") {
-                    if (!tryParseBool(value, state)) state = false;
                     bool val = dev.ncMode ? !state : state;
                     uint16_t addr = dev.coilBase + match.channel;
-                    if (dev.controlProtocol == 0) {
-                        writeOk = periMgr.writeModbusCoil(periphId, addr, val);
-                    } else {
-                        writeOk = periMgr.writeModbusReg(periphId, addr, val ? 1 : 0);
-                    }
+                    writeOk = writeRelay(addr, dev.controlProtocol != 0, val ? 1 : 0);
                     reportValue = state ? "1" : "0";
-                } else if (devType == "pwm") {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.pwmRegBase + match.channel, (uint16_t)value.toInt());
-                } else if (devType == "pid") {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.pidAddrs[1], (uint16_t)value.toInt());
-                } else if (devType == "motor") {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.motorRegs[0], (uint16_t)value.toInt());
                 }
             } else if (match.action == "all") {
                 if (devType == "relay") {
-                    if (!tryParseBool(value, state)) state = false;
                     bool val = dev.ncMode ? !state : state;
                     if (dev.batchRegister > 0) {
                         if (dev.batchRegType == 1) {
-                            writeOk = periMgr.writeModbusReg(periphId, dev.batchRegister, val ? 1 : 0);
+                            writeOk = writeRelay(dev.batchRegister, true, val ? 1 : 0);
                         } else {
                             uint16_t bitmask = (dev.channelCount >= 16) ? 0xFFFF : (uint16_t)((1 << dev.channelCount) - 1);
-                            writeOk = periMgr.writeModbusReg(periphId, dev.batchRegister, val ? bitmask : 0);
+                            writeOk = writeRelay(dev.batchRegister, true, val ? bitmask : 0);
                         }
                     } else {
                         writeOk = true;
-                        for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                            uint16_t addr = dev.coilBase + ch;
-                            bool ok = (dev.controlProtocol == 0)
-                                ? periMgr.writeModbusCoil(periphId, addr, val)
-                                : periMgr.writeModbusReg(periphId, addr, val ? 1 : 0);
-                            if (!ok) writeOk = false;
-                        }
                     }
-                    reportValue = state ? "1" : "0";
-                    // 批量操作：上报每个通道独立状态
-                    String stateStr = state ? "1" : "0";
-                    String remarkText = state ? "\xE5\xB7\xB2\xE6\x89\x93\xE5\xBC\x80" : "\xE5\xB7\xB2\xE5\x85\xB3\xE9\x97\xAD";
+                    // Keep acknowledged prefix / unknown attempt / unattempted
+                    // suffix distinct. Do not continue writing after first failure.
                     for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                        String chSid = modbus->buildSensorId(match.deviceIndex, ch);
-                        if (chSid.isEmpty()) {
-                            char chBuf[32];
-                            snprintf(chBuf, sizeof(chBuf), "%s_ch%d", sensorId.c_str(), ch);
-                            chSid = chBuf;
+                        const bool batch = dev.batchRegister != 0;
+                        bool attempted = batch ? relayAttempted : writeOk;
+                        bool acknowledged = batch && writeOk;
+                        if (!batch && attempted) {
+                            acknowledged = writeRelay(static_cast<uint16_t>(dev.coilBase + ch),
+                                dev.controlProtocol != 0, val ? 1 : 0);
+                            attempted = relayAttempted;
+                            if (!acknowledged) writeOk = false;
                         }
-                        JsonObject chReport = reportArr.add<JsonObject>();
-                        chReport["id"] = chSid;
-                        chReport["value"] = stateStr;
-                        chReport["remark"] = remarkText;
+                        char capturedId[sizeof(dev.sensorId) + 9]{};
+                        const char* end = static_cast<const char*>(std::memchr(dev.sensorId, '\0', sizeof(dev.sensorId)));
+                        if (end && end != dev.sensorId) {
+                            if (dev.channelCount > 1) snprintf(capturedId, sizeof(capturedId), "%s_ch%u", dev.sensorId, ch);
+                            else snprintf(capturedId, sizeof(capturedId), "%s", dev.sensorId);
+                        }
+                        String chSid(capturedId);
+                        if (chSid.isEmpty()) {
+                            chSid = sensorId + "_ch" + String(ch);
+                        }
+                        reportRelay(chSid, acknowledged, attempted, batch,
+                            !attempted ? "modbus_not_attempted" : acknowledged
+                                ? (batch ? "modbus_batch_acknowledged" : "modbus_command_acknowledged")
+                                : (batch ? "modbus_batch_result_unknown" : "modbus_result_unknown"));
                     }
+                    if (!writeOk) return true; // Handled, no success event or fallback.
                     // 触发 mc: 事件（使用 c/a 格式与规则匹配逻辑一致）
                     char mcIdBuf[16];
                     snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", match.deviceIndex);
@@ -824,28 +1027,6 @@ bool FastBeeFramework::initialize() {
                         match.deviceIndex, match.channel, allAct);
                     PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     return true;  // 批量已自行构建报告
-                } else if (devType == "pwm") {
-                    uint16_t regVal = (uint16_t)value.toInt();
-                    writeOk = true;
-                    for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                        if (!periMgr.writeModbusReg(periphId, dev.pwmRegBase + ch, regVal)) writeOk = false;
-                    }
-                } else if (devType == "pid") {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.pidAddrs[1], (uint16_t)value.toInt());
-                }
-            } else if (devType == "motor") {
-                if (match.action == "oper") {
-                    int operVal = value.toInt();
-                    int regIdx = (operVal == 1) ? 0 : (operVal == 2) ? 1 : 2;
-                    writeOk = periMgr.writeModbusReg(periphId, dev.motorRegs[regIdx], 1);
-                } else {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.motorRegs[match.channel], (uint16_t)value.toInt());
-                }
-            } else if (devType == "pid") {
-                if (match.action == "pv" || match.action == "out") {
-                    writeOk = false;
-                } else {
-                    writeOk = periMgr.writeModbusReg(periphId, dev.pidAddrs[match.channel], (uint16_t)value.toInt());
                 }
             }
 
@@ -857,7 +1038,7 @@ bool FastBeeFramework::initialize() {
                 String devTypeStr(dev.deviceType);
                 String evAct;
                 if (devTypeStr == "relay") {
-                    evAct = (value == "1" || value.equalsIgnoreCase("on") || value.equalsIgnoreCase("true")) ? "on" : "off";
+                    evAct = (value == "1" || FastBee::stringEqualsIgnoreCaseLiteral(value, "on") || FastBee::stringEqualsIgnoreCaseLiteral(value, "true")) ? "on" : "off";
                 } else if (devTypeStr == "pwm") {
                     evAct = "pwm";
                 } else if (devTypeStr == "pid") {
@@ -878,6 +1059,12 @@ bool FastBeeFramework::initialize() {
                 PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
             }
 
+            if (relay) {
+                reportRelay(sensorId, writeOk, relayAttempted, false,
+                    writeOk ? "modbus_command_acknowledged" : relayAttempted
+                        ? "modbus_result_unknown" : relayControl.reason);
+                return true;
+            }
             JsonObject reportItem = reportArr.add<JsonObject>();
             reportItem["id"] = sensorId;
             reportItem["value"] = reportValue;
@@ -1260,6 +1447,9 @@ bool FastBeeFramework::addSystemTasks() {
     if (!taskManager->addTask("ntp_sync", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (!framework) return;
+        const auto currentTimeQuality = FastBee::SystemTimeQuality::snapshot();
+        if (strcmp(currentTimeQuality.quality, "busy") != 0)
+            framework->ntpSynced = currentTimeQuality.synced;
         constexpr const char* HTTP_NTP_FALLBACK_URL =
             "http://iot.fastbee.cn/prod-api/iot/tool/ntp";
 
@@ -1278,19 +1468,18 @@ bool FastBeeFramework::addSystemTasks() {
         if (framework->ntpSyncPending && framework->network && framework->network->isNetworkConnected()) {
             framework->ntpSyncPending = false;
             LOG_INFO("[NTP] Starting NTP sync...");
-            framework->syncTimeFromConfig();
-            framework->ntpSyncStarted = true;  // 标记已启动同步
+            framework->ntpStartSequence = FastBee::SystemTimeQuality::sequence();
+            framework->ntpAttemptConfigured = framework->syncTimeFromConfig();
+            framework->ntpSyncStarted = true;  // Track accepted/rejected attempt through bounded retry policy.
             return;  // 等待下一次任务检查结果
         }
 
         // 检查同步结果（同步启动后）
         if (framework->ntpSyncStarted) {
-            struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 100) && timeinfo.tm_year >= 100) {
-                // 同步成功，确保时区设置生效
-                tzset();
-                // 重新获取本地时间（应用时区后）
-                getLocalTime(&timeinfo, 0);
+            struct tm timeinfo{};
+            const auto timeStatus = FastBee::SystemTimeQuality::snapshot();
+            if (framework->ntpAttemptConfigured && timeStatus.synced && timeStatus.sequence != framework->ntpStartSequence &&
+                getLocalTime(&timeinfo, 0)) {
                 // 同步成功
                 char timeStr[32];
                 strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
@@ -1394,7 +1583,7 @@ bool FastBeeFramework::addSystemTasks() {
 #if FASTBEE_ENABLE_LCD
     // OLED/LCD 维护任务（每1秒）：开机初期重申显示参数，防上电瞬间电压波动导致黑屏
     if (!taskManager->addTask("lcd_maintenance", [](void* param) {
-        LCDManager::getInstance().performMaintenance();
+        PeripheralManager::getInstance().performLcdMaintenance();
     }, nullptr, 1000)) {
         LOG_WARNING("Failed to add lcd maintenance task");
     }
@@ -1678,6 +1867,16 @@ void FastBeeFramework::shutdown() {
     LOGGER.flushBuffer();
 #endif
 
+    // Keep the maintenance task alive if a temperature output has not yet
+    // confirmed its inactive HIGH level. The manager fences new controllers
+    // before attempting retirement, so retries cannot re-enable an output.
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    if (!PeriphExecManager::getInstance().shutdownThermostats()) {
+        LOG_WARNING("Framework shutdown deferred: THERMOSTAT_OUTPUT_UNCONFIRMED");
+        return;
+    }
+#endif
+
     // 按依赖顺序反向关闭各子系统
     if (taskManager) {
         taskManager->stopAllTasks();
@@ -1708,6 +1907,9 @@ void FastBeeFramework::shutdown() {
     }
 
     if (network) {
+        // ProtocolManager has drained its leases above. Do not leave a callback
+        // pointing to it in the later network member destructor.
+        network->setPreNetworkSwitchCallback({});
         network->disconnect();
     }
 
@@ -1740,18 +1942,18 @@ unsigned long FastBeeFramework::getUptime() const {
 }
 
 // 从配置同步NTP时间（非阻塞，使用短超时）
-void FastBeeFramework::syncTimeFromConfig() {
+bool FastBeeFramework::syncTimeFromConfig() {
     File cfgFile = LittleFS.open("/config/device.json", "r");
     if (!cfgFile) {
         LOG_WARNING("[NTP] Failed to open device.json");
-        return;
+        return false;
     }
 
     FastBeeJsonDoc cfg;
     if (deserializeJson(cfg, cfgFile) != DeserializationError::Ok) {
         cfgFile.close();
         LOG_WARNING("[NTP] Failed to parse device.json");
-        return;
+        return false;
     }
     cfgFile.close();
 
@@ -1760,7 +1962,7 @@ void FastBeeFramework::syncTimeFromConfig() {
 
     if (!enableNTP) {
         LOG_INFO("[NTP] NTP is disabled");
-        return;
+        return false;
     }
 
     const char* tz = cfg["timezone"] | "CST-8";
@@ -1775,11 +1977,7 @@ void FastBeeFramework::syncTimeFromConfig() {
 
     // 设置时区 - 使用 POSIX 格式 CST-8 (中国标准时间, UTC+8)
     // 注意：POSIX 格式中，负号表示东时区，正号表示西时区
-    // 先设置环境变量，configTzTime 会使用这个设置
-    setenv("TZ", tz, 1);
-    tzset();
-
-    LOG_INFOF("[NTP] Timezone set to: %s, syncInterval=%ds", tz, syncInterval);
+    // The guarded SNTP setup below applies timezone and config as one operation.
 
     String s1Str = s1;
     String s2Str = s2;
@@ -1798,10 +1996,13 @@ void FastBeeFramework::syncTimeFromConfig() {
         secondaryServer.startsWith("https://")) secondaryServer = "time.google.com";
     LOG_INFOF("[NTP] Starting SNTP sync with %s, %s",
               primaryServer.c_str(), secondaryServer.c_str());
-    configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr);
-
-    // 确保时区设置生效
-    tzset();
+    FastBee::SystemTimeQuality::installSntpObserver();
+    if (!FastBee::SystemTimeZone::startSntp(tz, primaryServer.c_str(), secondaryServer.c_str())) {
+        LOG_WARNING("[NTP] Timezone/configuration busy or invalid; sync not started");
+        return false;
+    }
+    LOG_INFOF("[NTP] Timezone set to: %s, syncInterval=%ds", tz, syncInterval);
+    return true;
 }
 
 // 启动时回填 deviceId 和 MQTT clientId（与 DeviceRouteHandler / ProtocolRouteHandler 的自动生成逻辑一致）

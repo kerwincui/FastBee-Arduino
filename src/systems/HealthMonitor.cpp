@@ -12,8 +12,12 @@
  */
 
 #include "systems/HealthMonitor.h"
+#include "network/FixedJsonField.h"
+#include "systems/TaskStackSnapshot.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
+#include "protocols/MqttSecureIntent.h"
+#include "protocols/MqttMemoryDeadline.h"
 #include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
@@ -105,23 +109,21 @@ void HealthMonitor::loadPersistedMqttsDowngrade() {
     _mqttsMemoryDowngrade = true;
     _mqttsDowngradeTimeMs = millis();
 
-    String originalScheme = mqtt["downgraded_original_scheme"] | "mqtts";
-    if (originalScheme.isEmpty()) originalScheme = "mqtts";
+    String originalScheme = "mqtts";
     strncpy(_mqttsOriginalScheme, originalScheme.c_str(), sizeof(_mqttsOriginalScheme) - 1);
     _mqttsOriginalScheme[sizeof(_mqttsOriginalScheme) - 1] = '\0';
 
-    const uint32_t originalPort = mqtt["downgraded_original_port"] | 8883U;
-    _mqttsOriginalPort = (originalPort > 0 && originalPort <= 65535U)
-        ? static_cast<uint16_t>(originalPort) : 8883;
+    _mqttsOriginalPort = FastBee::mqttLegacySecurePort(mqtt);
 
     // RuntimeFeatureManager is loaded before HealthMonitor during boot. Keep
     // the persisted downgrade visible in /api/features/status immediately,
     // while still leaving features.json and the user's setting untouched.
     FastBee::RuntimeFeatureManager::instance().setRuntimeDisabled(
-        "mqtts", "内存压力：TLS 暂时降级为 MQTT");
+        "mqtts", "内存压力：TLS 已暂停，禁止明文回退");
 
-    Serial.printf("[MEMRECOVER] restored persisted MQTTS downgrade (original=%s:%u)\n",
-                  _mqttsOriginalScheme, (unsigned)_mqttsOriginalPort);
+    Serial.printf("[MEMRECOVER] historical plaintext downgrade blocked (TLS port=%u)\n",
+                  (unsigned)_mqttsOriginalPort);
+    downgradeMqttsToMqtt();
 #endif
 }
 
@@ -129,7 +131,7 @@ void HealthMonitor::clearMqttMemoryOverrideState() {
 #if FASTBEE_ENABLE_MQTT
     // The protocol route has already persisted the user's explicit choice and
     // removed the on-disk markers.  Clear only runtime bookkeeping here; the
-    // next health sample may apply a fresh downgrade again if pressure is
+    // next health sample may apply a fresh runtime suspension if pressure is
     // still genuinely present.
     const bool hadMemoryOverride = _mqttsMemoryDowngrade ||
                                    _mqttDisabledForMemory ||
@@ -150,9 +152,9 @@ void HealthMonitor::clearMqttMemoryOverrideState() {
     // decision after the user explicitly saves MQTT settings.
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-    if (pm && pm->getMQTTClient()) {
-        pm->getMQTTClient()->setDisabledByMemory(false);
-        pm->getMQTTClient()->setStoppedByMemory(false);
+    if (auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{}) {
+        mqtt->setDisabledByMemory(false);
+        mqtt->setStoppedByMemory(false);
     }
     if (hadMemoryOverride) {
         FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("mqtts");
@@ -425,7 +427,6 @@ void HealthMonitor::checkCriticalMemory() {
             uint32_t dramBeforeRecovery = FastBee::MemoryBudget::dram8Free();
             performMemoryRecovery(MemoryGuardLevel::NORMAL, MemoryGuardLevel::CRITICAL);
             // 立即禁用 MQTT（幂等）
-            _mqttDisabledForMemory = true;
             _mqttStoppedForMemory = true;
             disableMqttForMemory();
             uint32_t dramAfterRecovery = FastBee::MemoryBudget::dram8Free();
@@ -488,15 +489,15 @@ void HealthMonitor::checkCriticalMemory() {
         }
 
 #if FASTBEE_ENABLE_MQTT
-        // 30s: 写入配置禁用 MQTT（重启后也不连）+ 立即停止
+        // 30s: 本次启动暂停 MQTT，保留用户 scheme/port/enabled。
         if (criticalDuration >= CRITICAL_MQTT_STOP_DELAY_MS && !_mqttDisabledForMemory &&
-            (_mqttDisableRetryAtMs == 0 || millis() >= _mqttDisableRetryAtMs)) {
+            FastBee::mqttMemoryDeadlineReached(millis(), _mqttDisableRetryAtMs)) {
             _mqttDisabledForMemory = true;
             _mqttStoppedForMemory = true;
-            Serial.printf("[MEMRECOVER] === CRITICAL %lus: disabling MQTT permanently ===\n",
+            Serial.printf("[MEMRECOVER] === CRITICAL %lus: pausing MQTT for this boot ===\n",
                           (unsigned long)(criticalDuration / 1000));
             disableMqttForMemory();
-            Serial.println("[MEMRECOVER]   User must re-enable MQTT via Web UI after memory recovers");
+            Serial.println("[MEMRECOVER]   MQTT can resume after stable memory recovery; user configuration retained");
         }
 #endif
 
@@ -518,11 +519,11 @@ void HealthMonitor::checkCriticalMemory() {
                           (unsigned long)(millis() / 1000),
                           (unsigned long)(criticalDuration / 1000));
             Serial.printf("[MEMRECOVER]   Actions taken: %s%s%s%s%s\n",
-                          _mqttsMemoryDowngrade ? "MQTTS->MQTT(SEVERE) " : "",
+                          _mqttsMemoryDowngrade ? "MQTTS paused(SEVERE) " : "",
                           _modbusStoppedForMemory ? "Modbus stopped " : "",
                           _periphExecPausedForMemory ? "PeriphExec paused " : "",
                           _optionalPeripheralsSuspendedForMemory ? "Optional peripherals suspended " : "",
-                          _mqttDisabledForMemory ? "MQTT disabled(30s)" : "");
+                          _mqttStoppedForMemory ? "MQTT paused " : "");
             Serial.printf("[MEMRECOVER]   DRAM: current=%lu largest=%lu\n",
                           (unsigned long)checkHeap,
                           (unsigned long)currentHealth.dramLargestBlock);
@@ -551,40 +552,19 @@ void HealthMonitor::checkCriticalMemory() {
     }
 }
 
-// 定期输出关键任务的栈水位
+// Current-task-only telemetry: no borrowed handles from short-lived tasks.
 void HealthMonitor::logTaskStackWatermarks() {
-    // 扩展覆盖：常驻任务 + worker 池（pexec_w0/w1）+ IDLE
-    // 注意：fb_login/ota_url 为瞬态任务，仅在有 handle 时测量
-    const char* names[] = {
-        "loopTask", "async_tcp", "mqtt_reconn",
-        "pexec_w0", "pexec_w1", "fb_login", "ota_url"
-    };
-    static constexpr int TASK_COUNT = sizeof(names) / sizeof(names[0]);
-    TaskHandle_t tasks[TASK_COUNT];
-
-    for (int i = 0; i < TASK_COUNT; i++) {
-        tasks[i] = xTaskGetHandle(names[i]);
-        if (tasks[i]) {
-            // ESP-IDF's FreeRTOS port reports HWM directly in bytes.
-            UBaseType_t watermarkBytes = uxTaskGetStackHighWaterMark(tasks[i]);
-            if (watermarkBytes < 512) {
-                char buf[96];
-                snprintf(buf, sizeof(buf), "Health: Task '%s' stack watermark CRITICALLY LOW: %u bytes",
-                         names[i], (unsigned)watermarkBytes);
-                LOG_ERROR(buf);
-            } else if (watermarkBytes < 1024) {
-                char buf[96];
-                snprintf(buf, sizeof(buf), "Health: Task '%s' stack watermark LOW: %u bytes",
-                         names[i], (unsigned)watermarkBytes);
-                LOGGER.warning(buf);
-            } else {
-                char buf[80];
-                snprintf(buf, sizeof(buf), "Health: Task '%s' stack watermark: %u bytes",
-                         names[i], (unsigned)watermarkBytes);
-                LOG_DEBUG(buf);
-            }
-        }
+    const auto sample = FastBee::readCurrentTaskStackSample();
+    if (!sample.observed) {
+        LOG_DEBUG("Health: current-task stack watermark unknown");
+        return;
     }
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Health: current-task stack watermark: %lu bytes (caller only)",
+             static_cast<unsigned long>(sample.highWaterBytes));
+    if (sample.highWaterBytes < 512) LOG_ERROR(buf);
+    else if (sample.highWaterBytes < 1024) LOGGER.warning(buf);
+    else LOG_DEBUG(buf);
 }
 
 // ── MemGuard 等级判断 ────────────────────────────────────────────────
@@ -790,38 +770,35 @@ void HealthMonitor::updateMemoryGuardLevel() {
     }
 
 #if FASTBEE_ENABLE_MQTT
-    // If the first SEVERE recovery could not persist protocol.json (for
-    // example a transient LittleFS/write-buffer failure), the level itself
-    // does not change again and applyDegradation() would never be called a
-    // second time. Retry only while the effective level is still severe and
-    // only when the backoff has elapsed.
+    // Retry secure-intent detection when the first severe sample could not
+    // acquire a client/read configuration. Suspension never writes flash.
     const unsigned long nowForRecovery = millis();
     if (_currentLevel >= MemoryGuardLevel::SEVERE &&
         newLevel >= MemoryGuardLevel::SEVERE &&
         !_mqttsMemoryDowngrade && !_mqttDisabledForMemory &&
-        (_mqttsDowngradeRetryAtMs == 0 || nowForRecovery >= _mqttsDowngradeRetryAtMs)) {
+        FastBee::mqttMemoryDeadlineReached(nowForRecovery, _mqttsDowngradeRetryAtMs)) {
         FastBeeFramework* fw = FastBeeFramework::getInstance();
         ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-        MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+        auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
         bool wantsMqtts = mqtt && mqtt->getConfig().scheme == "mqtts";
 #if FASTBEE_ENABLE_STORAGE_CACHE || FASTBEE_ENABLE_MQTT
         if (!mqtt) {
             JsonDocument cfgDoc;
             if (ConfigStorage::getInstance().loadProtocolSection("mqtt", cfgDoc)) {
-                const char* scheme = cfgDoc["mqtt"]["scheme"] | "";
-                wantsMqtts = scheme && strcmp(scheme, "mqtts") == 0;
+                wantsMqtts = FastBee::mqttRequiresTls(cfgDoc["mqtt"]);
             }
         }
 #endif
         if (wantsMqtts) {
+            mqtt = {}; // Suspension may stop; do not retain its old instance.
             downgradeMqttsToMqtt();
         }
     }
 #endif
 
     // A persisted downgrade survives a reboot while _currentLevel starts at
-    // NORMAL. Once a healthy sample confirms that plain MQTT can be upgraded
-    // safely, run the normal recovery path even though no level transition
+    // NORMAL. Once a healthy sample permits secure recovery, run the normal
+    // recovery path even though no level transition
     // occurred during this boot. The same retry also covers a worker pool,
     // Modbus handler, or optional peripheral that was still shutting down when
     // the first NORMAL sample arrived; those states must not remain paused
@@ -839,11 +816,11 @@ void HealthMonitor::updateMemoryGuardLevel() {
         _optionalPeripheralsSuspendedForMemory;
     const unsigned long recoveryNow = millis();
     const bool mqttRestoreReady =
-        _mqttRestoreRetryAtMs == 0 || recoveryNow >= _mqttRestoreRetryAtMs;
+        FastBee::mqttMemoryDeadlineReached(recoveryNow, _mqttRestoreRetryAtMs);
     if (_currentLevel == MemoryGuardLevel::NORMAL &&
         newLevel == MemoryGuardLevel::NORMAL &&
         pendingNormalRecovery && !_mqttDisabledForMemory &&
-        (_mqttsRestoreRetryAtMs == 0 || recoveryNow >= _mqttsRestoreRetryAtMs) &&
+        FastBee::mqttMemoryDeadlineReached(recoveryNow, _mqttsRestoreRetryAtMs) &&
         mqttRestoreReady) {
         restoreMemoryRecovery();
     }
@@ -994,10 +971,9 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             {
                 FastBeeFramework* fw = FastBeeFramework::getInstance();
                 ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-                MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
-                if (mqtt) {
-                    mqtt->setMinReportInterval(0);
-                    Serial.println("[MEMGUARD] MQTT report interval restored");
+                if (pm) {
+                    pm->setMqttMinReportInterval(0);
+                    Serial.println("[MEMGUARD] MQTT report interval restore requested");
                 }
             }
 #endif
@@ -1072,15 +1048,14 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
         {
             FastBeeFramework* fw = FastBeeFramework::getInstance();
             ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
-            if (mqtt) {
+            if (pm) {
                 uint32_t interval = (newLevel == MemoryGuardLevel::CRITICAL) ? 30000 : 10000;
-                mqtt->setMinReportInterval(interval);
-                Serial.printf("[MEMGUARD] MQTT report interval -> %lu ms\n", (unsigned long)interval);
+                pm->setMqttMinReportInterval(interval);
+                Serial.printf("[MEMGUARD] MQTT report interval requested -> %lu ms\n", (unsigned long)interval);
             }
         }
 #endif
-        // 内存恢复：MQTTS→MQTT 降级 + 停止 Modbus + 暂停 PeriphExec
+        // 内存回收：暂停 MQTTS + 停止 Modbus + 暂停 PeriphExec
         // Reclaim once on entry, and again on an actual escalation to CRITICAL.
         // An earlier stage may have retained the display after enough memory
         // was freed; a later critical condition must still be able to stop it.
@@ -1225,26 +1200,28 @@ bool HealthMonitor::isMemoryDegraded() const {
 void HealthMonitor::fillDegradationJson(JsonObject dst) const {
     static const char* levelNames[] = {"NORMAL", "WARN", "SEVERE", "CRITICAL"};
     const uint8_t level = static_cast<uint8_t>(_currentLevel);
-    dst["active"] = isMemoryDegraded();
-    dst["runtimeOnly"] = true;
-    dst["level"] = levelNames[level < 4 ? level : 0];
-    dst["mqttsDowngraded"] = _mqttsMemoryDowngrade;
-    dst["mqttStopped"] = _mqttStoppedForMemory;
-    dst["mqttDisabled"] = _mqttDisabledForMemory;
-    dst["mqttRestorePending"] = _mqttRestorePendingForMemory;
-    dst["modbusStopped"] = _modbusStoppedForMemory;
-    dst["periphExecPaused"] = _periphExecPausedForMemory;
+    FastBee::setFixedJsonField(dst, "active", isMemoryDegraded());
+    FastBee::setFixedJsonField(dst, "runtimeOnly", true);
+    FastBee::setFixedJsonField(dst, "level", levelNames[level < 4 ? level : 0]);
+    FastBee::setFixedJsonField(dst, "mqttsDowngraded", false);
+    FastBee::setFixedJsonField(dst, "mqttsPaused", _mqttsMemoryDowngrade);
+    FastBee::setFixedJsonField(dst, "mqttsProtection", "pause_without_plaintext_fallback");
+    FastBee::setFixedJsonField(dst, "mqttStopped", _mqttStoppedForMemory);
+    FastBee::setFixedJsonField(dst, "mqttDisabled", _mqttDisabledForMemory);
+    FastBee::setFixedJsonField(dst, "mqttRestorePending", _mqttRestorePendingForMemory);
+    FastBee::setFixedJsonField(dst, "modbusStopped", _modbusStoppedForMemory);
+    FastBee::setFixedJsonField(dst, "periphExecPaused", _periphExecPausedForMemory);
 #if FASTBEE_ENABLE_PERIPH_EXEC
-    dst["periphExecWorkerSuspended"] = arePeriphExecWorkersSuspendedForMemory();
-    dst["periphExecWorkerSuspensionPending"] = isPeriphExecWorkerSuspensionPending();
+    FastBee::setFixedJsonField(dst, "periphExecWorkerSuspended", arePeriphExecWorkersSuspendedForMemory());
+    FastBee::setFixedJsonField(dst, "periphExecWorkerSuspensionPending", isPeriphExecWorkerSuspensionPending());
 #else
-    dst["periphExecWorkerSuspended"] = false;
-    dst["periphExecWorkerSuspensionPending"] = false;
+    FastBee::setFixedJsonField(dst, "periphExecWorkerSuspended", false);
+    FastBee::setFixedJsonField(dst, "periphExecWorkerSuspensionPending", false);
 #endif
-    dst["optionalPeripheralsSuspended"] = _optionalPeripheralsSuspendedForMemory;
-    dst["optionalPeripheralCount"] = _memorySuspendedPeripheralCount;
+    FastBee::setFixedJsonField(dst, "optionalPeripheralsSuspended", _optionalPeripheralsSuspendedForMemory);
+    FastBee::setFixedJsonField(dst, "optionalPeripheralCount", _memorySuspendedPeripheralCount);
     JsonArray actions = dst["actions"].to<JsonArray>();
-    if (_mqttsMemoryDowngrade) actions.add("MQTTS 已临时降级为 MQTT");
+    if (_mqttsMemoryDowngrade) actions.add("MQTTS 已因内存压力暂停，禁止明文回退");
     if (_modbusStoppedForMemory) actions.add("Modbus 轮询已暂停");
     if (_periphExecPausedForMemory) actions.add("外设执行定时规则已暂停");
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -1261,7 +1238,8 @@ void HealthMonitor::fillDegradationJson(JsonObject dst) const {
     }
     if (_mqttStoppedForMemory) actions.add("MQTT 已停止");
     if (_mqttRestorePendingForMemory) actions.add("MQTT 恢复等待内存条件，系统将继续重试");
-    if (_mqttDisabledForMemory) actions.add("MQTT 已禁用，需恢复内存后手动启用");
+    if (_mqttRecoveryBlockedForStorage) actions.add("MQTT 准入资源不可用，需要重启后恢复");
+    if (_mqttDisabledForMemory) actions.add("保留旧版 MQTT 禁用记录，需用户明确保存并启用");
     if (actions.size() == 0 && _currentLevel == MemoryGuardLevel::WARN) {
         actions.add("已降低日志和上报频率");
     }
@@ -1357,61 +1335,60 @@ bool HealthMonitor::detectMemoryLeak() const {
 
 void HealthMonitor::fillMetricsJson(String& json) {
     JsonDocument doc;
-    doc["heap"]["free"]          = currentHealth.freeHeap;
-    doc["heap"]["min"]           = currentHealth.minFreeHeap;
-    doc["heap"]["largest_block"] = currentHealth.largestFreeBlock;
-    doc["heap"]["fragmentation"] = currentHealth.heapFragmentation;
+    FastBee::setFixedJsonField(doc, "heap", "free", currentHealth.freeHeap);
+    FastBee::setFixedJsonField(doc, "heap", "min", currentHealth.minFreeHeap);
+    FastBee::setFixedJsonField(doc, "heap", "largest_block", currentHealth.largestFreeBlock);
+    FastBee::setFixedJsonField(doc, "heap", "fragmentation", currentHealth.heapFragmentation);
     // DRAM 内部内存（排除 PSRAM，用于 WiFi/MQTT/SSL 保护决策）
-    doc["heap"]["dram_free"]     = currentHealth.dramFreeHeap;
-    doc["heap"]["dram_largest"]  = currentHealth.dramLargestBlock;
-    doc["mqtt"]["queue_depth"]   = mqttQueueDepth;
-    doc["sse"]["client_count"]   = sseClientCount;
-    doc["poll"]["duration_ms"]   = pollDurationMs;
-    doc["uptime"]                = currentHealth.uptime / 1000UL;
-    doc["boot_time_ms"]           = currentHealth.bootTimeMs;
+    FastBee::setFixedJsonField(doc, "heap", "dram_free", currentHealth.dramFreeHeap);
+    FastBee::setFixedJsonField(doc, "heap", "dram_largest", currentHealth.dramLargestBlock);
+    FastBee::setFixedJsonField(doc, "mqtt", "queue_depth", mqttQueueDepth);
+    FastBee::setFixedJsonField(doc, "sse", "client_count", sseClientCount);
+    FastBee::setFixedJsonField(doc, "poll", "duration_ms", pollDurationMs);
+    FastBee::setFixedJsonField(doc, "uptime", currentHealth.uptime / 1000UL);
+    FastBee::setFixedJsonField(doc, "boot_time_ms", currentHealth.bootTimeMs);
 
     // MemGuard 等级信息
     static const char* levelNames[] = { "NORMAL", "WARN", "SEVERE", "CRITICAL" };
     uint8_t lvl = static_cast<uint8_t>(_currentLevel);
-    doc["memguard"]["level"]              = lvl;
-    doc["memguard"]["level_name"]         = levelNames[lvl < 4 ? lvl : 0];
-    doc["memguard"]["fragmentation_high"] = isFragmentationHigh();
+    FastBee::setFixedJsonField(doc, "memguard", "level", lvl);
+    FastBee::setFixedJsonField(doc, "memguard", "level_name", levelNames[lvl < 4 ? lvl : 0]);
+    FastBee::setFixedJsonField(doc, "memguard", "fragmentation_high", isFragmentationHigh());
     // 内存恢复状态（防砖机制进度）
-    doc["memguard"]["mqtts_downgraded"]    = _mqttsMemoryDowngrade;
-    doc["memguard"]["mqtt_stopped"]        = _mqttStoppedForMemory;
-    doc["memguard"]["mqtt_disabled"]       = _mqttDisabledForMemory;
-    doc["memguard"]["mqtt_restore_pending"] = _mqttRestorePendingForMemory;
-    doc["memguard"]["modbus_stopped"]      = _modbusStoppedForMemory;
-    doc["memguard"]["periph_exec_paused"]  = _periphExecPausedForMemory;
+    FastBee::setFixedJsonField(doc, "memguard", "mqtts_downgraded", false);
+    FastBee::setFixedJsonField(doc, "memguard", "mqtts_paused", _mqttsMemoryDowngrade);
+    FastBee::setFixedJsonField(doc, "memguard", "mqtts_protection", "pause_without_plaintext_fallback");
+    FastBee::setFixedJsonField(doc, "memguard", "mqtt_stopped", _mqttStoppedForMemory);
+    FastBee::setFixedJsonField(doc, "memguard", "mqtt_disabled", _mqttDisabledForMemory);
+    FastBee::setFixedJsonField(doc, "memguard", "mqtt_restore_pending", _mqttRestorePendingForMemory);
+    FastBee::setFixedJsonField(doc, "memguard", "modbus_stopped", _modbusStoppedForMemory);
+    FastBee::setFixedJsonField(doc, "memguard", "periph_exec_paused", _periphExecPausedForMemory);
 #if FASTBEE_ENABLE_PERIPH_EXEC
-    doc["memguard"]["periph_exec_worker_suspended"] =
-        arePeriphExecWorkersSuspendedForMemory();
-    doc["memguard"]["periph_exec_worker_suspension_pending"] =
-        isPeriphExecWorkerSuspensionPending();
+    FastBee::setFixedJsonField(doc, "memguard", "periph_exec_worker_suspended", arePeriphExecWorkersSuspendedForMemory());
+    FastBee::setFixedJsonField(doc, "memguard", "periph_exec_worker_suspension_pending", isPeriphExecWorkerSuspensionPending());
 #else
-    doc["memguard"]["periph_exec_worker_suspended"] = false;
-    doc["memguard"]["periph_exec_worker_suspension_pending"] = false;
+    FastBee::setFixedJsonField(doc, "memguard", "periph_exec_worker_suspended", false);
+    FastBee::setFixedJsonField(doc, "memguard", "periph_exec_worker_suspension_pending", false);
 #endif
-    doc["memguard"]["optional_peripherals_suspended"] =
-        _optionalPeripheralsSuspendedForMemory;
-    doc["memguard"]["optional_peripheral_count"] = _memorySuspendedPeripheralCount;
-    doc["memguard"]["critical_duration_s"] = (unsigned long)(getCriticalDurationMs() / 1000);
+    FastBee::setFixedJsonField(doc, "memguard", "optional_peripherals_suspended", _optionalPeripheralsSuspendedForMemory);
+    FastBee::setFixedJsonField(doc, "memguard", "optional_peripheral_count", _memorySuspendedPeripheralCount);
+    FastBee::setFixedJsonField(doc, "memguard", "critical_duration_s", (unsigned long)(getCriticalDurationMs() / 1000));
 
     // DRAM 水位趋势（泄漏检测）
-    doc["stability"]["dram_history_count"] = _dramHistoryCount;
-    doc["stability"]["leak_suspect"] = (_dramHistoryCount >= 6) ? detectMemoryLeak() : false;
-    doc["stability"]["uptime_hours"] = (unsigned long)(currentHealth.uptime / 3600000UL);
+    FastBee::setFixedJsonField(doc, "stability", "dram_history_count", _dramHistoryCount);
+    FastBee::setFixedJsonField(doc, "stability", "leak_suspect", (_dramHistoryCount >= 6) ? detectMemoryLeak() : false);
+    FastBee::setFixedJsonField(doc, "stability", "uptime_hours", (unsigned long)(currentHealth.uptime / 3600000UL));
 
 #if FASTBEE_ENABLE_PERIPH_EXEC
     // ISR 事件队列诊断（中断风暴可观测：队列满丢事件计数 + 当前积压）
-    doc["isr"]["queue_overruns"] = (unsigned long)PeripheralManager::getInstance().getIsrQueueOverrunCount();
-    doc["isr"]["queue_waiting"]  = (unsigned long)PeripheralManager::getInstance().getIsrQueueWaiting();
+    FastBee::setFixedJsonField(doc, "isr", "queue_overruns", (unsigned long)PeripheralManager::getInstance().getIsrQueueOverrunCount());
+    FastBee::setFixedJsonField(doc, "isr", "queue_waiting", (unsigned long)PeripheralManager::getInstance().getIsrQueueWaiting());
 #endif
 
     // PSRAM 信息（用于前端判断 MQTTS 支持）
-    doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
-    doc["heap"]["psram_free"]  = (unsigned long)(ESP.getFreePsram() / 1024);
-    doc["heap"]["tls_supported"] = (psramFound() && ESP.getPsramSize() > 0);
+    FastBee::setFixedJsonField(doc, "heap", "psram_total", (unsigned long)(ESP.getPsramSize() / 1024));
+    FastBee::setFixedJsonField(doc, "heap", "psram_free", (unsigned long)(ESP.getFreePsram() / 1024));
+    FastBee::setFixedJsonField(doc, "heap", "tls_supported", (psramFound() && ESP.getPsramSize() > 0));
 
     // 内存池统计（碎片预防监控）
     for (uint8_t i = 0; i < _trackedPoolCount; i++) {
@@ -1455,24 +1432,15 @@ void HealthMonitor::logMetricsSummary() {
 }
 
 size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const {
-    const char* taskNames[] = {
-        "loopTask", "async_tcp", "mqtt_reconn",
-        "pexec_w0", "pexec_w1", "fb_login", "ota_url",
-        "IDLE0", "IDLE1"
-    };
-    static constexpr size_t TASK_COUNT = sizeof(taskNames) / sizeof(taskNames[0]);
-    size_t count = 0;
-    for (size_t i = 0; i < TASK_COUNT && count < maxTasks; i++) {
-        TaskHandle_t h = xTaskGetHandle(taskNames[i]);
-        if (h) {
-            strncpy(outInfo[count].name, taskNames[i], sizeof(outInfo[count].name) - 1);
-            outInfo[count].name[sizeof(outInfo[count].name) - 1] = '\0';
-            // ESP-IDF returns bytes, not StackType_t words.
-            outInfo[count].highWaterMark = uxTaskGetStackHighWaterMark(h);
-            count++;
-        }
-    }
-    return count;
+    if (!outInfo || !maxTasks) return 0;
+    outInfo[0] = TaskStackInfo{};
+    const auto sample = FastBee::readCurrentTaskStackSample();
+    // One explicit unknown entry is not a zero-byte stack or an empty task list.
+    strncpy(outInfo[0].name, "current-task", sizeof(outInfo[0].name) - 1);
+    outInfo[0].observed = sample.observed;
+    outInfo[0].highWaterMark = sample.highWaterBytes;
+    outInfo[0].sampledAtUptimeMs = sample.sampledAtUptimeMs;
+    return 1;
 }
 
 // ── 内存恢复：SEVERE 级别服务降级 ─────────────────────────────────────
@@ -1501,21 +1469,20 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
 
     // Step 0: 确保 TLS 所需连续内存（P0 优化）
     if (!currentHealth.dramLargestBlock) {
-        Serial.println("[MEMRECOVER] WARN: dramLargestBlock=0, forced downgrade before TLS handshake");
+        Serial.println("[MEMRECOVER] WARN: dramLargestBlock=0, TLS suspension required before handshake");
     }
     ensureTLSContiguousMemory();
 
-    // Step 1: MQTTS → MQTT 降级（释放 ~30-50KB TLS DRAM）
+    // Step 1: 暂停 MQTTS 并等待资源退出，禁止降低传输安全性。
 #if FASTBEE_ENABLE_MQTT
     if (!_mqttsMemoryDowngrade) {
-        MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+        auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
         bool wantsMqtts = mqtt && mqtt->getConfig().scheme == "mqtts";
 #if FASTBEE_ENABLE_STORAGE_CACHE || FASTBEE_ENABLE_MQTT
         if (!mqtt) {
             JsonDocument cfgDoc;
             if (ConfigStorage::getInstance().loadProtocolSection("mqtt", cfgDoc)) {
-                const char* scheme = cfgDoc["mqtt"]["scheme"] | "";
-                wantsMqtts = scheme && strcmp(scheme, "mqtts") == 0;
+                wantsMqtts = FastBee::mqttRequiresTls(cfgDoc["mqtt"]);
             }
         }
 #endif
@@ -1524,8 +1491,9 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
             // uses the TLS transport (or is carrying a persisted downgrade).
             // Plain-MQTT devices must not show a permanent, unrelated MQTTS
             // warning after a transient severe-memory event.
-            featureMgr.setRuntimeDisabled("mqtts", "内存压力：TLS 暂时降级为 MQTT");
-            Serial.println("[MEMRECOVER] Step 1/3: MQTTS -> MQTT downgrade (releasing ~35KB TLS DRAM)");
+            featureMgr.setRuntimeDisabled("mqtts", "内存压力：TLS 已暂停，禁止明文回退");
+            Serial.println("[MEMRECOVER] Step 1/3: pausing MQTTS without changing transport security");
+            mqtt = {};
             downgradeMqttsToMqtt();
         }
         else if (!_mqttsMemoryDowngrade) {
@@ -1605,103 +1573,94 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
                   (unsigned long)dramAfter, (long)(dramAfter - dramBefore));
 }
 
-// ── MQTTS → MQTT 降级：写入配置文件（含 downgraded_by_memory 标记）并重启 MQTT ──
-// 采用保守方案：持久化 + downgraded_by_memory 标记，restoreMemoryRecovery() 自动回写
+// Runtime-only TLS suspension; the legacy method name is retained for callers.
 void HealthMonitor::downgradeMqttsToMqtt() {
-    const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE;
-
-    // Validate the section before writing.  updateJsonConfig() intentionally
-    // accepts a missing document for general callers; using it blindly here
-    // could turn a transient read failure into an empty protocol.json while
-    // the device is already under memory pressure.
-#if FASTBEE_ENABLE_STORAGE_CACHE || FASTBEE_ENABLE_MQTT
-    JsonDocument currentDoc;
-    if (!ConfigStorage::getInstance().loadProtocolSection("mqtt", currentDoc) ||
-        !currentDoc["mqtt"].is<JsonObject>()) {
-        _mqttsDowngradeRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER]   WARN: MQTT config section unavailable, retry downgrade later");
-        return;
-    }
-#else
-    _mqttsDowngradeRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-    Serial.println("[MEMRECOVER]   WARN: ConfigStorage unavailable, retry downgrade later");
-    return;
-#endif
-
-    // 只在第一次降级时抓取原始值，避免连续压力事件覆盖恢复信息。
-    if (!_mqttsMemoryDowngrade) {
-        FastBeeFramework* fw = FastBeeFramework::getInstance();
-        ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-        MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
-        if (mqtt) {
-            const MQTTConfig& cfg = mqtt->getConfig();
-            strncpy(_mqttsOriginalScheme, cfg.scheme.c_str(), sizeof(_mqttsOriginalScheme) - 1);
-            _mqttsOriginalScheme[sizeof(_mqttsOriginalScheme) - 1] = '\0';
-            _mqttsOriginalPort = cfg.port > 0 ? cfg.port : 8883;
-        } else {
-            String scheme = currentDoc["mqtt"]["scheme"] | "mqtts";
-            if (scheme.isEmpty()) scheme = "mqtts";
-            strncpy(_mqttsOriginalScheme, scheme.c_str(), sizeof(_mqttsOriginalScheme) - 1);
-            _mqttsOriginalScheme[sizeof(_mqttsOriginalScheme) - 1] = '\0';
-            const uint32_t port = currentDoc["mqtt"]["port"] | 8883U;
-            _mqttsOriginalPort = (port > 0 && port <= 65535U)
-                ? static_cast<uint16_t>(port) : 8883;
-        }
-    }
-    Serial.println("[MEMRECOVER]   protocol.json updating: scheme=mqtt, port=1883, downgraded_by_memory=true");
-
-    // 写入配置文件：scheme=mqtt, port=1883, downgraded_by_memory=true
-    bool configUpdated = HandlerUtils::updateJsonConfig(configPath,
-        [this](JsonDocument& doc) {
-            if (doc["mqtt"].is<JsonObject>()) {
-                doc["mqtt"]["scheme"] = "mqtt";
-                doc["mqtt"]["port"] = 1883;
-                doc["mqtt"]["downgraded_by_memory"] = true;
-                doc["mqtt"]["downgraded_original_scheme"] = _mqttsOriginalScheme;
-                doc["mqtt"]["downgraded_original_port"] = _mqttsOriginalPort;
-            }
-        });
-
-    if (!configUpdated) {
-        _mqttsDowngradeRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER]   WARN: failed to update protocol.json, skip MQTT restart");
-        return;  // 配置写入失败，不标记已降级，不重启 MQTT
-    }
-
-    // Confirm the persisted values before changing in-memory state.  This
-    // keeps the status API truthful even if LittleFS accepted the open/write
-    // but a later flush/rename left stale content on disk.
-    JsonDocument verifyDoc;
-    const bool verified = ConfigStorage::getInstance().loadProtocolSection("mqtt", verifyDoc) &&
-        verifyDoc["mqtt"].is<JsonObject>() &&
-        strcmp(verifyDoc["mqtt"]["scheme"] | "", "mqtt") == 0 &&
-        (verifyDoc["mqtt"]["port"] | 0U) == 1883U &&
-        (verifyDoc["mqtt"]["downgraded_by_memory"] | false);
-    if (!verified) {
-        _mqttsDowngradeRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER]   WARN: protocol.json verification failed, skip MQTT restart");
-        return;
-    }
-    _mqttsDowngradeRetryAtMs = 0;
-    Serial.println("[MEMRECOVER]   protocol.json updated: scheme=mqtt, port=1883, downgraded_by_memory=true");
-
-    // 标记已降级（防止重复操作）+ 记录降级时间
+#if FASTBEE_ENABLE_MQTT
+    // Retain the historical method name for callers, not its insecure behavior.
     _mqttsMemoryDowngrade = true;
     _mqttsDowngradeTimeMs = millis();
-
-    // 停止当前 MQTT（释放 TLS 传输层）并延迟重启（使用新配置 mqtt://）
+    _mqttsDowngradeRetryAtMs = 0;
+    _mqttStoppedForMemory = true;
+    _mqttRestorePendingForMemory = false;
+    FastBee::RuntimeFeatureManager::instance().setRuntimeDisabled(
+        "mqtts", "内存压力：TLS 已暂停，禁止明文回退");
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
     if (pm) {
-        pm->stopMQTT();
-        // 延迟重启：配置文件已更新为 mqtt，重启后使用非加密连接
-        pm->restartMQTTDeferred();
-        Serial.println("[MEMRECOVER]   MQTT stopped + deferred restart with plain scheme");
+        if (auto mqtt = pm->acquireMQTTClient()) mqtt->setStoppedByMemory(true);
+        pm->stopMQTT(); // Manager drains the in-flight worker before deleting TLS.
     }
+    Serial.println("[MEMRECOVER] MQTTS paused; scheme, port and enabled preserved");
+#endif
+}
 
-    // 记录 DRAM 变化用于诊断
-    uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
-    Serial.printf("[MEMRECOVER]   DRAM after downgrade: %lu bytes\n", (unsigned long)dramAfter);
+void HealthMonitor::restoreMqttsAfterMemory() {
+#if FASTBEE_ENABLE_MQTT
+    if (!_mqttsMemoryDowngrade || _mqttDisabledForMemory || _mqttRecoveryBlockedForStorage) return;
+    const unsigned long now = millis();
+    if (!FastBee::mqttMemoryDeadlineReached(now, _mqttsRestoreCooldownMs) ||
+        !FastBee::mqttMemoryDeadlineReached(now, _mqttsRestoreRetryAtMs)) return;
+    JsonDocument doc;
+    if (!ConfigStorage::getInstance().loadProtocolSection("mqtt", doc) ||
+        !doc["mqtt"].is<JsonObject>() || !FastBee::mqttRequiresTls(doc["mqtt"]) ||
+        !(doc["mqtt"]["enabled"] | true)) {
+        _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
+        Serial.println("[MEMRECOVER] TLS recovery requires confirmed enabled secure configuration");
+        return;
+    }
+    JsonVariantConst cfg = doc["mqtt"];
+    const bool historical = cfg["downgraded_by_memory"] | false;
+    const uint32_t requestedPort = historical ? FastBee::mqttLegacySecurePort(cfg) : (cfg["port"] | 1883U);
+    if (!requestedPort || requestedPort > UINT16_MAX) {
+        _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
+        Serial.println("[MEMRECOVER] TLS recovery metadata incomplete; explicit configuration required");
+        return;
+    }
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+    auto& features = FastBee::RuntimeFeatureManager::instance();
+    const auto confirmReady = [&]() {
+        auto ready = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
+        if (!ready || ready->isStopped() || ready->getConfig().scheme != "mqtts" ||
+            ready->getConfig().port != requestedPort) return false;
+        ready->setStoppedByMemory(false);
+        _mqttsMemoryDowngrade = false;
+        _mqttStoppedForMemory = false;
+        _mqttRestorePendingForMemory = false;
+        _mqttRestoreRetryAtMs = 0;
+        _mqttsRestoreRetryAtMs = 0;
+        _mqttsRestoreCooldownMs = now + 24UL * 60 * 60 * 1000;
+        features.clearRuntimeDisabled("mqtts");
+        return true; // Owner ready, not a handshake/broker receipt claim.
+    };
+    if (_mqttRestorePendingForMemory && confirmReady()) return;
+    features.clearRuntimeDisabled("mqtts");
+    FastBee::MqttRestartResult result = FastBee::MqttRestartResult::NotStarted;
+    const bool ready = pm && pm->restartMQTTDeferred(true, &result);
+    const bool queued = ready || result == FastBee::MqttRestartResult::Deferred;
+    _mqttRestorePendingForMemory = queued;
+    if (ready && confirmReady()) return;
+    _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
+    if (!queued) features.setRuntimeDisabled("mqtts", "TLS 恢复待重试，禁止明文回退");
+    Serial.println("[MEMRECOVER] TLS recovery pending; configuration preserved, no plaintext fallback");
+#endif
+}
+
+bool HealthMonitor::refreshMqttRecoveryAdmission() {
+#if FASTBEE_ENABLE_MQTT
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+    _mqttRecoveryBlockedForStorage = pm && !pm->mqttLifetimeAvailable();
+    if (_mqttRecoveryBlockedForStorage) {
+        // Keep prior stopped/downgraded evidence. Nothing was restored and
+        // rewriting scheme/port cannot recreate the owner's admission word.
+        _mqttRestorePendingForMemory = false;
+        _mqttRestoreRetryAtMs = 0;
+        _mqttsRestoreRetryAtMs = 0;
+        return false;
+    }
+#endif
+    return true;
 }
 
 // Confirm deferred services after loopTask has had a chance to rebuild them.
@@ -1749,13 +1708,14 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
     // that queued it.  restartMQTTDeferred() can be rejected by the heap
     // admission guard; clearing the memory-stop flag in that case would make
     // REST/SSE claim recovery while no client exists.
-    if (_mqttRestorePendingForMemory && !_mqttDisabledForMemory &&
+    const bool mqttRecoveryAllowed = refreshMqttRecoveryAdmission();
+    if (mqttRecoveryAllowed && _mqttRestorePendingForMemory && !_mqttDisabledForMemory && !_mqttsMemoryDowngrade &&
         _currentLevel < MemoryGuardLevel::SEVERE) {
         const unsigned long now = millis();
-        if (_mqttRestoreRetryAtMs == 0 || now >= _mqttRestoreRetryAtMs) {
+        if (FastBee::mqttMemoryDeadlineReached(now, _mqttRestoreRetryAtMs)) {
             FastBeeFramework* fw = FastBeeFramework::getInstance();
             ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
-            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+            auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
             if (mqtt && !mqtt->isStopped() && !mqtt->isStoppedByMemory()) {
                 _mqttRestorePendingForMemory = false;
                 _mqttRestoreRetryAtMs = 0;
@@ -1763,8 +1723,9 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
                 mqtt->setStoppedByMemory(false);
                 Serial.println("[MEMRECOVER]   MQTT handler already usable; cleared degraded state");
             } else {
+                mqtt = {}; // A stopped client must not block its own replacement.
                 const bool restartQueued = pm && pm->restartMQTTDeferred();
-                MQTTClient* restored = pm ? pm->getMQTTClient() : nullptr;
+                auto restored = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
                 if (restartQueued && restored && !restored->isStopped()) {
                     _mqttRestorePendingForMemory = false;
                     _mqttRestoreRetryAtMs = 0;
@@ -1912,15 +1873,16 @@ void HealthMonitor::restoreMemoryRecovery() {
 
     // 恢复 MQTT：被禁用时不自动恢复，用户需手动在 Web 界面开启
 #if FASTBEE_ENABLE_MQTT
+    const bool mqttRecoveryAllowed = refreshMqttRecoveryAdmission();
     if (_mqttDisabledForMemory) {
         Serial.println("[MEMRECOVER]   MQTT stays DISABLED (config: enabled=false), user must re-enable manually");
         // 不重置 _mqttDisabledForMemory，不重启 MQTT
         _mqttRestorePendingForMemory = false;
         _mqttRestoreRetryAtMs = 0;
-    } else if (_mqttStoppedForMemory &&
-               (_mqttRestoreRetryAtMs == 0 || millis() >= _mqttRestoreRetryAtMs)) {
+    } else if (mqttRecoveryAllowed && _mqttStoppedForMemory && !_mqttsMemoryDowngrade &&
+               FastBee::mqttMemoryDeadlineReached(millis(), _mqttRestoreRetryAtMs)) {
         const bool restartQueued = pm && pm->restartMQTTDeferred();
-        MQTTClient* restored = pm ? pm->getMQTTClient() : nullptr;
+        auto restored = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
         if (restartQueued && restored && !restored->isStopped()) {
             _mqttRestorePendingForMemory = false;
             _mqttRestoreRetryAtMs = 0;
@@ -1940,96 +1902,9 @@ void HealthMonitor::restoreMemoryRecovery() {
     }
 #endif
 
-    // 恢复 MQTTS：降级后自动回写配置并重启，带 24h 冷却防风暴
-    // 若 MQTTS 握手再次导致内存压力，MemGuard 会重新降级，
-    // 24h 冷却确保不会在 NORMAL 与 SEVERE 之间振荡。
+    // TLS recovery must never create or persist a plaintext fallback.
 #if FASTBEE_ENABLE_MQTT
-    // When the critical-path guard had to disable MQTT completely, keep the
-    // user-visible disabled decision authoritative.  Do not silently restore
-    // an encrypted transport while MQTT is still disabled; the original
-    // scheme/port marker remains on disk for an explicit user re-enable.
-    if (_mqttsMemoryDowngrade && !_mqttDisabledForMemory) {
-        if (_mqttsRestoreCooldownMs > 0 && millis() < _mqttsRestoreCooldownMs) {
-            unsigned long remainingMs = _mqttsRestoreCooldownMs - millis();
-            Serial.printf("[MEMRECOVER]   MQTTS restore on cooldown (%lus remaining), keeping plain MQTT\n",
-                          (unsigned long)(remainingMs / 1000));
-        } else {
-            Serial.println("[MEMRECOVER]   Restoring MQTTS (memory recovered, writing back config)");
-            const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE;
-            const String originalScheme = String(_mqttsOriginalScheme[0] ? _mqttsOriginalScheme : "mqtts");
-            const uint16_t originalPort = _mqttsOriginalPort > 0 ? _mqttsOriginalPort : 8883;
-#if FASTBEE_ENABLE_STORAGE_CACHE || FASTBEE_ENABLE_MQTT
-            JsonDocument currentDoc;
-            const bool sectionAvailable =
-                ConfigStorage::getInstance().loadProtocolSection("mqtt", currentDoc) &&
-                currentDoc["mqtt"].is<JsonObject>();
-#else
-            const bool sectionAvailable = false;
-#endif
-            bool configRestored = false;
-            if (sectionAvailable) {
-                const bool writeOk = HandlerUtils::updateJsonConfig(configPath,
-                    [originalScheme, originalPort](JsonDocument& doc) {
-                        if (doc["mqtt"].is<JsonObject>()) {
-                            doc["mqtt"]["scheme"] = originalScheme;
-                            doc["mqtt"]["port"] = originalPort;
-                            doc["mqtt"]["downgraded_by_memory"] = false;
-                            // Keep the original values for diagnostics and a
-                            // future retry after another reboot.
-                            doc["mqtt"]["downgraded_original_scheme"] = originalScheme;
-                            doc["mqtt"]["downgraded_original_port"] = originalPort;
-                        }
-                    });
-                if (writeOk) {
-                    JsonDocument verifyDoc;
-                    configRestored = ConfigStorage::getInstance().loadProtocolSection("mqtt", verifyDoc) &&
-                        verifyDoc["mqtt"].is<JsonObject>() &&
-                        strcmp(verifyDoc["mqtt"]["scheme"] | "", originalScheme.c_str()) == 0 &&
-                        (verifyDoc["mqtt"]["port"] | 0U) == originalPort &&
-                        !(verifyDoc["mqtt"]["downgraded_by_memory"] | false);
-                }
-            }
-
-            if (!configRestored) {
-                _mqttsRestoreRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-                Serial.println("[MEMRECOVER]   WARN: failed to verify MQTTS restore, keeping plain MQTT");
-            } else {
-                // Writing the original scheme is only half of the recovery:
-                // the TLS client must also be rebuilt successfully.  A
-                // deferred rebuild can be rejected by the heap admission
-                // guard, so do not clear the persisted/runtime downgrade
-                // state until a usable client is confirmed.
-                bool restartQueued = false;
-                MQTTClient* restored = nullptr;
-                if (pm) {
-                    pm->stopMQTT();
-                    restartQueued = pm->restartMQTTDeferred(true);  // forceRebuild=true，新配置生效
-                    restored = pm->getMQTTClient();
-                }
-                const bool clientReady = restartQueued && restored && !restored->isStopped();
-                if (clientReady) {
-                    _mqttsRestoreRetryAtMs = 0;
-                    _mqttsMemoryDowngrade = false;
-                    _mqttsRestoreCooldownMs = millis() + 24UL * 60 * 60 * 1000;  // 24h 冷却
-                    featureMgr.clearRuntimeDisabled("mqtts");
-                    Serial.printf("[MEMRECOVER]   MQTTS config restored and client ready (scheme=%s, port=%u)\n",
-                                  _mqttsOriginalScheme, (unsigned)_mqttsOriginalPort);
-                } else {
-                    // Keep the device on plain MQTT if TLS could not be
-                    // rebuilt.  This also persists the marker again so a
-                    // reboot cannot immediately retry a memory-expensive TLS
-                    // handshake before HealthMonitor has started.
-                    _mqttsMemoryDowngrade = true;
-                    featureMgr.setRuntimeDisabled("mqtts", "内存恢复后等待 TLS 客户端重建");
-                    downgradeMqttsToMqtt();
-                    _mqttsRestoreRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-                    Serial.println(restartQueued
-                        ? "[MEMRECOVER]   WARN: MQTTS client not ready after deferred restart; reverted to plain MQTT"
-                        : "[MEMRECOVER]   WARN: MQTTS deferred restart rejected; reverted to plain MQTT");
-                }
-            }
-        }
-    }
+    if (mqttRecoveryAllowed) restoreMqttsAfterMemory();
 #endif
 
     // 重置 CRITICAL 计时
@@ -2039,8 +1914,10 @@ void HealthMonitor::restoreMemoryRecovery() {
                                 _modbusRestorePendingForMemory ||
                                 _mqttRestorePendingForMemory ||
                                 _optionalPeripheralsSuspendedForMemory ||
-                                (_mqttsMemoryDowngrade && !_mqttDisabledForMemory);
-    Serial.println(restorePending
+                                (_mqttsMemoryDowngrade && !_mqttDisabledForMemory && !_mqttRecoveryBlockedForStorage);
+    Serial.println(_mqttRecoveryBlockedForStorage
+        ? "[MEMRECOVER] === MQTT admission storage unavailable; restart required ==="
+        : restorePending
         ? "[MEMRECOVER] === NORMAL restore pending (will retry) ==="
         : "[MEMRECOVER] === NORMAL restore complete ===");
 }
@@ -2053,8 +1930,9 @@ void HealthMonitor::ensureTLSContiguousMemory() {
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
     if (!pm) return;
 
-    MQTTClient* mqtt = pm->getMQTTClient();
+    auto mqtt = pm->acquireMQTTClient();
     if (!mqtt || mqtt->getConfig().scheme != "mqtts") return;
+    mqtt = {}; // Remaining work may invoke the exclusive suspension path.
 
     uint32_t largestBlock = currentHealth.dramLargestBlock;
     const uint32_t tlsRequired = 32768U;  // 32KB 连续 DRAM（见 ChipConfig.h:TLS_RESERVED_BLOCK_BYTES）
@@ -2066,73 +1944,30 @@ void HealthMonitor::ensureTLSContiguousMemory() {
                   largestBlock, tlsRequired);
 
     // 再次触发内存回收（应该已经执行过了，但作为兜底）
-    if (largestBlock < 16384U) {  // 小于 16KB，立即降级到非 TLS
-        Serial.println("[TLS-RESERVE] CRITICAL: Insufficient contiguous memory (<16KB), forcing downgrade");
+    if (largestBlock < 16384U) {  // 小于 16KB，暂停 TLS，保留安全传输意图
+        Serial.println("[TLS-RESERVE] CRITICAL: Insufficient contiguous memory (<16KB), pausing TLS");
 
         if (!_mqttsMemoryDowngrade) {
             downgradeMqttsToMqtt();
-            Serial.println("[TLS-RESERVE] Forced downgrade to plain MQTT due to TLS memory pressure");
+            Serial.println("[TLS-RESERVE] MQTTS paused due to TLS memory pressure; plaintext fallback forbidden");
         }
     }
 #endif
 }
 
-// ── 永久禁用 MQTT：写入配置 + 停止（CRITICAL 30s 最后手段）────────────
+// Critical-memory runtime suspension; never overwrite enabled or transport intent.
 void HealthMonitor::disableMqttForMemory() {
-    Serial.println("[MEMRECOVER]   Disabling MQTT in config (memory critical)");
-    const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE;
-#if FASTBEE_ENABLE_STORAGE_CACHE || FASTBEE_ENABLE_MQTT
-    JsonDocument currentDoc;
-    const bool sectionAvailable =
-        ConfigStorage::getInstance().loadProtocolSection("mqtt", currentDoc) &&
-        currentDoc["mqtt"].is<JsonObject>();
-#else
-    const bool sectionAvailable = false;
-#endif
-    if (!sectionAvailable) {
-        _mqttDisabledForMemory = false;
-        _mqttStoppedForMemory = false;
-        _mqttDisableRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER]   WARN: MQTT config section unavailable, will retry disable");
-        return;
-    }
-    bool ok = HandlerUtils::updateJsonConfig(configPath,
-        [](JsonDocument& doc) {
-            if (doc["mqtt"].is<JsonObject>()) {
-                doc["mqtt"]["enabled"] = false;
-                doc["mqtt"]["disabled_by_memory"] = true;
-                // Remove the compatibility alias if a previous firmware wrote
-                // it, leaving one authoritative marker on disk.
-                doc["mqtt"].remove("disable_mqtt_by_memory");
-            }
-        });
-    JsonDocument verifyDoc;
-    const bool verified = ok &&
-        ConfigStorage::getInstance().loadProtocolSection("mqtt", verifyDoc) &&
-        verifyDoc["mqtt"].is<JsonObject>() &&
-        !(verifyDoc["mqtt"]["enabled"] | true) &&
-        (verifyDoc["mqtt"]["disabled_by_memory"] | false);
-    if (!verified) {
-        _mqttDisabledForMemory = false;
-        _mqttStoppedForMemory = false;
-        _mqttDisableRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER]   WARN: failed to disable MQTT in config");
-        return;
-    }
-    _mqttDisableRetryAtMs = 0;
-    Serial.println("[MEMRECOVER]   protocol.json updated: mqtt.enabled=false, disabled_by_memory=true");
-
-    // 立即停止 MQTT（配置已更新，重启后也不会重连）
+#if FASTBEE_ENABLE_MQTT
+    // Critical pressure suspends this boot's client. Never replace user intent.
+    _mqttStoppedForMemory = true;
+    _mqttRestorePendingForMemory = false;
+    _mqttDisableRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
     if (pm) {
-        if (MQTTClient* mqtt = pm->getMQTTClient()) {
-            // Set the marker before stopMQTT() emits its final SSE event.
-            mqtt->setDisabledByMemory(true);
-            mqtt->setStoppedByMemory(true);
-        }
+        if (auto mqtt = pm->acquireMQTTClient()) mqtt->setStoppedByMemory(true);
         pm->stopMQTT();
-        pm->markMqttDisabledByConfig();
-        Serial.println("[MEMRECOVER]   MQTT stopped (will NOT reconnect after reboot)");
     }
+    Serial.println("[MEMRECOVER] MQTT paused for critical memory; enabled and credentials preserved");
+#endif
 }

@@ -1,0 +1,360 @@
+// Complete candidate/full serializers and actual preflight response sections.
+// No GPIO, scheduler, networking, storage, target validation or device access.
+#include <Arduino.h>
+#undef malloc
+#undef free
+#include <ArduinoJson.h>
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "core/PeripheralExecution.h"
+#include "core/PeripheralConfig.h"
+#include "core/ResourceProfile.h"
+#include "network/FixedJsonField.h"
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+static std::string activeCase;
+#define CHECK(expression) do { if (!(expression)) { \
+    std::cerr << activeCase << ':' << __LINE__ << ": " << #expression << '\n'; \
+    std::exit(86); } } while (0)
+
+struct TraceAllocator : ArduinoJson::Allocator {
+    static constexpr size_t never = std::numeric_limits<size_t>::max();
+    std::map<void*, size_t> blocks;
+    std::vector<std::string> events;
+    size_t growthCalls = 0, failures = 0, failAt = never;
+    bool transient = false;
+    bool reject(const char* kind, size_t bytes) {
+        const size_t call = growthCalls++;
+        const bool rejected = transient ? call == failAt : call >= failAt;
+        events.push_back(std::string(kind) + std::to_string(bytes) + (rejected ? ":fail" : ":ok"));
+        failures += rejected ? 1 : 0;
+        return rejected;
+    }
+    void* allocate(size_t bytes) override {
+        if (reject("allocate:", bytes)) return nullptr;
+        void* result = std::malloc(bytes); CHECK(result != nullptr);
+        blocks[result] = bytes; return result;
+    }
+    void deallocate(void* pointer) override {
+        if (!pointer) return;
+        auto found = blocks.find(pointer); CHECK(found != blocks.end());
+        events.push_back("free:" + std::to_string(found->second));
+        blocks.erase(found); std::free(pointer);
+    }
+    void* reallocate(void* pointer, size_t bytes) override {
+        auto found = blocks.find(pointer);
+        if (pointer) CHECK(found != blocks.end());
+        // AJ shrinkToFit retains a valid allocation. Do not inject a shrinking
+        // realloc failure; inject only allocate/growing-reallocate points.
+        if (pointer && bytes <= found->second) {
+            events.push_back("shrink:" + std::to_string(bytes)); return pointer;
+        }
+        if (reject("reallocate:", bytes)) return nullptr;
+        if (pointer) blocks.erase(found);
+        void* result = std::realloc(pointer, bytes); CHECK(result != nullptr);
+        blocks[result] = bytes; return result;
+    }
+};
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string result = "object{";
+        for (JsonPairConst field : object) {
+            result += std::string(field.key().c_str(), field.key().size());
+            result += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            result += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return result + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string result = "array[";
+        for (JsonVariantConst value : array) result += ArduinoJson::detail::accept(value, *this) + ";";
+        return result + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        CHECK(false); return "unsupported";
+    }
+};
+
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflowed = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflowed == other.overflowed;
+    }
+};
+static Snapshot capture(const JsonDocument& document) {
+    Snapshot result;
+    serializeJson(document, result.bytes);
+    Shape shape; result.shape = ArduinoJson::detail::accept(document.as<JsonVariantConst>(), shape);
+    result.overflowed = document.overflowed();
+    return result;
+}
+static TraceAllocator* activeAllocator = nullptr;
+static Snapshot lastDocument;
+static unsigned documentsCreated = 0;
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { CHECK(activeAllocator); ++documentsCreated; }
+    ~TrackedDocument() { lastDocument = capture(*this); }
+};
+
+// Actual types are retained. Only the peripheral snapshot source is replaced;
+// its returned String lifetime and absent/present branches remain observable.
+struct PeripheralManager {
+    std::map<String, PeripheralConfig> entries;
+    std::vector<std::string> reads;
+    static PeripheralManager& getInstance() { static PeripheralManager manager; return manager; }
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& output) {
+        reads.emplace_back(id.c_str());
+        const auto found = entries.find(id);
+        if (found == entries.end()) return false;
+        output = found->second; return true;
+    }
+};
+struct FakeRequest { int status = 0; unsigned sends = 0; std::string body; };
+struct FakeContext {
+    void sendError(FakeRequest* request, int code, const char* message) {
+        request->status = code; ++request->sends; request->body = message;
+    }
+};
+static FakeContext context;
+static FakeContext* ctx = &context;
+namespace HandlerUtils {
+void sendJsonStream(FakeRequest* request, const JsonDocument& document) {
+    request->status = 200; ++request->sends; serializeJson(document, request->body);
+}
+}
+namespace FastBee {
+// Unchanged action-contract delegate: explicit deterministic allocation seam.
+// This fixture verifies the caller/overflow boundary, not contract contents.
+void appendRuleActionContracts(JsonObject data, const PeriphExecRule& candidate) {
+    data["actionContractsFixtureOnly"] = true;
+    JsonArray values = data["actionContracts"].to<JsonArray>();
+    for (size_t i = 0; i < candidate.actions.size() && i < MAX_ACTIONS_PER_RULE; ++i) {
+        JsonObject item = values.add<JsonObject>();
+        item["index"] = i;
+        item["description"] = std::string(48 + i, 'd');
+    }
+}
+}
+struct Issue {
+    std::string code, severity;
+    String path, message;
+    uint8_t risk = 0;
+};
+
+// Inject only the allocator in local production JsonDocument construction.
+// All headers and the separate FixedJsonField.cpp use real JsonDocument types.
+#define JsonDocument TrackedDocument
+@PRODUCTION_SERIALIZERS@
+#undef JsonDocument
+
+using CandidateWriter = void(*)(JsonObject, const PeriphExecRule&);
+using FullWriter = String(*)(const PeriphExecRule&);
+using PreflightWriter = void(*)(FakeRequest*, const String&, const PeriphExecRule&,
+                               const PeriphExecRule&, const std::vector<Issue>&, uint8_t);
+static CandidateWriter candidates[] = {writeRuleCandidateOracle, writeRuleCandidateCurrent, writeRuleCandidateDraft};
+static FullWriter fullWriters[] = {serializeRuleFullOracle, serializeRuleFullCurrent, serializeRuleFullDraft};
+static PreflightWriter preflights[] = {preflightResponseOracle, preflightResponseCurrent, preflightResponseDraft};
+
+static PeriphExecRule makeRule(unsigned scenario) {
+    PeriphExecRule rule;
+    rule.id = scenario ? "exec_\"\\控制\n" : "";
+    rule.name = scenario ? String(std::string(120, 'n')) + "\r\n温控" : "";
+    rule.enabled = scenario % 2 == 0;
+    rule.execMode = scenario == 3 ? UINT8_MAX : 1;
+    rule.protocolType = scenario == 3 ? UINT8_MAX : 5;
+    rule.scriptContent = scenario ? String(std::string(420, 's')) + "${value}\"\\\t" : "";
+    rule.reportAfterExec = scenario % 2 != 0;
+    rule.allowPanelControl = scenario > 1;
+    rule.recordHistory = scenario == 3;
+    const unsigned count = scenario == 0 ? 0 : scenario == 1 ? 1 : MAX_TRIGGERS_PER_RULE;
+    for (unsigned i = 0; i < count; ++i) {
+        ExecTrigger trigger;
+        trigger.triggerType = scenario == 3 ? UINT8_MAX : static_cast<uint8_t>(i);
+        trigger.triggerPeriphId = i == 0 ? "present" : i == 1 ? "missing" : "";
+        trigger.operatorType = scenario == 3 ? UINT8_MAX : 8;
+        trigger.compareValue = String(std::string(70 + i, 'c')) + "\"\\\b\t\n数据";
+        trigger.timerMode = scenario == 3 ? UINT8_MAX : 1;
+        trigger.intervalSec = scenario == 3 ? UINT32_MAX : 86400;
+        trigger.timePoint = "23:59"; trigger.eventId = "ds:channel/温度";
+        trigger.pollResponseTimeout = scenario == 3 ? UINT16_MAX : 1000;
+        trigger.pollMaxRetries = scenario == 3 ? UINT8_MAX : 3;
+        trigger.pollInterPollDelay = scenario == 3 ? UINT16_MAX : 100;
+        trigger.lastTriggerTime = UINT32_MAX; trigger.triggerCount = UINT32_MAX;
+        rule.triggers.push_back(trigger);
+    }
+    const unsigned actionCount = scenario == 0 ? 0 : scenario == 1 ? 1 : MAX_ACTIONS_PER_RULE;
+    for (unsigned i = 0; i < actionCount; ++i) {
+        ExecAction action;
+        action.targetPeriphId = i == 0 ? "present" : i == 1 ? "missing" : i == 2 ? "" : "present2";
+        action.actionType = scenario == 3 ? UINT8_MAX : static_cast<uint8_t>(i);
+        action.actionValue = String(std::string(180 + i * 10, 'a')) + "\"\\\t\n中文";
+        action.useReceivedValue = i % 2 == 0;
+        action.syncDelayMs = scenario == 3 ? UINT16_MAX : 10000;
+        action.execMode = scenario == 3 ? UINT8_MAX : 1;
+        rule.actions.push_back(action);
+    }
+    return rule;
+}
+
+struct Outcome {
+    Snapshot document;
+    std::string returned;
+    int status = 0;
+    unsigned sends = 0, documents = 0;
+    size_t growthCalls = 0, failures = 0;
+    std::vector<std::string> events, reads;
+};
+static Outcome run(unsigned kind, unsigned version, unsigned scenario,
+                   size_t failAt = TraceAllocator::never, bool transient = false) {
+    TraceAllocator allocator; allocator.failAt = failAt; allocator.transient = transient;
+    activeAllocator = &allocator; lastDocument = {}; documentsCreated = 0;
+    auto& peripherals = PeripheralManager::getInstance(); peripherals.entries.clear(); peripherals.reads.clear();
+    PeripheralConfig peripheral; peripheral.name = "输出\"\\\n名称";
+    peripheral.type = PeripheralType::GPIO_DIGITAL_OUTPUT; peripherals.entries.emplace("present", peripheral);
+    peripheral.name = String(std::string(90, 'p')); peripheral.type = PeripheralType::UART;
+    peripherals.entries.emplace("present2", peripheral);
+    PeriphExecRule candidate = makeRule(scenario == 4 ? 2 : scenario);
+    Outcome result;
+    if (kind == 0) {
+        TrackedDocument document;
+        JsonObject target = document.to<JsonObject>();
+        if (scenario == 4) {
+            target["id"] = "old ID that must be replaced";
+            target["name"] = 17;
+            target["enabled"]["oldChild"] = true;
+            target["untouched"] = "retain this unrelated value";
+        }
+        candidates[version](target, candidate);
+        const Snapshot beforeMutation = capture(document);
+        candidate.id = "changed"; candidate.name = "changed"; candidate.scriptContent = "changed";
+        candidate.triggers.clear(); candidate.actions.clear();
+        CHECK(capture(document) == beforeMutation); // All dynamic String values remain owned.
+    } else if (kind == 1) {
+        result.returned = fullWriters[version](candidate).c_str();
+    } else {
+        FakeRequest request;
+        std::vector<Issue> issues;
+        if (scenario >= 1) issues.push_back({"WARN_\"\\_long_code", "warning", "rule.actions[0]", "需确认\"\\\n", 1});
+        if (scenario >= 2) issues.push_back({"HIGH_RISK", "warning", "rule", String(std::string(180, 'm')), 2});
+        if (scenario >= 3) issues.push_back({"ERROR_CODE", "error", "rule.triggers[1]", "无效\t参数", 2});
+        const PeriphExecRule current = makeRule(1);
+        preflights[version](&request, scenario % 2 ? "update" : "add", current, candidate, issues,
+                            scenario == 4 ? uint8_t(2) : uint8_t(0));
+        result.status = request.status; result.sends = request.sends; result.returned = request.body;
+    }
+    CHECK(allocator.blocks.empty());
+    result.document = lastDocument; result.documents = documentsCreated;
+    result.events = allocator.events; result.growthCalls = allocator.growthCalls; result.failures = allocator.failures;
+    result.reads = peripherals.reads;
+    activeAllocator = nullptr;
+    return result;
+}
+
+static void equal(const Outcome& expected, const Outcome& actual) {
+    CHECK(expected.document == actual.document);
+    CHECK(expected.returned == actual.returned);
+    CHECK(expected.status == actual.status && expected.sends == actual.sends);
+    CHECK(expected.documents == actual.documents && expected.documents == 1);
+    CHECK(expected.events == actual.events);
+    CHECK(expected.growthCalls == actual.growthCalls && expected.failures == actual.failures);
+    CHECK(expected.reads == actual.reads);
+}
+
+static void completeValues(unsigned kind, unsigned scenario, const Outcome& output) {
+    CHECK(!output.document.overflowed && output.failures == 0);
+    JsonDocument decoded; CHECK(!deserializeJson(decoded, output.document.bytes));
+    const PeriphExecRule rule = makeRule(scenario == 4 ? 2 : scenario);
+    JsonVariantConst content = kind == 2 ? decoded["data"]["candidate"].as<JsonVariantConst>() : decoded.as<JsonVariantConst>();
+    CHECK(content["id"].as<String>() == rule.id);
+    CHECK(content["name"].as<String>() == rule.name);
+    CHECK(content["enabled"].is<bool>() && content["enabled"].as<bool>() == rule.enabled);
+    CHECK(content["triggers"].size() == rule.triggers.size());
+    CHECK(content["actions"].size() == rule.actions.size());
+    CHECK(content["scriptContent"].as<String>() == rule.scriptContent);
+    CHECK(content["reportAfterExec"].is<bool>());
+    CHECK(content["allowPanelControl"].is<bool>());
+    CHECK(content["recordHistory"].is<bool>());
+    if (!rule.triggers.empty()) {
+        CHECK(content["triggers"][0]["intervalSec"].as<uint32_t>() == rule.triggers[0].intervalSec);
+        CHECK(content["triggers"][0]["compareValue"].as<String>() == rule.triggers[0].compareValue);
+        CHECK(content["actions"][0]["syncDelayMs"].as<uint16_t>() == rule.actions[0].syncDelayMs);
+        CHECK(content["actions"][0]["actionValue"].as<String>() == rule.actions[0].actionValue);
+        CHECK(content["actions"][0]["useReceivedValue"].is<bool>());
+        if (kind == 1) {
+            CHECK(content["triggers"][0]["lastTriggerTime"].as<unsigned long>() == UINT32_MAX);
+            CHECK(content["triggers"][0]["triggerCount"].as<uint32_t>() == UINT32_MAX);
+            CHECK(content["triggers"][0]["triggerPeriphName"] == "输出\"\\\n名称");
+            CHECK(content["actions"][0]["targetPeriphType"] == 12);
+            if (rule.triggers.size() > 1) CHECK(content["triggers"][1]["triggerPeriphName"].isNull());
+            if (rule.actions.size() > 1) CHECK(content["actions"][1]["targetPeriphType"].isNull());
+        } else CHECK(content["triggers"][0]["lastTriggerTime"].isNull());
+    }
+    if (kind == 0 && scenario == 4) CHECK(content["untouched"] == "retain this unrelated value");
+    if (kind == 1) CHECK(output.returned == output.document.bytes);
+    if (kind == 2) {
+        CHECK(output.status == 200 && output.sends == 1);
+        const bool allowed = scenario < 3;
+        CHECK(decoded["allowed"].is<bool>() && decoded["allowed"].as<bool>() == allowed);
+        CHECK(decoded["data"]["allowed"].as<bool>() == allowed);
+        CHECK(decoded["data"]["requiresConfirmation"].as<bool>() == (allowed && scenario > 0));
+        CHECK(decoded["data"]["errorCount"].as<unsigned>() == (scenario >= 3 ? 1U : 0U));
+        CHECK(decoded["data"]["warningCount"].as<unsigned>() == (scenario == 0 ? 0U : scenario == 1 ? 1U : 2U));
+        CHECK(decoded["data"]["riskLevel"] == (scenario == 0 ? "low" : scenario == 1 ? "medium" : "high"));
+        CHECK(decoded["data"]["limits"]["maxRules"].as<size_t>() == FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES);
+        CHECK(decoded["data"]["limits"]["maxTriggersPerRule"] == MAX_TRIGGERS_PER_RULE);
+        CHECK(decoded["data"]["limits"]["maxActionsPerRule"] == MAX_ACTIONS_PER_RULE);
+        CHECK(decoded["data"]["current"].is<JsonObject>() == (scenario % 2 != 0));
+        CHECK(output.returned == output.document.bytes);
+    }
+}
+
+int main(int argc, char** argv) {
+    CHECK(argc == 2);
+    const std::string mode = argv[1];
+    const unsigned kind = mode.find("candidate-") == 0 ? 0 : mode.find("full-") == 0 ? 1 : 2;
+    CHECK(mode == "candidate-values" || mode == "candidate-oom" || mode == "full-values" ||
+          mode == "full-oom" || mode == "preflight-values" || mode == "preflight-oom");
+    const bool faults = mode.find("-oom") != std::string::npos;
+    size_t injected = 0, overflows = 0, rejected = 0;
+    for (unsigned scenario = 0; scenario < 5; ++scenario) {
+        activeCase = mode + "/case=" + std::to_string(scenario);
+        const Outcome baseline = run(kind, 0, scenario);
+        completeValues(kind, scenario, baseline);
+        for (unsigned version = 1; version < 3; ++version) {
+            const Outcome actual = run(kind, version, scenario);
+            equal(baseline, actual); completeValues(kind, scenario, actual);
+        }
+        if (!faults) continue;
+        CHECK(baseline.growthCalls > 0);
+        for (bool transient : {false, true}) {
+            for (size_t point = 0; point < baseline.growthCalls; ++point) {
+                activeCase = mode + "/case=" + std::to_string(scenario) + "/growth=" +
+                    std::to_string(point) + (transient ? "/transient" : "/persistent");
+                const Outcome expected = run(kind, 0, scenario, point, transient);
+                CHECK(expected.failures > 0); ++injected;
+                overflows += expected.document.overflowed ? 1 : 0;
+                if (expected.status == 503) {
+                    ++rejected;
+                    CHECK(expected.sends == 1 && expected.returned == "Rule preflight response allocation failed");
+                }
+                for (unsigned version = 1; version < 3; ++version)
+                    equal(expected, run(kind, version, scenario, point, transient));
+            }
+        }
+    }
+    if (faults) CHECK(injected > 0 && overflows > 0);
+    if (faults && kind == 2) CHECK(rejected > 0);
+    std::cout << "PASS " << mode << " cases=5 variants=3 faults=" << injected << '\n';
+}

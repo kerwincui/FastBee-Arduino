@@ -1,0 +1,154 @@
+#include "protocols/MqttReconnectLifetime.h"
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <string>
+#include <thread>
+#define FASTBEE_ENABLE_REMOTE_RESOURCES 0
+#define LOG_INFO(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+#define LOG_DEBUG(...) ((void)0)
+template<class... Args> void ets_printf(Args...) {}
+using SemaphoreHandle_t=std::recursive_mutex*;
+using TickType_t=unsigned;
+constexpr unsigned portMAX_DELAY=~0u;
+constexpr int pdTRUE=1,MALLOC_CAP_8BIT=1;
+thread_local unsigned ownerDepth=0;
+int xSemaphoreTakeRecursive(SemaphoreHandle_t value,TickType_t timeout) {
+    assert(timeout==0);
+    if(!value->try_lock())return 0;
+    ++ownerDepth;return pdTRUE;
+}
+void xSemaphoreGiveRecursive(SemaphoreHandle_t value) {assert(ownerDepth);--ownerDepth;value->unlock();}
+@GUARD@
+class String:public std::string {
+public:
+    using std::string::string;
+    bool isEmpty() const {return empty();}
+    int indexOf(char value) const {auto at=find(value);return at==npos?-1:static_cast<int>(at);}
+};
+size_t freeMemory=40000;
+size_t heap_caps_get_free_size(int) {return freeMemory;}
+unsigned long millis() {return 700;}
+void delay(unsigned) {assert(ownerDepth);}
+bool mqttHasInternalDram(uint32_t,uint32_t,const char*) {return true;}
+namespace FastBee { namespace MemoryBudget {constexpr uint32_t WEB_GUARD_RECOVERY_DRAM_FREE=20000;} }
+struct Client {
+    unsigned stops=0,flushes=0;
+    void stop() {assert(ownerDepth);++stops;}
+    void flush() {assert(ownerDepth);++flushes;}
+};
+struct Socket {
+    unsigned writes=0,reads=0,sets=0,disconnects=0;
+    bool online=true;
+    Client* client=nullptr;
+    bool connected() {assert(ownerDepth);++reads;return online;}
+    bool publish(const char*,const char*,bool) {assert(ownerDepth);++writes;return true;}
+    bool subscribe(const char*,int) {assert(ownerDepth);++writes;return true;}
+    bool unsubscribe(const char*) {assert(ownerDepth);++writes;return true;}
+    void disconnect() {assert(ownerDepth);++disconnects;online=false;}
+    void setClient(Client& value) {assert(ownerDepth);++sets;client=&value;}
+};
+struct Web {bool isWebBusy() const {return false;}} web;
+struct FastBeeFramework {
+    static FastBeeFramework* getInstance() {static FastBeeFramework value;return &value;}
+    Web* getWebConfigManager() {return &web;}
+};
+enum class MqttTopicType {REALTIME_MON};
+class MQTTClient {
+public:
+    std::recursive_mutex mutex;
+    SemaphoreHandle_t _publishMutex=&mutex;
+    FastBee::MqttReconnectLifetime _reconnectLifetime;
+    std::atomic<bool> stopped{false},isConnected{true},_stopCompleted{false},_reconnectPending{false};
+    std::atomic<bool> _beginAttempted{false},_webYieldPending{false};
+    std::atomic<uint32_t> ntpConnectionEpoch{0};
+    unsigned long reconnectInterval=5000,lastReconnectAttempt=0;
+    unsigned consecutiveTimeouts=0,releases=0,resumes=0,notifications=0,monitorCalls=0;
+    bool _lastMqttsTlsMemoryFailure=false,_mqttsMemoryBackoffActive=false,testOnly=false;
+    Client wifiClient,*_externalClient=nullptr,*_wifiClientSecure=nullptr;
+    bool _externalClientSecure=false;
+    Socket mqttClient;
+    using StatusChangeCallback=std::function<void(const String&)>;
+    StatusChangeCallback _statusChangeCallback;
+    std::function<void(const String&,const String&,MqttTopicType)> messageCallback;
+    std::function<String()> _monitorDataProvider;
+    String monitorPayload;
+    bool isConnectionTestOnly() const {return testOnly;}
+    void releaseTlsTransport() {assert(ownerDepth);++releases;_wifiClientSecure=nullptr;}
+    void resumeWebServices() {assert(ownerDepth);++resumes;}
+    void _notifyStatusChange() {assert(ownerDepth);++notifications;}
+    int findEnabledPublishTopicIndex(MqttTopicType) {return 0;}
+    bool publishToTopic(size_t,const String& value) {assert(ownerDepth);++monitorCalls;monitorPayload=value;return true;}
+    bool disconnect();bool stop();bool setTransportClient(Client*,bool secure=false);
+    bool subscribeExact(const String&);bool unsubscribeExact(const String&);bool publishExact(const String&,const String&);
+    void yieldToWeb();bool publishMonitorData();
+    void setMessageCallback(std::function<void(const String&,const String&,MqttTopicType)>);
+    void setStatusChangeCallback(StatusChangeCallback);void setMonitorDataProvider(std::function<String()>);
+};
+@METHODS@
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];MQTTClient c;Client external,secure;
+    auto rejectIo=[&]{assert(!c.publishExact("topic","message")&&!c.subscribeExact("topic")&&!c.unsubscribeExact("topic"));assert(c.mqttClient.writes==0);};
+    if(mode=="recursive") {
+        RecursiveMutexGuard owner(c._publishMutex,0);
+        assert(c.publishExact("topic","message")&&c.subscribeExact("topic")&&c.unsubscribeExact("topic"));
+        assert(c.mqttClient.writes==3&&ownerDepth==1);return 0;
+    }
+    if(mode=="stopped") {c.stopped=true;rejectIo();return 0;}
+    if(mode=="test_isolation") {c.testOnly=true;rejectIo();return 0;}
+    if(mode=="null_mutex") {c._publishMutex=nullptr;rejectIo();assert(!c.disconnect()&&!c.stop()&&!c.setTransportClient(&external));return 0;}
+    if(mode=="disconnect") {
+        c._externalClient=&external;c._wifiClientSecure=&secure;
+        assert(c.disconnect()&&!c.isConnected&&c.mqttClient.disconnects==1);
+        assert(external.flushes==1&&external.stops==1&&c.wifiClient.stops==1&&c.releases==1&&c.ntpConnectionEpoch==1);return 0;
+    }
+    if(mode=="stop_worker") {
+        assert(c._reconnectLifetime.reserve());assert(!c.stop()&&c._reconnectLifetime.stopping());
+        assert(c.mqttClient.disconnects==0&&!c._stopCompleted);
+        c._reconnectLifetime.finish();assert(c.stop()&&c._stopCompleted&&c.resumes==1);
+        assert(c.stop()&&c.mqttClient.disconnects==1&&c.resumes==1);return 0;
+    }
+    if(mode=="transport_frozen") {
+        assert(c.setTransportClient(&external)&&c.mqttClient.client==&external);
+        c._beginAttempted=true;assert(!c.setTransportClient(nullptr));
+        assert(c._externalClient==&external&&c.mqttClient.sets==1);return 0;
+    }
+    if(mode=="callbacks_frozen") {
+        unsigned oldCalls=0,newCalls=0;
+        c.setMessageCallback([&](const String&,const String&,MqttTopicType){++oldCalls;});
+        c.setStatusChangeCallback([&](const String&){++oldCalls;});
+        c.setMonitorDataProvider([&]{++oldCalls;return String("[]");});
+        c._beginAttempted=true;
+        c.setMessageCallback([&](const String&,const String&,MqttTopicType){++newCalls;});
+        c.setStatusChangeCallback([&](const String&){++newCalls;});
+        c.setMonitorDataProvider([&]{++newCalls;return String("[]");});
+        c.messageCallback("","",MqttTopicType::REALTIME_MON);c._statusChangeCallback("");c._monitorDataProvider();
+        assert(oldCalls==3&&newCalls==0);return 0;
+    }
+    if(mode=="yield_healthy") {c.yieldToWeb();assert(c.isConnected&&!c._webYieldPending&&c.wifiClient.stops==0);return 0;}
+    if(mode=="yield_worker") {
+        freeMemory=19000;assert(c._reconnectLifetime.reserve());c.yieldToWeb();
+        assert(c._webYieldPending&&c.wifiClient.stops==0);
+        c._reconnectLifetime.finish();c.yieldToWeb();assert(!c._webYieldPending&&c.wifiClient.stops==1);return 0;
+    }
+    if(mode=="monitor_missing") {assert(!c.publishMonitorData()&&c.monitorCalls==0);return 0;}
+    if(mode=="monitor_sample") {
+        c.setMonitorDataProvider([]{return String("[{\"id\":\"temp\",\"value\":\"23\"}]");});
+        assert(c.publishMonitorData()&&c.monitorCalls==1&&c.monitorPayload.find("23")!=std::string::npos);return 0;
+    }
+    assert(mode=="contention"||mode=="stop_busy"||mode=="yield_busy");
+    std::promise<void> entered,release;auto released=release.get_future();
+    std::thread owner([&]{RecursiveMutexGuard held(c._publishMutex,0);assert(held.isLocked());entered.set_value();released.wait();});
+    entered.get_future().wait();
+    if(mode=="contention") {rejectIo();assert(!c.disconnect()&&!c.setTransportClient(&external)&&c.mqttClient.reads==0&&c.mqttClient.sets==0);}
+    if(mode=="stop_busy") {assert(!c.stop()&&c.stopped&&!c._stopCompleted&&c.mqttClient.disconnects==0);}
+    if(mode=="yield_busy") {freeMemory=19000;c._externalClient=&external;c._wifiClientSecure=&secure;c.yieldToWeb();assert(c._webYieldPending&&c.isConnected&&external.stops==0&&secure.stops==0);}
+    release.set_value();owner.join();
+    if(mode=="stop_busy")assert(c.stop()&&c._stopCompleted&&c.mqttClient.disconnects==1);
+    if(mode=="yield_busy") {c.yieldToWeb();assert(!c._webYieldPending&&!c.isConnected&&external.stops==1&&secure.stops==1&&c.reconnectInterval==30000);}
+    if(mode=="contention")assert(c.publishExact("topic","message"));
+}

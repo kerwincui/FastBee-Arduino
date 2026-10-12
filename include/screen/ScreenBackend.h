@@ -5,6 +5,7 @@
 
 #include "core/PeripheralConfig.h"
 #include "screen/ScreenBacklight.h"
+#include "core/RuntimeResourceSnapshot.h"
 
 namespace FastBee {
 namespace Screen {
@@ -35,7 +36,17 @@ public:
     virtual ~IDisplayBackend() = default;
     virtual bool begin(const DisplayConfigParams& config, String& error) = 0;
     virtual void end() = 0;
+    // Resource-owning backends can refuse cleanup. The owner must retain the
+    // instance and retry instead of destroying a still-leased backend.
+    virtual bool stop(String& error) {
+        setSleep(true);
+        end();
+        error = "";
+        return true;
+    }
     virtual bool ready() const = 0;
+    // Owner screen task only; HTTP observers use ScreenRuntime's published copy.
+    virtual void snapshotBacklightResource(BacklightResourceSnapshot& result) const { result = {}; }
     virtual DisplayCapabilities capabilities() const = 0;
     virtual bool pushPixels(uint16_t x, uint16_t y, uint16_t width,
                             uint16_t height, const uint16_t* rgb565,

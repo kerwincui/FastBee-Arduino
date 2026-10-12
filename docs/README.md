@@ -1,45 +1,27 @@
-# 设备配置样例与本地备份
+# 设备配置与本地备份
 
-本目录只保存可公开提交的设备配置样例和少量源码配套说明。完整的用户手册、烧录教程和 API 文档维护在 [FastBee 设备端文档](https://fastbee.cn/doc/device/)；这里不重复维护整套手册。
+本目录每台设备只维护一套公开配置。四台当前测试设备统一放在 [device-test-configs/](device-test-configs/README.md)，另两种板卡保留各自唯一的样例。公开配置已脱敏，不能用空凭据覆盖现场配置；完整用户手册维护在 [FastBee 设备端文档](https://fastbee.cn/doc/device/)。
 
-仓库中的配置分为两层：
+## 唯一配置入口
 
-- 下表中的五套公开样例可提交到 Git，设备身份、WiFi STA 和 MQTT 凭据必须保持为空。
-- 仓库根目录的 `.device-config-backups/latest/<构建环境>/` 是被 Git 忽略的本机私有备份，每台设备只保留当前最新的一份真机配置。完整 JSON 可能包含设备身份、WiFi 或登录材料，不得打包、提交或发送给其他人；长期保存应移到加密存储。
-
-## 设备配置样例
-
-五套配置分别对应不同硬件，不能互换。样例中的设备身份、WiFi STA 和 MQTT 凭据均为空或已脱敏。
-
-| 构建环境 | 配置来源 | JSON 内容 | 主要用途 |
+| 设备 / 历史端口 | 构建环境 | 配置来源 | 配置范围 |
 | --- | --- | --- | --- |
-| `esp32c3-F4R0` | [`esp32c3-deployment-config.json`](esp32c3-deployment-config.json) | bundle：`device`、`peripherals`、`periph_exec`、`protocol` | DHT11、GPIO LED、OLED 和 3 条联动规则 |
-| `esp32c6-F4R0` | [`c6-rgb-led-f4r0/`](c6-rgb-led-f4r0/README.md) | `device`、`network`、`peripherals`、`periph_exec`、`protocol` | GPIO8 板载 RGB 和 2 条灯效规则 |
-| `esp32-F4R0` | [`puzhong-esp32-config.json`](puzhong-esp32-config.json) | bundle：上述 5 类及 `rule_scripts` | 普中开发板 16 个外设和 20 条综合测试规则 |
-| `esp32s3-F16R8` | [`ecm50a-s3-f16r8/`](ecm50a-s3-f16r8/README.md) | `device`、`network`、`peripherals`、`periph_exec`、`protocol` | ECM50-A 土壤 AI、互补光电 DI、本板继电器和六台 Modbus 设备；SHT30 可选禁用 |
-| `esp32s3-F8R0` | [`waveshare-esp32s3-relay6ch/`](waveshare-esp32s3-relay6ch/README.md) | `device`、`network`、`peripherals`、`periph_exec`、`protocol` | Waveshare 六路继电器、RGB、RS485 和 Modbus 温湿度模板 |
+| C3 开发板 / `COM4` | `esp32c3-F4R0` | [device-test-configs/com4-esp32c3-f4r0/config](device-test-configs/com4-esp32c3-f4r0/README.md) | 3 个外设、3 条规则，含实际功能配置 |
+| 普中 ESP32 / `COM16` | `esp32-F4R0` | [device-test-configs/com16-esp32-f4r0/config](device-test-configs/com16-esp32-f4r0/README.md) | 11 个外设、6 条规则及规则脚本；不恢复旧全量负载 |
+| ECM50-A 工业 S3 / `COM15` | `esp32s3-F16R8` | [device-test-configs/com15-esp32s3-f16r8/config](device-test-configs/com15-esp32s3-f16r8/README.md) | 8 个外设、9 条规则、Modbus 和现场配置 |
+| Waveshare 触控屏 / `COM8/9` | `esp32s3-F16R8`，需 RGB 板级构建 | [device-test-configs/com8-com9-esp32s3-touch/config](device-test-configs/com8-com9-esp32s3-touch/README.md) | 4 个外设、6 条规则（1 条启用）、布局与历史；COM8/9 是同一台设备 |
+| C6 RGB 板 / `COM11` | `esp32c6-F4R0` | [c6-rgb-led-f4r0](c6-rgb-led-f4r0/README.md) | GPIO8 RGB 和 2 条灯效规则 |
+| Waveshare 六路继电器板 / `COM7` | `esp32s3-F8R0` | [waveshare-esp32s3-relay6ch](waveshare-esp32s3-relay6ch/README.md) | 六路继电器、RGB、RS485 和温湿度模板 |
 
-表中的 bundle 是一个 JSON 文件，其中 `files[].content` 保存各配置文件内容。目录格式则直接保存独立 JSON。两种格式均由部署脚本原生支持，不要把某台设备的配置复制给另一台设备。
+上表是配置归属和历史端口标签，不是当前在线清单。DHCP 变化后以串口或路由器实际分配结果为准；访问设备前重新核对 MAC、芯片、端口和当前 STA 地址 `http://<device-ip>`。普通工业 S3 与 RGB 触控屏不能按相同构建环境混用配置或私有备份。
 
-新增带屏设备测试配置见 [`waveshare-esp32s3-touch-lcd4/`](waveshare-esp32s3-touch-lcd4/README.md)，使用 `esp32s3-F16R8`，下载模式通常为 `COM8`、应用运行时当前为 `COM9`，板本为 Rev4.0。模板启用 RGB/GT911、SHT30 温湿度采集、最近十点和面板卡片；Modbus 使用地址 8、9600、8-N-1，预置速度、脉冲数、计数和波特率编码四个 FC03 单寄存器读取任务，且默认全部禁用。当前电机硬件断开，不试运转、不自动写寄存器。它与 COM15 的 ECM50-A 是不同设备，不纳入下面既有五设备自动映射；请按说明单独预检，不能仅凭相同构建环境选择备份。
+每套配置由多个运行 JSON 组成；设备目录中的 README、manifest 和 RGB 构建合同不是运行配置。四设备目录输入必须指向各自的 `config/`，不能指向含 manifest 的设备根目录。C6 和六路继电器板的目录格式可直接作为配置来源。
 
-下表只说明五套公开样例的构建环境和历史串口标签，不是当前实验室在线清单。DHCP 变化后以串口或路由器实际分配结果为准；实际部署时必须先按 MAC/芯片身份核对设备，再将 `<device-ip>` 替换为当前分配的 STA 地址：
+## 部署与配置保护
 
-| 环境 | 串口 | 参考 STA 地址 |
-| --- | --- | --- |
-| `esp32s3-F16R8` | `COM15` | `http://<device-ip>` |
-| `esp32c3-F4R0` | `COM4` | `http://<device-ip>` |
-| `esp32c6-F4R0` | `COM11` | `http://<device-ip>` |
-| `esp32-F4R0` | `COM16` | `http://<device-ip>` |
-| `esp32s3-F8R0` | `COM7` | `http://<device-ip>` |
+四设备的配置来源、历史备份和实施状态见[四设备总说明](device-test-configs/README.md)。目录整理不改变配置内容、部署许可或验收状态；`deploymentAllowed=false` 的公开副本不能作为直接部署许可。部署以同设备的新鲜私有配置为基准，只合并已审核的差异，保留网络、身份、认证、MQTT、外设、规则、布局和非 Web 文件。
 
-样例保留设备原始导出的选择范围，不强行补入未导出的文件。部署时 `scripts/deploy-config-bundle.ps1` 会补齐缺失的工厂默认配置，并根据已启用的外设、规则、Modbus 和网络能力生成 `features.json`。最终写入 LittleFS 的常规文件为 `device.json`、`network.json`、`features.json`、`peripherals.json`、`periph_exec.json` 和 `protocol.json`；只有实际使用规则脚本时才需要 `rule_scripts.json`。`auth.json` 和 `users.json` 含认证材料，不能进入公开样例。
-
-无 PSRAM 设备超过内存预算时，部署脚本会按内存策略禁用部分高占用外设或执行规则，并在部署报告中记录实际裁剪结果。源样例不会被静默改写。
-
-## 单设备部署
-
-先用 `-DryRun` 检查环境、串口、配置内容和内存裁剪结果：
+初次使用独立板卡样例，可先执行预检：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-config-bundle.ps1 `
@@ -47,41 +29,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-config-bundle
   -BundlePath docs/c6-rgb-led-f4r0 -DryRun
 ```
 
-检查通过后移除 `-DryRun`。端口只是示例，应以当前系统识别结果为准。ECM50-A 还需增加 `-NetworkProfile ecm50a`。
+`-DryRun` 会暂存和恢复 `data/config`，仍需遵守共享锁和冻结输入要求；不在构建期间并行运行。实际烧录前核对容量、分区、活动槽，完成私有备份并取得本次写入和读回校验证据。`scripts/deploy-multi-device.ps1 -AllDevices` 仍是五设备历史映射，包含 COM11/COM7，不是当前四设备任务入口。
 
-公开配置不保存 STA 密码，部署时通过环境变量临时提供：
-
-```powershell
-$env:FASTBEE_STA_SSID = "your-ssid"
-$env:FASTBEE_STA_PASSWORD = "your-password"
-```
-
-真机验证只访问设备获得的 STA 地址，不连接设备 AP；STA 联网失败时保留串口和离线配置检查，跳过 Web 检查。
-
-## 五设备批量预检
-
-先执行不写设备的预检，确认五个环境、串口和配置来源一一对应：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-multi-device.ps1 `
-  -AllDevices -DryRun -SkipSerialCheck
-```
-
-实际烧录前仍需逐台确认系统识别的串口。五台设备的 USB 写入会串行执行，不要同时运行第二个烧录命令。设备上线后先确认 `/api/health`，再登录检查功能状态、外设、规则和协议页面；可选菜单只在对应功能实际为 `active` 时显示，“设备配置”等基础菜单始终保留。
+公开配置不保存有效 WiFi、MQTT 或天气密钥，`auth.json` 和 `users.json` 仅留在被 Git 忽略的 `.device-config-backups/`。四设备私有备份按设备 ID 和已核实 MAC 隔离，两台 S3 不能共享一个环境目录键。历史失败、Flash 备份和验收报告按证据保留规则维护，不属于本次配置去重范围。
 
 ## 配置维护规则
 
-1. 修改样例后运行 `node scripts/validate-device-config-examples.js`，确认 JSON 合法、无凭据且五套配置语义指纹互不相同。
-2. 运行 `node scripts/validate-project-hygiene.js`，确认没有把身份、WiFi、MQTT 或认证材料带入可提交文件。
-3. 修改字段、外设类型或联动动作时运行 `npm test`，同步更新对应板卡说明。
-4. 不要把现场导出的真实配置覆盖到公开样例，也不要使用 `git add -f` 提交仓库根目录的 `.device-config-backups/`；更新真机备份时替换 `latest/<构建环境>/`，不要继续累积按日期命名的副本。
-5. 不要随意改动这五个配置路径；部署脚本和回归测试直接引用它们。
+1. 每台设备只更新上表中的唯一配置，不新增日期或“临时”配置副本。manifest 中的原来源路径仅记录历史，不作为第二套配置入口。
+2. 修改公开配置后执行 `node scripts/validate-device-config-examples.js` 和 `node scripts/validate-project-hygiene.js`，检查 JSON、脱敏、关联引用及配置差异。
+3. 改变字段、外设类型、规则或板级参数时同步说明及对应测试；构建和设备验收按实际影响范围执行。
+4. `ecm50a-s3-f16r8/` 与 `waveshare-esp32s3-touch-lcd4/` 保留硬件说明和历史记录，运行 JSON 已移除；不得在这些目录重新维护配置。
+5. 通用外设片段、协议模板和专项例子用于独立功能说明，不是某台设备的完整配置副本；保留在对应专题中。
 
 ## 专项说明
 
-- [通用 I²C 外设配置与验收](generic-i2c-peripherals/README.md)：PCF8574、INA226 与已有传感器的无凭据配置片段、接线/校准、迁移回退和九环境验收记录。
-- [通用外设能力扩展计划（待审核）](generic-peripheral-extension-plan.md)：通过现有外设配置与外设执行扩展 IO 和传感器能力，附可选功能、分工及验收标准。
-- [StamPLC 资料核对记录（历史评估）](stamplc/README.md)：保留硬件与官方源码证据，原整板适配范围已由通用扩展计划取代。
+- [通用 I²C 外设配置与验收](generic-i2c-peripherals/README.md)
+- [通用外设能力扩展计划](generic-peripheral-extension-plan.md)
+- [StamPLC 资料核对记录](stamplc/README.md)
 - [工业 AI / DI / DO / AO 字段参考](industrial-io-guide.md)
+- [触控屏使用说明](touch-screen-user-guide.md)
 - [设备测试与发布流程](https://fastbee.cn/doc/device/deploy/testing.html)
 - [外设配置说明](https://fastbee.cn/doc/device/peripherals/)

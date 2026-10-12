@@ -358,7 +358,7 @@
         saveMappingModal() {
             if (!this.guardDeveloperModeAction()) return;
             if (this._currentMappingTaskIdx < 0) return;
-            this._collectMappingValues();
+            if (this._collectMappingValues() === false) return;
             this._masterTasks[this._currentMappingTaskIdx].mappings = this._currentMappings;
             this._renderAllDevices();
             this.closeMappingModal();
@@ -370,14 +370,14 @@
                 Notification.warning('每任务最多8个映射');
                 return;
             }
-            this._collectMappingValues();
-            this._currentMappings.push({ regOffset: 0, dataType: 0, scaleFactor: 0.1, decimalPlaces: 1, sensorId: '', unit: '' });
+            if (this._collectMappingValues() === false) return;
+            this._currentMappings.push({ regOffset: 0, dataType: 0, wordOrder: 0, scaleFactor: 0.1, decimalPlaces: 1, sensorId: '', unit: '' });
             this._renderMappingTable();
         },
 
         removeMapping(idx) {
             if (!this.guardDeveloperModeAction()) return;
-            this._collectMappingValues();
+            if (this._collectMappingValues() === false) return;
             this._currentMappings.splice(idx, 1);
             this._renderMappingTable();
         },
@@ -386,18 +386,30 @@
             const tbody = document.getElementById('mapping-table-body');
             if (!tbody) return;
             const rows = tbody.querySelectorAll('tr');
-            rows.forEach((row, idx) => {
-                if (idx >= this._currentMappings.length) return;
-                const inputs = row.querySelectorAll('input, select');
-                if (inputs.length >= 6) {
-                    this._currentMappings[idx].regOffset = parseInt(inputs[0].value) || 0;
-                    this._currentMappings[idx].dataType = parseInt(inputs[1].value) || 0;
-                    this._currentMappings[idx].scaleFactor = parseFloat(inputs[2].value) || 1.0;
-                    this._currentMappings[idx].decimalPlaces = parseInt(inputs[3].value) || 1;
-                    this._currentMappings[idx].sensorId = inputs[4].value || '';
-                    this._currentMappings[idx].unit = inputs[5].value || '';
-                }
-            });
+            const next = this._currentMappings.map(item => ({...item}));
+            try {
+                rows.forEach((row, idx) => {
+                    if (idx >= next.length) return;
+                    const inputs = row.querySelectorAll('input, select');
+                    if (inputs.length < 7) throw new Error('映射表单不完整，请重新打开');
+                    for (const position of [0,1,2,3,6]) if (!inputs[position].value.trim()) throw new Error('数值字段不能为空');
+                    Object.assign(next[idx], {regOffset: Number(inputs[0].value), dataType: Number(inputs[1].value),
+                        scaleFactor: Number(inputs[2].value), decimalPlaces: Number(inputs[3].value),
+                        sensorId: inputs[4].value, unit: inputs[5].value, wordOrder: Number(inputs[6].value)});
+                    const m = next[idx], quantity = this._masterTasks[this._currentMappingTaskIdx]?.quantity;
+                    const length = value => new TextEncoder().encode(value).length;
+                    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 125 ||
+                        window.decodeModbusMapping(Array(quantity).fill(0), m) === null ||
+                        !Number.isInteger(m.decimalPlaces) || m.decimalPlaces < 0 || m.decimalPlaces > 6 ||
+                        length(m.sensorId) > 15 || length(m.unit) > 7 || /[\x00-\x1f"\\]/.test(m.sensorId) || /[\x00-\x1f]/.test(m.unit))
+                        throw new Error('映射越界：检查寄存器、类型、字序、倍率、0～6小数位及字段字节长度');
+                });
+                this._currentMappings = next;
+                return true;
+            } catch (error) {
+                Notification.warning(error.message, 'Modbus 映射');
+                return false;
+            }
         },
 
         _renderMappingTable() {
@@ -408,7 +420,7 @@
                 {v: 2, t: 'uint32'}, {v: 3, t: 'int32'}, {v: 4, t: 'float32'}
             ];
             if (this._currentMappings.length === 0) {
-                tbody.innerHTML = this._renderProtocolEmptyRow(7, '暂无轮询任务');
+                tbody.innerHTML = this._renderProtocolEmptyRow(8, '暂无映射');
                 return;
             }
             tbody.innerHTML = this._currentMappings.map((m, idx) => {
@@ -416,12 +428,13 @@
                     '<option value="' + o.v + '"' + (m.dataType === o.v ? ' selected' : '') + '>' + o.t + '</option>'
                 ).join('');
                 return '<tr>' +
-                    '<td><input type="number" class="protocol-mapping-num-sm" value="' + (m.regOffset || 0) + '" min="0" max="124"></td>' +
+                    '<td><input type="number" class="protocol-mapping-num-sm" value="' + escapeHtml(m.regOffset ?? 0) + '" min="0" max="124"></td>' +
                     '<td><select class="protocol-mapping-select">' + dtSelect + '</select></td>' +
-                    '<td><input type="number" class="protocol-mapping-num-md" value="' + (m.scaleFactor ?? 0.1) + '" step="0.001"></td>' +
-                    '<td><input type="number" class="protocol-mapping-num-sm" value="' + (m.decimalPlaces ?? 1) + '" min="0" max="6"></td>' +
-                    '<td><input type="text" class="protocol-mapping-text" value="' + (m.sensorId || '') + '" maxlength="15" placeholder="temperature"></td>' +
-                    '<td><input type="text" class="protocol-mapping-text protocol-mapping-unit" value="' + (m.unit || '') + '" maxlength="7" placeholder="°C"></td>' +
+                    '<td><input type="number" class="protocol-mapping-num-md" value="' + escapeHtml(m.scaleFactor === undefined ? 1 : m.scaleFactor) + '" step="any"></td>' +
+                    '<td><input type="number" class="protocol-mapping-num-sm" value="' + escapeHtml(m.decimalPlaces ?? 1) + '" min="0" max="6"></td>' +
+                    '<td><input type="text" class="protocol-mapping-text" value="' + escapeHtml(m.sensorId || '') + '" maxlength="15" placeholder="temperature"></td>' +
+                    '<td><input type="text" class="protocol-mapping-text protocol-mapping-unit" value="' + escapeHtml(m.unit || '') + '" maxlength="7" placeholder="°C"></td>' +
+                    '<td><select><option value="0">高字在前</option><option value="1"' + (m.wordOrder === 1 ? ' selected' : '') + '>低字在前</option></select></td>' +
                     '<td><button type="button" class="fb-btn fb-btn-sm fb-btn-danger protocol-mapping-remove" data-index="' + idx + '">删除</button></td>' +
                 '</tr>';
             }).join('');
@@ -502,31 +515,7 @@
             this.applyDeveloperModeState(tbody);
         },
 
-        _updateDevice(idx, field, value) {
-            if (this._modbusDevices && this._modbusDevices[idx]) {
-                this._modbusDevices[idx][field] = value;
-                if (field === 'deviceType') {
-                    if (idx === this._activeDeviceIdx) {
-                        this._activateDevice(idx);
-                    } else {
-                        this._renderAllDevices();
-                    }
-                }
-            }
-        },
 
-        _updateActiveDeviceExt(field, value) {
-            if (this._activeDeviceIdx < 0 || !this._modbusDevices) return;
-            var dev = this._modbusDevices[this._activeDeviceIdx];
-            if (!dev) return;
-            if (field.indexOf('pidAddrs.') === 0) {
-                var arrIdx = parseInt(field.split('.')[1]);
-                if (!dev.pidAddrs) dev.pidAddrs = [0, 1, 2, 3, 4, 5];
-                dev.pidAddrs[arrIdx] = value;
-            } else {
-                dev[field] = value;
-            }
-        },
 
         addModbusDevice() {
             if (!this.guardDeveloperModeAction()) return;
@@ -580,11 +569,9 @@
             document.getElementById('mdev-edit-motor-decimals').value = String(dev ? (dev.motorDecimals || 0) : 0);
             document.getElementById('mdev-edit-motor-min-pos').value = dev ? (dev.motorMinPosition || 0) : 0;
             document.getElementById('mdev-edit-motor-max-pos').value = dev ? (dev.motorMaxPosition || 0) : 0;
-            document.getElementById('mdev-edit-motor-cur-pos').value = dev ? (dev.motorCurrentPosition || 0) : 0;
-            document.getElementById('mdev-edit-motor-move-step').value = dev ? (dev.motorMoveStep || 0) : 0;
-            document.getElementById('mdev-edit-motor-last-pulse').value = dev ? (dev.motorLastPulse || 0) : 0;
+            document.getElementById('mdev-edit-motor-limits').checked = !!(dev && dev.motorMaxPosition > dev.motorMinPosition);
+            this._onMotorLimitToggle();
             var profile = dev && dev.motorProtocol;
-            document.getElementById('mdev-edit-motor-profile').value = profile || !dev ? 'custom' : 'legacy';
             var protocolDefaults = { 'read-fc': 3, 'write-fc': 6, 'read-speed': motorRegs[3], 'read-pulse': motorRegs[4],
                 'fwd-value': 1, 'rev-value': 1, 'stop-value': 1 };
             var protocolKeys = { 'read-fc':'readFunction', 'write-fc':'writeFunction', 'read-speed':'speedReadRegister',
@@ -592,8 +579,9 @@
             Object.keys(protocolDefaults).forEach(function(key) {
                 document.getElementById('mdev-edit-motor-' + key).value = profile ? profile[protocolKeys[key]] : protocolDefaults[key];
             });
-            document.getElementById('mdev-edit-motor-finite').checked = profile ? profile.finitePulseMove === true : !!dev;
-            this._onMotorProtocolPreset();
+            ['mdev-edit-motor-advanced', 'mdev-edit-travel-section'].forEach(function(id) {
+                var details = document.getElementById(id); if (details) details.open = false;
+            });
             this._onEditTypeChange();
             var title = document.getElementById('modbus-edit-modal-title');
             if (title) title.textContent = (idx >= 0)
@@ -602,24 +590,33 @@
             AppState.showModal(modal);
         },
 
-        _onMotorProtocolPreset() {
-            var preset = document.getElementById('mdev-edit-motor-profile').value;
-            if (preset === 'yf53') {
-                var fields = { fwd:0, rev:1, stop:2, speed:5, pulse:7, decimals:0,
-                    'read-fc':3, 'write-fc':6, 'read-speed':5, 'read-pulse':7,
-                    'fwd-value':1, 'rev-value':1, 'stop-value':1 };
-                Object.keys(fields).forEach(function(key) { document.getElementById('mdev-edit-motor-' + key).value = fields[key]; });
-                document.getElementById('mdev-edit-motor-finite').checked = false;
-                // Presets only fill the local form. Bus settings, identity and
-                // travel limits are never changed by selecting a model.
-                document.getElementById('mdev-edit-motor-profile').value = 'custom';
-            }
-            var section = document.getElementById('mdev-edit-motor-protocol-fields');
-            if (section) AppState.toggleVisible(section, preset !== 'legacy');
+        _onMotorLimitToggle() {
+            var enabled = document.getElementById('mdev-edit-motor-limits').checked;
+            var minimum = document.getElementById('mdev-edit-motor-min-pos');
+            var maximum = document.getElementById('mdev-edit-motor-max-pos');
+            if (enabled && Number(minimum.value) === Number(maximum.value)) { minimum.value = -400; maximum.value = 400; }
+            var fields = document.getElementById('mdev-edit-motor-limit-fields');
+            if (fields) AppState.toggleVisible(fields, enabled);
+        },
+
+        openMotorTravelSettings() {
+            if (!this.guardDeveloperModeAction()) return;
+            var index = this._activeDeviceIdx;
+            var device = this._modbusDevices && this._modbusDevices[index];
+            if (!device || device.deviceType !== 'motor') return;
+            if (typeof this._closeCtrlModal === 'function') this._closeCtrlModal();
+            this._openEditModal(index);
+            var section = document.getElementById('mdev-edit-travel-section');
+            if (section) { section.open = true; section.scrollIntoView({ block: 'start' }); }
         },
 
         _onEditTypeChange() {
             var type = document.getElementById('mdev-edit-type').value;
+            ['mdev-edit-ch', 'mdev-edit-base', 'mdev-edit-protocol', 'mdev-edit-nc'].forEach(function(id) {
+                var input = document.getElementById(id);
+                var row = input && input.closest && input.closest('.fb-grid-2');
+                if (row) AppState.toggleVisible(row, type !== 'motor');
+            });
             var pwmSec = document.getElementById('mdev-edit-pwm-section');
             var pidSec = document.getElementById('mdev-edit-pid-section');
             var motorSec = document.getElementById('mdev-edit-motor-section');
@@ -640,10 +637,37 @@
             this._editingDeviceIdx = -1;
         },
 
-        _saveEditModal() {
+        async _saveEditModalToDevice() {
+            if (this._modbusEditSavePending || !this.guardDeveloperModeAction()) return false;
+            var original = JSON.parse(JSON.stringify(this._modbusDevices || []));
+            if (this._saveEditModal(true) !== true) return false;
+            var modal = document.getElementById('modbus-device-edit-modal');
+            var wasInert = modal && modal.inert;
+            this._modbusEditSavePending = true;
+            if (modal) modal.inert = true;
+            try {
+                if (await this.saveProtocolConfig('modbus-rtu-form')) {
+                    this._closeEditModal();
+                    return true;
+                }
+                this._modbusDevices = original;
+                return false;
+            } catch (error) {
+                this._modbusDevices = original;
+                Notification.error(error.message || '设备配置保存失败');
+                return false;
+            } finally {
+                this._modbusEditSavePending = false;
+                if (modal) modal.inert = wasInert;
+                this._renderAllDevices();
+            }
+        },
+
+        _saveEditModal(keepOpen) {
             if (!this.guardDeveloperModeAction()) return;
             var motorValues = null;
             if (document.getElementById('mdev-edit-type').value === 'motor') {
+                var limits = document.getElementById('mdev-edit-motor-limits').checked;
                 var invalidMotor = false;
                 var motorInteger = function(field, min, max) {
                     var raw = String(document.getElementById('mdev-edit-motor-' + field).value).trim();
@@ -654,24 +678,37 @@
                 motorValues = {
                     motorRegs: ['fwd','rev','stop','speed','pulse'].map(function(field) { return motorInteger(field, 0, 65535); }),
                     motorDecimals: motorInteger('decimals', 0, 6),
-                    motorMinPosition: motorInteger('min-pos', -2147483648, 2147483647),
-                    motorMaxPosition: motorInteger('max-pos', -2147483648, 2147483647),
-                    motorCurrentPosition: motorInteger('cur-pos', -2147483648, 2147483647),
-                    motorMoveStep: motorInteger('move-step', 0, 2147483647),
-                    motorLastPulse: motorInteger('last-pulse', 0, 65535)
+                    motorMinPosition: limits ? motorInteger('min-pos', -2147483648, 0) : 0,
+                    motorMaxPosition: limits ? motorInteger('max-pos', 0, 2147483647) : 0
                 };
                 if (invalidMotor) { Notification.warning('请填写有效的电机寄存器、位置和步数整数'); return; }
-                if (document.getElementById('mdev-edit-motor-profile').value !== 'legacy') {
-                    var profile = { version:1, readFunction:motorInteger('read-fc', 3, 4),
-                        writeFunction:motorInteger('write-fc', 6, 16),
-                        speedReadRegister:motorInteger('read-speed', 0, 65535),
-                        pulseReadRegister:motorInteger('read-pulse', 0, 65535),
-                        forwardValue:motorInteger('fwd-value', 0, 65535),
-                        reverseValue:motorInteger('rev-value', 0, 65535),
-                        stopValue:motorInteger('stop-value', 0, 65535),
-                        finitePulseMove:document.getElementById('mdev-edit-motor-finite').checked };
-                    if (invalidMotor || [6,16].indexOf(profile.writeFunction) < 0) {
-                        Notification.warning('请核对协议功能码、读回地址和动作值'); return;
+                var previousMotor = this._modbusDevices && this._modbusDevices[this._editingDeviceIdx];
+                var previousProfile = previousMotor && previousMotor.motorProtocol;
+                var wasLimited = previousMotor && previousMotor.motorMaxPosition > previousMotor.motorMinPosition;
+                var profile = { version:1, readFunction:motorInteger('read-fc', 3, 4),
+                    writeFunction:motorInteger('write-fc', 6, 16),
+                    speedReadRegister:motorInteger('read-speed', 0, 65535),
+                    pulseReadRegister:motorInteger('read-pulse', 0, 65535),
+                    forwardValue:motorInteger('fwd-value', 0, 65535),
+                    reverseValue:motorInteger('rev-value', 0, 65535),
+                    stopValue:motorInteger('stop-value', 0, 65535),
+                    finitePulseMove:!previousProfile || previousProfile.finitePulseMove !== false };
+                if (invalidMotor || [6,16].indexOf(profile.writeFunction) < 0) {
+                    Notification.warning('请核对协议功能码、读回地址和动作值'); return;
+                }
+                // Preserve an implicit legacy mapping on ordinary edits. New
+                // motors and advanced changes use the same explicit settings.
+                var keepLegacy = previousMotor && previousMotor.deviceType === 'motor' && !previousProfile &&
+                    (!limits || wasLimited) && profile.readFunction === 3 && profile.writeFunction === 6 &&
+                    profile.speedReadRegister === motorValues.motorRegs[3] && profile.pulseReadRegister === motorValues.motorRegs[4] &&
+                    profile.forwardValue === 1 && profile.reverseValue === 1 && profile.stopValue === 1;
+                if (!keepLegacy) {
+                    if (limits) {
+                        if (previousMotor && previousMotor.motorMinPosition === motorValues.motorMinPosition &&
+                            previousMotor.motorMaxPosition === motorValues.motorMaxPosition) {
+                            if (previousProfile && previousProfile.positionTracking) profile.positionTracking = previousProfile.positionTracking;
+                            if (previousProfile && Number.isInteger(previousProfile.startupPosition)) profile.startupPosition = previousProfile.startupPosition;
+                        } else { profile.positionTracking = 'commanded'; profile.startupPosition = 0; }
                     }
                     var actionValues = [profile.forwardValue, profile.reverseValue, profile.stopValue];
                     var regs = motorValues.motorRegs;
@@ -688,12 +725,8 @@
                     if (regs[3] === regs[4]) { Notification.warning('速度和脉冲数的写入地址不能相同'); return; }
                     motorValues.motorProtocol = profile;
                 }
-                if (motorValues.motorMaxPosition < motorValues.motorMinPosition) {
-                    Notification.warning('最大位置不能小于最小位置；两者相等表示关闭软限位'); return;
-                }
-                if (motorValues.motorMaxPosition > motorValues.motorMinPosition &&
-                    (motorValues.motorCurrentPosition < motorValues.motorMinPosition || motorValues.motorCurrentPosition > motorValues.motorMaxPosition)) {
-                    Notification.warning('估算位置必须在软限位范围内，请先核对实际原点'); return;
+                if (limits && motorValues.motorMaxPosition <= motorValues.motorMinPosition) {
+                    Notification.warning('行程范围必须包含零点，且最大位置大于最小位置'); return;
                 }
             }
             var idx = this._editingDeviceIdx;
@@ -736,9 +769,15 @@
             if (motorValues) {
                 Object.assign(dev, motorValues);
                 if (!motorValues.motorProtocol) delete dev.motorProtocol;
+                dev.channelCount = 1; dev.controlProtocol = 1;
+                if (!dev.sensorId) dev.sensorId = 'motor_' + dev.slaveAddress;
+                ['motorTravelDraft', 'motorCurrentPosition', 'motorMoveStep', 'motorLastPulse',
+                    'coilBase', 'ncMode', 'batchRegister', 'batchRegType', 'pwmRegBase', 'pwmResolution',
+                    'pidAddrs', 'pidDecimals'].forEach(function(key) { delete dev[key]; });
             }
             this._renderAllDevices();
-            this._closeEditModal();
+            if (keepOpen !== true) this._closeEditModal();
+            return true;
         },
 
         // ========== UART 外设 ==========

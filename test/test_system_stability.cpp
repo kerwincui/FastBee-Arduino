@@ -1221,9 +1221,9 @@ void test_source_code_periph_exec_edit_load_retry() {
 void test_source_code_config_transfer_auth_label() {
     TestLog::testStart("Source: Config Transfer auth.json Chinese Label");
 
-    std::string content = readSrcFile("web-src/modules/runtime/device-config.js");
+    std::string content = readSrcFile("web-src/modules/runtime/device-config-transfer.js");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
-        "Failed to read device-config.js");
+        "Failed to read device-config-transfer.js");
     TestLog::step("File loaded");
 
     // CONFIG_TRANSFER_LABELS 必须包含 auth.json 条目
@@ -1277,11 +1277,19 @@ void test_source_code_mqtt_test_stops_main_client() {
         "Test handler must save config to protocol.json before connecting");
     TestLog::step("saveMqttTestConfig call present");
 
-    // 必须停止主客户端后再重启（避免 broker session 冲突）
-    TEST_ASSERT_TRUE_MESSAGE(
-        content.find("Stopping main client before deferred restart") != std::string::npos,
-        "Must stop main client before deferred restart");
-    TestLog::step("Stop main client log message present");
+    // The manager owns stop/rebuild; the route must not bypass active readers.
+    TEST_ASSERT_TRUE_MESSAGE(content.find("deferred = pm->restartMQTTDeferred(true, &restartResult)") != std::string::npos,
+        "MQTT test must request a forced rebuild with an explicit lifecycle result");
+    const std::string manager = readSrcFile("src/protocols/ProtocolManager.cpp");
+    const size_t begin = manager.find("bool ProtocolManager::restartMQTTDeferred(");
+    const size_t lifecycle = manager.find("MqttClientLifetime::Write lifecycle", begin);
+    const size_t stop = manager.find("if (!mqttClient->stop())", lifecycle);
+    const size_t reset = manager.find("mqttClient.reset()", stop);
+    const size_t create = manager.find("new (std::nothrow) MQTTClient()", reset);
+    TEST_ASSERT_TRUE_MESSAGE(begin != std::string::npos && lifecycle != std::string::npos && stop != std::string::npos &&
+                             reset != std::string::npos && create != std::string::npos && lifecycle < stop && stop < reset && reset < create,
+        "The lifecycle owner must stop and retire the old client before creating another broker connection");
+    TestLog::step("Manager serializes stop, retirement and rebuild");
 
     // 必须调用 restartMQTTDeferred() 通过主客户端重连（与"保存"按钮相同路径）
     TEST_ASSERT_TRUE_MESSAGE(
@@ -1291,7 +1299,7 @@ void test_source_code_mqtt_test_stops_main_client() {
 
     // 必须返回 deferred 状态让前端通过轮询确认连接结果
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("doc[\"data\"][\"deferred\"]") != std::string::npos,
+        content.find("FastBee::setFixedJsonField(doc, \"data\", \"deferred\", deferred || pending);") != std::string::npos,
         "Must return deferred status for frontend polling");
     TestLog::step("deferred status response present");
 

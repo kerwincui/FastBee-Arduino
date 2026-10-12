@@ -1,0 +1,115 @@
+#include <Arduino.h>
+#include <cassert>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+
+struct AsyncWebParameter {
+    String stored;
+    const String& value() const { return stored; }
+};
+struct AsyncWebServerRequest {
+    std::map<std::string, AsyncWebParameter> post, query;
+    std::vector<std::string> calls;
+    bool hasParam(const String& key, bool isPost) {
+        const std::string text(key.c_str());
+        calls.push_back(std::string("has:") + (isPost ? "post:" : "query:") + text);
+        return (isPost ? post : query).count(text) != 0;
+    }
+    const AsyncWebParameter* getParam(const String& key, bool isPost) {
+        const std::string text(key.c_str());
+        calls.push_back(std::string("get:") + (isPost ? "post:" : "query:") + text);
+        auto& table = isPost ? post : query;
+        const auto found = table.find(text);
+        assert(found != table.end());
+        return &found->second;
+    }
+    // The optimization must enter the existing String lookup. This fixture
+    // rejects any new direct SDK char* path, including failure-only paths.
+    bool hasParam(const char*, bool) { assert(false && "SDK char* bypass"); return false; }
+    const AsyncWebParameter* getParam(const char*, bool) { assert(false && "SDK char* bypass"); return nullptr; }
+};
+struct OriginalWebHandlerContext {
+@ORIGINAL_DECLARATIONS@
+};
+struct WebHandlerContext {
+@PRODUCTION_DECLARATIONS@
+};
+@ORIGINAL_METHODS@
+@PRODUCTION_METHODS@
+
+static unsigned checked = 0;
+template<class Key, class Default>
+void compareValue(AsyncWebServerRequest* input, const Key& key, const Default& fallback) {
+    OriginalWebHandlerContext old; WebHandlerContext current;
+    AsyncWebServerRequest before, after;
+    if (input) before = after = *input;
+    const auto expected = old.getParamValue(input ? &before : nullptr, key, fallback);
+    const auto actual = current.getParamValue(input ? &after : nullptr, key, fallback);
+    assert(actual == expected);
+    assert(before.calls == after.calls);
+    ++checked;
+}
+template<class Key>
+void compareNumeric(AsyncWebServerRequest* input, const Key& key, int intFallback, bool boolFallback) {
+    OriginalWebHandlerContext old; WebHandlerContext current;
+    AsyncWebServerRequest before, after;
+    if (input) before = after = *input;
+    assert(current.getParamInt(input ? &after : nullptr, key, intFallback) ==
+           old.getParamInt(input ? &before : nullptr, key, intFallback));
+    assert(before.calls == after.calls);
+    before.calls.clear(); after.calls.clear();
+    assert(current.getParamBool(input ? &after : nullptr, key, boolFallback) ==
+           old.getParamBool(input ? &before : nullptr, key, boolFallback));
+    assert(before.calls == after.calls);
+    checked += 2;
+}
+int main() {
+    using Request = AsyncWebServerRequest;
+    using ValueSS = String (WebHandlerContext::*)(Request*, const String&, const String&);
+    using ValueCC = String (WebHandlerContext::*)(Request*, const char*, const char*);
+    using ValueCS = String (WebHandlerContext::*)(Request*, const char*, const String&);
+    using ValueSC = String (WebHandlerContext::*)(Request*, const String&, const char*);
+    using IntS = int (WebHandlerContext::*)(Request*, const String&, int);
+    using IntC = int (WebHandlerContext::*)(Request*, const char*, int);
+    using BoolS = bool (WebHandlerContext::*)(Request*, const String&, bool);
+    using BoolC = bool (WebHandlerContext::*)(Request*, const char*, bool);
+    ValueSS ss = &WebHandlerContext::getParamValue; ValueCC cc = &WebHandlerContext::getParamValue;
+    ValueCS cs = &WebHandlerContext::getParamValue; ValueSC sc = &WebHandlerContext::getParamValue;
+    IntS is = &WebHandlerContext::getParamInt; IntC ic = &WebHandlerContext::getParamInt;
+    BoolS bs = &WebHandlerContext::getParamBool; BoolC bc = &WebHandlerContext::getParamBool;
+    assert(ss && cc && cs && sc && is && ic && bs && bc);
+    for (int scenario = 0; scenario < 7; ++scenario) {
+        Request input;
+        if (scenario == 1 || scenario == 3) input.query["key"] = {String("query")};
+        if (scenario == 2 || scenario == 3) input.post["key"] = {String("post")};
+        if (scenario == 4) { input.post["key"] = {String("")}; input.query["key"] = {String("query")}; }
+        if (scenario == 5) input.query[""] = {String("empty-key")};
+        Request* request = scenario == 6 ? nullptr : &input;
+        const char* key = scenario == 5 ? "" : "key";
+        const String stringKey(key), stringFallback("fallback");
+        compareValue(request, key, "fallback"); compareValue(request, key, stringFallback);
+        compareValue(request, stringKey, "fallback"); compareValue(request, stringKey, stringFallback);
+        compareValue(request, key, ""); compareValue(request, key, static_cast<const char*>(nullptr));
+        compareValue(request, static_cast<const char*>(nullptr), "fallback");
+        compareValue(request, static_cast<const char*>(nullptr), static_cast<const char*>(nullptr));
+        OriginalWebHandlerContext old; WebHandlerContext current;
+        auto before = input, after = input;
+        assert(current.getParamValue(request ? &after : nullptr, key) ==
+               old.getParamValue(request ? &before : nullptr, key));
+        assert(before.calls == after.calls); ++checked;
+        before = after = input;
+        assert(current.getParamValue(request ? &after : nullptr, stringKey) ==
+               old.getParamValue(request ? &before : nullptr, stringKey));
+        assert(before.calls == after.calls); ++checked;
+        compareNumeric(request, key, -23, true); compareNumeric(request, stringKey, -23, true);
+        compareNumeric(request, static_cast<const char*>(nullptr), 41, false);
+    }
+    for (const char* value : {"0", "-17", "+8", " 12", "12suffix", "invalid", "", "TRUE", "tRuE", "1", "false", "yes", "true "}) {
+        Request input;
+        input.post["key"] = {String(value)}; input.query["key"] = {String("99")};
+        compareNumeric(&input, "key", 37, true); compareNumeric(&input, String("key"), 37, false);
+    }
+    std::cout << "PASS compared=" << checked << " actual production methods; no device access\n";
+}

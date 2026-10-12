@@ -1,0 +1,34 @@
+{
+  "peripherals": [
+    {
+      "id": "mcp_demo_bus", "name": "MCP demo I2C", "type": 2, "enabled": false,
+      "pins": [8, 9],
+      "params": {"frequency": 100000, "address": 0, "isMaster": true}
+    },
+    {
+      "id": "mcp_demo_reset", "name": "MCP dedicated RESET", "type": 12, "enabled": false,
+      "pins": [10],
+      "params": {"ioSource": 0, "initialState": 1, "invertLogic": false, "passive": false}
+    },
+    {
+      "id": "mcp_demo", "name": "MCP demo provider", "type": 55, "enabled": false,
+      "pins": [],
+      "params": {"driver": "MCP23017", "busPeripheralId": "mcp_demo_bus", "resetPeripheralId": "mcp_demo_reset", "address": 32, "sampleInterval": 50}
+    },
+    {
+      "id": "mcp_demo_a7", "name": "MCP A7 output", "type": 12, "enabled": false,
+      "pins": [],
+      "params": {"ioSource": 1, "providerId": "mcp_demo", "channel": 7, "initialState": 0, "invertLogic": false, "passive": false, "inputMode": 0}
+    },
+    {
+      "id": "mcp_demo_b7", "name": "MCP B7 output", "type": 12, "enabled": false,
+      "pins": [],
+      "params": {"ioSource": 1, "providerId": "mcp_demo", "channel": 15, "initialState": 0, "invertLogic": false, "passive": false, "inputMode": 0}
+    },
+    {
+      "id": "mcp_demo_input", "name": "MCP A0 input", "type": 11, "enabled": false,
+      "pins": [],
+      "params": {"ioSource": 1, "providerId": "mcp_demo", "channel": 0, "initialState": 0, "invertLogic": false, "passive": false, "inputMode": 0, "debounceMs": 50, "reportMode": 0}
+    }
+  ]
+}

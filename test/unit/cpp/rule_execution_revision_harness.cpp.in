@@ -1,0 +1,98 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "core/UartEventOrigin.h"
+#include "core/RuleOutputIdentity.h"
+#include <cassert>
+#include <cstdint>
+#include <map>
+#include <string>
+static bool busy=false, sourceLive=true;
+static std::string retireAt;
+static unsigned saves=0, mirrors=0, events=0, reboots=0, syncs=0;
+static void stage(const char* name) { if(retireAt==name) sourceLive=false; }
+struct MutexGuard { MutexGuard(int,int=0) {} bool isLocked() const {return !busy;} };
+struct Logger {template<class... T> void warningf(T...){} template<class... T> void infof(T...){}
+    template<class... T> void errorf(T...){}
+    void info(const char*){} void warning(const char*){} void error(const char*){} } LOGGER;
+enum class EventType {EVENT_SYS_RESTART};
+enum class RestartReason {USER_COMMAND,CONFIG_CHANGE};
+struct PeriphExecRule {String id;uint64_t runtimeRevision=0,outputActor=0;};
+struct Scheduler {void validateLoadedConfig(){}};
+struct PeriphExecManager {
+    int _rulesMutex=1; bool _configurationLoadFailed=false,_configurationRestartPending=false;
+    uint64_t _ruleRuntimeRevision=0;std::map<String,PeriphExecRule> rules;Scheduler* _scheduler=nullptr;
+    unsigned thermostatRetirements=0;
+    void retireThermostatsLocked(){++thermostatRetirements;}
+    void retireSdRecorderLocked() {} // Recorder behavior is covered by its dedicated runtime harness.
+    void rebuildButtonEventCache(){} void rebuildDataSourceCache(){}
+    void refreshRuleRuntimeIndexesLocked(bool=true);
+    bool isRuleExecutionCurrent(const PeriphExecRule&) const;
+    static PeriphExecManager& getInstance(){static PeriphExecManager value;return value;}
+    void triggerEvent(EventType,const String&,const FastBee::UartEventOrigin&){++events;stage("event");}
+};
+struct PeripheralManager {static PeripheralManager& getInstance(){static PeripheralManager p;return p;}
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin)const{return origin.unbound()||sourceLive;}};
+struct WiFiConfig {bool enableMDNS=false;};
+struct FBNetworkManager {WiFiConfig getConfig(){stage("get-network");return {};}
+    bool updateConfig(const WiFiConfig&,bool){++mirrors;stage("mirror");return true;}};
+struct FastBeeFramework {static FastBeeFramework* getInstance(){static FastBeeFramework f;return &f;}
+    void* getNetworkManager(){static FBNetworkManager network;return &network;}};
+namespace FastBee {
+struct RuntimeFeatureManager {
+    struct UserConfigSnapshot{};
+    enum class ConfigUpdateResult{NO_VALID_ENTRIES,SAVE_FAILED,SAVED};
+    static RuntimeFeatureManager& instance(){static RuntimeFeatureManager value;return value;}
+    ConfigUpdateResult updateAndSave(const JsonDocument&,UserConfigSnapshot*){++saves;stage("save");return ConfigUpdateResult::SAVED;}
+    bool restoreUserConfig(const UserConfigSnapshot&){return true;}
+    bool saveCurrentConfig(){return true;} void loadConfig(){}
+};
+struct SystemTimeQuality {static void installSntpObserver(){stage("observer");}};
+struct SystemTimeZone {static bool startSntp(const char*,const char*,const char*){++syncs;return true;}};
+}
+struct SystemRebooter {static void scheduleReboot(const char*,unsigned long,RestartReason){++reboots;}};
+enum class ExecActionType:uint8_t{ACTION_FEATURE_ENABLE=31,ACTION_FEATURE_DISABLE=32,
+    ACTION_SYS_RESTART=6,ACTION_SYS_FACTORY_RESET=7,ACTION_SYS_NTP_SYNC=8,ACTION_SYS_OTA=9};
+struct ExecAction {uint8_t actionType=31;String actionValue="mdns";};
+struct PeriphExecExecutor {bool executeSystemAction(const ExecAction&,const FastBee::UartEventOrigin&,bool*);};
+// @production@
+int main(int argc,char**argv){
+    assert(argc==2);std::string mode=argv[1];auto& m=PeriphExecManager::getInstance();
+    m.rules["a"]={"a",0};m.rules["b"]={"b",0};
+    m.refreshRuleRuntimeIndexesLocked();auto queued=m.rules["a"];
+    assert(queued.runtimeRevision==m.rules["b"].runtimeRevision);
+    assert(queued.outputActor && m.rules["b"].outputActor && queued.outputActor!=m.rules["b"].outputActor);
+    assert(m.thermostatRetirements==1);
+    assert(m.isRuleExecutionCurrent(queued));
+    if(mode=="revision"){
+        m.refreshRuleRuntimeIndexesLocked();assert(!m.isRuleExecutionCurrent(queued));
+        assert(queued.outputActor!=m.rules["a"].outputActor);
+        assert(m.thermostatRetirements==2);
+        queued=m.rules["a"];assert(m.isRuleExecutionCurrent(queued));
+        m.rules.erase("a");assert(!m.isRuleExecutionCurrent(queued));
+        m.rules["a"]={"a",0};m.refreshRuleRuntimeIndexesLocked();assert(!m.isRuleExecutionCurrent(queued));
+        queued=m.rules["a"];busy=true;assert(!m.isRuleExecutionCurrent(queued));busy=false;
+        m._configurationLoadFailed=true;assert(!m.isRuleExecutionCurrent(queued));m._configurationLoadFailed=false;
+        m._configurationRestartPending=true;assert(!m.isRuleExecutionCurrent(queued));return 0;
+    }
+    if(mode=="exhausted"){
+        m._ruleRuntimeRevision=UINT64_MAX-1;m.refreshRuleRuntimeIndexesLocked();queued=m.rules["a"];
+        assert(!m.isRuleExecutionCurrent(queued));m.refreshRuleRuntimeIndexesLocked();
+        assert(m._ruleRuntimeRevision==UINT64_MAX&&!m.isRuleExecutionCurrent(queued));return 0;
+    }
+    ExecAction action;auto origin=FastBee::UartEventOrigin::captured(1,1);bool retired=false;
+    if(mode=="initial") sourceLive=false;
+    if(mode=="save"||mode=="get-network"||mode=="mirror"||mode=="event") retireAt=mode;
+    if(mode=="restart-event"){action.actionType=6;retireAt="event";}
+    if(mode=="ntp-retire"){action.actionType=8;retireAt="observer";}
+    if(mode=="ota") action.actionType=9;
+    if(mode=="unbound"){origin={};sourceLive=false;}
+    PeriphExecExecutor executor;bool ok=executor.executeSystemAction(action,origin,&retired);
+    const bool expected=mode=="normal"||mode=="unbound";
+    assert(ok==expected);assert(retired==(!expected&&mode!="ota"));
+    assert(reboots==(expected?1U:0U));assert(syncs==0);
+    if(mode=="initial"||mode=="restart-event"||mode=="ntp-retire"||mode=="ota") assert(saves==0);
+    else assert(saves==1); // Source retirement never silently replays or undoes an earlier write.
+    if(mode=="save"||mode=="get-network"||mode=="initial") assert(mirrors==0&&events==0);
+    if(mode=="mirror") assert(mirrors==1&&events==0);
+    if(mode=="event"||mode=="restart-event") assert(events==1);
+}

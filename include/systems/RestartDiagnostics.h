@@ -34,10 +34,11 @@ struct PreRestartSnapshot {
     uint8_t  memGuardLevel;      // 0=NORMAL, 1=WARN, 2=SEVERE, 3=CRITICAL
     uint8_t  consecutiveLowMem;  // 连续低内存计数
     
-    // 任务栈水位（关键任务）
-    uint16_t loopTaskWatermark;     // loopTask 剩余栈 (bytes)
-    uint16_t asyncTcpWatermark;     // async_tcp 剩余栈 (bytes)
-    uint16_t mqttReconnWatermark;   // mqtt_reconn 剩余栈 (bytes)
+    // Legacy layout retained for RTC evidence. New captures use UINT16_MAX
+    // (unknown); consumers must not treat old unleased named-task reads as live.
+    uint16_t loopTaskWatermark;
+    uint16_t asyncTcpWatermark;
+    uint16_t mqttReconnWatermark;
     
     // 系统状态
     uint8_t  wifiConnected;      // WiFi 是否连接

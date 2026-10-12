@@ -69,7 +69,7 @@ class ScreenPanelContractTests(unittest.TestCase):
             "bool panelSafeRule(const PeriphExecRule& rule)",
             "String ScreenPanelManager::ruleFingerprint(const PeriphExecRule& rule)",
             "bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kind,\n                                        bool target, uint32_t& operationId,\n                                        String& error)",
-            "bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kind,\n                                        const String& value, uint32_t& operationId,\n                                        String& error, const char* expectedControlRef)",
+            "bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kind,\n                                        const String& value, uint32_t& operationId,\n                                        String& error, const char* expectedControlRef,\n                                        uint32_t expectedRevision)",
         ]
         bodies = [sig + " {" + braced_block(MANAGER, sig) + "}" for sig in signatures]
         code = r'''
@@ -83,6 +83,8 @@ class ScreenPanelContractTests(unittest.TestCase):
 #include <ArduinoJson.h>
 #include "core/PeripheralExecution.h"
 #include "core/AsyncExecTypes.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/ScreenOutputIdentity.h"
 inline void convertFromJson(JsonVariantConst source, String& destination) { destination=source.as<std::string>(); }
  enum class PanelRuleInputKind : uint8_t { TRIGGER, BOOLEAN, NUMBER, UNSUPPORTED };
  struct PanelNumericConstraints {
@@ -93,22 +95,51 @@ inline void convertFromJson(JsonVariantConst source, String& destination) { dest
  enum class ScreenActionKind { SET_BOOLEAN, SET_NUMBER, TRIGGER, SYSTEM_RESTART, SYSTEM_ACTION, MOTOR_COMMAND };
 struct MotorControlService {
  static MotorControlService& instance(){static MotorControlService service;return service;}
- unsigned calls=0; String receivedRef;
- bool submit(const String& ref,const String&,int,const String&,uint32_t&,String&){++calls;receivedRef=ref;return true;}
+ unsigned calls=0; String receivedRef; FastBee::OrdinaryControlContext captured;
+ bool submit(const String& ref,const String& action,int,const String&,uint32_t&,String&,
+  const FastBee::OrdinaryControlContext* context=nullptr){
+  assert(action=="readStatus" ? !context : context!=nullptr);
+  if(context)captured=*context;++calls;receivedRef=ref;return true;
+ }
 };
 enum class RestartReason { USER_COMMAND };
 struct SystemRebooter {
  static bool isScheduled(){return false;}
  static void scheduleReboot(const char*,unsigned long,RestartReason){assert(false);}
 };
-struct PanelLock { explicit PanelLock(void*){} bool locked()const{return true;} };
+int panelLockDepth=0; bool panelLockBusy=false;
+struct PanelLock {
+ bool acquired;
+ explicit PanelLock(void*,uint32_t=0):acquired(!panelLockBusy){if(acquired)++panelLockDepth;}
+ ~PanelLock(){if(acquired)--panelLockDepth;}
+ bool locked()const{return acquired;}
+};
+struct ScreenPanelSnapshot { static constexpr uint32_t MAX_CARDS=24; };
+struct PeripheralManager {
+ unsigned begins=0,finishes=0;bool allowed=true,cancelled=false;
+ FastBee::OrdinaryControlContext captured;
+ static PeripheralManager& getInstance(){static PeripheralManager value;return value;}
+ bool beginOrdinaryControl(FastBee::OrdinaryControl::Source source,uint64_t actor,uint32_t hold,
+  bool overrideConfirmed,uint64_t generation,const String&,uint32_t epoch,
+  const FastBee::UartEventOrigin&,FastBee::OrdinaryControlContext& context){
+  assert(panelLockDepth==0);++begins;
+  if(!allowed || !FastBee::ScreenOutputIdentity::matches(actor))return false;
+  context.request.actor={source,actor};context.request.holdMs=hold;
+  context.request.overrideConfirmed=overrideConfirmed;context.request.reviewedGeneration=generation;
+  context.configEpoch=epoch;context.request.operation=begins;captured=context;return true;
+ }
+ void finishOrdinaryControl(const FastBee::OrdinaryControlContext&,bool cancel){assert(panelLockDepth==0);++finishes;cancelled=cancel;}
+};
 bool validIdentifier(const String& id) { return !id.isEmpty(); }
 struct PeriphExecManager {
- PeriphExecRule rule; int calls=0; String received;
+ PeriphExecRule rule; int calls=0; String received; bool accepted=true,lockAfterSubmit=false;
+ void (*afterSnapshot)()=nullptr;
+ FastBee::OrdinaryControlContext captured;
  static PeriphExecManager& getInstance(){static PeriphExecManager value;return value;}
- bool getRuleSnapshot(const String&,PeriphExecRule& out){out=rule;return true;}
- bool runOnce(const String&,const String& value,String*,AsyncExecResult* result){
-  ++calls;received=value;result->operationId=42;return true;
+ bool getRuleSnapshot(const String&,PeriphExecRule& out){out=rule;if(afterSnapshot)afterSnapshot();return true;}
+ bool runOnce(const String&,const String& value,String*,AsyncExecResult* result,const FastBee::OrdinaryControlContext* control){
+  assert(panelLockDepth==0 && control);captured=*control;
+  ++calls;received=value;result->operationId=42;panelLockBusy=lockAfterSubmit;return accepted;
  }
 };
 JsonDocument remoteChoices;
@@ -117,15 +148,15 @@ JsonDocument remoteChoices;
   return panelRuleInputKind(rule,remoteChoices.as<JsonArrayConst>(),numeric);
 }
 struct ScreenPanelManager {
- JsonDocument config; void* _mutex=nullptr;
+ JsonDocument config; void* _mutex=nullptr;bool _persisted=true;uint32_t _revision=1;
  bool _restartSaveFailed=false,_restartWithoutHistorySave=false;
  std::array<String,24> _operationCardIds{}; std::array<uint32_t,24> _operationIds{};
  bool copyConfig(JsonDocument& out,uint32_t& revision,bool& persisted)const {
-  out.set(config.as<JsonVariantConst>());revision=1;persisted=true;return true;
+  out.set(config.as<JsonVariantConst>());revision=_revision;persisted=_persisted;return true;
  }
   static String ruleFingerprint(const PeriphExecRule&);
   bool dispatchAction(const char*,ScreenActionKind,bool,uint32_t&,String&);
-  bool dispatchAction(const char*,ScreenActionKind,const String&,uint32_t&,String&,const char* expectedControlRef=nullptr);
+  bool dispatchAction(const char*,ScreenActionKind,const String&,uint32_t&,String&,const char* expectedControlRef=nullptr,uint32_t expectedRevision=0);
  };
 METHODS
 int main(){
@@ -134,6 +165,7 @@ int main(){
   ExecAction action;action.actionType=17;action.actionValue="5:$value";
   action.useReceivedValue=true;exec.rule.actions.push_back(action);
  ScreenPanelManager panel;
+ FastBee::ScreenOutputIdentity::publish(panel._revision);
  auto page=panel.config["pages"].add<JsonObject>();
  auto card=page["cards"].add<JsonObject>();
   card["id"]="button";card["kind"]="control";card["visualType"]="number";card["controlRef"]="rule.write";
@@ -142,6 +174,10 @@ int main(){
   uint32_t operation=999;String error;
   assert(panel.dispatchAction("button",ScreenActionKind::SET_NUMBER,String("125"),operation,error));
   assert(exec.calls==1 && exec.received=="125" && operation==42);
+  assert(exec.captured.request.actor.source==FastBee::OrdinaryControl::Source::Screen);
+  assert(exec.captured.request.actor.identity==((uint64_t(1)<<32U)|1U));
+  assert(exec.captured.request.holdMs==30000 && !exec.captured.request.overrideConfirmed);
+  assert(exec.captured.configEpoch==FastBee::SensorConfigEpoch::current());
   assert(!panel.dispatchAction("button",ScreenActionKind::SET_NUMBER,String("126"),operation,error));
   assert(!panel.dispatchAction("button",ScreenActionKind::SET_NUMBER,String("5:125"),operation,error));
   assert(exec.calls==1 && operation==0);
@@ -181,6 +217,9 @@ int main(){
   assert(motors.calls==0);
   assert(panel.dispatchAction("button",ScreenActionKind::MOTOR_COMMAND,String("stop"),operation,error,"motor.new"));
   assert(motors.calls==1 && motors.receivedRef=="motor.new");
+  assert(motors.captured.request.actor.source==FastBee::OrdinaryControl::Source::Screen);
+  assert(motors.captured.request.actor.identity==((uint64_t(1)<<32U)|1U));
+  assert(motors.captured.request.holdMs==30000 && !motors.captured.request.overrideConfirmed);
   assert(panel.dispatchAction("button",ScreenActionKind::MOTOR_COMMAND,String("forward"),operation,error,"motor.new"));
   assert(motors.calls==2);
   // Existing callers without a UI expectation retain their previous API contract.
@@ -208,6 +247,44 @@ int main(){
     assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
     assert(exec.calls==previous+1 && motors.calls==3);
   }
+  exec.rule.actions[0].targetPeriphId="configured-output";
+  card["bindingFingerprint"]=ScreenPanelManager::ruleFingerprint(exec.rule).c_str();
+  const int callsBeforeRejections=exec.calls;
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error,"rule.write",2));
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error,"rule.other",1));
+  for(uint32_t invalid : {uint32_t(0),UINT32_MAX}) {
+    panel._revision=invalid;FastBee::ScreenOutputIdentity::publish(invalid);
+    assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  }
+  panel._revision=1;FastBee::ScreenOutputIdentity::publish(1);
+  auto& pm=PeripheralManager::getInstance();const unsigned previousFinishes=pm.finishes;pm.allowed=false;
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  assert(exec.calls==callsBeforeRejections);pm.allowed=true;
+  panelLockBusy=true;
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  panelLockBusy=false;
+  static ScreenPanelManager* changingPanel=&panel;
+  exec.afterSnapshot=[](){++changingPanel->_revision;FastBee::ScreenOutputIdentity::publish(changingPanel->_revision);};
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  assert(exec.calls==callsBeforeRejections);exec.afterSnapshot=nullptr;
+  exec.accepted=false;
+  assert(!panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  assert(pm.finishes==previousFinishes+1 && pm.cancelled);exec.accepted=true;
+  exec.lockAfterSubmit=true;
+  assert(panel.dispatchAction("button",ScreenActionKind::TRIGGER,String(""),operation,error));
+  assert(operation==42 && pm.finishes==previousFinishes+1 && exec.calls==callsBeforeRejections+2);
+  panelLockBusy=false;exec.lockAfterSubmit=false;
+  // Stable identity uses saved card ordinal across pages, not the visible index.
+  card["id"]="first";
+  auto secondPage=panel.config["pages"].add<JsonObject>();
+  auto laterCard=secondPage["cards"].add<JsonObject>();laterCard.set(card);
+  laterCard["id"]="later";
+  assert(panel.dispatchAction("later",ScreenActionKind::TRIGGER,String(""),operation,error));
+  assert(exec.captured.request.actor.identity==((uint64_t(panel._revision)<<32U)|2U));
+  // Zero and exhausted revisions cannot revalidate a stale actor.
+  FastBee::ScreenOutputIdentity::publish(0);assert(!FastBee::ScreenOutputIdentity::matches(exec.captured.request.actor.identity));
+  FastBee::ScreenOutputIdentity::publish(UINT32_MAX);assert(FastBee::ScreenOutputIdentity::current()==0);
+  assert(!FastBee::ScreenOutputIdentity::matches(uint64_t(UINT32_MAX)<<32U|1U));
  }
  '''.replace("INPUT_FUNCTIONS", "\n".join(bodies[:7])).replace("METHODS", "\n".join(bodies[7:]))
         with tempfile.TemporaryDirectory(prefix="fastbee-panel-input-") as directory:
@@ -314,6 +391,9 @@ int main(){
             "bool panelAsyncExecStatusIsTerminal(AsyncExecStatus status)",
         ):
             definitions.append(marker + " {" + braced_block(MANAGER, marker) + "}")
+        dispatch = (ROOT / "include/core/NativeOutputDispatch.h").read_text(encoding="utf-8")
+        marker = "inline void rememberOrdinaryControlResult(const OrdinaryControlResult& current,\n                                         OrdinaryControlResult* aggregate)"
+        definitions.append("namespace FastBee { " + marker + " {" + braced_block(dispatch, marker) + "} }")
         loop_marker = "for (const auto& operation : recentOperations)"
         loop = loop_marker + " {" + braced_block(MANAGER, loop_marker) + "}"
         # Compile the production helpers and snapshot loop without Arduino String
@@ -327,7 +407,7 @@ int main(){
             executable = temporary / ("panel_async.exe" if os.name == "nt" else "panel_async")
             result = subprocess.run(
                 [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                 f"-I{temporary}",
+                 f"-I{temporary}", f"-I{ROOT / 'include'}",
                  str(ROOT / "test/unit/cpp/screen_panel_async_harness.cpp"),
                  "-o", str(executable)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
@@ -359,7 +439,7 @@ int main(){
         lock_at = save.index("PanelLock lock(_mutex)")
         revision_at = save.index("expectedRevision != _revision", lock_at)
         write_at = save.index("writeEnvelope(", revision_at)
-        publish_at = save.index("_configJson = serialized", write_at)
+        publish_at = save.index("_configJson = std::move(serialized)", write_at)
         self.assertLess(lock_at, revision_at)
         self.assertLess(revision_at, write_at)
         self.assertLess(write_at, publish_at)

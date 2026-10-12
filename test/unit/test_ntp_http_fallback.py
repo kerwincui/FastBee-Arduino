@@ -20,8 +20,8 @@ class NtpHttpFallbackTests(unittest.TestCase):
     def test_sntp_remains_first_path_and_timezone_is_preserved(self):
         standard = SOURCE.index('// Standard SNTP remains')
         self.assertLess(SOURCE.index('syncTimeFromConfig()'), standard)
-        self.assertIn('configTzTime(tz, primaryServer.c_str(), secondaryServer.c_str(), nullptr);', SOURCE)
-        self.assertIn('setenv("TZ", tz, 1);', SOURCE)
+        self.assertIn('SystemTimeZone::startSntp(tz, primaryServer.c_str(), secondaryServer.c_str())', SOURCE)
+        self.assertNotIn('setenv("TZ"', SOURCE)
         self.assertIn('LOG_INFO("[NTP] HTTP fallback sync successful")', SOURCE)
 
     def test_failed_fallback_reuses_existing_retry_and_cooldown(self):

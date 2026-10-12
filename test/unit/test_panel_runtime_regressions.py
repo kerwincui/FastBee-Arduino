@@ -59,7 +59,7 @@ int main() {
 }
 '''.replace('TYPES',types).replace('PRODUCTION',production))
 
-    def compile_run(self, source, includes=(), expected=0):
+    def compile_run(self, source, includes=(), expected=0, extra_sources=()):
         compiler = shutil.which('g++') or shutil.which('clang++')
         self.assertIsNotNone(compiler, 'C++17 compiler required')
         with tempfile.TemporaryDirectory(prefix='fastbee-panel-runtime-') as directory:
@@ -68,14 +68,17 @@ int main() {
             exe = base / ('case.exe' if os.name == 'nt' else 'case')
             cpp.write_text(source, encoding='utf-8')
             result = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                                     *[f'-I{p}' for p in includes], str(cpp), '-o', str(exe)],
+                                     *[f'-I{p}' for p in includes], str(cpp),
+                                     *[str(p) for p in extra_sources], '-o', str(exe)],
                                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=40)
             self.assertEqual(result.returncode, 0, (result.stdout or "") + (result.stderr or ""))
             result = subprocess.run([str(exe)], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             if expected == 0:
                 self.assertEqual(result.returncode, 0, (result.stdout or "") + (result.stderr or ""))
             else:
-                self.assertNotEqual(result.returncode, 0, 'Regression mutation was not detected')
+                self.assertEqual(result.returncode, expected,
+                                 'Mutation must fail at the ownership assertion, not crash or hang: ' +
+                                 (result.stdout or "") + (result.stderr or ""))
 
     def test_config_page_link_snapshot_dispatches_its_target(self):
         manager = (ROOT / 'src/core/ScreenPanelManager.cpp').read_text(encoding='utf-8')
@@ -89,12 +92,12 @@ int main() {
         parse_kind = 'bool parseKind(const String& value, ScreenCardKind& out)' + block(manager, 'bool parseKind(')
         parse_visual = 'bool parseVisual(const String& value, ScreenVisualType& out)' + block(manager, 'bool parseVisual(')
         handle = 'void handleTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot, uint16_t x, uint16_t y, char* confirmationCardId, size_t confirmationCapacity, ScreenControlSession* controlSession=nullptr, uint32_t now=0)' + block(runtime, 'void handleTap(')
-        # The shipped layout now uses the fixed five-tab footer. Navigation is
+        # The preserved layout uses the four-tab footer. Navigation is
         # deliberately independent from page cards, so there are no nested
         # page-link controls to dispatch.
-        layout = (ROOT / 'docs/waveshare-esp32s3-touch-lcd4/screen_panel.json').read_text(encoding='utf-8')
+        layout = (ROOT / 'docs/device-test-configs/com8-com9-esp32s3-touch/config/screen_panel.json').read_text(encoding='utf-8')
         pages = jsonlib.loads(layout)['config']['pages']
-        self.assertEqual(5, len(pages))
+        self.assertEqual(4, len(pages))
         self.assertFalse(any(card['kind'] == 'page-link' for page in pages for card in page['cards']))
         source = r'''
 #include <ArduinoJson.h>
@@ -138,7 +141,7 @@ public:
 };
 bool handleContentTap(StripeRenderer&,ScreenPanelSnapshot&,ScreenPanelCardSnapshot&,uint16_t,uint16_t,char*,size_t,ScreenControlSession*,uint32_t){return false;}
 unsigned dispatched=0; bool dispatchSucceeds=true;
-bool dispatchCardAction(ScreenPanelCardSnapshot&,bool=false){++dispatched;return dispatchSucceeds;}
+bool dispatchCardAction(ScreenPanelCardSnapshot&,bool=false,uint32_t=0){++dispatched;return dispatchSucceeds;}
 HANDLE
 int main(){
  JsonDocument doc;
@@ -147,9 +150,9 @@ int main(){
  StripeRenderer renderer;ScreenPanelSnapshot snapshot; snapshot.cardCount=1; snapshot.pageCount=5;
  for (int i=0;i<5;++i) snprintf(snapshot.pages[i].id,sizeof(snapshot.pages[i].id),"page%d",i);
  char confirmation[41]{};
- assert(doc["config"]["pages"].size()==5);
- // Fixed footer navigation selects one of five page IDs and never dispatches
- // the card underneath it.
+ assert(doc["config"]["pages"].size()==4);
+ // The preserved layout has four pages. Independently cover five synthetic
+ // footer targets and ensure navigation never dispatches the card underneath.
  handleTap(renderer,snapshot,40,458,confirmation,sizeof(confirmation));
  assert(manager.selected=="page0"&&manager.selectedCount==1&&dispatched==0);
  handleTap(renderer,snapshot,140,458,confirmation,sizeof(confirmation));
@@ -169,6 +172,22 @@ int main(){
  snapshot.activePageIndex=1;
  handleTap(renderer,snapshot,40,458,confirmation,sizeof(confirmation));
  assert(manager.selected=="first"&&manager.selectedCount==7&&dispatched==0);
+ // Populate a page-link using the production snapshot fields, then dispatch
+ // its target through the production tap handler without invoking an action.
+ JsonDocument link;
+ assert(!deserializeJson(link,R"({"id":"page-entry","kind":"page-link","visualType":"navigation","pageId":"second"})"));
+ auto& pageLink=snapshot.cards[0];
+ populateCard(doc["config"]["pages"][0].as<JsonObjectConst>(),link.as<JsonObjectConst>(),pageLink);
+ assert(pageLink.kind==ScreenCardKind::PAGE_LINK&&pageLink.visualType==ScreenVisualType::NAVIGATION);
+ assert(std::string(pageLink.targetPageId)=="second");
+ handleTap(renderer,snapshot,30,100,confirmation,sizeof(confirmation));
+ assert(manager.selected=="second"&&manager.selectedCount==8&&dispatched==0);
+ // An unconfigured target must not select a page or submit a control action.
+ link.remove("pageId");
+ populateCard(doc["config"]["pages"][0].as<JsonObjectConst>(),link.as<JsonObjectConst>(),pageLink);
+ assert(!pageLink.targetPageId[0]);
+ handleTap(renderer,snapshot,30,100,confirmation,sizeof(confirmation));
+ assert(manager.selected=="second"&&manager.selectedCount==8&&dispatched==0);
  // Numeric +/- edits retain precision and bounds; only Execute submits.
  auto& numeric=snapshot.cards[0]; numeric={}; strcpy(numeric.id,"numeric");
  numeric.kind=ScreenCardKind::CONTROL; numeric.visualType=ScreenVisualType::NUMBER_CONTROL;
@@ -228,6 +247,7 @@ int main(){
             manager, 'void ScreenPanelManager::appendState(JsonObject out) const')
         source = r'''
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -269,8 +289,32 @@ int main(){
 '''.replace('TYPES', types).replace('PRODUCTION', production)
         json = ROOT / '.pio/libdeps/esp32s3-F16R8/ArduinoJson/src'
         self.assertTrue(json.exists())
-        self.compile_run(source, [json])
-        self.compile_run(source.replace('JsonString(card.id)', 'card.id'), [json], expected=1)
+        self.compile_run(source, [json, ROOT / 'include'],
+                         extra_sources=[ROOT / 'src/network/FixedJsonField.cpp'])
+        # The positive test above still serializes after actual destruction.
+        # The mutant deliberately borrows card.id; freeing that pointer before
+        # serialization invokes UB (on Windows it can hang in a crash dialog).
+        # Poison but retain live snapshot storage for this negative case only.
+        # The serialized wrong ID must produce the exact normal return code 2.
+        retained = r'''
+#include <vector>
+std::vector<std::unique_ptr<ScreenPanelSnapshot>> retiredSnapshots;
+struct RetainPoisonedSnapshot {
+ void operator()(ScreenPanelSnapshot* snapshot) const {
+    std::memset(static_cast<void*>(snapshot->cards.data()), 0, sizeof(snapshot->cards));
+    retiredSnapshots.emplace_back(snapshot);
+ }
+};
+'''
+        mutation = source.replace('const char* qualityName', retained + '\nconst char* qualityName')
+        original_owner = 'std::unique_ptr<ScreenPanelSnapshot> snapshot('
+        self.assertEqual(mutation.count(original_owner), 1)
+        self.assertGreater(mutation.count('JsonString(card.id)'), 0)
+        mutation = mutation.replace(original_owner,
+            'std::unique_ptr<ScreenPanelSnapshot, RetainPoisonedSnapshot> snapshot(')
+        mutation = mutation.replace('JsonString(card.id)', 'card.id')
+        self.compile_run(mutation, [json, ROOT / 'include'], expected=2,
+                         extra_sources=[ROOT / 'src/network/FixedJsonField.cpp'])
 
     def test_system_sources_use_live_values_for_cards_and_series(self):
         manager = (ROOT / 'src/core/ScreenPanelManager.cpp').read_text(encoding='utf-8')

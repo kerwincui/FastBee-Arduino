@@ -35,7 +35,7 @@
         clock: { title: '时间', display: 'clock', size: 'wide' },
         weather: { title: '心知天气', display: 'weather', size: 'large' },
         'page-link': { title: '打开页面', display: 'page-link', size: 'small' },
-        motor: { title: '电机控制', display: 'motor', size: 'large', confirm: true, motorSpeed: 50, motorPulse: 1600, motorSpeedStep: 1, motorPulseStep: 100 },
+        motor: { title: '电机控制', display: 'motor', size: 'large', confirm: false, motorSpeed: 10, motorPulse: 100, motorSpeedStep: 1, motorPulseStep: 100 },
         'sleep-time': { title: '自动息屏', display: 'sleep-time', size: 'wide', systemActionId: 'sleep-time' },
         'touch-beep': { title: '触摸音', display: 'touch-beep', size: 'wide', systemActionId: 'touch-beep' },
         'confirm-idle': { title: '操作确认', display: 'confirm-idle', size: 'wide', systemActionId: 'confirm-idle' },
@@ -227,8 +227,8 @@
                 }
                 if (kind === 'brightness') item.actionValue = normalizeBrightnessPercent(item.actionValue);
                 item.targetPageId = String(item.targetPageId || item.pageId || '');
-                item.confirm = kind === 'motor' || (card && card.confirm !== undefined ? card.confirm === true :
-                    card && card.requireConfirmation !== undefined ? card.requireConfirmation === true : item.confirm === true);
+                item.confirm = card && card.confirm !== undefined ? card.confirm === true :
+                    card && card.requireConfirmation !== undefined ? card.requireConfirmation === true : item.confirm === true;
                 item.min = finiteNumber(card && card.min !== undefined ? card.min : card && card.rangeMin, 0);
                 item.max = finiteNumber(card && card.max !== undefined ? card.max : card && card.rangeMax, 100);
                 item.step = finiteNumber(item.step, 1);
@@ -1119,7 +1119,7 @@
 
         _spMotorPreview(card, state, precision) {
             var values = [['速度', this._spFormatValue(card.motorSpeed / Math.pow(10, precision), precision), this._spFormatValue(state.motorSpeed / Math.pow(10, precision), precision)], ['脉冲', card.motorPulse, state.motorPulse]];
-            var status = state.pending ? '指令处理中' : state.motorCommandSuccess ? '已应答，运行状态未确认' : state.error ? '指令未确认' : '运行状态未确认';
+            var status = state.pending ? '指令处理中' : state.motorCommandSuccess ? '指令已应答' : state.error ? '指令失败' : '就绪';
             return '<div class="sp-motor-preview"><small>' + escapeHtml(status) + '</small>' + values.map(function(item) {
                 return '<div class="sp-motor-param"><span><small>' + item[0] + '</small><strong>' + escapeHtml(item[1]) + '</strong><small>读回 ' + escapeHtml(state.motorKnown ? item[2] : '--') + '</small></span><button disabled>−</button><button disabled>＋</button><button disabled>应用</button></div>';
             }).join('') + '<div class="sp-motor-actions"><button class="sp-motor-forward" disabled>正转</button><button class="sp-motor-stop" disabled>停止</button><button class="sp-motor-reverse" disabled>反转</button></div></div>';

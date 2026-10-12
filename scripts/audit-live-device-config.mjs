@@ -19,7 +19,7 @@ const devices = [
     ip: '192.168.5.22',
     port: 'COM15',
     environment: 'esp32s3-F16R8',
-    source: path.join(projectRoot, 'docs', 'ecm50a-s3-f16r8'),
+    source: path.join(projectRoot, 'docs', 'device-test-configs', 'com15-esp32s3-f16r8', 'config'),
   },
   {
     key: 'c3-f4r0',
@@ -27,7 +27,7 @@ const devices = [
     ip: '192.168.5.55',
     port: 'COM4',
     environment: 'esp32c3-F4R0',
-    source: path.join(projectRoot, 'docs', 'esp32c3-deployment-config.json'),
+    source: path.join(projectRoot, 'docs', 'device-test-configs', 'com4-esp32c3-f4r0', 'config'),
     forceModbusDisabled: true,
   },
   {
@@ -44,7 +44,7 @@ const devices = [
     ip: '192.168.5.21',
     port: 'COM16',
     environment: 'esp32-F4R0',
-    source: path.join(projectRoot, 'docs', 'puzhong-esp32-config.json'),
+    source: path.join(projectRoot, 'docs', 'device-test-configs', 'com16-esp32-f4r0', 'config'),
   },
   {
     key: 's3-f8r0',

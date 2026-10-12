@@ -12,6 +12,10 @@ HEADER = (ROOT / "include/network/handlers/PeripheralRouteHandler.h").read_text(
 SOURCE = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(
     encoding="utf-8"
 )
+SOURCE += (ROOT / "src/network/handlers/PeripheralCatalogRoutes.cpp").read_text(encoding="utf-8")
+SOURCE += "\n" + (ROOT / "src/network/handlers/PeripheralReadRoutes.cpp").read_text(encoding="utf-8")
+CATALOG = (ROOT / "src/network/BoardProfileCatalog.cpp").read_text(encoding="utf-8")
+BOARD_ROUTE = (ROOT / "src/network/handlers/BoardProfileRouteHandler.cpp").read_text(encoding="utf-8")
 PLANNER_SOURCE = (ROOT / "src/core/PeripheralResourcePlanner.cpp").read_text(
     encoding="utf-8"
 )
@@ -36,6 +40,33 @@ def function_body(source: str, signature_pattern: str) -> str:
 
 
 class PeripheralPreflightRouteContractTests(unittest.TestCase):
+    def test_c3_profile_is_discoverable_and_enabled_for_preflight(self):
+        supported = function_body(SOURCE, 'compiledBoardProfileSupported[(][)]')
+        self.assertIn('CHIP_IS_ESP32C3', supported)
+        resolve = function_body(SOURCE, 'resolveBoardProfile[(]')
+        self.assertIn('getEsp32C3Profile()', resolve)
+        self.assertIn('profileId == "3"', resolve)
+        listing = function_body(BOARD_ROUTE, 'PeripheralRouteHandler::handleGetBoardProfiles[(]')
+        self.assertIn('getCompiledBoardProfile()', listing)
+        self.assertIn('getEsp32C3Profile()', CATALOG)
+        identity = function_body(CATALOG, 'boardProfileChip[(]')
+        self.assertIn('ESP32_C3_GENERIC', identity)
+        self.assertIn('"ESP32-C3"', identity)
+
+    def test_profiles_do_not_claim_board_wiring_or_hardware_validation(self):
+        serialize = function_body(CATALOG, 'writeProfile[(]')
+        self.assertIn('w.flagField("hardwareVerified", false)', serialize)
+        self.assertIn('w.flagField("requiresBoardWiringVerification", true)', serialize)
+        self.assertIn('"chip-policy" : "board-policy"', serialize)
+        resources = function_body(SOURCE, 'PeripheralRouteHandler::handleGetPeripheralResources[(]')
+        self.assertIn('!sameText(profile->key, active->key)', resources)
+
+    def test_driver_registry_capacity_is_visible_without_silent_overflow(self):
+        descriptors = function_body(SOURCE, 'addSensorDriverDescriptors[(]')
+        for field in ('registrationFailures', 'registeredDriverCount',
+                      'driverCapacity', 'availableDriverSlots'):
+            self.assertIn('FastBee::setFixedJsonField(typeObj, "' + field + '",', descriptors)
+
     def test_routes_are_specific_and_registered_before_generic_crud(self):
         setup = function_body(
             SOURCE, r"\bPeripheralRouteHandler::setupRoutes\s*\("
@@ -51,8 +82,8 @@ class PeripheralPreflightRouteContractTests(unittest.TestCase):
         for route in expected[1:]:
             self.assertLess(setup.index(route), generic)
 
-    def test_large_fixed_preflight_result_is_persistent_and_guarded(self):
-        self.assertIn("FastBee::PreflightResult preflightResult", HEADER)
+    def test_large_fixed_preflight_result_is_request_scoped_and_guarded(self):
+        self.assertNotIn("FastBee::PreflightResult preflightResult", HEADER)
         self.assertIn("SemaphoreHandle_t preflightMutex", HEADER)
         self.assertIn("~PeripheralRouteHandler", HEADER)
         constructor = function_body(
@@ -69,42 +100,49 @@ class PeripheralPreflightRouteContractTests(unittest.TestCase):
             "handleAddPeripheral",
             "handleUpdatePeripheral",
             "handleEnablePeripheral",
+            "handleImportConfiguration",
         ):
             body = function_body(
                 SOURCE, rf"\bPeripheralRouteHandler::{handler}\s*\("
             )
             self.assertIn("MutexGuard resultLock(preflightMutex", body)
+            self.assertIn("std::unique_ptr<FastBee::PreflightResult> workspace", body)
+            self.assertIn("if (!allocatePreflightWorkspace(ctx, request, workspace)) return", body)
+            self.assertLess(body.index("MutexGuard resultLock(preflightMutex"),
+                            body.index("allocatePreflightWorkspace(ctx, request, workspace)"))
+            self.assertLess(body.index("RecursiveMutexGuard managerLock"),
+                            body.index("allocatePreflightWorkspace(ctx, request, workspace)"))
 
     def test_schema_exposes_stable_issues_candidate_claims_and_capacity(self):
         issues = function_body(SOURCE, r"\baddPreflightIssues\s*\(")
         for field in (
-            'item["code"]',
-            'item["severity"]',
-            'item["requiresConfirmation"]',
-            'item["resourceKind"]',
-            'item["ownerId"]',
-            'item["conflictingOwnerId"]',
+            'FastBee::setFixedJsonField(item, "code",',
+            'FastBee::setFixedJsonField(item, "severity",',
+            'FastBee::setFixedJsonField(item, "requiresConfirmation",',
+            'FastBee::setFixedJsonField(item, "resourceKind",',
+            'FastBee::setFixedJsonField(item, "ownerId",',
+            'FastBee::setFixedJsonField(item, "conflictingOwnerId",',
         ):
             self.assertIn(field, issues)
 
         claims = function_body(SOURCE, r"\baddCandidateClaims\s*\(")
         self.assertIn("sameText(claim.ownerId, candidateId)", claims)
         for field in (
-            'item["resourceKind"]',
-            'item["state"]',
-            'item["shareMode"]',
-            'item["role"]',
+            'FastBee::setFixedJsonField(item, "resourceKind",',
+            'FastBee::setFixedJsonField(item, "state",',
+            'FastBee::setFixedJsonField(item, "shareMode",',
+            'FastBee::setFixedJsonField(item, "role",',
             'item["pins"]',
         ):
             self.assertIn(field, claims)
 
         resources = function_body(SOURCE, r"\baddResourceRows\s*\(")
         for field in (
-            'row["used"]',
-            'row["configured"]',
-            'row["capacity"]',
-            'row["available"]',
-            'row["status"]',
+            'FastBee::setFixedJsonField(row, "used",',
+            'FastBee::setFixedJsonField(row, "configured",',
+            'FastBee::setFixedJsonField(row, "capacity",',
+            'FastBee::setFixedJsonField(row, "available",',
+            'FastBee::setFixedJsonField(row, "status",',
         ):
             self.assertIn(field, resources)
 

@@ -40,7 +40,7 @@ class SensorGroupExecutionTests(unittest.TestCase):
             environment["PATH"] = str(Path(compiler).parent) + os.pathsep + environment.get("PATH", "")
             build = subprocess.run([compiler, "-std=c++17", "-O2", "-fstack-usage", "-Wall", "-Wextra", "-Werror",
                 "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0", "-DARDUINOJSON_ENABLE_STD_STRING=1",
-                f"-I{target}", f"-I{json}",
+                f"-I{target}", f"-I{json}", f"-I{ROOT / 'include'}",
                 str(ROOT / "test/unit/cpp/sensor_group_execution_harness.cpp"), "-o", str(executable)],
                 capture_output=True, text=True, timeout=60, env=environment)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
@@ -57,7 +57,7 @@ class SensorGroupExecutionTests(unittest.TestCase):
             (target / "sensor_group_methods.inc").write_text(broken, encoding="utf-8")
             invalid = subprocess.run([compiler, "-std=c++17", "-fsyntax-only",
                 "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0", "-DARDUINOJSON_ENABLE_STD_STRING=1",
-                f"-I{target}", f"-I{json}", str(ROOT / "test/unit/cpp/sensor_group_execution_harness.cpp")],
+                f"-I{target}", f"-I{json}", f"-I{ROOT / 'include'}", str(ROOT / "test/unit/cpp/sensor_group_execution_harness.cpp")],
                 capture_output=True, text=True, timeout=60, env=environment)
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn("deleted", invalid.stderr)

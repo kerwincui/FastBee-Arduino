@@ -46,10 +46,11 @@ public:
                size_t replyLength, bool success, uint32_t now) {
         for (auto& axis : axes) {
             const bool referenced = axis.position.referenced, stationary = axis.stationary, known = axis.pulseKnown;
+            const bool stopped = axis.stopAcknowledged;
             const uint16_t pulse = axis.pulse;
             axis.after(request, requestLength, reply, replyLength, success, now);
             if (referenced != axis.position.referenced || stationary != axis.stationary ||
-                known != axis.pulseKnown || pulse != axis.pulse) ++generation;
+                known != axis.pulseKnown || pulse != axis.pulse || stopped != axis.stopAcknowledged) ++generation;
         }
     }
 

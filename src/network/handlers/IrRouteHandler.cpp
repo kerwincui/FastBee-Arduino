@@ -12,6 +12,33 @@
 #include "peripherals/drivers/IRRemoteDriver.h"
 #include <ArduinoJson.h>
 
+namespace {
+const char* irLearnStateName(IrLearnState state) {
+    switch (state) {
+        case IrLearnState::LEARNING: return "learning";
+        case IrLearnState::CAPTURED: return "captured";
+        case IrLearnState::TIMEOUT: return "timeout";
+        default: return "idle";
+    }
+}
+int irKeyErrorStatus(const String& error) {
+    if (error == "IR_KEY_NOT_FOUND") return 404;
+    if (error.startsWith("IR_KEYS_") && error != "IR_KEYS_LIMIT") return 503;
+    if (error == "IR_UNAVAILABLE") return 503;
+    return 400;
+}
+bool parseIrLearnTimeout(const String& text, uint32_t& timeout) {
+    if (text.isEmpty() || text.length() > 5) return false;
+    uint32_t value = 0;
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        value = value * 10 + static_cast<uint32_t>(text[i] - '0');
+    }
+    if (value < 1000 || value > 60000) return false;
+    timeout = value; return true;
+}
+}
+
 IrRouteHandler::IrRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx)
 {
@@ -57,12 +84,15 @@ void IrRouteHandler::handleStatus(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
     IRRemoteDriver& ir = IRRemoteDriver::getInstance();
+    IrStatusSnapshot snapshot;
+    if (!ir.getSnapshot(snapshot)) { ctx->sendError(request, 503, "IR 状态暂不可用，请稍后重试"); return; }
 
     JsonDocument doc;
-    doc["initialized"] = ir.isInitialized();
-    doc["learnState"] = ir.getLearnStateName();
-    doc["keyCount"] = (int)ir.getKeyCount();
-    doc["lastCode"] = ir.getLastCode();
+    doc["initialized"] = snapshot.initialized;
+    doc["stopping"] = snapshot.stopping;
+    doc["learnState"] = irLearnStateName(snapshot.learnState);
+    doc["keyCount"] = snapshot.keyCount;
+    doc["lastCode"] = snapshot.lastCode;
     ctx->sendSuccess(request, doc);
 }
 
@@ -72,21 +102,22 @@ void IrRouteHandler::handleLearnStart(AsyncWebServerRequest* request)
     if (!ctx->requireDeveloperMode(request)) return;
 
     IRRemoteDriver& ir = IRRemoteDriver::getInstance();
-    if (!ir.isInitialized()) {
-        ctx->sendError(request, 400, "红外接收器未初始化，请先在外设管理中启用红外接收头");
-        return;
-    }
 
     uint32_t timeoutMs = 10000;
     if (request->hasParam("timeoutMs", true)) {
-        long v = request->getParam("timeoutMs", true)->value().toInt();
-        if (v > 0) timeoutMs = (uint32_t)v;
+        if (!parseIrLearnTimeout(request->getParam("timeoutMs", true)->value(), timeoutMs)) {
+            ctx->sendError(request, 400, "timeoutMs 必须为 1000~60000 的整数"); return;
+        }
     }
-    ir.startLearn(timeoutMs);
+    if (!ir.startLearn(timeoutMs)) {
+        ctx->sendError(request, 409, "红外接收器未就绪、忙或正在停止，请稍后重试"); return;
+    }
+    IrStatusSnapshot snapshot;
+    if (!ir.getSnapshot(snapshot)) { ctx->sendError(request, 503, "学习已请求，状态暂不可用，请查询状态"); return; }
 
     JsonDocument doc;
-    doc["learnState"] = ir.getLearnStateName();
-    doc["remainingMs"] = ir.getLearnRemainingMs();
+    doc["learnState"] = irLearnStateName(snapshot.learnState);
+    doc["remainingMs"] = snapshot.remainingMs;
     ctx->sendSuccess(request, doc);
 }
 
@@ -94,12 +125,14 @@ void IrRouteHandler::handleLearnStatus(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
     IRRemoteDriver& ir = IRRemoteDriver::getInstance();
+    IrStatusSnapshot snapshot;
+    if (!ir.getSnapshot(snapshot)) { ctx->sendError(request, 503, "IR 状态暂不可用，请稍后重试"); return; }
 
     JsonDocument doc;
-    doc["learnState"] = ir.getLearnStateName();
-    doc["remainingMs"] = ir.getLearnRemainingMs();
-    doc["code"] = ir.getLearnedCode();
-    doc["protocol"] = ir.getLearnedProtocol();
+    doc["learnState"] = irLearnStateName(snapshot.learnState);
+    doc["remainingMs"] = snapshot.remainingMs;
+    doc["code"] = snapshot.learnedCode;
+    doc["protocol"] = snapshot.learnedProtocol;
     // 若捕获的编码已存在于按键库，返回其名称（便于前端提示重复）
     ctx->sendSuccess(request, doc);
 }
@@ -107,7 +140,9 @@ void IrRouteHandler::handleLearnStatus(AsyncWebServerRequest* request)
 void IrRouteHandler::handleLearnStop(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
-    IRRemoteDriver::getInstance().stopLearn();
+    if (!IRRemoteDriver::getInstance().stopLearn()) {
+        ctx->sendError(request, 503, "取消学习未确认，请稍后重试"); return;
+    }
     ctx->sendSuccess(request, "已取消学习");
 }
 
@@ -116,9 +151,17 @@ void IrRouteHandler::handleListKeys(AsyncWebServerRequest* request)
     if (!ctx->requireAuth(request)) return;
     IRRemoteDriver& ir = IRRemoteDriver::getInstance();
     // 按键映射体积小，直接拼装 envelope，避免二次解析
-    String keys = ir.getKeysJson();
-    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)ir.getKeyCount()) +
+    String keys;
+    size_t count = 0;
+    IrStatusSnapshot snapshot;
+    if (!ir.getSnapshot(snapshot) || (!snapshot.keysLoaded && !ir.loadKeyMap()) || !ir.getKeySnapshot(keys, count)) {
+        ctx->sendError(request, 503, "按键库暂不可用，请稍后重试"); return;
+    }
+    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)count) +
                   ",\"keys\":" + keys + "}}";
+    const size_t expected = sizeof("{\"success\":true,\"data\":{\"count\":") - 1 +
+                            String((int)count).length() + sizeof(",\"keys\":") - 1 + keys.length() + 2;
+    if (resp.length() != expected) { ctx->sendError(request, 503, "按键库响应内存不足"); return; }
     request->send(200, "application/json", resp);
 }
 
@@ -141,7 +184,7 @@ void IrRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
 
     String err;
     if (!IRRemoteDriver::getInstance().upsertKey(name, code, protocol, err)) {
-        ctx->sendError(request, 400, err.length() ? err : String("保存失败"));
+        ctx->sendError(request, irKeyErrorStatus(err), err.length() ? err : String("保存失败"));
         return;
     }
     ctx->sendSuccess(request, "按键已保存");
@@ -158,8 +201,9 @@ void IrRouteHandler::handleDeleteKey(AsyncWebServerRequest* request)
     }
     String name = request->getParam("name", true)->value();
     name.trim();
-    if (!IRRemoteDriver::getInstance().deleteKey(name)) {
-        ctx->sendError(request, 404, "未找到该按键");
+    String error;
+    if (!IRRemoteDriver::getInstance().deleteKey(name, &error)) {
+        ctx->sendError(request, irKeyErrorStatus(error), error);
         return;
     }
     ctx->sendSuccess(request, "按键已删除");
@@ -170,7 +214,10 @@ void IrRouteHandler::handleClearKeys(AsyncWebServerRequest* request)
     if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
-    IRRemoteDriver::getInstance().clearKeys();
+    String error;
+    if (!IRRemoteDriver::getInstance().clearKeys(&error)) {
+        ctx->sendError(request, irKeyErrorStatus(error), error); return;
+    }
     ctx->sendSuccess(request, "已清除全部按键");
 }
 

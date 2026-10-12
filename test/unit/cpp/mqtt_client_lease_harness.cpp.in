@@ -1,0 +1,330 @@
+#include "protocols/MqttClientLease.h"
+#include "network/NetworkTransitionGuard.h"
+#include "core/ReportInstanceBinding.h"
+#include "protocols/MqttReportRetirement.h"
+#include <cassert>
+#include <future>
+#include <memory>
+#include <string>
+#include <thread>
+#include <stdexcept>
+#define LOG_INFO(...) ((void)0)
+class MQTTClient {
+public:
+    inline static bool transportAlive = true;
+    inline static unsigned destructions = 0, totalStops = 0;
+    inline static FastBee::MqttRetirementReason lastDestructionReason=FastBee::MqttRetirementReason::Unspecified;
+    unsigned stops=0;
+    const uint32_t reportInstanceId=FastBee::nextReportInstanceId();
+    unsigned reports=0;
+    uint32_t getReportInstanceId() const {return reportInstanceId;}
+    bool queueReportData(const std::string&) {++reports;return true;}
+    bool stopped=false, memoryStopped=false, connected=false, valid=true, workerActive=false, cancelled=false;
+    ~MQTTClient() { assert(transportAlive); ++destructions;lastDestructionReason=retirementReason; }
+    bool stop() { assert(transportAlive); ++stops; ++totalStops; stopped=true; return !workerActive; }
+    bool isStopped() const {return stopped;}
+    bool isReconnectCancellationRequested() const {return cancelled;}
+    void setReportRetirementReason(FastBee::MqttRetirementReason value) { retirementReason=value; }
+    FastBee::MqttRetirementReason retirementReason=FastBee::MqttRetirementReason::Unspecified;
+    bool isStoppedByMemory() const {return memoryStopped;}
+    bool isDisabledByMemory() const {return false;}
+    bool getIsConnected() const {return connected;}
+};
+class ProtocolManager {
+public:
+    std::unique_ptr<MQTTClient> mqttClient;
+    mutable FastBee::MqttClientLifetime mqttLifetime;
+    std::atomic<bool> mqttStopPending{false},mqttShutdownPending{false},mqttRestartPending{false};
+    unsigned rebuilds=0;
+    FastBee::MqttClientLease acquireMQTTClient(bool* absent=nullptr) const;
+    bool stopMQTT();
+    bool finishMqttStop();
+    FastBee::MqttClientLifetime::Write prepareMqttNetworkSwitch();
+    void requestMqttRestartAsync();
+    bool restartMQTT();
+    bool restartMQTTDeferred(bool forceRebuild=false, FastBee::MqttRestartResult* result=nullptr);
+};
+// Only external status-helper dependencies are replaced. Lifetime admission,
+// stop completion and helper control flow come from production sources.
+unsigned long millis() {return 10000UL;}
+bool mqttHasValidRuntimeConfig(MQTTClient* mqtt) {return mqtt && mqtt->valid;}
+class HealthMonitor {
+public:
+    bool isMqttStoppedForMemory() const {return false;}
+    bool isMqttDisabledForMemory() const {return false;}
+};
+class FastBeeFramework {
+public:
+    static FastBeeFramework* getInstance() {return nullptr;}
+    HealthMonitor* getHealthMonitor() {return nullptr;}
+};
+class FBNetworkManager {
+public:
+    FastBee::MqttClientLifetime _networkTransitionLifetime;
+    FastBee::NetworkProtocolAdmission _preNetworkSwitchCb;
+    bool pendingRestart=false, adapterOk=true;
+    unsigned long pendingRestartTime=0;
+    unsigned mutations=0;
+    std::function<void()> onAdapter;
+    bool restartNetwork(bool* deferred);
+};
+@METHODS@
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];ProtocolManager pm;
+    if(mode=="absent") { bool absent=false;assert(!pm.acquireMQTTClient(&absent) && absent);return 0; }
+    pm.mqttClient.reset(new MQTTClient);
+    using Read=FastBee::MqttClientLifetime::Read;
+    using Write=FastBee::MqttClientLifetime::Write;
+    if(mode=="worker_stop_pending") {
+        pm.mqttClient->workerActive=true;
+        assert(!pm.stopMQTT() && pm.mqttStopPending && MQTTClient::destructions==0);
+        pm.mqttClient->workerActive=false;
+        assert(pm.finishMqttStop() && !pm.mqttStopPending && pm.mqttClient);return 0;
+    }
+    if(mode=="worker_network_pending") {
+        pm.mqttClient->workerActive=true;
+        assert(!pm.prepareMqttNetworkSwitch() && pm.mqttClient && pm.mqttRestartPending);
+        assert(MQTTClient::destructions==0);
+        assert(pm.mqttClient->retirementReason==FastBee::MqttRetirementReason::Unspecified);
+        pm.mqttClient->workerActive=false;
+        auto transition=pm.prepareMqttNetworkSwitch();
+        assert(transition && !pm.mqttClient && MQTTClient::destructions==1);
+        assert(MQTTClient::lastDestructionReason==FastBee::MqttRetirementReason::NetworkSwitch);return 0;
+    }
+    if(mode=="status_cancelled") {
+        pm.mqttClient->cancelled=true;pm.mqttClient->stopped=true;
+        auto lease=pm.acquireMQTTClient();bool attempted=true,started=true;
+        assert(!tryAutoStartMqttForStatus(&pm,lease,false,true,true,attempted,started));
+        assert(!attempted && !started && pm.rebuilds==0);return 0;
+    }
+    if(mode=="bound_report_rebuild") {
+        uint32_t origin=0;
+        {auto client=pm.acquireMQTTClient();origin=client->getReportInstanceId();assert(origin);}
+        {auto transition=pm.prepareMqttNetworkSwitch();assert(transition && !pm.mqttClient);}
+        pm.mqttClient.reset(new MQTTClient);pm.mqttRestartPending=false;pm.mqttClient->connected=true;
+        auto client=pm.acquireMQTTClient();assert(client);
+        assert(FastBee::replayBoundReport(*client.get(),origin,std::string("a"))==FastBee::ReportReplayResult::InstanceChanged);
+        assert(client->reports==0);return 0;
+    }
+    if(mode=="bound_report_lease") {
+        auto client=pm.acquireMQTTClient();client->connected=true;const auto origin=client->getReportInstanceId();
+        assert(!pm.prepareMqttNetworkSwitch());
+        assert(FastBee::replayBoundReport(*client.get(),origin,std::string("a"))==FastBee::ReportReplayResult::Accepted);
+        assert(client->reports==1 && MQTTClient::destructions==0);return 0;
+    }
+    if(mode=="write_default") {
+        Write empty; assert(!empty && !empty.tryAcquire()); empty.release(); return 0;
+    }
+    if(mode=="write_move") {
+        Write first(pm.mqttLifetime); assert(first);
+        Write moved(std::move(first)); assert(moved && !first && !first.tryAcquire());
+        auto* same=&moved; moved=std::move(*same); assert(moved); assert(!pm.acquireMQTTClient());
+        moved.release(); assert(pm.acquireMQTTClient()); return 0;
+    }
+    if(mode=="write_move_assign") {
+        FastBee::MqttClientLifetime other;
+        Write first(pm.mqttLifetime), second(other);
+        first=std::move(second); assert(first && !second);
+        assert(pm.acquireMQTTClient()); assert(!Read(other));
+        first={}; assert(Read(other)); return 0;
+    }
+    if(mode=="transport_busy") {
+        auto client=pm.acquireMQTTClient();
+        assert(!pm.prepareMqttNetworkSwitch());
+        assert(pm.mqttClient && !pm.mqttClient->stopped && MQTTClient::destructions==0);
+        assert(!pm.mqttRestartPending && !pm.mqttStopPending); return 0;
+    }
+    if(mode=="transport_shutdown") {
+        pm.mqttShutdownPending=true; assert(!pm.prepareMqttNetworkSwitch());
+        assert(pm.mqttClient && MQTTClient::destructions==0 && MQTTClient::totalStops==0);
+        assert(!pm.mqttRestartPending); assert(Write(pm.mqttLifetime)); return 0;
+    }
+    if(mode=="transport_ready" || mode=="transport_stopped" ||
+       mode=="transport_stop_pending" || mode=="transport_absent") {
+        if(mode=="transport_stopped") pm.mqttClient->stopped=true;
+        if(mode=="transport_stop_pending") pm.mqttStopPending=true;
+        if(mode=="transport_absent") pm.mqttClient.reset();
+        {
+            auto transition=pm.prepareMqttNetworkSwitch(); assert(transition);
+            assert(!pm.mqttClient && MQTTClient::destructions==1);
+            assert(MQTTClient::totalStops==(mode=="transport_absent"?0U:1U));
+            assert(pm.mqttRestartPending==(mode=="transport_ready"));
+            bool absent=true; assert(!pm.acquireMQTTClient(&absent) && !absent);
+            assert(!pm.prepareMqttNetworkSwitch());
+            // The old transport can now disappear. The exclusive lease still
+            // prevents a new client from borrowing a half-recreated adapter.
+            MQTTClient::transportAlive=false;
+            auto result=FastBee::MqttRestartResult::Ready;
+            assert(!pm.restartMQTTDeferred(true,&result) && pm.rebuilds==0);
+            assert(result==FastBee::MqttRestartResult::Deferred);
+        }
+        assert(Write(pm.mqttLifetime)); MQTTClient::transportAlive=true; return 0;
+    }
+    if(mode.rfind("network_",0)==0) {
+        FastBee::MqttClientLifetime network;
+        unsigned admissions=0;
+        FastBee::NetworkProtocolAdmission callback=[&] {
+            ++admissions; return pm.prepareMqttNetworkSwitch();
+        };
+        if(mode=="network_production_defer" || mode=="network_production_failure") {
+            FBNetworkManager net; net._preNetworkSwitchCb=callback;
+            bool deferred=true;
+            if(mode=="network_production_defer") {
+                auto client=pm.acquireMQTTClient();
+                assert(!net.restartNetwork(&deferred) && deferred);
+                assert(net.pendingRestart && net.pendingRestartTime==10000UL && net.mutations==0);
+                assert(pm.mqttClient && MQTTClient::destructions==0);
+            } else net.adapterOk=false;
+            net.onAdapter=[&] {
+                assert(!pm.mqttClient && MQTTClient::destructions==1);
+                assert(!pm.acquireMQTTClient() && !Write(net._networkTransitionLifetime));
+                assert(!pm.restartMQTTDeferred(true) && pm.rebuilds==0);
+            };
+            assert(net.restartNetwork(&deferred)==net.adapterOk);
+            assert(!deferred && net.mutations==1);
+            assert(Write(net._networkTransitionLifetime));assert(Write(pm.mqttLifetime));return 0;
+        }
+        if(mode=="network_no_callback") {
+            { FastBee::NetworkTransitionGuard transition(network,{});
+              assert(transition && !Write(network)); assert(pm.acquireMQTTClient()); }
+            assert(Write(network) && admissions==0); return 0;
+        }
+        if(mode=="network_mqtt_busy") {
+            { auto client=pm.acquireMQTTClient();
+              FastBee::NetworkTransitionGuard transition(network,callback); assert(!transition);
+              assert(pm.mqttClient && !pm.mqttClient->stopped && admissions==1); }
+            assert(Write(network)); assert(pm.prepareMqttNetworkSwitch()); return 0;
+        }
+        if(mode=="network_thread_busy") {
+            std::promise<void> admitted,leave; auto release=leave.get_future();
+            std::thread worker([&] {
+                FastBee::NetworkTransitionGuard transition(network,callback); assert(transition);
+                admitted.set_value(); release.wait(); assert(!pm.mqttClient);
+            });
+            admitted.get_future().wait();
+            { FastBee::NetworkTransitionGuard competing(network,callback); assert(!competing); }
+            assert(admissions==1 && !pm.acquireMQTTClient());
+            assert(!pm.restartMQTTDeferred(true) && pm.rebuilds==0);
+            leave.set_value();worker.join();assert(Write(network));assert(Write(pm.mqttLifetime));return 0;
+        }
+        if(mode=="network_reentry") {
+            { FastBee::NetworkTransitionGuard transition(network,callback); assert(transition);
+              FastBee::NetworkTransitionGuard nested(network,callback); assert(!nested);
+              assert(admissions==1 && MQTTClient::destructions==1 && !pm.acquireMQTTClient()); }
+            assert(Write(network)); assert(Write(pm.mqttLifetime)); return 0;
+        }
+        if(mode=="network_failure_release") {
+            const auto failAdapter=[&] {
+                FastBee::NetworkTransitionGuard transition(network,callback); assert(transition);
+                assert(!pm.mqttClient && MQTTClient::destructions==1);
+                MQTTClient::transportAlive=false; // fake adapter teardown/failure
+                assert(!pm.restartMQTTDeferred(true) && pm.rebuilds==0);
+                return false; // RAII releases even on a hardware fallback path.
+            };
+            assert(!failAdapter()); assert(Write(network)); assert(Write(pm.mqttLifetime));
+            MQTTClient::transportAlive=true; assert(pm.mqttRestartPending);
+            assert(pm.restartMQTTDeferred(true) && pm.rebuilds==1); return 0;
+        }
+        assert(false);
+    }
+    if(mode=="deferred_outcome") {
+        auto lease=pm.acquireMQTTClient();
+        auto result=FastBee::MqttRestartResult::Ready;
+        assert(!pm.restartMQTTDeferred(true,&result));
+        assert(result==FastBee::MqttRestartResult::Deferred && pm.rebuilds==0);
+        lease={};assert(pm.restartMQTTDeferred(true,&result));
+        assert(result==FastBee::MqttRestartResult::Ready && pm.rebuilds==1);return 0;
+    }
+    if(mode=="stop_outcome") {
+        auto lease=pm.acquireMQTTClient();assert(!pm.stopMQTT());
+        assert(pm.mqttClient->stops==0);lease={};assert(pm.finishMqttStop());
+        assert(pm.mqttClient->stops==1 && !pm.mqttStopPending);return 0;
+    }
+    if(mode=="shutdown_outcome") {
+        pm.mqttShutdownPending=true;auto result=FastBee::MqttRestartResult::Ready;
+        assert(!pm.restartMQTTDeferred(true,&result));
+        assert(result==FastBee::MqttRestartResult::NotStarted && pm.rebuilds==0);return 0;
+    }
+    if(mode=="direct_pending_restart") {
+        pm.requestMqttRestartAsync();assert(pm.mqttRestartPending);
+        assert(pm.restartMQTTDeferred(true) && !pm.mqttRestartPending);
+        assert(pm.acquireMQTTClient());return 0;
+    }
+    if(mode.rfind("status_",0)==0) {
+        if(mode=="status_absent")pm.mqttClient.reset();
+        if(mode=="status_busy")pm.mqttRestartPending=true;
+        if(mode=="status_release"||mode=="status_rebuild_contention")pm.mqttClient->stopped=true;
+        if(mode=="status_memory_stop") {pm.mqttClient->stopped=true;pm.mqttClient->memoryStopped=true;}
+        bool absent=false,attempted=false,started=false;
+        auto lease=pm.acquireMQTTClient(&absent);
+        FastBee::MqttClientLease competitor;
+        if(mode=="status_rebuild_contention")competitor=pm.acquireMQTTClient();
+        const bool result=tryAutoStartMqttForStatus(&pm,lease,absent,true,true,attempted,started);
+        const bool expectedAttempt=mode=="status_absent"||mode=="status_release"||mode=="status_rebuild_contention";
+        assert(result==expectedAttempt && attempted==expectedAttempt);
+        const bool expectedStart=mode=="status_absent"||mode=="status_release";
+        assert(started==expectedStart && pm.rebuilds==(expectedStart?1U:0U));
+        if(expectedAttempt)assert(!lease);
+        if(mode=="status_rebuild_contention")assert(pm.mqttRestartPending);
+        return 0;
+    }
+    if(mode=="writer"||mode=="writer_exclusion") {
+        { Write write(pm.mqttLifetime);assert(write);bool absent=true;
+          assert(!pm.acquireMQTTClient(&absent) && !absent);
+          Write second(pm.mqttLifetime);assert(!second);Read read(pm.mqttLifetime);assert(!read); }
+        assert(pm.acquireMQTTClient());return 0;
+    }
+    if(mode=="pending_restart"||mode=="pending_stop"||mode=="shutdown") {
+        if(mode=="pending_restart")pm.requestMqttRestartAsync();
+        if(mode=="pending_stop")pm.mqttStopPending=true;
+        if(mode=="shutdown")pm.mqttShutdownPending=true;
+        bool absent=true;assert(!pm.acquireMQTTClient(&absent) && !absent);return 0;
+    }
+    if(mode=="exceptions") {
+        try { auto lease=pm.acquireMQTTClient();assert(lease);throw std::runtime_error("test"); }
+        catch(const std::runtime_error&) {}
+        Write write(pm.mqttLifetime);assert(write);return 0;
+    }
+    if(mode=="thread_drain") {
+        std::promise<void> entered,release;auto ready=release.get_future();
+        std::thread worker([&]{auto lease=pm.acquireMQTTClient();assert(lease);entered.set_value();ready.wait();assert(lease.get()==pm.mqttClient.get());});
+        entered.get_future().wait();assert(!pm.restartMQTTDeferred(true) && pm.rebuilds==0);
+        assert(!pm.acquireMQTTClient());release.set_value();worker.join();
+        pm.mqttRestartPending=false;assert(pm.restartMQTTDeferred(true) && pm.rebuilds==1);return 0;
+    }
+    auto first=pm.acquireMQTTClient();assert(first && first.get()==pm.mqttClient.get());
+    if(mode=="move") {
+        FastBee::MqttClientLease moved(std::move(first));assert(moved && !first);
+        {Write denied(pm.mqttLifetime);assert(!denied);}
+        moved={};Write allowed(pm.mqttLifetime);assert(allowed);return 0;
+    }
+    if(mode=="move_assign"||mode=="self_move") {
+        FastBee::MqttClientLease moved;
+        if(mode=="move_assign")moved=pm.acquireMQTTClient();
+        moved=std::move(first);assert(moved && !first);
+        if(mode=="self_move") { auto* same=&moved; moved=std::move(*same); }
+        assert(moved);{Write denied(pm.mqttLifetime);assert(!denied);}
+        moved={};Write allowed(pm.mqttLifetime);assert(allowed);return 0;
+    }
+    if(mode=="readers") {
+        auto second=pm.acquireMQTTClient();assert(second);first={};
+        {Write denied(pm.mqttLifetime);assert(!denied);}
+        second={};Write allowed(pm.mqttLifetime);assert(allowed);return 0;
+    }
+    if(mode=="restart_busy"||mode=="deferred_busy") {
+        assert(!(mode=="restart_busy"?pm.restartMQTT():pm.restartMQTTDeferred(true)));
+        assert(pm.mqttRestartPending && pm.rebuilds==0);first={};pm.mqttRestartPending=false;
+        assert(pm.restartMQTTDeferred(true) && pm.rebuilds==1);return 0;
+    }
+    if(mode=="stop_busy"||mode=="stop_then_restart") {
+        pm.stopMQTT();assert(pm.mqttStopPending && pm.mqttClient->stops==0);
+        if(mode=="stop_then_restart")assert(!pm.restartMQTTDeferred(true) && pm.mqttRestartPending);
+        first={};pm.finishMqttStop();assert(!pm.mqttStopPending && pm.mqttClient->stops==1);
+        if(mode=="stop_then_restart") {
+            assert(pm.mqttRestartPending);pm.mqttRestartPending=false;
+            assert(pm.restartMQTTDeferred(true) && pm.rebuilds==1);
+        }
+        return 0;
+    }
+    assert(mode=="available");first={};Write write(pm.mqttLifetime);assert(write);
+}

@@ -4,6 +4,15 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { createWebAssetReport } = require('./web-asset-report');
+const { MAPPING: PRIVATE_RUNTIME_MAPPING } = require('./web-private-properties');
+function hasRuntimePrivateName(source, original) {
+    // Debug output preserves the source key; production uses the reviewed map.
+    // Match an entire property token, never a short-name prefix such as $e1/$e1a.
+    return [original, PRIVATE_RUNTIME_MAPPING[original]].filter(Boolean).some(name => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp('(^|[^A-Za-z0-9_$])' + escaped + '(?![A-Za-z0-9_$])').test(source);
+    });
+}
 const {
     resolveWebAssetBudgets,
     evaluateWebAssetReport
@@ -40,6 +49,7 @@ const REQUIRED_GZIP_ASSETS = [
     'js/modules/device-config.js.gz',
     'js/modules/periph-exec.js.gz',
     'js/modules/periph-exec-form.js.gz',
+    'js/modules/periph-exec-templates.js.gz',
     'js/modules/network.js.gz',
     'js/modules/feature-config.js.gz',
     'js/modules/admin-bundle.js.gz',
@@ -215,12 +225,14 @@ function checkUiRegressionGuards(files, manifest) {
         'peripheral diagnostics fragment must be loaded on demand');
     // Config transfer multi-select modal logic
     if (configTransferCompiled) {
-        assert(deviceConfig.includes('_showConfigTransferModal'), 'config transfer modal show method missing');
-        assert(deviceConfig.includes('config-transfer-select-all'), 'config transfer select-all logic missing');
-        assert(deviceConfig.includes('config-transfer-list'), 'config transfer list rendering logic missing');
-        assert(deviceConfig.includes('config-transfer-confirm-btn'), 'config transfer confirm handler missing');
-        assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
-        assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
+        const transfer = readGzipText('js/modules/device-config-transfer.js.gz');
+        assert(deviceConfig.includes('device-config-transfer'), 'device configuration must load transfer tools on demand');
+        assert(transfer.includes('_showConfigTransferModal'), 'config transfer modal show method missing');
+        assert(transfer.includes('config-transfer-select-all'), 'config transfer select-all logic missing');
+        assert(transfer.includes('config-transfer-list'), 'config transfer list rendering logic missing');
+        assert(transfer.includes('config-transfer-confirm-btn'), 'config transfer confirm handler missing');
+        assert(transfer.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
+        assert(transfer.includes('new Promise'), 'config transfer modal should use Promise pattern');
     }
 
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
@@ -277,7 +289,7 @@ function checkUiRegressionGuards(files, manifest) {
     assert(/\.file-input-wrapper\s*>\s*label\.fb-btn/.test(mainCss),
         'published CSS must include the shared file picker trigger style');
     if (configTransferCompiled) {
-        const modalsPage = readGzipText('pages/modals.html.gz');
+        const modalsPage = readGzipText('js/modules/device-config-transfer.js.gz');
         assert(modalsPage.includes('config-transfer-modal'), 'config transfer modal container missing');
         assert(modalsPage.includes('config-transfer-select-all'), 'config transfer select-all checkbox missing');
         assert(modalsPage.includes('config-transfer-list'), 'config transfer list container missing');
@@ -299,13 +311,13 @@ function checkPaginationRegressionGuards(files) {
     assert(allJs.includes('onPageChange'), 'pagination onPageChange callback missing');
 
     // Peripheral config pagination
-    assert(allJs.includes('_periphCurrentPage'), 'peripheral config page state missing');
-    assert(allJs.includes('_periphPageSize') || allJs.includes('periphPageSize'), 'peripheral config pageSize state missing');
+    assert(hasRuntimePrivateName(allJs, '_periphCurrentPage'), 'peripheral config page state missing');
+    assert(hasRuntimePrivateName(allJs, '_periphPageSize') || allJs.includes('periphPageSize'), 'peripheral config pageSize state missing');
     assert(allJs.includes('periph-pagination'), 'peripheral pagination container ID missing');
 
     // Periph-exec pagination
-    assert(allJs.includes('_peCurrentPage'), 'periph-exec page state missing');
-    assert(allJs.includes('_pePageSize') || allJs.includes('pePageSize'), 'periph-exec pageSize state missing');
+    assert(hasRuntimePrivateName(allJs, '_peCurrentPage'), 'periph-exec page state missing');
+    assert(hasRuntimePrivateName(allJs, '_pePageSize') || allJs.includes('pePageSize'), 'periph-exec pageSize state missing');
     assert(allJs.includes('periph-exec-pagination'), 'periph-exec pagination container ID missing');
 
     // API URL must include pagination params
@@ -441,7 +453,7 @@ function checkFeatureTransferRegressionGuards() {
     assert(!featureJs.includes('exportFeatureConfig'), 'feature-config must NOT implement exportFeatureConfig');
     assert(!featureJs.includes('importFeatureConfig'), 'feature-config must NOT implement importFeatureConfig');
     assert(!featureJs.includes('applyLiteMode'), 'feature-config must NOT implement applyLiteMode');
-    const deviceJs = read('web-src/modules/runtime/device-config.js');
+    const deviceJs = read('web-src/modules/runtime/device-config-transfer.js');
     // 2026-08: 标签改为 i18n 包装 t('dc-label-features', '功能配置')，键与回退文案均需存在
     assert(deviceJs.includes("'features.json': '功能配置'") ||
         deviceJs.includes("'features.json': t('dc-label-features', '功能配置')"),

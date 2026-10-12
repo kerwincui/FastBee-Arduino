@@ -9,7 +9,7 @@ from test.unit.test_screen_system_actions import braced_statement
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "docs" / "waveshare-esp32s3-touch-lcd4"
+BUNDLE = ROOT / "docs" / "device-test-configs" / "com8-com9-esp32s3-touch" / "config"
 
 
 class WaveshareTouchLcd4BundleTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
             for path in BUNDLE.glob("*.json")
         }
 
-    def test_user_visible_default_names_are_chinese_without_changing_bindings(self):
+    def test_preserved_names_are_valid_utf8_without_changing_bindings(self):
         labels = []
         def inspect(value):
             if isinstance(value, dict):
@@ -37,12 +37,13 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
             inspect(self.docs[name])
         self.assertGreaterEqual(len(labels), 16)
         for label in labels:
-            self.assertRegex(label, r'[\u4e00-\u9fff]', label)
+            self.assertNotIn('\ufffd', label)
+            self.assertEqual(label, label.encode('utf-8').decode('utf-8'))
         collect = next(rule for rule in self.docs['periph_exec.json']['rules'] if rule['id'] == 'collect_sht30')
         actions = [json.loads(action['actionValue']) for action in collect['actions']]
         self.assertEqual(['air_temperature', 'air_humidity'], [action['dataField'] for action in actions])
         self.assertEqual(['temperature', 'humidity'], [action['channelField'] for action in actions])
-        self.assertEqual(['空气温度', '空气湿度'], [action['sensorLabel'] for action in actions])
+        self.assertEqual(['Air temperature', 'Air humidity'], [action['sensorLabel'] for action in actions])
 
     def test_bundle_has_required_documents_and_no_live_credentials(self):
         for name in ("device.json", "network.json", "peripherals.json",
@@ -54,7 +55,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         self.assertEqual("", device["userId"])
         self.assertEqual("", network["staSSID"])
         self.assertEqual("", network["staPassword"])
-        self.assertEqual([], network["networks"])
+        self.assertEqual([], network.get("networks", []))
         mqtt = self.docs["protocol.json"]["mqtt"]
         self.assertFalse(mqtt["enabled"])
         for key in ("clientId", "username", "password", "mqttSecret", "authCode"):
@@ -63,8 +64,8 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         self.assertNotIn("users.json", self.docs)
         weather = self.docs["protocol.json"]["weatherSources"]
         self.assertEqual(1, len(weather))
-        self.assertEqual("local", weather[0]["id"])
-        self.assertFalse(weather[0]["enabled"])
+        self.assertEqual("home_weather", weather[0]["id"])
+        self.assertTrue(weather[0]["enabled"])  # Preserve intent; the public API key remains blank.
         self.assertEqual("", weather[0]["apiKey"])
 
     def test_confirmed_bus_pins_and_sht30_schema(self):
@@ -87,8 +88,8 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         rtu = self.docs["protocol.json"]["modbusRtu"]
         self.assertTrue(rtu["enabled"])
         self.assertEqual(255, rtu["dePin"])
-        self.assertEqual(8, rtu["slaveAddress"])
-        tasks = rtu["master"]["tasks"]
+        self.assertEqual(4, rtu["slaveAddress"])  # Master default does not override per-task addresses.
+        tasks = rtu["master"]["tasks"][1:]
         self.assertEqual([5, 7, 4, 10], [task["startAddress"] for task in tasks])
         self.assertTrue(all((task["slaveAddress"], task["functionCode"], task["quantity"]) ==
                             (8, 3, 1) for task in tasks))
@@ -98,17 +99,17 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         rules = self.docs["periph_exec.json"]["rules"]
         enabled = {rule["id"]: rule["enabled"] for rule in rules}
         self.assertTrue(enabled["collect_sht30"])
-        self.assertNotIn("collect_pm", enabled)
+        self.assertFalse(enabled["collect_pm"])
         self.assertFalse(enabled["collect_motor"])
 
     def test_sht30_cache_history_and_panel_use_matching_channels(self):
-        rule = self.docs["periph_exec.json"]["rules"][0]
+        rule = next(rule for rule in self.docs["periph_exec.json"]["rules"] if rule["id"] == "collect_sht30")
         self.assertTrue(rule["recordHistory"])
         self.assertFalse(rule["reportAfterExec"])
         actions = [json.loads(item["actionValue"]) for item in rule["actions"]]
         self.assertEqual({"temperature", "humidity"}, {a["channelField"] for a in actions})
         sensor_refs = {a["periphId"] + "_" + a["channelField"] for a in actions}
-        history_refs = sensor_refs | {"modbus.motor_speed", "modbus.motor_count"}
+        history_refs = sensor_refs | {"modbus.pm25", "modbus.pm10"}
         self.assertEqual(history_refs, set(self.docs["point_history.json"]["sourceAllowlist"]))
         panel = self.docs["screen_panel.json"]
         self.assertEqual(1, panel["storageVersion"])
@@ -151,7 +152,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
 
     def test_unconnected_modbus_motor_template_is_not_scheduled(self):
         rules = self.docs["periph_exec.json"]["rules"]
-        self.assertFalse(any(rule["id"] == "collect_pm" for rule in rules))
+        self.assertFalse(next(rule for rule in rules if rule["id"] == "collect_pm")["enabled"])
         poll_rule = next(rule for rule in rules if rule["id"] == "collect_motor")
         self.assertFalse(poll_rule["enabled"])
         self.assertTrue(poll_rule["recordHistory"])
@@ -162,10 +163,10 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         for action in poll_rule["actions"]:
             self.assertEqual(18, action["actionType"])
             payloads.append(json.loads(action["actionValue"]))
-        self.assertEqual([{"poll": [index], "ctrl": []} for index in range(4)], payloads)
+        self.assertEqual([{"poll": [index], "ctrl": []} for index in range(1, 5)], payloads)
         tasks = self.docs["protocol.json"]["modbusRtu"]["master"]["tasks"]
         self.assertTrue(all(not task["enabled"] for task in tasks))
-        self.assertEqual([5, 7, 4, 10], [task["startAddress"] for task in tasks])
+        self.assertEqual([5, 7, 4, 10], [task["startAddress"] for task in tasks[1:]])
 
     def test_canvas_cards_are_in_bounds_nonoverlapping_and_navigable(self):
         pages = self.docs["screen_panel.json"]["config"]["pages"]
@@ -189,18 +190,18 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
     def test_layout_has_no_unconfigured_weather_or_control_placeholders(self):
         config = self.docs["screen_panel.json"]["config"]
         pages = {page["id"]: page for page in config["pages"]}
-        self.assertEqual(5, len(pages))
-        self.assertIn("weather", pages)
+        self.assertEqual(4, len(pages))
+        self.assertIn("environment", pages)
         cards = [card for page in pages.values() for card in page["cards"]]
         self.assertLessEqual(len(cards), 24)
         self.assertEqual(len(cards), len({card["id"] for card in cards}))
         weather_cards = [card for card in cards if card["kind"] == "weather"]
-        self.assertEqual(2, len(weather_cards))
-        self.assertTrue(all(card.get("sourceRef") == "weather.local" for card in weather_cards))
-        controls = [card for card in pages["controls"]["cards"] if card["kind"] == "control"]
+        self.assertEqual(1, len(weather_cards))
+        self.assertTrue(all(card.get("sourceRef") == "weather.home_weather" for card in weather_cards))
+        controls = [card for card in pages["environment"]["cards"] if card["kind"] == "control"]
         self.assertEqual({"action"}, {card["visualType"] for card in controls})
         self.assertTrue(all(card.get("controlRef") for card in controls))
-        collector_button = next(card for card in controls if card["id"] == "execute_once")
+        collector_button = next(card for card in controls if card.get("controlRef") == "rule.collect_sht30")
         self.assertEqual("rule.collect_sht30", collector_button["controlRef"])
         self.assertRegex(collector_button["bindingFingerprint"], r"^[0-9a-f]{8}$")
         allowed_rules = [rule for rule in self.docs["periph_exec.json"]["rules"] if rule["allowPanelControl"]]
@@ -209,7 +210,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
                             for action in allowed_rules[0]["actions"]))
         system_actions = [card["systemActionId"] for card in pages["system"]["cards"]
                           if card["kind"] == "system"]
-        self.assertEqual(["brightness", "sleep-time", "touch-beep", "sleep", "restart"], system_actions)
+        self.assertEqual(["brightness", "sleep-time", "touch-beep", "buzzer", "restart", "sleep"], system_actions)
         brightness = [card["actionValue"] for card in pages["system"]["cards"]
                       if card.get("systemActionId") == "brightness"]
         self.assertEqual([70], brightness)
@@ -223,9 +224,9 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         self.assertFalse(any(card["kind"] == "page-link" for card in home["cards"]))
         self.assertTrue(any(card["kind"] == "weather" for card in home["cards"]))
 
-    def test_motor_protocol_uses_confirmed_registers_without_default_panel_controls(self):
+    def test_preserved_motor_panel_does_not_enable_scheduled_motion(self):
         pages = self.docs["screen_panel.json"]["config"]["pages"]
-        self.assertFalse(any(page["id"] == "motor" for page in pages))
+        self.assertTrue(any(page["id"] == "motor" for page in pages))
         self.assertFalse(any(page["id"] == "particles" for page in pages))
         cards = [card for page in pages for card in page["cards"]]
         self.assertFalse(any(card.get("sourceRef", "").startswith("modbus.pm") for card in cards))
@@ -234,16 +235,17 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         self.assertEqual((8, 1, [0, 1, 2, 5, 7]),
                          (device["slaveAddress"], device["controlProtocol"], device["motorRegs"]))
         self.assertEqual((0, 0), (device["motorMinPosition"], device["motorMaxPosition"]))
-        self.assertEqual((6, 1, 10), (device["addressReg"], device["baudRateMode"], device["baudRateReg"]))
+        self.assertEqual((3, 6, 5, 7), tuple(device["motorProtocol"][key] for key in
+                         ("readFunction", "writeFunction", "speedReadRegister", "pulseReadRegister")))
         self.assertTrue(all(not task["enabled"] for task in master["tasks"]))
-        reads = master["tasks"]
+        reads = master["tasks"][1:]
         self.assertEqual([5, 7, 4, 10], [task["startAddress"] for task in reads])
         self.assertTrue(all((task["slaveAddress"], task["functionCode"], task["quantity"]) == (8, 3, 1)
                             for task in reads))
         rules = {rule["id"]: rule for rule in self.docs["periph_exec.json"]["rules"]}
         collector = rules["collect_motor"]
         self.assertFalse(collector["enabled"])
-        self.assertEqual([{"poll": [index], "ctrl": []} for index in (0, 1, 2, 3)],
+        self.assertEqual([{"poll": [index], "ctrl": []} for index in (1, 2, 3, 4)],
                          [json.loads(action["actionValue"]) for action in collector["actions"]])
         for name, value in (("motor_forward", "0:1"), ("motor_reverse", "1:1"), ("motor_stop", "2:1")):
             rule = rules[name]
@@ -271,7 +273,7 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
         production = braced_statement(source, "String ScreenPanelManager::ruleFingerprint(")
         rule = next(rule for rule in self.docs["periph_exec.json"]["rules"] if rule["id"] == "collect_sht30")
         card = next(card for page in self.docs["screen_panel.json"]["config"]["pages"]
-                    for card in page["cards"] if card["id"] == "execute_once")
+                    for card in page["cards"] if card.get("controlRef") == "rule.collect_sht30")
         actions = ",\n".join("{%d, %s, %s, %s, %d}" % (
             action["actionType"], json.dumps(action["targetPeriphId"]),
             json.dumps(action["actionValue"]), str(action["useReceivedValue"]).lower(),
@@ -304,7 +306,7 @@ int main() {
 
     def test_home_screen_stays_visible_without_sensor_readings(self):
         config = self.docs["screen_panel.json"]["config"]
-        self.assertEqual(70, config["settings"]["brightnessPercent"])
+        self.assertEqual(52, config["settings"]["brightnessPercent"])
         self.assertEqual(0, config["settings"]["idleSleepSeconds"])
         home = next(page for page in config["pages"]
                     if page["id"] == config["settings"]["homePageId"])

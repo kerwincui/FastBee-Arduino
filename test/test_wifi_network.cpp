@@ -1394,7 +1394,7 @@ void test_source_batch_system_info_reports_memory_guard() {
         "BatchRouteHandler must access the framework health monitor");
     TEST_ASSERT_TRUE_MESSAGE(content.find("systems/HealthMonitor.h") != std::string::npos,
         "BatchRouteHandler must include HealthMonitor for guard level reporting");
-    TEST_ASSERT_TRUE_MESSAGE(content.find("memory[\"guardLevel\"]") != std::string::npos,
+    TEST_ASSERT_TRUE_MESSAGE(content.find("FastBee::setFixedJsonField(memory, \"guardLevel\",") != std::string::npos,
         "Compact system info must expose memory.guardLevel");
     TEST_ASSERT_TRUE_MESSAGE(content.find("monitor->getMemoryGuardLevel()") != std::string::npos,
         "Compact system info must read the current guard level");

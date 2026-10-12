@@ -10,11 +10,18 @@ MANAGER_CPP = "\n".join(
     (ROOT / path).read_text(encoding="utf-8")
     for path in (
         "src/core/PeripheralManager.cpp",
+        "src/core/PeripheralManagerUART.cpp",
         "src/core/PeripheralManagerIo.cpp",
+        "src/core/PeripheralManagerEncoder.cpp",
         "src/core/PeripheralManagerPersistence.cpp",
+        "src/core/PeripheralManagerValidation.cpp",
     )
 )
-ROUTE_CPP = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(encoding="utf-8")
+ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/network/handlers/PeripheralRouteHandler.cpp",
+    "src/network/handlers/PeripheralReadRoutes.cpp",
+    "src/network/handlers/PeripheralRouteReadSupport.h",
+))
 EXEC_CPP = (ROOT / "src/core/PeriphExecExecutor.cpp").read_text(encoding="utf-8")
 PERIPHERALS_JS = (ROOT / "web-src/modules/runtime/peripherals.js").read_text(encoding="utf-8")
 PERIPHERAL_IO_JS = (ROOT / "web-src/modules/runtime/peripheral-io.js").read_text(encoding="utf-8")
@@ -91,9 +98,13 @@ class UartContractTests(unittest.TestCase):
         load = function_body(
             MANAGER_CPP, r"\bPeripheralManager::loadConfiguration\s*\("
         )
+        self.assertIn("serializePersistedPeripheral(obj, config)", save)
+        self.assertIn("parsePersistedPeripheral(obj, config, parseError)", load)
+        encode = function_body(MANAGER_CPP, r"\bserializePersistedPeripheral\s*\(")
+        decode = function_body(MANAGER_CPP, r"\bparsePersistedPeripheral\s*\(")
         for field in ("baudRate", "dataBits", "stopBits", "parity"):
-            self.assertIn(f'params["{field}"]', save)
-            self.assertIn(f'params["{field}"]', load)
+            self.assertIn(f'FastBee::setFixedJsonField(params, "{field}",', encode)
+            self.assertIn(f'params["{field}"]', decode)
 
         self.assertIn("saturatingAddUint32", MANAGER_CPP)
         for field in (
@@ -159,9 +170,13 @@ class EncoderContractTests(unittest.TestCase):
         load = function_body(
             MANAGER_CPP, r"\bPeripheralManager::loadConfiguration\s*\("
         )
+        self.assertIn("serializePersistedPeripheral(obj, config)", save)
+        self.assertIn("parsePersistedPeripheral(obj, config, parseError)", load)
+        encode = function_body(MANAGER_CPP, r"\bserializePersistedPeripheral\s*\(")
+        decode = function_body(MANAGER_CPP, r"\bparsePersistedPeripheral\s*\(")
         for field in ("resolution", "useInterrupt"):
-            self.assertIn(f'params["{field}"]', save)
-            self.assertIn(f'params["{field}"]', load)
+            self.assertIn(f'FastBee::setFixedJsonField(params, "{field}",', encode)
+            self.assertIn(f'params["{field}"]', decode)
 
         for handler in (
             "handleAddPeripheral",
@@ -178,7 +193,8 @@ class EncoderContractTests(unittest.TestCase):
 
     def test_encoder_isr_has_no_fake_fallback_and_uses_both_phases(self):
         setup = function_body(MANAGER_CPP, r"\bPeripheralManager::setupHardware\s*\(")
-        encoder_section = setup[setup.find("// ========== 编码器初始化") :]
+        self.assertIn("return setupEncoderHardware(config)", setup)
+        encoder_section = function_body(MANAGER_CPP, r"\bPeripheralManager::setupEncoderHardware\s*\(")
         self.assertIn("ENCODER_RESOURCE_EXHAUSTED", encoder_section)
         self.assertNotIn("polling only", encoder_section)
         self.assertIsNotNone(

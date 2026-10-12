@@ -3,7 +3,7 @@
 #include "network/SseJsonChunks.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
-#include <esp_heap_caps.h>
+#include "core/MemoryBudget.h"
 #include <cstdio>
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
@@ -42,9 +42,9 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
             if (request) request->send(503, "text/plain", "SSE unavailable");
             return;
         }
-        // 内存门控：largestBlock < 16KB 或 MEMGUARD >= SEVERE 时拒绝新 SSE
+        // 内存门控：内部 8BIT 最大连续块 < 8KB 或 MEMGUARD >= SEVERE 时拒绝新 SSE
         // 避免浏览器多 tab 自动重连持续吃堆，让系统有恢复窗口
-        uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
         if (largestBlock < LOW_MEMORY_THRESHOLD) {
             _stats.rejectedLowMemory++;
             _stats.lastRejectAtMs = millis();
@@ -286,8 +286,8 @@ bool SSERouteHandler::shouldSkipBroadcast() {
         return true;
     }
 #endif
-    // 使用最大可分配块而非总空闲堆，更准确地反映能否进行网络操作
-    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    // 网络操作需要内部 8BIT 连续块；PSRAM 或仅支持 32BIT 的内部堆不能补足。
+    const uint32_t largestBlock = FastBee::MemoryBudget::dram8Largest();
     if (largestBlock < LOW_MEMORY_THRESHOLD) {
         _stats.skippedBroadcastLowMemory++;
         _stats.lastSkipBroadcastAtMs = now;

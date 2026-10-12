@@ -6,10 +6,18 @@
  */
 
 #include "network/OTAManager.h"
+#include "core/FeatureFlags.h"
+
+// FastBeeFramework owns an optional unique_ptr in every profile, including
+// FASTBEE_ENABLE_OTA=0. Its deleter must always have a definition; destruction
+// retains the owner retirement/release path without enabling any OTA service.
+OTAManager::~OTAManager() { featureOwner_.retiring(); }
+
+#if FASTBEE_ENABLE_OTA
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
 #include "systems/SystemRebooter.h"
-#include "core/FeatureFlags.h"
+#include "core/MemoryBudget.h"
 #include "core/FastBeeFramework.h"
 #include "network/NetworkManager.h"
 #include "protocols/FastBeeOTAProtocol.h"
@@ -26,14 +34,11 @@
 #include <NetworkClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
-#include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <new>
 #include <memory>
 #include <time.h>
-
-#if FASTBEE_ENABLE_OTA
 
 // OTA状态枚举
 enum OTAStatus {
@@ -105,6 +110,7 @@ OTAManager::OTAManager(AsyncWebServer* webServer)
       currentSize(0),
       progress(0) {
     (void)webServer;  // 路由已移交 OTARouteHandler 统一注册，此参数保留兼容性
+    featureOwner_.ready();
 }
 
 // 初始化（路由由 OTARouteHandler 注册并委托到本类，此处仅重置状态）
@@ -123,7 +129,7 @@ size_t OTAManager::calcMaxSketchSpace() {
 
 // 内存门控：OTA 写入需要 ~4KB 临时缓冲，SEVERE/CRITICAL 状态或 DRAM 不足时拒绝
 bool OTAManager::checkMemoryGate(String* reason) {
-    uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    const uint32_t dramFree = FastBee::MemoryBudget::dram8Free();
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
@@ -132,7 +138,7 @@ bool OTAManager::checkMemoryGate(String* reason) {
         return false;
     }
 #endif
-    // 硬门槛：至少 20KB 8BIT DRAM 可用
+    // 硬门槛：至少 20KB 内部 8BIT DRAM 可用，PSRAM 不补足该门槛。
     if (dramFree < OTA_MIN_FREE_DRAM) {
         if (reason) *reason = "Insufficient memory for OTA update (DRAM=" + String(dramFree) + "B)";
         return false;

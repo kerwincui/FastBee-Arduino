@@ -2,8 +2,10 @@
 #if FASTBEE_ENABLE_IR_REMOTE
 
 #include "peripherals/drivers/IRRemoteDriver.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeripheralExecution.h"
 #include "core/PeriphExecManager.h"
+#endif
 #include "systems/LoggerSystem.h"
 #include "core/FeatureBudget.h"
 #include "core/RuntimeFeatureManager.h"
@@ -11,6 +13,25 @@
 #include <IRrecv.h>
 #include <IRutils.h>
 #include <ArduinoJson.h>
+#include <new>
+#include <cstring>
+#include <utility>
+
+namespace {
+struct IrGuard {
+    SemaphoreHandle_t mutex;
+    bool held;
+    explicit IrGuard(SemaphoreHandle_t value, TickType_t wait = 0)
+        : mutex(value), held(value && xSemaphoreTake(value, wait) == pdTRUE) {}
+    ~IrGuard() { if (held) xSemaphoreGive(mutex); }
+};
+struct IrMutation {
+    std::atomic_flag& flag;
+    bool held;
+    explicit IrMutation(std::atomic_flag& value) : flag(value), held(!flag.test_and_set(std::memory_order_acquire)) {}
+    ~IrMutation() { if (held) flag.clear(std::memory_order_release); }
+};
+}
 
 // 红外按键映射（对码结果）不再单独建 ir_keys.json，
 // 统一随外设执行配置 periph_exec.json 的 irKeys 字段持久化（经 PeriphExecManager 读写）
@@ -56,10 +77,38 @@ static String codeToHex(uint64_t value) {
 
 IRRemoteDriver& IRRemoteDriver::getInstance() {
     static IRRemoteDriver instance;
-    if (!instance._mutex) {
-        instance._mutex = xSemaphoreCreateMutex();
-    }
+    instance.ensureMutex();
+    static const FastBee::FeatureInstanceObserver observer{"irRemote", [](const void* context) {
+        return static_cast<const IRRemoteDriver*>(context)->observeFeatureInstance();
+    }, &instance};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
     return instance;
+}
+
+bool IRRemoteDriver::ensureMutex() {
+    if (_mutex.load(std::memory_order_acquire)) return true;
+    const auto created = xSemaphoreCreateMutex();
+    if (!created) return false;
+    SemaphoreHandle_t expected = nullptr;
+    if (!_mutex.compare_exchange_strong(expected, created, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) vSemaphoreDelete(created);
+    return true;
+}
+
+FastBee::FeatureInstanceSnapshot IRRemoteDriver::observeFeatureInstance() const {
+    using namespace FastBee;
+    const auto mutex = _mutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTake(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    FeatureInstanceSnapshot snapshot;
+    if (_initialized && (!_irRecv || !_results)) snapshot = FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::InvalidSnapshot, FeatureInstanceScope::ServiceLifecycle);
+    else snapshot = FeatureInstanceSnapshot::lifecycle(_initialized ? FeatureInstanceState::Running :
+        (_irRecv || _results) ? FeatureInstanceState::Allocated : FeatureInstanceState::Stopped);
+    xSemaphoreGive(mutex);
+    return snapshot;
 }
 
 IRRemoteDriver::~IRRemoteDriver() {
@@ -67,6 +116,7 @@ IRRemoteDriver::~IRRemoteDriver() {
 }
 
 bool IRRemoteDriver::begin(uint8_t recvPin, uint16_t bufferSize) {
+    if (!_mutex) return false;
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("irRemote")) {
         LOGGER.info("[IR] Compiled but runtime-disabled, skip init");
         return false;
@@ -75,7 +125,10 @@ bool IRRemoteDriver::begin(uint8_t recvPin, uint16_t bufferSize) {
         LOGGER.warning("[IR] Disabled by memory budget, skip init");
         return false;
     }
+    // Never acquire the rules/storage lock while holding the receiver lock.
+    loadKeyMap(); // An unavailable early-boot configuration is retried by check().
     if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+    if (_stopping || _dispatching) { if (_mutex) xSemaphoreGive(_mutex); return false; }
     if (_initialized) { if (_mutex) xSemaphoreGive(_mutex); return true; }
 
     IRrecv* recv = new IRrecv(recvPin, bufferSize, 50, true);  // 50us timeout, save buffer
@@ -89,9 +142,6 @@ bool IRRemoteDriver::begin(uint8_t recvPin, uint16_t bufferSize) {
     _lastProtocol = "";
     _lastValue = 0;
 
-    // 加载按键映射（对码结果），不做启动时对码
-    loadKeyMap();
-
     LOGGER.infof("[IR] Receiver initialized on pin %d (buffer=%d, keys=%d)",
                  recvPin, bufferSize, (int)_keyMap.size());
     if (_mutex) xSemaphoreGive(_mutex);
@@ -99,9 +149,10 @@ bool IRRemoteDriver::begin(uint8_t recvPin, uint16_t bufferSize) {
 }
 
 void IRRemoteDriver::check() {
+    if (!_mutex.load(std::memory_order_acquire)) return;
     // 非阻塞获取锁：若 stop()/begin() 正在执行则跳过本轮
     if (_mutex && xSemaphoreTake(_mutex, 0) != pdTRUE) return;
-    if (!_initialized || !_irRecv || !_results) {
+    if (!_initialized || !_irRecv || !_results || _stopping || _dispatching) {
         if (_mutex) xSemaphoreGive(_mutex);
         return;
     }
@@ -111,7 +162,14 @@ void IRRemoteDriver::check() {
 
     // 延迟加载按键映射：IR 外设可能在 PeriphExecManager 初始化前 begin()，
     // 首次读到空表时保持未加载标记，待配置管理器就绪后补加载一次
-    if (!_keyMapLoaded) loadKeyMap();
+    if (!_keyMapLoaded) {
+        if (_mutex) xSemaphoreGive(_mutex);
+        loadKeyMap();
+        if (xSemaphoreTake(_mutex, 0) != pdTRUE) return;
+        if (!_initialized || !_irRecv || !_results || _stopping || _dispatching) {
+            xSemaphoreGive(_mutex); return;
+        }
+    }
 
     IRrecv* recv = static_cast<IRrecv*>(_irRecv);
     decode_results* results = static_cast<decode_results*>(_results);
@@ -163,7 +221,7 @@ void IRRemoteDriver::check() {
 
         // 触发红外编码接收事件（命中按键映射时携带 key 字段）
 #if FASTBEE_ENABLE_PERIPH_EXEC
-        String keyName = resolveKeyName(value, protocol);
+        String keyName = _resolveKeyNameLocked(value, protocol);
         String eventData = "{\"protocol\":\"" + protocol +
                            "\",\"code\":\"" + hex +
                            "\",\"bits\":" + String(results->bits);
@@ -171,7 +229,20 @@ void IRRemoteDriver::check() {
             eventData += ",\"key\":\"" + keyName + "\"";  // 按键名已校验为安全字符
         }
         eventData += "}";
+        // Reserve this exact decode until dispatch returns. stop() refuses to
+        // report quiescence or allow restart while this reservation exists.
+        recv->resume();
+        _dispatching = true;
+        if (_mutex) xSemaphoreGive(_mutex);
+        struct DispatchTerminal {
+            IRRemoteDriver& owner;
+            ~DispatchTerminal() {
+                IrGuard lock(owner._mutex.load(std::memory_order_acquire), portMAX_DELAY);
+                if (lock.held) owner._dispatching = false;
+            }
+        } terminal{*this};
         PeriphExecManager::getInstance().dispatchEventMatchedRules("ir_code_received", eventData);
+        return;
 #endif
 
         recv->resume();
@@ -179,8 +250,10 @@ void IRRemoteDriver::check() {
     if (_mutex) xSemaphoreGive(_mutex);
 }
 
-void IRRemoteDriver::stop() {
-    if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+bool IRRemoteDriver::stop() {
+    IrGuard lock(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+    if (!lock.held) return false;
+    if (_dispatching) { _stopping = true; return false; }
     if (_irRecv) {
         IRrecv* recv = static_cast<IRrecv*>(_irRecv);
         _irRecv = nullptr;
@@ -198,14 +271,17 @@ void IRRemoteDriver::stop() {
     _lastProtocol = "";
     _lastValue = 0;
     _learnState = IrLearnState::IDLE;
+    _learnDeadline = 0; _learnedCode = ""; _learnedProtocol = ""; _learnedValue = 0;
+    _stopping = false;
     LOGGER.info("[IR] Receiver stopped");
-    if (_mutex) xSemaphoreGive(_mutex);
+    return true;
 }
 
 // ============ 学习模式 ============
 
-void IRRemoteDriver::startLearn(uint32_t timeoutMs) {
-    if (!_initialized) return;
+bool IRRemoteDriver::startLearn(uint32_t timeoutMs) {
+    IrGuard lock(_mutex.load(std::memory_order_acquire));
+    if (!lock.held || !_initialized || !_irRecv || !_results || _stopping || _dispatching) return false;
     if (timeoutMs < 1000) timeoutMs = 1000;
     if (timeoutMs > 60000) timeoutMs = 60000;
     _learnState = IrLearnState::LEARNING;
@@ -216,13 +292,17 @@ void IRRemoteDriver::startLearn(uint32_t timeoutMs) {
     // 清空可能残留的解码缓冲，避免捕获到进入学习前的旧编码
     if (_irRecv) static_cast<IRrecv*>(_irRecv)->resume();
     LOGGER.infof("[IR] Learn mode started (timeout=%ums)", (unsigned)timeoutMs);
+    return true;
 }
 
-void IRRemoteDriver::stopLearn() {
+bool IRRemoteDriver::stopLearn() {
+    IrGuard lock(_mutex.load(std::memory_order_acquire));
+    if (!lock.held) return false;
     if (_learnState == IrLearnState::LEARNING) {
         _learnState = IrLearnState::IDLE;
         LOGGER.info("[IR] Learn mode cancelled");
     }
+    return true;
 }
 
 void IRRemoteDriver::_updateLearnTimeout() {
@@ -234,8 +314,8 @@ void IRRemoteDriver::_updateLearnTimeout() {
 }
 
 IrLearnState IRRemoteDriver::getLearnState() {
-    _updateLearnTimeout();
-    return _learnState;
+    IrStatusSnapshot snapshot;
+    return getSnapshot(snapshot) ? snapshot.learnState : IrLearnState::IDLE;
 }
 
 String IRRemoteDriver::getLearnStateName() {
@@ -248,43 +328,73 @@ String IRRemoteDriver::getLearnStateName() {
 }
 
 uint32_t IRRemoteDriver::getLearnRemainingMs() {
-    _updateLearnTimeout();
-    if (_learnState != IrLearnState::LEARNING) return 0;
-    int32_t rem = (int32_t)(_learnDeadline - millis());
-    return rem > 0 ? (uint32_t)rem : 0;
+    IrStatusSnapshot snapshot;
+    return getSnapshot(snapshot) ? snapshot.remainingMs : 0;
 }
+
+bool IRRemoteDriver::getSnapshot(IrStatusSnapshot& snapshot) const {
+    snapshot = {};
+    IrGuard lock(_mutex.load(std::memory_order_acquire));
+    if (!lock.held) return false;
+    try {
+    IrStatusSnapshot value;
+    value.initialized = _initialized && !_stopping; value.stopping = _stopping;
+    value.keysLoaded = _keyMapLoaded;
+    value.learnState = _learnState; value.keyCount = _keyMap.size(); value.lastValue = _lastValue;
+    value.lastCode = _lastCode; value.lastProtocol = _lastProtocol;
+    value.learnedCode = _learnedCode; value.learnedProtocol = _learnedProtocol;
+    if (value.lastCode != _lastCode || value.lastProtocol != _lastProtocol ||
+        value.learnedCode != _learnedCode || value.learnedProtocol != _learnedProtocol) return false;
+    if (value.stopping) value.learnState = IrLearnState::IDLE;
+    if (value.learnState == IrLearnState::LEARNING) {
+        const int32_t remaining = static_cast<int32_t>(static_cast<uint32_t>(_learnDeadline) - static_cast<uint32_t>(millis()));
+        if (remaining > 0) value.remainingMs = static_cast<uint32_t>(remaining);
+        else value.learnState = IrLearnState::TIMEOUT;
+    }
+    snapshot = std::move(value);
+    return true;
+    } catch (const std::bad_alloc&) { return false; }
+}
+String IRRemoteDriver::getLastCode() const { IrStatusSnapshot s; return getSnapshot(s) ? s.lastCode : String(); }
+String IRRemoteDriver::getLastProtocol() const { IrStatusSnapshot s; return getSnapshot(s) ? s.lastProtocol : String(); }
+uint64_t IRRemoteDriver::getLastValue() const { IrStatusSnapshot s; return getSnapshot(s) ? s.lastValue : 0; }
+bool IRRemoteDriver::isInitialized() const { IrStatusSnapshot s; return getSnapshot(s) && s.initialized; }
+bool IRRemoteDriver::isLearning() const { IrStatusSnapshot s; return getSnapshot(s) && s.learnState == IrLearnState::LEARNING; }
+String IRRemoteDriver::getLearnedCode() const { IrStatusSnapshot s; return getSnapshot(s) ? s.learnedCode : String(); }
+String IRRemoteDriver::getLearnedProtocol() const { IrStatusSnapshot s; return getSnapshot(s) ? s.learnedProtocol : String(); }
+size_t IRRemoteDriver::getKeyCount() const { IrStatusSnapshot s; return getSnapshot(s) ? s.keyCount : 0; }
 
 // ============ 按键映射 ============
 
-bool IRRemoteDriver::loadKeyMap() {
-    _keyMap.clear();
-    // PeriphExecManager 未初始化（如 IR 外设在系统启动早期 begin）时保持未加载标记，
-    // 由 check() 在配置管理器就绪后补加载
-    String keysJson = PeriphExecManager::getInstance().getIrKeysJson();
-    if (keysJson.isEmpty() && !PeriphExecManager::getInstance().getRulesMutex()) {
-        return false;
-    }
-    _keyMapLoaded = true;
-    if (keysJson.isEmpty()) return true;  // 无配置视为空表
+#if FASTBEE_ENABLE_PERIPH_EXEC
+static bool parseIrKeys(const String& json, std::vector<IrKeyEntry>& keys) {
+    keys.clear();
+    if (json.isEmpty()) return true;
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, keysJson);
-    if (err || !doc.is<JsonArray>()) {
-        LOGGER.warningf("[IR] irKeys parse error: %s", err.c_str());
-        return false;
-    }
-    for (JsonObject o : doc.as<JsonArray>()) {
-        String name = o["name"] | "";
-        String code = o["code"] | "";
-        String proto = o["protocol"] | "";
+    if (deserializeJson(doc, json.c_str(), json.length()) || doc.overflowed() || !doc.is<JsonArray>() || doc.size() > 40) return false;
+    for (JsonVariantConst item : doc.as<JsonArrayConst>()) {
+        if (!item.is<JsonObjectConst>() || !item["name"].is<const char*>() || !item["code"].is<const char*>() ||
+            (!item["protocol"].isNull() && !item["protocol"].is<const char*>())) return false;
+        const JsonString n = item["name"].as<JsonString>(), c = item["code"].as<JsonString>();
+        const JsonString p = item["protocol"].as<JsonString>();
+        if (n.size() != std::strlen(n.c_str()) || c.size() != std::strlen(c.c_str()) ||
+            (p.c_str() && (p.size() > 32 || p.size() != std::strlen(p.c_str())))) return false;
+        String name(n.c_str()), code(c.c_str()), proto(p.c_str() ? p.c_str() : "");
         uint64_t value = 0;
-        if (!isValidKeyName(name) || !parseIrCode(code, value)) continue;
-        if (_keyMap.size() >= MAX_IR_KEYS) break;
-        _keyMap.push_back(IrKeyEntry{name, value, proto});
+        if (name.length() != n.size() || code.length() != c.size() || proto.length() != p.size() ||
+            !isValidKeyName(name) || !parseIrCode(code, value)) return false;
+        for (const auto& entry : keys) if (entry.name == name) return false;
+        keys.push_back(IrKeyEntry{std::move(name), value, std::move(proto)});
     }
     return true;
 }
 
+#endif // FASTBEE_ENABLE_PERIPH_EXEC
 String IRRemoteDriver::resolveKeyName(uint64_t value, const String& protocol) const {
+    IrGuard lock(_mutex.load(std::memory_order_acquire));
+    return lock.held ? _resolveKeyNameLocked(value, protocol) : String();
+}
+String IRRemoteDriver::_resolveKeyNameLocked(uint64_t value, const String& protocol) const {
     for (const auto& e : _keyMap) {
         if (e.value != value) continue;
         if (e.protocol.length() > 0 && !e.protocol.equalsIgnoreCase(protocol)) continue;
@@ -293,23 +403,54 @@ String IRRemoteDriver::resolveKeyName(uint64_t value, const String& protocol) co
     return "";
 }
 
-String IRRemoteDriver::getKeysJson() const {
+static bool serializeIrKeys(const std::vector<IrKeyEntry>& keys, String& out) {
+    out = "";
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    for (const auto& e : _keyMap) {
+    for (const auto& e : keys) {
         JsonObject o = arr.add<JsonObject>();
         o["name"] = e.name;
         o["code"] = codeToHex(e.value);
         o["protocol"] = e.protocol;
     }
-    String out;
-    serializeJson(arr, out);
-    return out;
+    if (doc.overflowed()) return false;
+    const size_t expected = measureJson(arr);
+    return serializeJson(arr, out) == expected && out.length() == expected;
+}
+
+bool IRRemoteDriver::loadKeyMap() {
+#if !FASTBEE_ENABLE_PERIPH_EXEC
+    return false; // No rule-config service is linked; receiver/learning remain usable.
+#else
+    IrMutation mutation(_keyMutation);
+    if (!mutation.held) return false;
+    try {
+        String source;
+        std::vector<IrKeyEntry> candidate;
+        if (!PeriphExecManager::getInstance().copyIrKeysJson(source) || !parseIrKeys(source, candidate)) return false;
+        IrGuard lock(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+        if (!lock.held) return false;
+        _keyMap.swap(candidate); _keyMapLoaded = true;
+        return true;
+    } catch (const std::bad_alloc&) { return false; }
+#endif
+}
+bool IRRemoteDriver::getKeySnapshot(String& json, size_t& count) const {
+    json = ""; count = 0;
+    IrGuard lock(_mutex.load(std::memory_order_acquire));
+    if (!lock.held || !_keyMapLoaded) return false;
+    try {
+        if (!serializeIrKeys(_keyMap, json)) { json = ""; return false; }
+        count = _keyMap.size(); return true;
+    } catch (const std::bad_alloc&) { json = ""; return false; }
+}
+String IRRemoteDriver::getKeysJson() const {
+    String json; size_t count = 0; getKeySnapshot(json, count); return json;
 }
 
 bool IRRemoteDriver::upsertKey(const String& name, const String& code,
                                const String& protocol, String& err) {
-    if (!_keyMapLoaded) loadKeyMap();
+    err = "";
     if (!isValidKeyName(name)) {
         err = "按键名非法（仅允许字母数字下划线短横线，1-32 字符）";
         return false;
@@ -319,63 +460,65 @@ bool IRRemoteDriver::upsertKey(const String& name, const String& code,
         err = "编码格式非法（应为十六进制，如 0x00FF6897）";
         return false;
     }
-    // 更新已有同名按键
-    for (auto& e : _keyMap) {
-        if (e.name == name) {
-            e.value = value;
-            e.protocol = protocol;
-            return _persistKeyMap();
+    if (protocol.length() > 32 || protocol.length() != std::strlen(protocol.c_str())) {
+        err = "IR_KEY_PROTOCOL_INVALID"; return false;
+    }
+    return _editKeyMap(name, value, protocol, 0, err);
+}
+
+bool IRRemoteDriver::deleteKey(const String& name, String* error) {
+    String ignored;
+    return _editKeyMap(name, 0, "", 1, error ? *error : ignored);
+}
+
+bool IRRemoteDriver::clearKeys(String* error) {
+    String ignored;
+    return _editKeyMap("", 0, "", 2, error ? *error : ignored);
+}
+
+bool IRRemoteDriver::_editKeyMap(const String& name, uint64_t value, const String& protocol,
+                                 uint8_t operation, String& error) {
+#if !FASTBEE_ENABLE_PERIPH_EXEC
+    (void)name; (void)value; (void)protocol; (void)operation;
+    error = "IR_KEYS_STORE_DISABLED"; return false;
+#else
+    error = "";
+    if (operation != 2 && !isValidKeyName(name)) { error = "IR_KEY_NAME_INVALID"; return false; }
+    if (!_mutex.load(std::memory_order_acquire)) { error = "IR_UNAVAILABLE"; return false; }
+    IrMutation mutation(_keyMutation);
+    if (!mutation.held) { error = "IR_KEYS_BUSY"; return false; }
+    try {
+        String source, json;
+        std::vector<IrKeyEntry> candidate;
+        auto& manager = PeriphExecManager::getInstance();
+        if (!manager.copyIrKeysJson(source) || !parseIrKeys(source, candidate)) {
+            error = "IR_KEYS_SOURCE_UNCONFIRMED"; return false;
         }
-    }
-    if (_keyMap.size() >= MAX_IR_KEYS) {
-        err = "按键数量已达上限（" + String((int)MAX_IR_KEYS) + "）";
-        return false;
-    }
-    _keyMap.push_back(IrKeyEntry{name, value, protocol});
-    return _persistKeyMap();
-}
-
-bool IRRemoteDriver::deleteKey(const String& name) {
-    if (!_keyMapLoaded) loadKeyMap();
-    bool removed = false;
-    for (size_t i = 0; i < _keyMap.size(); ++i) {
-        if (_keyMap[i].name == name) {
-            _keyMap.erase(_keyMap.begin() + i);
-            removed = true;
-            break;
+        size_t found = 0;
+        while (found < candidate.size() && candidate[found].name != name) ++found;
+        if (operation == 2) candidate.clear();
+        else if (operation == 1) {
+            if (found == candidate.size()) { error = "IR_KEY_NOT_FOUND"; return false; }
+            candidate.erase(candidate.begin() + found);
+        } else {
+            IrKeyEntry entry{name, value, protocol};
+            if (entry.name != name || entry.protocol != protocol) { error = "IR_KEYS_MEMORY"; return false; }
+            if (found < candidate.size()) candidate[found] = std::move(entry);
+            else {
+                if (candidate.size() >= MAX_IR_KEYS) { error = "IR_KEYS_LIMIT"; return false; }
+                candidate.push_back(std::move(entry));
+            }
         }
-    }
-    if (!removed) return false;
-    return _persistKeyMap();
-}
-
-bool IRRemoteDriver::clearKeys() {
-    _keyMap.clear();
-    _keyMapLoaded = true;
-    // 清空：写入空数组并持久化（PeriphExecManager 会同步移除配置中的 irKeys 字段）
-    PeriphExecManager::getInstance().setIrKeysJson("");
-    LOGGER.info("[IR] All IR keys cleared");
-    return true;
-}
-
-bool IRRemoteDriver::_persistKeyMap() {
-    if (_keyMap.empty()) {
-        return PeriphExecManager::getInstance().setIrKeysJson("");
-    }
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (const auto& e : _keyMap) {
-        JsonObject o = arr.add<JsonObject>();
-        o["name"] = e.name;
-        o["code"] = codeToHex(e.value);
-        o["protocol"] = e.protocol;
-    }
-    String json;
-    serializeJson(arr, json);
-    bool ok = PeriphExecManager::getInstance().setIrKeysJson(json);
-    if (ok) LOGGER.infof("[IR] IR keys saved to periph_exec.json (%d keys)", (int)_keyMap.size());
-    else LOGGER.warning("[IR] Failed to save IR keys to periph_exec.json");
-    return ok;
+        if (!candidate.empty() && !serializeIrKeys(candidate, json)) { error = "IR_KEYS_MEMORY"; return false; }
+        // The same rules lock compares the observed value and commits the
+        // existing atomic configuration writer. Imports cannot be overwritten.
+        if (!manager.setIrKeysJson(json, &source)) { error = "IR_KEYS_COMMIT_UNCONFIRMED"; return false; }
+        IrGuard lock(_mutex.load(std::memory_order_acquire), portMAX_DELAY);
+        if (!lock.held) { error = "IR_KEYS_PUBLISH_UNCONFIRMED"; return false; }
+        _keyMap.swap(candidate); _keyMapLoaded = true;
+        return true;
+    } catch (const std::bad_alloc&) { error = "IR_KEYS_MEMORY"; return false; }
+#endif
 }
 
 #endif // FASTBEE_ENABLE_IR_REMOTE

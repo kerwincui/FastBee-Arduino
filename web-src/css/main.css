@@ -1590,8 +1590,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     justify-content: center;
     flex-wrap: wrap;
 }
-.page-layout-flat > .fb-card, .page-layout-flat > .form-section, .page-layout-flat > .stats-grid { margin-bottom: 0; }
-.page-layout-flat .fb-card { margin-bottom: 0; }
+.page-layout-flat > .fb-card, .page-layout-flat > .form-section, .page-layout-flat > .stats-grid,
+.page-layout-flat .fb-card,
 .page-layout-flat .fb-card-body > .config-content > .fb-panel:last-child, .page-layout-flat .fb-card-body > .config-content > .form-section:last-child { margin-bottom: 0; }
 @media (max-width: 1024px) { .page-layout-flat { gap: var(--space-4); } }
 @media (max-width: 768px) {
@@ -1653,6 +1653,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modbus-debug-rx { color: var(--primary); }
 .modbus-debug-err { color: var(--danger); }
 @media (max-width: 768px) { .modbus-layout { flex-direction: column; } .modbus-panel-right { width: 100%; } .modbus-debug-log { height: 200px; } }
+@media (max-width: 768px) {
+    #modbus-device-ctrl-modal .modal-body { flex-direction: column; }
+    #modbus-device-ctrl-modal .modal-body > .fb-w-fixed { width: 100% !important; }
+}
 [data-theme="dark"] .modbus-debug-log { background: var(--gray-12); }
 [data-theme="dark"] .modbus-debug-entry { border-bottom-color: var(--border); }
 
@@ -1675,6 +1679,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .motor-param-row { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
 .motor-param-row label { width: 70px; flex-shrink: 0; font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .motor-param-input { max-width: 100px; }
+.motor-travel-section { border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.motor-travel-section summary { cursor: pointer; font-weight: 600; }
+.motor-travel-section p { font-size: 13px; overflow-wrap: anywhere; }
+.motor-travel-reference-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+.motor-travel-reference-row label { flex: 1 1 190px; font-size: 13px; color: var(--text-secondary); }
+.motor-travel-reference-row .motor-param-input { flex: 1 1 120px; min-width: 0; max-width: 100%; }
+.motor-travel-check { display: flex; align-items: flex-start; gap: var(--space-2); font-size: 13px; margin-block: var(--space-3); }
+.motor-travel-check input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; }
+.motor-travel-check span { min-width: 0; overflow-wrap: anywhere; }
+.motor-travel-confirm-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.motor-travel-confirm-actions .fb-btn { flex: 1 1 150px; min-height: 40px; white-space: normal; overflow-wrap: anywhere; }
 .motor-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); flex-wrap: wrap; }
 .motor-actions .motor-action-btn { min-width: 84px; flex: 0 0 auto; justify-content: center; }
 @media (max-width: 640px) {
@@ -2548,6 +2563,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .peripheral-io-payload-group,
 .peripheral-io-actions {
   grid-column: 1 / -1;
+}
+
+#peripheral-ds1302-panel .peripheral-io-actions {
+  flex-wrap: wrap;
 }
 
 .peripheral-io-payload,

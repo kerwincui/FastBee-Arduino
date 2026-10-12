@@ -3,14 +3,8 @@
  * 包含设备基本信息、NTP配置、重启/恢复出厂、配置导入导出
  */
 (function() {
-    const MAX_CONFIG_TRANSFER_BYTES = 128 * 1024;
     const DEFAULT_NTP_SERVER1 = 'http://iot.fastbee.cn/prod-api/iot/tool/ntp';
     const DEFAULT_NTP_SERVER2 = 'cn.pool.ntp.org';
-    // 弱网适配：URL 编码后 body ≈ 原始 3 倍，1.5KB → ~4.5KB body（约 3-4 个 TCP 包），
-    // 退化链路下跨包丢失率远低于 4KB 分片（~12KB body）；后端上限 16KB/分片
-    const CONFIG_IMPORT_CHUNK_BYTES = 1536;
-    const CONFIG_IMPORT_CHUNK_RETRIES = 3;  // 单分片失败重试次数（退化链路下跨包丢失可重试恢复）
-    const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
     function t(key, fallback) {
         // 保留已有调用点，但界面始终返回中文硬编码。
         return fallback || key;
@@ -37,19 +31,6 @@
         btn.innerHTML = '刷新';
         btn.title = '';
     }
-    const CONFIG_TRANSFER_LABELS = {
-        'all': '全部配置包',
-        'device.json': '设备信息',
-        'features.json': '功能配置',
-        'network.json': '网络配置',
-        'peripherals.json': '外设配置',
-        'periph_exec.json': '外设执行',
-        'protocol.json': '通信协议',
-        'users.json': '用户配置',
-        'auth.json': '安全认证',
-        'rule_scripts.json': '规则脚本'
-    };
-
     AppState.registerModule('device-config', {
 
         _deviceConfigActive(epoch) {
@@ -176,9 +157,17 @@
 
             const configExportBtn = document.getElementById('dev-config-export-btn');
             if (configExportBtn) configExportBtn.addEventListener('click', () => this.exportDeviceConfigBundle());
+            const planExportBtn = document.getElementById('dev-config-plan-export-btn');
+            if (planExportBtn) planExportBtn.addEventListener('click', () => this.exportDeviceConfigBundle(true));
 
             const configImportBtn = document.getElementById('dev-config-import-btn');
             if (configImportBtn) configImportBtn.addEventListener('click', () => this.importDeviceConfigBundle());
+            const boardMigrationBtn = document.getElementById('dev-config-board-migration-btn');
+            if (boardMigrationBtn) boardMigrationBtn.addEventListener('click', () => this.importDeviceConfigBundle(true));
+            const migrationStatusBtn = document.getElementById('dev-config-migration-status-btn');
+            if (migrationStatusBtn) migrationStatusBtn.addEventListener('click', () => this.checkConfigMigration());
+            const migrationDiscardBtn = document.getElementById('dev-config-migration-discard-btn');
+            if (migrationDiscardBtn) migrationDiscardBtn.addEventListener('click', () => this.discardConfigMigration());
 
             const configImportFile = document.getElementById('dev-config-import-file');
             if (configImportFile) {
@@ -500,7 +489,7 @@
             apiPost('/api/device/time/sync', {})
                 .then(res => {
                     const data = (res && res.data) ? res.data : {};
-                    const synced = !!(res && res.success && data.synced);
+                    const synced = !!(res && res.success && data.synced && data.syncRequestSucceeded === true);
                     if (!res || !res.success || !synced) {
                         if (!options.silent) Notification.warning(
                             (res && res.error) || t('dc-ntp-sync-fail', 'NTP同步失败'), 'NTP');
@@ -529,15 +518,57 @@
             const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
             const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
 
-            setEl('dev-time-datetime', d.datetime);
+            setEl('dev-time-datetime', d.timeDisplayAvailable === false ? '' : d.datetime);
+            const clock = document.getElementById('dev-time-datetime');
+            if (clock) clock.title = d.activeTimezoneAvailable === true && typeof d.activeTimezone === 'string'
+                ? '当前时区：' + d.activeTimezone : '当前时区未确认';
 
-            if (!internetAvailable) {
-                setHtml('dev-time-synced', '<span class="badge badge-warning">' + t('dc-ntp-not-synced', '未同步') + '</span>');
-            } else if (d.synced) {
-                setHtml('dev-time-synced', '<span class="badge badge-success">' + t('dc-ntp-synced', '已同步') + '</span>');
-            } else {
-                setHtml('dev-time-synced', '<span class="badge badge-warning">' + t('dc-ntp-not-synced', '未同步') + '</span>');
-            }
+            // Connectivity is independent from the age/provenance of a clock.
+            // Legacy firmware without quality fields cannot prove a sync event.
+            const timeLabels = {
+                rtc_unverified: t('dc-time-quality-rtc', 'RTC启动时间（未校准）'),
+                synced_tls: t('dc-time-quality-tls', '已同步（TLS来源，非精度保证）'),
+                synced_unverified: t('dc-time-quality-unverified', '已同步（来源未认证）'),
+                stale: t('dc-time-quality-stale', '时间已失鲜，待重新同步'),
+                clock_changed: t('dc-time-quality-changed', '时钟发生未跟踪变化'),
+                invalid: t('dc-time-quality-invalid', '系统时间无效'),
+                busy: t('dc-time-quality-busy', '时间状态暂不可用'),
+                unknown: t('dc-time-quality-unknown', '时间来源未知')
+            };
+            let quality = typeof d.timeQuality === 'string' && Object.prototype.hasOwnProperty.call(timeLabels, d.timeQuality)
+                ? d.timeQuality : 'unknown';
+            const sourceLabels = { sntp: 'SNTP', http: 'HTTP', https: 'HTTPS', mqtt: 'MQTT', rtc: 'RTC' };
+            const knownSource = typeof d.timeSource === 'string' && Object.prototype.hasOwnProperty.call(sourceLabels, d.timeSource);
+            const freshSource = d.timeValid === true && knownSource &&
+                Number.isSafeInteger(d.timeSyncAgeMs) && d.timeSyncAgeMs >= 0 && d.timeSyncAgeMs <= 86400000 &&
+                Number.isInteger(d.timeSyncSequence) && d.timeSyncSequence > 0 && d.timeSyncSequence < 4294967295;
+            const freshRecord = d.synced === true && d.timeSource !== 'rtc' && freshSource;
+            const rtcRecord = d.synced === false && d.timeSource === 'rtc' &&
+                d.timeSourceAuthenticated === false && freshSource;
+            if ((quality === 'synced_tls' && (!freshRecord || d.timeSource !== 'https' || d.timeSourceAuthenticated !== true)) ||
+                (quality === 'synced_unverified' && (!freshRecord || d.timeSourceAuthenticated !== false)) ||
+                (quality === 'rtc_unverified' && !rtcRecord)) quality = 'unknown';
+            const rtcBootLabels = {
+                not_attempted: '尚未尝试', pending: '处理中', disabled: '未启用', not_compiled: '未编译',
+                busy: '资源忙', skipped_valid: '保留已有时间', multiple_sources: '启动来源不唯一',
+                unavailable: 'RTC不可用', invalid_clock: 'RTC日历无效', stopped: 'RTC已停走',
+                invalid_offset: '缺少有效偏移', invalid_epoch: '换算时间超界',
+                rejected: '写入失败或时钟状态变化', applied: '已采用，未经校准'
+            };
+            const bootStatus = Object.prototype.hasOwnProperty.call(rtcBootLabels, d.rtcBootStatus)
+                ? d.rtcBootStatus : 'not_attempted';
+            const bootFailure = ['busy', 'multiple_sources', 'unavailable', 'invalid_clock', 'stopped',
+                'invalid_offset', 'invalid_epoch', 'rejected'].includes(bootStatus);
+            const label = timeLabels[quality] + (bootFailure ? '；RTC启动：' + rtcBootLabels[bootStatus] : '');
+            const badge = quality === 'synced_tls' ? 'badge-success' : 'badge-warning';
+            setHtml('dev-time-synced', '<span class="badge ' + badge + '">' + label + '</span>');
+            const timeStatus = document.getElementById('dev-time-synced');
+            if (timeStatus) timeStatus.title = quality === 'synced_tls' || quality === 'synced_unverified'
+                ? '来源：' + sourceLabels[d.timeSource] + '；距最近同步：' + Math.floor(d.timeSyncAgeMs / 1000) + '秒；平台与RTC精度未验证'
+                : quality === 'rtc_unverified'
+                    ? '来源：RTC；距启动采用：' + Math.floor(d.timeSyncAgeMs / 1000) + '秒；不是RTC校准年龄或精度证明'
+                    : '没有可用于确认当前已同步的完整来源记录';
+            if (timeStatus) timeStatus.title += '；RTC启动：' + rtcBootLabels[bootStatus];
 
             if (d.uptime !== undefined) {
                 const ms = d.uptime;
@@ -735,501 +766,42 @@
             if (el) el.textContent = text || '--';
         },
 
-        _configTransferFetch(url) {
-            // Current firmware authenticates browser requests with the
-            // same-origin HttpOnly session cookie.  Do not attach a legacy
-            // bearer token from localStorage: the server gives an explicit
-            // Authorization header precedence, so a stale token would mask a
-            // valid cookie and turn config transfer into a misleading 401.
-            return fetch(url, {
-                method: 'GET',
-                credentials: 'include',
-                cache: 'no-store'
-            });
-        },
-
-        _normalizeConfigFileName(name) {
-            return String(name || '')
-                .replace(/^fastbee-config-/, '')
-                .replace(/\s+\(\d+\)(?=\.json$)/i, '');
-        },
-
-        /**
-         * 根据 JSON 内容自动检测配置文件类型，返回规范文件名
-         * 当文件名不是已知配置名时，用于 AI 生成配置等场景的自动识别
-         */
-        _detectConfigFileName(name, parsed) {
-            // 已经是已知配置文件名，无需检测
-            if (CONFIG_TRANSFER_LABELS[name]) return name;
-            if (!parsed || typeof parsed !== 'object') return name;
-
-            // 按内容特征匹配
-            if (Array.isArray(parsed.peripherals)) return 'peripherals.json';
-            if (Array.isArray(parsed.rules)) return 'periph_exec.json';
-            if (parsed.staSSID !== undefined || parsed.apSSID !== undefined || parsed.mode !== undefined) return 'network.json';
-            if (parsed.deviceName !== undefined || parsed.chipType !== undefined) return 'device.json';
-            if (parsed.mqtt !== undefined || parsed.server !== undefined) return 'protocol.json';
-            // 功能配置：功能页导出的包装格式（fastbee-feature-config）或设备原始
-            // features.json；也兼容 feature-settings.json/functions.json 等友好命名
-            if (parsed.type === 'fastbee-feature-config'
-                || (parsed.features && typeof parsed.features === 'object' && !Array.isArray(parsed.features))) {
-                return 'features.json';
-            }
-            return name;
-        },
-
-        _getConfigTransferLabel(name) {
-            return CONFIG_TRANSFER_LABELS[name] || name || '--';
-        },
-
-        /**
-         * 显示配置文件选择弹窗
-         * @param {Array} items - [{name, size?}] 配置文件列表
-         * @param {string} mode - 'export' 或 'import'
-         * @returns {Promise<Array>} 用户选中的文件列表
-         */
-        async _showConfigTransferModal(items, mode) {
-            const self = this;
-            const modal = await AppState._ensureModalForAction('config-transfer-modal');
-            if (!modal) throw new Error(t('dc-transfer-modal-missing', '弹窗元素不存在'));
-            return new Promise((resolve, reject) => {
-                const titleEl = document.getElementById('config-transfer-modal-title');
-                const listEl = document.getElementById('config-transfer-list');
-                const selectAllEl = document.getElementById('config-transfer-select-all');
-                const summaryEl = document.getElementById('config-transfer-summary');
-                const confirmBtn = document.getElementById('config-transfer-confirm-btn');
-                const cancelBtn = document.getElementById('config-transfer-cancel-btn');
-                const closeBtn = document.querySelector('#config-transfer-modal .modal-close-btn');
-                if (!listEl || !confirmBtn || !cancelBtn) { reject(new Error(t('dc-transfer-modal-missing', '弹窗元素不存在'))); return; }
-
-                // 设置标题和确认按钮文字
-                if (titleEl) titleEl.textContent = mode === 'export' ? t('dc-transfer-export-title', '选择导出的配置') : t('dc-transfer-import-title', '选择导入的配置');
-                confirmBtn.textContent = mode === 'export' ? t('dc-transfer-export-confirm', '确认导出') : t('dc-transfer-import-confirm', '确认导入');
-
-                // 渲染复选框列表
-                listEl.innerHTML = '';
-                items.forEach((item, idx) => {
-                    const label = document.createElement('label');
-                    label.className = 'fb-checkbox';
-                    const cb = document.createElement('input');
-                    cb.type = 'checkbox';
-                    cb.checked = true;
-                    cb.dataset.idx = idx;
-                    const span = document.createElement('span');
-                    const displayName = self._getConfigTransferLabel(item.name);
-                    span.textContent = displayName + (item.size ? ' (' + (item.size > 1024 ? (item.size / 1024).toFixed(1) + ' KB' : item.size + ' B') + ')' : '');
-                    label.appendChild(cb);
-                    label.appendChild(span);
-                    listEl.appendChild(label);
-                });
-
-                // 更新摘要
-                function updateSummary() {
-                    const checked = listEl.querySelectorAll('input[type="checkbox"]:checked').length;
-                    if (summaryEl) summaryEl.textContent = checked + '/' + items.length + t('dc-transfer-item-count', ' 项');
-                    confirmBtn.disabled = checked === 0;
-                    if (selectAllEl) selectAllEl.checked = checked === items.length;
-                }
-                updateSummary();
-
-                // 全选/取消全选
-                function onSelectAll() {
-                    const checked = selectAllEl.checked;
-                    listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
-                    updateSummary();
-                }
-                if (selectAllEl) { selectAllEl.checked = true; selectAllEl.addEventListener('change', onSelectAll); }
-
-                // 单项变化
-                function onItemChange() { updateSummary(); }
-                listEl.addEventListener('change', onItemChange);
-
-                // 清理函数
-                function cleanup() {
-                    if (selectAllEl) selectAllEl.removeEventListener('change', onSelectAll);
-                    listEl.removeEventListener('change', onItemChange);
-                    confirmBtn.removeEventListener('click', onConfirm);
-                    cancelBtn.removeEventListener('click', onCancel);
-                    if (closeBtn) closeBtn.removeEventListener('click', onCancel);
-                    AppState.hideModal('config-transfer-modal');
-                }
-
-                function onConfirm() {
-                    const selected = [];
-                    listEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
-                        const idx = parseInt(cb.dataset.idx);
-                        if (items[idx]) selected.push(items[idx]);
-                    });
-                    cleanup();
-                    resolve(selected);
-                }
-                function onCancel() {
-                    cleanup();
-                    reject(new Error(t('dc-transfer-user-cancel', '用户取消')));
-                }
-
-                confirmBtn.addEventListener('click', onConfirm);
-                cancelBtn.addEventListener('click', onCancel);
-                if (closeBtn) closeBtn.addEventListener('click', onCancel);
-                AppState.showModal('config-transfer-modal');
-            });
-        },
-
-        _configTransferByteLength(content) {
-            let bytes = 0;
-            for (let i = 0; i < content.length;) {
-                const code = content.codePointAt(i);
-                bytes += code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : (code <= 0xFFFF ? 3 : 4));
-                i += code > 0xFFFF ? 2 : 1;
-            }
-            return bytes;
-        },
-
-        _splitConfigTransferChunks(content, maxBytes) {
-            const chunks = [];
-            let start = 0;
-            let bytes = 0;
-            for (let i = 0; i < content.length;) {
-                const code = content.codePointAt(i);
-                const charLen = code > 0xFFFF ? 2 : 1;
-                const charBytes = code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : (code <= 0xFFFF ? 3 : 4));
-                if (bytes > 0 && bytes + charBytes > maxBytes) {
-                    chunks.push(content.slice(start, i));
-                    start = i;
-                    bytes = 0;
-                }
-                bytes += charBytes;
-                i += charLen;
-            }
-            if (start < content.length) chunks.push(content.slice(start));
-            return chunks;
-        },
-
-        _validateConfigTransferEntry(item) {
-            const name = this._normalizeConfigFileName(item && item.name);
-            const content = String((item && item.content) || '');
-            if (!/^[A-Za-z0-9_.-]+\.json$/.test(name)) {
-                throw new Error(t('dc-transfer-invalid-name', '配置文件名不正确：') + (item && item.name ? item.name : '--'));
-            }
-            if (!content || this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
-                throw new Error(t('dc-transfer-empty-or-large', '配置文件过大或为空：') + name);
-            }
+        async _runConfigTransferAction(action, args) {
+            if (this._configTransferLoading) return;
+            const epoch = this._deviceConfigEpoch || 0;
+            this._configTransferLoading = true;
+            this._setConfigTransferStatus('正在加载配置迁移工具...');
             try {
-                JSON.parse(content);
-            } catch (err) {
-                throw new Error(t('dc-transfer-invalid-json', '配置文件不是有效 JSON：') + name);
-            }
-            return { name, content };
-        },
-
-        async _importConfigTransferEntry(item) {
-            const entry = this._validateConfigTransferEntry(item);
-
-            if (entry.name === 'periph_exec.json') {
-                return this._importExecutionConfig(entry);
-            }
-
-            // 字段过滤容错：读取设备当前配置作为 schema，过滤导入文件中的多余字段
-            let filteredContent = entry.content;
-            if (typeof window.filterConfigFields === 'function') {
-                try {
-                    const url = new URL('/api/config/transfer/export', window.location.origin);
-                    url.searchParams.set('name', entry.name);
-                    const resp = await this._configTransferFetch(url.toString());
-                    if (resp.ok) {
-                        const currentText = await resp.text();
-                        const currentObj = JSON.parse(currentText);
-                        const importedObj = JSON.parse(entry.content);
-                        const filtered = window.filterConfigFields(importedObj, currentObj);
-                        filteredContent = JSON.stringify(filtered);
-                    }
-                } catch (filterErr) {
-                    // 过滤失败不影响正常导入流程，继续使用原始内容
-                    console.warn('[device-config] field filter skipped for', entry.name, filterErr);
-                }
-            }
-
-            const chunks = this._splitConfigTransferChunks(filteredContent, CONFIG_IMPORT_CHUNK_BYTES);
-            const total = chunks.length;
-            let cleanedCount = 0;
-            let i = 0;
-            while (i < total) {
-                const payload = {
-                    name: entry.name,
-                    index: String(i),
-                    total: String(total),
-                    chunk: chunks[i]
-                };
-                let res = null;
-                let lastErrMsg = null;
-                let attempt = 0;
-                // 退化链路下跨包 body 丢失会使设备收到空分片（400），重试可恢复。
-                // 幂等性：响应到达前超时/断连时设备可能已写入当前分片，重试前退回 index=0
-                // 重新覆盖写（index=0 为覆盖语义），避免追加语义下内容重复。
-                while (attempt <= CONFIG_IMPORT_CHUNK_RETRIES) {
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error('配置迁移工具加载超时，请重试')), 30000);
                     try {
-                        res = await apiPost('/api/config/transfer/import-chunk', payload, 30000);
-                    } catch (reqErr) {
-                        res = null;
-                        const status = reqErr && reqErr.status;
-                        lastErrMsg = (reqErr && reqErr.data && reqErr.data.error) || reqErr && reqErr.message || t('dc-transfer-request-fail', '请求失败');
-                        // 4xx 明确拒绝（设备未写入）：仅 400 空分片可重试，其余直接失败
-                        if (status !== undefined && status >= 400 && status < 500) {
-                            if (status !== 400) throw new Error(lastErrMsg);
-                        } else {
-                            // 网络错误/超时/5xx：写入状态未知，退回首个分片重来
-                            i = 0;
-                            Object.assign(payload, { index: '0', chunk: chunks[0] });
-                        }
-                    }
-                    if (res && res.success) break;
-                    if (res && !res.success) lastErrMsg = res.error || lastErrMsg;
-                    attempt++;
-                    if (attempt <= CONFIG_IMPORT_CHUNK_RETRIES) {
-                        await new Promise(r => setTimeout(r, 500 * attempt));
-                    }
-                }
-                if (!res || !res.success) {
-                    throw new Error(lastErrMsg || (t('dc-transfer-chunk-fail', '分片导入失败：') + entry.name));
-                }
-                // 最后一个分片可能包含清理信息
-                if (res.data && res.data.cleaned) {
-                    cleanedCount = res.data.cleaned;
-                }
-                i++;
-            }
-            if (cleanedCount > 0) {
-                Notification.info(t('dc-transfer-cleaned-prefix', '已自动清理') + cleanedCount + t('dc-transfer-cleaned-suffix', ' 个残留配置文件'), t('dc-transfer-import-title-short', '配置导入'));
-            }
-            return { success: true, name: entry.name };
-        },
-
-        async _importExecutionConfig(entry) {
-            const size = this._configTransferByteLength(entry.content);
-            if (size > 96 * 1024) throw new Error('外设执行配置最大为 96 KB');
-            // Preserve the complete document. The current device's rules are
-            // data, not a schema for silently filtering another configuration.
-            const random = new Uint8Array(16);
-            window.crypto.getRandomValues(random);
-            const session = Array.from(random, value => value.toString(16).padStart(2, '0')).join('');
-            const chunks = this._splitConfigTransferChunks(entry.content, CONFIG_IMPORT_CHUNK_BYTES);
-            let offset = 0;
-            let finalState = null;
-            for (const chunk of chunks) {
-                const end = offset + this._configTransferByteLength(chunk);
-                const payload = { session, offset: String(offset), size: String(size), chunk };
-                let response;
-                for (let attempt = 0; ; attempt++) {
-                    try {
-                        response = await apiPost('/api/periph-exec/import-chunk', payload, 30000);
-                        if (!response || !response.success) throw new Error(response && response.error || '外设执行导入失败');
-                        break;
-                    } catch (error) {
-                        const status = error && error.status;
-                        if ((status >= 400 && status < 500) || attempt >= CONFIG_IMPORT_CHUNK_RETRIES) {
-                            const reason = error && error.data && error.data.error || error && error.message || '未知错误';
-                            const hints = {
-                                CONFIG_MEMORY_PRESSURE: '可用内存不足，原配置已保留。请等待设备空闲后重试',
-                                CONFIG_PENDING_RESTART: '已有配置待应用，请先重启设备',
-                                CONFIG_RULE_COUNT: '规则数量超过当前硬件容量，原配置已保留',
-                                CONFIG_DUPLICATE_ID: '存在重复的规则 ID，原配置已保留',
-                                CONFIG_COMMIT_FAILED: '配置写入失败，原配置已保留'
-                            };
-                            throw new Error(hints[reason] || '外设执行配置未导入：' + reason);
-                        }
-                        // The same session/range is idempotent, including a lost
-                        // final response. Never restart or replay rule actions.
-                        const retryAfter = Number(error && error.data && error.data.retryAfter);
-                        const delay = Number.isFinite(retryAfter) && retryAfter > 0
-                            ? Math.min(retryAfter, 30) * 1000 : 500 * (attempt + 1);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
-                }
-                finalState = response.data;
-                if (!finalState || finalState.received !== end) throw new Error('设备返回的配置接收长度不一致');
-                offset = end;
-            }
-            if (!finalState.saved || !finalState.restartRequired || finalState.applied !== false) {
-                throw new Error('未确认完整配置已保存，请勿将导入视为成功');
-            }
-            return { success: true, name: entry.name, restartRequired: true, applied: false };
-        },
-
-        _readSelectedConfigEntries(selectedFiles) {
-            return Promise.all(selectedFiles.map((file) => file.text().then((text) => ({ file, text }))))
-                .then((items) => {
-                    const entries = [];
-                    items.forEach(({ file, text }) => {
-                        let parsed = null;
-                        try {
-                            parsed = JSON.parse(text);
-                        } catch (err) {
-                            parsed = null;
-                        }
-
-                        if (parsed && parsed.type === 'fastbee-config-bundle' && Array.isArray(parsed.files)) {
-                            parsed.files.forEach((item) => entries.push(item));
-                            return;
-                        }
-
-                        // 自动检测：文件名不是已知配置名时，根据 JSON 内容推断正确的配置文件名
-                        const normalizedName = this._normalizeConfigFileName(file.name);
-                        const detectedName = this._detectConfigFileName(normalizedName, parsed);
-                        if (detectedName !== normalizedName) {
-                            console.info(`[device-config] Auto-detected config type: ${file.name} → ${detectedName}`);
-                            // 在页面上显示自动重命名提示
-                            this._setConfigTransferStatus(
-                                t('dc-transfer-auto-detected', '已自动识别：') + file.name + ' → ' + this._getConfigTransferLabel(detectedName)
-                            );
-                        }
-
-                        // JSON 格式预检查
-                        if (!parsed || typeof parsed !== 'object') {
-                            throw new Error(t('dc-transfer-invalid-json-file', '文件') + ' ' + file.name + ' ' + t('dc-transfer-invalid-json-format', '不是有效的 JSON 格式'));
-                        }
-
-                        entries.push({
-                            name: detectedName,
-                            content: text
+                        this._loadModule('device-config-transfer', () => {
+                            clearTimeout(timeout);
+                            if (this._configTransferReady === true) resolve();
+                            else reject(new Error('配置迁移工具不完整，请刷新页面'));
                         });
-                    });
-
-                    return entries.map((item) => this._validateConfigTransferEntry(item));
+                    } catch (error) { clearTimeout(timeout); reject(error); }
                 });
+                if (this._deviceConfigActive(epoch)) return this[action](...args);
+            } catch (error) {
+                if (this._deviceConfigActive(epoch)) this._setConfigTransferStatus(error.message || '配置迁移工具加载失败');
+            } finally { this._configTransferLoading = false; }
         },
 
-        exportDeviceConfigBundle() {
-            const btn = document.getElementById('dev-config-export-btn');
-            if (btn) btn.disabled = true;
-            this._setConfigTransferStatus(t('dc-transfer-reading-list', '正在读取配置列表...'));
-
-            apiGetFresh('/api/config/transfer/list')
-                .then((res) => {
-                    const files = (res && res.success && res.data && res.data.files) ? res.data.files : [];
-                    if (!files.length) throw new Error(t('dc-transfer-no-exportable', '没有可导出的配置文件'));
-                    return this._showConfigTransferModal(files, 'export');
-                })
-                .then(async (selected) => {
-                    if (!selected.length) throw new Error(t('dc-transfer-none-selected', '未选择任何配置文件'));
-                    this._setConfigTransferStatus(t('dc-transfer-exporting', '正在导出...'));
-
-                    const bundle = {
-                        type: 'fastbee-config-bundle',
-                        version: 1,
-                        scope: selected.length === 1 ? selected[0].name : 'selected',
-                        exportedAt: new Date().toISOString(),
-                        files: []
-                    };
-
-                    for (let i = 0; i < selected.length; i++) {
-                        const item = selected[i];
-                        this._setConfigTransferStatus(t('dc-transfer-exporting', '正在导出') + ' ' + item.name + ' (' + (i + 1) + '/' + selected.length + ')...');
-                        const url = new URL('/api/config/transfer/export', window.location.origin);
-                        url.searchParams.set('name', item.name);
-                        const resp = await this._configTransferFetch(url.toString());
-                        if (!resp.ok) throw new Error(t('dc-transfer-export-fail', '导出失败：') + item.name);
-                        const content = await resp.text();
-                        if (this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
-                            throw new Error(t('dc-transfer-file-too-large', '配置文件过大：') + item.name);
-                        }
-                        bundle.files.push({ name: item.name, content });
-                    }
-
-                    // 单文件直接导出原始JSON，多文件导出bundle包
-                    const exportContent = selected.length === 1
-                        ? bundle.files[0].content
-                        : JSON.stringify(bundle, null, 2);
-                    const exportName = selected.length === 1
-                        ? bundle.files[0].name
-                        : 'fastbee-config-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
-                    const blob = new Blob([exportContent], { type: 'application/json' });
-                    const link = document.createElement('a');
-                    const objectUrl = URL.createObjectURL(blob);
-                    link.href = objectUrl;
-                    link.download = exportName;
-                    document.body.appendChild(link);
-                    link.click();
-                    link.remove();
-                    setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
-
-                    this._setConfigTransferStatus(t('dc-transfer-export-done-prefix', '配置导出完成：') + bundle.files.length + t('dc-transfer-export-done-suffix', ' 个文件'));
-                    Notification.success(t('dc-transfer-export-done', '配置导出完成'), t('dc-transfer-title', '配置导入/导出'));
-                })
-                .catch((err) => {
-                    if (err && err.message === t('dc-transfer-user-cancel', '用户取消')) {
-                        this._setConfigTransferStatus('--');
-                        return;
-                    }
-                    console.error('[device-config] export config bundle failed:', err);
-                    this._setConfigTransferStatus(t('dc-transfer-export-fail-status', '配置导出失败'));
-                    Notification.error(err && err.message ? err.message : t('dc-transfer-export-fail-status', '配置导出失败'), t('dc-transfer-title', '配置导入/导出'));
-                })
-                .finally(() => {
-                    if (btn) btn.disabled = false;
-                });
+        exportDeviceConfigBundle(reusable = false) {
+            return this._runConfigTransferAction('exportDeviceConfigBundle', [reusable]);
         },
 
-        importDeviceConfigBundle() {
-            const input = document.getElementById('dev-config-import-file');
-            const btn = document.getElementById('dev-config-import-btn');
-            const selectedFiles = input && input.files ? Array.from(input.files) : [];
-            if (!selectedFiles.length) {
-                Notification.warning(t('dc-transfer-select-first', '请先选择配置文件或配置包'), t('dc-transfer-title', '配置导入/导出'));
-                return;
-            }
-            const totalSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
-            if (totalSize > MAX_CONFIG_BUNDLE_BYTES) {
-                Notification.warning(t('dc-transfer-too-large', '配置文件总量过大，请分批导入'), t('dc-transfer-title', '配置导入/导出'));
-                return;
-            }
+        importDeviceConfigBundle(boardMigration = false) {
+            return this._runConfigTransferAction('importDeviceConfigBundle', [boardMigration]);
+        },
 
-            if (btn) btn.disabled = true;
-            this._setConfigTransferStatus(t('dc-transfer-parsing', '正在解析配置文件...'));
+        checkConfigMigration() {
+            return this._runConfigTransferAction('checkConfigMigration', []);
+        },
 
-            this._readSelectedConfigEntries(selectedFiles)
-                .then((files) => {
-                    if (!files.length) throw new Error(t('dc-transfer-empty-bundle', '配置包内没有可导入的配置文件'));
-                    // 弹窗让用户选择要导入的配置
-                    return this._showConfigTransferModal(
-                        files.map(f => ({ name: f.name, size: f.content ? f.content.length : 0 })),
-                        'import'
-                    ).then((selected) => {
-                        // 只导入用户选中的文件
-                        const selectedNames = selected.map(s => s.name);
-                        return files.filter(f => selectedNames.includes(f.name));
-                    });
-                })
-                .then(async (files) => {
-                    if (!files.length) throw new Error(t('dc-transfer-none-selected', '未选择任何配置文件'));
-                    let restartRequired = false;
-                    for (let i = 0; i < files.length; i++) {
-                        const item = files[i];
-                        this._setConfigTransferStatus(t('dc-transfer-importing', '正在导入') + ' ' + item.name + ' (' + (i + 1) + '/' + files.length + ')...');
-                        const result = await this._importConfigTransferEntry(item);
-                        restartRequired = restartRequired || !!result.restartRequired;
-                    }
-                    const message = restartRequired
-                        ? '配置已保存，外设执行尚未应用；请重启设备后生效'
-                        : t('dc-transfer-import-done', '配置导入完成，建议重启设备');
-                    this._setConfigTransferStatus(message);
-                    Notification.success(message, t('dc-transfer-title', '配置导入/导出'));
-                    if (typeof window.apiInvalidateCache === 'function') {
-                        window.apiInvalidateCache();
-                    }
-                })
-                .catch((err) => {
-                    if (err && err.message === t('dc-transfer-user-cancel', '用户取消')) {
-                        this._setConfigTransferStatus('--');
-                        return;
-                    }
-                    const errMsg = err && err.message ? err.message : t('dc-transfer-import-fail', '配置导入失败');
-                    console.error('[device-config] import config bundle failed:', err);
-                    this._setConfigTransferStatus(t('dc-transfer-import-fail-prefix', '配置导入失败：') + errMsg);
-                    Notification.error(errMsg, t('dc-transfer-title', '配置导入/导出'));
-                })
-                .finally(() => {
-                    if (btn) btn.disabled = false;
-                });
+        discardConfigMigration() {
+            return this._runConfigTransferAction('discardConfigMigration', []);
         },
 
         // ============ 固件升级 (OTA) ============

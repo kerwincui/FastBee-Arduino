@@ -12,7 +12,7 @@
  * 使用静态构造函数模式实现"热插拔"注册：
  * - 新驱动只需在 .cpp 文件末尾使用 FASTBEE_REGISTER_SENSOR(name, ClassName)
  * - 链接时自动注册到全局表，无需修改 PeripheralManager
- * - 最多支持 8 种第三方驱动（可调整 MAX_SENSOR_DRIVERS）
+ * - 默认支持 12 个注册名；通过 FASTBEE_SENSOR_DRIVER_CAPACITY 编译裁剪
  */
 
 namespace FastBee {
@@ -28,7 +28,12 @@ struct SensorDriverEntry {
 };
 
 // 最大注册驱动数
-static constexpr size_t MAX_SENSOR_DRIVERS = 8;
+#ifndef FASTBEE_SENSOR_DRIVER_CAPACITY
+#define FASTBEE_SENSOR_DRIVER_CAPACITY 12
+#endif
+static_assert(FASTBEE_SENSOR_DRIVER_CAPACITY >= 1 && FASTBEE_SENSOR_DRIVER_CAPACITY <= 64,
+              "Sensor registry capacity must be between 1 and 64");
+static constexpr size_t MAX_SENSOR_DRIVERS = FASTBEE_SENSOR_DRIVER_CAPACITY;
 
 /**
  * @brief 传感器驱动注册表（Meyers' Singleton）
@@ -77,6 +82,9 @@ public:
      * @brief 获取已注册驱动数量
      */
     size_t getDriverCount() const { return _count; }
+
+    size_t getCapacity() const { return MAX_SENSOR_DRIVERS; }
+    size_t getAvailableSlots() const { return MAX_SENSOR_DRIVERS - _count; }
 
     size_t getRegistrationFailureCount() const { return _registrationFailures; }
 

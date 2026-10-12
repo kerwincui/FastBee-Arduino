@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <functional>
+#include "core/FeatureOwnerLifetime.h"
 
 // 前向声明
 class AsyncWebServer;
@@ -31,6 +32,9 @@ public:
      * @param webServer Web服务器指针（保留参数兼容性，路由已移交 OTARouteHandler）
      */
     explicit OTAManager(AsyncWebServer* webServer = nullptr);
+    ~OTAManager();
+    OTAManager(const OTAManager&) = delete;
+    OTAManager& operator=(const OTAManager&) = delete;
     
     /**
      * @brief 初始化OTA管理器
@@ -184,6 +188,7 @@ public:
     String getErrorMessage() const;
 
 private:
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::Ota};
     /**
      * @brief 计算当前可用的最大 Sketch 升级空间
      */

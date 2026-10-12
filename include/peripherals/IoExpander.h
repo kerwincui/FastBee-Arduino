@@ -26,6 +26,9 @@ public:
     bool writeChannel(uint8_t channel, bool high, uint32_t now);
     bool readChannel(uint8_t channel, bool output, uint32_t now, bool& high) const;
     bool healthy(uint32_t now) const;
+    // Passive initialization state only; not freshness or physical health.
+    // Access under the owning PeripheralManager lock, like other driver fields.
+    bool initialized() const { return _started && _outputsKnown && !_recover; }
     uint32_t generation() const { return _generation; }
     uint32_t sampledAt() const { return _sampledAt; }
     uint8_t outputShadow() const { return _shadow; }

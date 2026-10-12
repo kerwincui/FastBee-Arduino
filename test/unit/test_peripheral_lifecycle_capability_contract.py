@@ -15,6 +15,7 @@ PERSISTENCE_CPP = (
 ROUTE_CPP = (
     ROOT / "src/network/handlers/PeripheralRouteHandler.cpp"
 ).read_text(encoding="utf-8")
+ROUTE_CPP += "\n" + (ROOT / "src/network/handlers/PeripheralCatalogRoutes.cpp").read_text(encoding="utf-8")
 PROTOCOL_CPP = (ROOT / "src/protocols/ProtocolManager.cpp").read_text(
     encoding="utf-8"
 )
@@ -47,6 +48,10 @@ class PeripheralLifecycleCapabilityContractTests(unittest.TestCase):
         load = function_body(
             PERSISTENCE_CPP, r"\bPeripheralManager::loadConfiguration\s*\("
         )
+        self.assertIn("serializePersistedPeripheral(obj, config)", save)
+        self.assertIn("parsePersistedPeripheral(obj, config, parseError)", load)
+        serializer = function_body(PERSISTENCE_CPP, r"\bserializePersistedPeripheral\s*\(")
+        parser = function_body(PERSISTENCE_CPP, r"\bparsePersistedPeripheral\s*\(")
         for field in (
             "ioSource",
             "providerId",
@@ -56,8 +61,8 @@ class PeripheralLifecycleCapabilityContractTests(unittest.TestCase):
             "address",
             "sampleInterval",
         ):
-            self.assertIn(f'params["{field}"]', save)
-            self.assertIn(f'params["{field}"]', load)
+            self.assertIn(f'FastBee::setFixedJsonField(params, "{field}",', serializer)
+            self.assertIn(f'params["{field}"]', parser)
 
         dependencies = function_body(
             MANAGER_CPP, r"\bPeripheralManager::validateIoDependencies\s*\("
@@ -100,7 +105,9 @@ class PeripheralLifecycleCapabilityContractTests(unittest.TestCase):
         self.assertNotIn("getPeripheralSnapshot", report)
         self.assertNotIn("return false", report)
         validation = execute.index("digitalTarget.isExpanderChannel()")
-        dispatch = execute.index("switch (actType)")
+        # The earlier switch dispatches native DO through the ordinary arbiter.
+        # This contract binds the legacy expander validation to its own switch.
+        dispatch = execute.index("switch (actType)", validation)
         self.assertLess(validation, dispatch)
         for token in (
             "getPeripheralSnapshot",
@@ -208,10 +215,10 @@ class PeripheralLifecycleCapabilityContractTests(unittest.TestCase):
             ROUTE_CPP, r"\baddPeripheralTypeDescriptorDetails\s*\("
         )
         for token in (
-            'typeObj["implemented"] = false',
-            'typeObj["runtimeManaged"] = true',
-            'typeObj["owner"] = "protocol.modbus"',
-            'typeObj["configurable"]',
+            'FastBee::setFixedJsonField(typeObj, "implemented", false)',
+            'FastBee::setFixedJsonField(typeObj, "runtimeManaged", true)',
+            'FastBee::setFixedJsonField(typeObj, "owner", "protocol.modbus")',
+            'FastBee::setFixedJsonField(typeObj, "configurable", isPeripheralTypeUserConfigurable(type))',
         ):
             self.assertIn(token, descriptor)
 

@@ -64,9 +64,11 @@ WebConfigManager::WebConfigManager(AsyncWebServer* webServer,
     ctx = std::unique_ptr<WebHandlerContext>(new WebHandlerContext(webServer, authMgr, userMgr));
     // 设置反向指针，使 WebHandlerContext 能通知请求突增跟踪
     if (ctx) ctx->webConfigManager = this;
+    featureOwner_.ready();
 }
 
 WebConfigManager::~WebConfigManager() {
+    featureOwner_.retiring();
     stop();
 #if FASTBEE_WEB_MEM_GUARD
     // 中间件链只持裸指针：先摘除再销毁，避免悬垂引用
@@ -95,6 +97,10 @@ bool WebConfigManager::initialize() {
 
 #if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     logHandler         = std::unique_ptr<LogRouteHandler>(new LogRouteHandler(ctx.get()));
+    if (!logHandler) {
+        ets_printf("[WebConfig] Insufficient internal memory for log handler\n");
+        return false;
+    }
 #endif
     systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
     deviceHandler      = std::unique_ptr<DeviceRouteHandler>(new DeviceRouteHandler(ctx.get()));
@@ -454,6 +460,9 @@ unsigned long WebConfigManager::getLastWebRequestAgeMs() const {
 }
 
 void WebConfigManager::performMaintenance() {
+#if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
+    if (logHandler) logHandler->performMaintenance();
+#endif
     // 统一重启机制：由 SystemRebooter::update() 执行待处理的重启
     SystemRebooter::update();
 
@@ -1217,7 +1226,7 @@ void WebConfigManager::setupAllRoutes() {
     systemHandler->setupRoutes(server);                      ROUTE_PROBE("System");
 
 #if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
-    logHandler->setupRoutes(server);                         ROUTE_PROBE("Log");
+    if (logHandler) logHandler->setupRoutes(server);         ROUTE_PROBE("Log");
 #endif
 
     // 4b. 设备路由（/api/device/*）

@@ -177,7 +177,7 @@ class ScreenPanelWebRuntimeTests(unittest.TestCase):
                 self.assertEqual(['slider','select','switch','select','action'], [card['visualType'] for card in cards])
                 self.assertEqual([], interaction['systemValidation']['errors'])
                 self.assertTrue(all(interaction['invalidIntervals']))
-                self.assertTrue(interaction['motorConfirmation'])
+                self.assertFalse(interaction['motorConfirmation'])
 
     def test_navigation_loads_model_before_editor_once_for_concurrent_callers(self):
         for build, result in self.results.items():
@@ -249,10 +249,10 @@ class ScreenPanelWebRuntimeTests(unittest.TestCase):
         for build, result in self.results.items():
             with self.subTest(build=build):
                 previews = result['motorPreviews']
-                self.assertIn('已应答，运行状态未确认', previews['stopped'])
+                self.assertIn('指令已应答', previews['stopped'])
                 self.assertIn('读回 --', previews['stopped'])
                 self.assertNotIn('已停止', previews['stopped'])
-                self.assertIn('指令未确认', previews['failed'])
+                self.assertIn('指令失败', previews['failed'])
                 self.assertIn('读回 25.0', previews['failed'])
                 self.assertIn('读回 800', previews['failed'])
                 self.assertIn('50.0', previews['failed'])

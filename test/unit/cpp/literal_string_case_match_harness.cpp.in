@@ -1,0 +1,27 @@
+#include <Arduino.h>
+#include <cassert>
+#include <iostream>
+#include <string>
+#include <vector>
+#include "network/LiteralStringMatch.h"
+#include <type_traits>
+using CaseMatchSignature=bool (*)(const String&, const char*);
+static_assert(std::is_same<decltype(&FastBee::stringEqualsIgnoreCaseLiteral),CaseMatchSignature>::value,
+              "Public case match declaration changed");
+int main(){
+    std::vector<std::string> values=@VALUES@;
+    values.push_back(std::string(1000,'x'));values.push_back(std::string(1000,'X'));
+    std::vector<std::string> literals=@LITERALS@;
+    literals.push_back(std::string(1000,'x'));literals.push_back(std::string(2000,'x'));
+    int compared=0;int nullCompared=0;
+    for(const auto& text:values){String value(text.c_str());
+        for(const auto& literal:literals){
+            assert(value.equalsIgnoreCase(String(literal.c_str()))==FastBee::stringEqualsIgnoreCaseLiteral(value,literal.c_str()));++compared;
+        }
+        assert(value.equalsIgnoreCase(String(static_cast<const char*>(nullptr)))==FastBee::stringEqualsIgnoreCaseLiteral(value,nullptr));++nullCompared;
+    }
+    assert(FastBee::stringEqualsIgnoreCaseLiteral("rElEaSe","release"));
+    assert(!FastBee::stringEqualsIgnoreCaseLiteral("release extra","release"));
+    assert(compared==@CASES@ && nullCompared==@NULLCASES@);
+    std::cout<<"PASS compared="<<compared<<" null="<<nullCompared<<" actual case match method\n";
+}

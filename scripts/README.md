@@ -4,6 +4,21 @@
 
 > **跨平台提示**：以下 PowerShell 脚本支持 Windows / Linux / macOS，后两者需安装 [PowerShell Core](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) 并使用 `pwsh` 替代 `powershell`。
 
+
+
+### 设备端文档逐文件审计
+
+设备端文档位于独立的 `FastBee-doc/src/device` 仓库。文档修改后可从本仓库根目录执行：
+
+```powershell
+node scripts/audit-device-docs.mjs \
+  --docs-root D:\\project\\gitlab\\FastBee-doc\\src\\device \
+  --review-dir artifacts\\device-doc-audit-YYYYMMDD \
+  --output artifacts\\device-doc-audit-YYYYMMDD\\report.json
+```
+
+该审计检查 UTF-8、闭合代码围栏、标记为 `json` 的完整 JSON、本地 Markdown/HTML/图片链接以及逐文件审核清单。审核清单的每个 `*-review.json` 使用顶层 `{"files":[{"path","sources","findings","changed"}]}`；`sources` 必须指向固件仓库中实际存在的文件，报告同时保存输入 SHA-256。设备端实机验证不由此命令执行，报告中的 `deviceValidation` 仍应为 `not-performed`，除非另有当前设备证据。
+
 ## 推荐入口
 
 | 脚本 | 用途 | 常用命令 |

@@ -1,0 +1,178 @@
+{
+  "peripherals": [
+    {
+      "id": "adc_pot",
+      "name": "ADC电位器",
+      "type": 26,
+      "enabled": true,
+      "pins": [
+        34
+      ],
+      "params": {
+        "attenuation": 3,
+        "resolution": 12,
+        "sampleRate": 0
+      }
+    },
+    {
+      "id": "buzzer",
+      "name": "蜂鸣器",
+      "type": 17,
+      "enabled": true,
+      "pins": [
+        13
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 13,
+        "pwmFrequency": 2700,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "key1",
+      "name": "按键KEY1",
+      "type": 13,
+      "enabled": true,
+      "pins": [
+        14
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "key2",
+      "name": "按键KEY2",
+      "type": 13,
+      "enabled": true,
+      "pins": [
+        27
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "key3",
+      "name": "按键KEY3",
+      "type": 13,
+      "enabled": true,
+      "pins": [
+        26
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "key4",
+      "name": "按键KEY4",
+      "type": 13,
+      "enabled": true,
+      "pins": [
+        25
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "led_d1",
+      "name": "LED灯D1",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        4
+      ],
+      "params": {
+        "initialState": 1,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "led_d2",
+      "name": "LED灯D2",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        16
+      ],
+      "params": {
+        "initialState": 1,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "led_d3",
+      "name": "LED灯D3",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        17
+      ],
+      "params": {
+        "initialState": 1,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "led_d4",
+      "name": "LED灯D4",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        5
+      ],
+      "params": {
+        "initialState": 1,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "relay",
+      "name": "继电器",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        33
+      ],
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ArduinoJson.h>
+#include "utils/SharedJsonSerializer.h"
 #include <ESPAsyncWebServer.h>
 #include <algorithm>
 #include <cstring>
@@ -26,7 +27,7 @@ public:
 
     size_t _fillBuffer(uint8_t* destination, size_t capacity) override {
         RangeWriter writer(destination, _sentLength, capacity);
-        serializeJson(document_, writer);
+        serializeJsonShared(document_, writer);
         const size_t written = writer.written();
         // Once the last bytes are staged, retries use the response's staging
         // buffer. Release the much larger JSON pool before TCP ACK/FIN and

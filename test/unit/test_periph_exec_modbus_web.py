@@ -19,7 +19,7 @@ const {chromium} = require('./test/browser/node_modules/playwright');
       window.escapeHtml = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       window.AppState = {};
     });
-    for(const file of ['periph-exec-modbus.js','periph-exec-form.js'])
+    for(const file of ['periph-exec-modbus.js','periph-exec-form.js','periph-exec-templates.js'])
       await page.addScriptTag({content:fs.readFileSync('web-src/modules/runtime/'+file,'utf8')});
     await page.evaluate(() => Object.assign(AppState, {
       pollMode:false,

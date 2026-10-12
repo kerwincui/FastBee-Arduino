@@ -25,7 +25,7 @@ class ScreenFontRasterTests(unittest.TestCase):
         # Expose only visibility in the extracted production canvas for coverage
         # assertions; glyph lookup and rasterization remain production code.
         production = production.replace("private:\n    static void fontLine", "public:\n    static void fontLine")
-        labels = runtime + (ROOT / "docs/waveshare-esp32s3-touch-lcd4/screen_panel.json").read_text(encoding="utf-8")
+        labels = runtime + (ROOT / "docs/device-test-configs/com8-com9-esp32s3-touch/config/screen_panel.json").read_text(encoding="utf-8")
         codepoints = sorted({ord(char) for text in re.findall(r'"([^"\n]*)"', labels)
                              for char in text if '\u4e00' <= char <= '\u9fff'})
         harness = r'''

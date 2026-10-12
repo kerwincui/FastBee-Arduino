@@ -61,6 +61,11 @@ def image_for(contents):
 
 
 class MdnsConfigDeployTests(unittest.TestCase):
+    def test_esptool_default_uses_current_user_profile(self):
+        source = Path(module.__file__).read_text(encoding='utf-8')
+        self.assertIn("Path.home() / '.platformio/packages/tool-esptoolpy'", source)
+        self.assertNotIn('C:' + '/Users/', source)
+
     def test_flash_read_block_checks_stream_and_independent_md5(self):
         data=b'x'*2048
         esp=mock.Mock(); esp.ESP_CMDS={'READ_FLASH':210}

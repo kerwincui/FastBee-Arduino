@@ -10,6 +10,11 @@
             return this._modbusCtrlOffline === true;
         },
 
+        _ctrlModalCommandsBlocked() {
+            var device = this._modbusDevices && this._modbusDevices[this._activeDeviceIdx];
+            return this._isCtrlModalOffline() && !(device && device.deviceType === 'motor' && device.enabled !== false);
+        },
+
         _setCtrlModalOffline(offline, message) {
             var modal = document.getElementById('modbus-device-ctrl-modal');
             if (!modal) {
@@ -18,10 +23,21 @@
             }
             var isOffline = !!offline;
             this._modbusCtrlOffline = isOffline;
-            modal.classList.toggle('modbus-ctrl-offline', isOffline);
+            // The motor service checks communication again for each explicit request.
+            var blocked = this._ctrlModalCommandsBlocked();
+            modal.classList.toggle('modbus-ctrl-offline', blocked);
             var banner = document.getElementById('modbus-ctrl-offline-banner');
             if (banner) banner.remove();
             if (isOffline) {
+                var body = modal.querySelector('.modal-body');
+                if (body) {
+                    banner = document.createElement('div');
+                    banner.id = 'modbus-ctrl-offline-banner';
+                    banner.className = 'message message-error';
+                    banner.setAttribute('role', 'status');
+                    banner.textContent = message || '设备通信失败';
+                    body.parentNode.insertBefore(banner, body);
+                }
                 if (typeof this._stopCoilAutoRefresh === 'function') this._stopCoilAutoRefresh();
                 if (typeof this._stopPidAutoRefresh === 'function') this._stopPidAutoRefresh();
                 var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
@@ -32,7 +48,7 @@
             var controls = modal.querySelectorAll('.modal-body input, .modal-body select, .modal-body textarea, .modal-body button');
             controls.forEach(function(el) {
                 if (el.getAttribute('data-action') === 'motorStop' || el.getAttribute('data-action') === 'refreshMotorStatus') return;
-                if (isOffline) {
+                if (blocked) {
                     if (!el.disabled) el.dataset.modbusOfflineDisabled = '1';
                     el.disabled = true;
                 } else if (el.dataset.modbusOfflineDisabled === '1') {
@@ -92,6 +108,7 @@
             this._modbusCtrlGeneration = (this._modbusCtrlGeneration || 0) + 1;
             if (this._protocolMotorSyncTimer) clearTimeout(this._protocolMotorSyncTimer);
             this._protocolMotorAcknowledged = '';
+            this._protocolMotorReport(null);
             localStorage.setItem('modbus_active_device', String(idx));
             var dev = this._modbusDevices[idx];
             var type = dev.deviceType || 'relay';

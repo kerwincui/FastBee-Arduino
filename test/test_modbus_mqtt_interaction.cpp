@@ -804,19 +804,27 @@ static void test_modbus_mqtt_raw_command_requires_complete_crc_adu() {
                              "MQTT raw command implementation must be discoverable");
     const std::string rawBlock = manager.substr(rawStart, rawEnd - rawStart);
     const auto minLengthPos = rawBlock.find("hex.length() < 8U");
+    const auto lengthRejectPos = rawBlock.find(
+        "return failed(\"MODBUS_HEX_INVALID\");", minLengthPos);
     const auto crcPos = rawBlock.find(
         "calculateCRC(byteArray, byteLen - 2U)");
     const auto mismatchPos = rawBlock.find(
         "byteArray[byteLen - 2U] != crcLo");
-    const auto rejectPos = rawBlock.find("return \"\";", mismatchPos);
+    const auto highMismatchPos = rawBlock.find(
+        "byteArray[byteLen - 1U] != crcHi", mismatchPos);
+    const auto rejectPos = rawBlock.find(
+        "return failed(\"MODBUS_CRC_INVALID\");", highMismatchPos);
     const auto sendPos = rawBlock.find("sendRawFrameBytesOnce");
+    const auto submitPos = rawBlock.find("pm.submitOrdinaryModbusFrame");
     TEST_ASSERT_TRUE_MESSAGE(
-        minLengthPos != std::string::npos && crcPos != std::string::npos &&
+        minLengthPos != std::string::npos && lengthRejectPos != std::string::npos &&
+        crcPos != std::string::npos && highMismatchPos != std::string::npos &&
         mismatchPos != std::string::npos && rejectPos != std::string::npos &&
-        sendPos != std::string::npos &&
-        minLengthPos < crcPos && crcPos < mismatchPos &&
-        mismatchPos < rejectPos && rejectPos < sendPos,
-        "CRC and minimum-ADU validation must reject before UART transmission");
+        sendPos != std::string::npos && submitPos != std::string::npos &&
+        minLengthPos < lengthRejectPos && lengthRejectPos < crcPos &&
+        crcPos < mismatchPos && mismatchPos < highMismatchPos &&
+        highMismatchPos < rejectPos && rejectPos < sendPos && rejectPos < submitPos,
+        "CRC and minimum-ADU failures must report rejection before read UART or PM write submission");
     TEST_ASSERT_TRUE_MESSAGE(
         rawBlock.find("size_t effectiveLen = byteLen;") == std::string::npos,
         "MQTT passthrough must not reinterpret an invalid ADU as a CRC-less body");

@@ -1,6 +1,6 @@
 /**
  * 外设执行编辑器 - 传感器扩展
- * 仅在配置“传感器数据读取”动作时按需加载。
+ * 仅在配置传感器读取或依赖采集通道的温控动作时按需加载。
  */
 (function() {
     var DIGITAL_SENSORS = ['dht11', 'dht22', 'ds18b20', 'sht30', 'sht31', 'aht20', 'bh1750', 'bmp280', 'mpu6050'];
@@ -20,8 +20,205 @@
     };
 
     AppState.registerModule('periph-exec-sensor', {
+        _renderSdRecorderPanel(value) {
+            let cfg = {};
+            try { cfg = JSON.parse(value || '{}'); } catch (_) {}
+            if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) cfg = {};
+            const schema = this._sdRecorderConfigSchema();
+            if (!schema) return '<p class="pe-help-text">固件未提供完整 SD 记录参数，请重新加载；原配置保留。</p>';
+            const sources = this._peSensorSources || [];
+            const saved = typeof cfg.sourceRef === 'string' ? cfg.sourceRef : '';
+            const options = '<option value="">-- 选择已保存的数值采集来源 --</option>' + sources.map(s =>
+                '<option value="' + escapeHtml(s.id) + '"' + (saved === s.id ? ' selected' : '') + '>' +
+                escapeHtml(s.label || s.id) + '</option>').join('') +
+                (saved && !sources.some(s => s.id === saved) ? '<option selected disabled value="' + escapeHtml(saved) + '">原来源待核验</option>' : '');
+            const labels = {sampleSec: '采样间隔（秒）', maxAgeSec: '样本最大年龄（秒）', flushSec: '刷写间隔（秒）', fileKiB: '单文件上限（KiB）', fileCount: '轮转文件数'};
+            return '<div class="pe-action-grid"><div class="fb-form-group pe-span-all"><label>记录来源</label><select class="pe-sd-record-sourceRef">' + options + '</select></div>' +
+                Object.keys(labels).map(key => '<div class="fb-form-group"><label>' + labels[key] +
+                    '</label><input type="number" step="1" class="pe-sd-record-' + key + '" min="' + schema[key].min +
+                    '" max="' + schema[key].max + '" value="' + escapeHtml(String(cfg?.[key] ?? schema[key].defaultValue)) + '"></div>').join('') +
+                '<p class="pe-help-text pe-span-all">仅记录唯一已启用、勾选数值历史的采集规则的新鲜有效数值，不主动采集；目录列出不代表满足条件。保存启用后持续写入已挂载SD，全局仅一个记录器；手动执行只读状态，读取失败不等于停止。停用/删除成功后丢弃待写队列。队列最多8条、单批2KiB；仅轮转覆盖本次运行创建的记录，保留以往文件。写入故障须检查后恢复SD；来源/配置/时钟故障须停用后重新启用。失败批次不重放；写入/flush成功不证明断电持久性或卡健康。</p>' +
+                '<button type="button" class="fb-btn fb-btn-sm pe-sd-record-setup pe-span-all">设置独立记录触发（1秒）并保持禁用</button></div>';
+        },
+
+        _collectSdRecorderConfig(block) {
+            const cfg = {sourceRef: block.querySelector('.pe-sd-record-sourceRef')?.value || ''};
+            for (const key of ['sampleSec', 'maxAgeSec', 'flushSec', 'fileKiB', 'fileCount']) {
+                const value = block.querySelector('.pe-sd-record-' + key)?.value;
+                cfg[key] = value === '' || value == null ? NaN : Number(value);
+            }
+            return cfg;
+        },
+
+        _validateSdRecorderForm(rule, cfg) {
+            const schema = this._sdRecorderConfigSchema();
+            if (!schema) return '固件未提供完整 SD 记录参数，请重新加载';
+            if (!cfg || Array.isArray(cfg) || Object.keys(cfg).length !== 6 ||
+                Object.keys(cfg).some(key => key !== 'sourceRef' && !schema[key]) ||
+                typeof cfg.sourceRef !== 'string' || !/^[A-Za-z0-9_.:-]+$/.test(cfg.sourceRef) || cfg.sourceRef.length > schema.sourceMaxBytes)
+                return '记录参数必须包含六个字段及有效来源标识';
+            for (const key of ['sampleSec', 'maxAgeSec', 'flushSec', 'fileKiB', 'fileCount']) {
+                const field = schema[key], value = cfg[key];
+                if (!Number.isInteger(value) || value < field.min || value > field.max)
+                    return key + ' 须为 ' + field.min + '～' + field.max + ' 的整数';
+            }
+            if (rule.actions.length !== 1 || rule.triggers.length !== 1 || rule.triggers[0].triggerType !== 1 ||
+                rule.triggers[0].timerMode !== 0 || rule.triggers[0].intervalSec !== 1 || rule.allowPanelControl ||
+                rule.recordHistory || rule.scriptContent || rule.actions[0].useReceivedValue || rule.actions[0].syncDelayMs !== 0)
+                return '请设置独立记录触发：单动作、1秒定时，无脚本/延时/历史/屏幕控制/接收值替换';
+            if (!(this._pePeripherals || []).some(p => p.id === rule.actions[0].targetPeriphId && Number(p.type) === 37 && p.enabled === true))
+                return '请选择已启用的 SD 外设';
+            // This catalog describes saved producers, not current samples. The
+            // server resolves exact binding, uniqueness and recordHistory.
+            if (rule.enabled && !(this._peSensorSources || []).some(s => s.id === cfg.sourceRef)) return '请核对并选择已保存的数值来源';
+            return '';
+        },
+
+        _setupSdRecorderRuleForm() {
+            const blocks = document.querySelectorAll('#periph-exec-actions .periph-exec-config-item');
+            if (blocks.length !== 1 || blocks[0].querySelector('.pe-action-type')?.value !== '40') {
+                Notification.error('SD 记录必须独占一条规则，请先移除其它动作'); return;
+            }
+            const triggers = document.getElementById('periph-exec-triggers');
+            if (!triggers) return;
+            triggers.replaceChildren();
+            this._createPeriphExecTriggerElement({triggerType: 1, timerMode: 0, intervalSec: 1}, 0);
+            ['enabled', 'report', 'record-history', 'panel-control'].forEach(name => {
+                const input = document.getElementById('periph-exec-' + name); if (input) input.checked = false;
+            });
+            blocks[0].querySelector('.pe-sync-delay').value = '0';
+        },
+
+        _thermostatConfigSchema() {
+            const schema = (this._peTypeCatalog || []).find(p => p && Number(p.value ?? p.type) === 12)?.thermostatConfig;
+            if (schema?.version !== 1 || schema.additionalProperties !== false || !Array.isArray(schema.fields) ||
+                schema.fields.length !== 10 || schema.crossField !== 'setpoint_plus_minus_hysteresis_within_setpoint_range') return null;
+            const fields = Object.create(null);
+            for (const field of schema.fields) {
+                if (!field || typeof field.key !== 'string' || fields[field.key] || field.required !== true) return null;
+                fields[field.key] = field;
+            }
+            if (fields.sourceRef?.type !== 'string' || !Number.isInteger(fields.sourceRef.maxBytes) || fields.sourceRef.maxBytes < 1) return null;
+            for (const key of ['setpoint', 'hysteresis', 'minOnSec', 'minOffSec', 'maxAgeSec']) {
+                const field = fields[key], integer = !['setpoint', 'hysteresis'].includes(key);
+                if (field?.type !== (integer ? 'integer' : 'number') ||
+                    ![field.min, field.max, field.default].every(Number.isFinite) ||
+                    field.min > field.default || field.default > field.max ||
+                    (integer && ![field.min, field.max, field.default].every(Number.isInteger))) return null;
+            }
+            for (const key of ['mode', 'recovery', 'startup', 'fault']) {
+                const field = fields[key];
+                if (field?.type !== 'string' || !Array.isArray(field.choices) || !field.choices.length ||
+                    !field.choices.every(value => typeof value === 'string' && value.length > 0) ||
+                    !field.choices.includes(field.default)) return null;
+            }
+            return fields;
+        },
+
+        _thermostatSources() {
+            // Only saved Celsius channels, never a guessed pin or a raw UART
+            // payload. Runtime still requires a fresh GOOD numeric observation.
+            return (this._peSensorSources || []).filter(source => source && source.id &&
+                ['°C', '℃', 'C'].includes(source.unit) &&
+                (this._pePeripherals || []).some(p => p.id === source.periphId && p.enabled === true));
+        },
+
+        _renderThermostatPanel(value) {
+            let cfg = {};
+            try { cfg = JSON.parse(value || '{}'); } catch (_) {}
+            const schema = this._thermostatConfigSchema();
+            if (!schema) return '<p class="pe-help-text">固件未提供完整温控参数描述，请重新加载后再编辑；已保存配置保留。</p>';
+            const sources = this._thermostatSources();
+            const options = '<option value="">-- 选择已保存的摄氏温度采集通道 --</option>' +
+                sources.map(s => '<option value="' + escapeHtml(s.id) + '"' + (cfg.sourceRef === s.id ? ' selected' : '') + '>' +
+                    escapeHtml(s.label || s.id) + ' (' + escapeHtml(s.unit) + ')</option>').join('') +
+                (cfg.sourceRef && !sources.some(s => s.id === cfg.sourceRef) ? '<option selected disabled value="' +
+                    escapeHtml(cfg.sourceRef) + '">原温度来源不可用，请核对采集规则</option>' : '');
+            const number = (key, label) => '<div class="fb-form-group"><label>' + label +
+                '</label><input class="pe-thermostat-' + key + '" type="number" min="' + schema[key].min + '" max="' + schema[key].max +
+                '" step="' + (schema[key].type === 'integer' ? '1' : 'any') + '" value="' +
+                escapeHtml(String(cfg[key] ?? schema[key].default)) + '"></div>';
+            const policy = (key, label, labels) => {
+                const field = schema[key], selected = cfg[key] ?? field.default;
+                return '<div class="fb-form-group"><label>' + label + '</label><select class="pe-thermostat-' + key + '">' +
+                    field.choices.map(option => '<option value="' + escapeHtml(option) + '"' +
+                        (selected === option ? ' selected' : '') + '>' + escapeHtml(labels[option] || option) + '</option>').join('') +
+                    (!field.choices.includes(selected) ? '<option selected disabled value="' + escapeHtml(String(selected)) +
+                        '">原策略不可用，请重新选择</option>' : '') + '</select></div>';
+            };
+            return '<div class="pe-action-grid"><div class="fb-form-group pe-span-all"><label>温度来源</label>' +
+                '<select class="pe-thermostat-sourceRef">' + options + '</select></div>' +
+                policy('mode', '控制方向', {heat: '制热：低于下阈值开启', cool: '制冷：高于上阈值开启'}) +
+                number('setpoint', '停止阈值（°C）') + number('hysteresis', '启动回差（°C）') +
+                number('minOnSec', '最小开启时间（秒）') + number('minOffSec', '最小关闭时间（秒）') +
+                number('maxAgeSec', '温度最大年龄（秒）') +
+                policy('fault', '失鲜 / 故障安全', {off: '立即关闭（HIGH），不等待最小开启时间'}) +
+                policy('startup', '启动策略', {fresh: '保持关闭，等待启动后的有效新样本和最小关闭时间'}) +
+                policy('recovery', '故障恢复', {manual: '锁定关闭，人工停用再启用', fresh: '新有效样本 + 最小关闭时间后恢复'}) +
+                '<p class="pe-help-text pe-span-all">制热在“停止阈值−回差”及以下启动，到停止阈值关闭；制冷在“停止阈值+回差”及以上启动，到停止阈值关闭。只支持已启用的独立原生数字输出、低电平吸合、上电HIGH，无反相/扩展器/蜂鸣器。请先配置摄氏温度采集规则并启用；本规则不发起采样。保存启用后持续评估，手动执行只读取状态。停用或修改控制配置会先关闭；引脚读回不是物理负载反馈。来源配置变化或输出失败必须人工检查，自动恢复不覆盖此类故障。</p>' +
+                '<button type="button" class="fb-btn fb-btn-sm pe-thermostat-setup pe-span-all">设置独立温控触发（1秒）并保持禁用</button></div>';
+        },
+
+        _setupThermostatRuleForm() {
+            const blocks = document.querySelectorAll('#periph-exec-actions .periph-exec-config-item');
+            if (blocks.length !== 1 || blocks[0].querySelector('.pe-action-type')?.value !== '39') {
+                Notification.error('温控必须独占一条规则，请先移除其它动作'); return;
+            }
+            const triggers = document.getElementById('periph-exec-triggers');
+            if (!triggers) return;
+            triggers.replaceChildren();
+            this._createPeriphExecTriggerElement({triggerType: 1, timerMode: 0, intervalSec: 1}, 0);
+            ['enabled', 'report', 'record-history', 'panel-control'].forEach(name => {
+                const input = document.getElementById('periph-exec-' + name); if (input) input.checked = false;
+            });
+            blocks[0].querySelector('.pe-sync-delay').value = '0';
+        },
+
+        _collectThermostatConfig(block) {
+            const cfg = {};
+            ['sourceRef', 'mode', 'recovery', 'startup', 'fault'].forEach(key => {
+                cfg[key] = block.querySelector('.pe-thermostat-' + key)?.value || '';
+            });
+            ['setpoint', 'hysteresis', 'minOnSec', 'minOffSec', 'maxAgeSec'].forEach(key => {
+                const value = block.querySelector('.pe-thermostat-' + key)?.value;
+                cfg[key] = value === '' || value == null ? NaN : Number(value);
+            });
+            return cfg;
+        },
+
+        _validateThermostatForm(rule, cfg) {
+            const schema = this._thermostatConfigSchema();
+            if (!schema) return '固件未提供完整温控参数描述，请重新加载后再保存';
+            if (!cfg || typeof cfg !== 'object' || Object.keys(cfg).length !== 10 ||
+                Object.keys(cfg).some(key => !schema[key])) return '温控配置必须包含固件要求的完整字段';
+            const sourceBytes = typeof cfg.sourceRef === 'string' ? Array.from(cfg.sourceRef).reduce((bytes, character) => {
+                const point = character.codePointAt(0);
+                return bytes + (point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4);
+            }, 0) : 0;
+            if (!sourceBytes || sourceBytes > schema.sourceRef.maxBytes || cfg.sourceRef.includes('\u0000'))
+                return '温度来源标识超过固件范围或无效';
+            if (rule.actions.length !== 1 || rule.triggers.length !== 1 || rule.triggers[0].triggerType !== 1 ||
+                rule.triggers[0].timerMode !== 0 || rule.triggers[0].intervalSec !== 1 ||
+                rule.allowPanelControl || rule.recordHistory || rule.actions[0].syncDelayMs !== 0)
+                return '请使用“设置独立温控触发”按钮；温控必须为单动作、1秒定时，无延时/历史/屏幕控制';
+            if (!this._thermostatTargets().some(p => p.id === rule.actions[0].targetPeriphId)) return '请选择符合低电平吸合、上电HIGH条件的已启用原生数字输出';
+            if (!this._thermostatSources().some(s => s.id === cfg.sourceRef)) return '请选择已保存且外设启用的摄氏温度来源';
+            for (const key of ['mode', 'recovery', 'startup', 'fault'])
+                if (!schema[key].choices.includes(cfg[key])) return '请选择固件支持的温控方向与恢复策略';
+            for (const key of ['setpoint', 'hysteresis', 'minOnSec', 'minOffSec', 'maxAgeSec']) {
+                const field = schema[key], value = cfg[key];
+                if (!Number.isFinite(value) || value < field.min || value > field.max ||
+                    (field.type === 'integer' && !Number.isInteger(value)))
+                    return key + ' 须在 ' + field.min + '～' + field.max + ' ' + field.unit +
+                        (field.type === 'integer' ? '，并为整数' : '');
+            }
+            if (cfg.setpoint - cfg.hysteresis < schema.setpoint.min || cfg.setpoint + cfg.hysteresis > schema.setpoint.max)
+                return '停止阈值加减回差须在 ' + schema.setpoint.min + '～' + schema.setpoint.max + ' °C 范围内';
+            return '';
+        },
+
         _getPeriphExecSensorPanelState(data) {
-            var sensorCfg = {sensorCategory: 'analog', periphId: '', scaleFactor: 1, offset: 0, decimalPlaces: 1, sensorLabel: '', unit: '', dataField: '', deviceIndex: 0};
+            var sensorCfg = {sensorCategory: 'analog', periphId: '', scaleFactor: 1, offset: 0, decimalPlaces: 1, sensorLabel: '', unit: '', dataField: '', deviceIndex: 0, deviceAddress: ''};
             if (data && data.actionValue) {
                 try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch (error) {}
             }
@@ -48,7 +245,7 @@
                 sensorCfg.decimalPlaces = isDigitalSensor ? 1 : 2;
             }
             var baseKeys = {periphId: 1, sensorCategory: 1, scaleFactor: 1, offset: 1, decimalPlaces: 1, sensorLabel: 1,
-                unit: 1, dataField: 1, channelField: 1, deviceIndex: 1, bCoefficient: 1, seriesResistor: 1, nominalResistance: 1,
+                unit: 1, dataField: 1, channelField: 1, deviceIndex: 1, deviceAddress: 1, bCoefficient: 1, seriesResistor: 1, nominalResistance: 1,
                 shuntResistance: 1, inputGain: 1, inputOffset: 1, loopMinMa: 1, loopMaxMa: 1, engineeringMin: 1,
                 engineeringMax: 1, sampleCount: 1, mapToEngineering: 1};
             var extra = {};
@@ -97,7 +294,9 @@
                 '<div class="fb-form-group pe-sensor-property-group' + this._hiddenClass(!!sensorCfg.channelField) + '"><label>物模型字段</label><input class="pe-sensor-property" type="text" maxlength="63" value="' + escapeHtml(sensorCfg.channelField ? sensorCfg.dataField : '') + '" placeholder="例如 batteryVoltage"><small class="pe-help-text">填写上报数据的字段名；测量单位由已配置驱动提供。</small></div>' +
                 '<small class="pe-help-text pe-sensor-configured-status pe-span-all' + this._hiddenClass(!!sensorCfg.channelField) + '"></small>' +
                 '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(String(sensorCfg.sensorCategory).toLowerCase() === 'ds18b20') + '"><label>设备索引</label>' +
-                '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + sensorCfg.deviceIndex + '"></div>' +
+                '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + escapeHtml(sensorCfg.deviceIndex) + '">' +
+                '<label>ROM 地址（可选）</label><input class="pe-sensor-address" type="text" maxlength="16" value="' + escapeHtml(sensorCfg.deviceAddress) + '" placeholder="16位十六进制，含CRC">' +
+                '<small class="pe-help-text">填写后仅读取该探头，缺失不回退；留空按索引。多探头建议绑定ROM；新转换等待最多750毫秒，不占共享传感器锁。</small></div>' +
                 '<div class="fb-form-group pe-sensor-ntc-group pe-span-all' + this._hiddenClass(String(sensorCfg.sensorCategory).toLowerCase() === 'ntc') + '">' +
                 '<div class="fb-form-group"><label>NTC B值</label><input type="number" class="pe-sensor-ntc-b" step="any" value="' + (sensorCfg.bCoefficient || 3950) + '"></div>' +
                 '<div class="fb-form-group"><label>串联电阻(Ω)</label><input type="number" class="pe-sensor-ntc-series" step="any" value="' + (sensorCfg.seriesResistor || 10000) + '"></div>' +
@@ -216,7 +415,9 @@
             var descriptor = (this._peTypeCatalog || []).find(function(item) { return Number(item.value ?? item.type) === 38; });
             var driver = (descriptor?.driverDescriptors || []).find(function(item) { return String(item.name).toLowerCase() === String(name).toLowerCase(); });
             var channels = (driver?.channels || []).filter(function(channel) {
-                return !channel.mode || Number(channel.mode) === (Number(params.mode || 0) === 1 ? 2 : 1);
+                return (!channel.mode || Number(channel.mode) === (Number(params.mode || 0) === 1 ? 2 : 1)) &&
+                    (!channel.singleMuxOnly || !Number(params.scanMask)) &&
+                    (channel.scanMux === undefined || !!(Number(params.scanMask) & (1 << Number(channel.scanMux))));
             });
             var reason = !peripheral ? '请选择已配置的 I2C 传感器' :
                 peripheral.enabled === false ? '该外设已禁用' :
@@ -259,6 +460,16 @@
             if (status) status.textContent = details.reason || (!channel ? '请选择当前驱动支持的测量通道' : '使用 ' + details.driver.name + ' 的已保存接线与校准参数');
         },
 
+        _syncDhtSensorField(block) {
+            var category = String(block?.querySelector('.pe-sensor-category')?.value || '').toLowerCase();
+            if (category !== 'dht11' && category !== 'dht22') return;
+            var field = block.querySelector('.pe-sensor-datafield')?.value;
+            var unit = block.querySelector('.pe-sensor-unit');
+            if (unit) { unit.value = field === 'humidity' ? '%' : '°C'; unit.readOnly = true; }
+            var label = block.querySelector('.pe-sensor-label');
+            if (label && (!label.value || label.value === '温度' || label.value === '湿度'))
+                label.value = field === 'humidity' ? '湿度' : '温度';
+        },
         onSensorCategoryChange(selectEl, index, preserveValues) {
             var block = this._getPeriphExecBlock('periph-exec-actions', index);
             if (!block) return;
@@ -362,8 +573,10 @@
             var help = advanced && advanced.querySelector('.pe-help-text');
             if (help) help.textContent = isDigital ? '数字传感器（DHT/DS18B20等）无需高级参数' : '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。';
             if (normCat === 'configured') this._syncConfiguredSensorAction(block);
+            this._syncDhtSensorField(block);
         },
         _collectPeriphExecSensorAction(item, action) {
+            this._syncDhtSensorField(item);
             var sensorCategory = item.querySelector('.pe-sensor-category')?.value || 'analog';
             var normalized = String(sensorCategory).toLowerCase();
             if (normalized === 'configured') {
@@ -404,7 +617,15 @@
                 unit: item.querySelector('.pe-sensor-unit')?.value?.trim() || '',
                 dataField: item.querySelector('.pe-sensor-datafield')?.value || DEFAULT_FIELDS[normalized] || 'value'
             };
-            if (normalized === 'ds18b20') sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
+            if (normalized === 'ds18b20') {
+                var indexText = item.querySelector('.pe-sensor-devindex')?.value;
+                sensorData.deviceIndex = indexText === undefined || indexText === '' ? 0 : Number(indexText);
+                if (!Number.isInteger(sensorData.deviceIndex) || sensorData.deviceIndex < 0 || sensorData.deviceIndex > 15)
+                    this._peConfiguredSensorError = 'DS18B20索引须为0～15的整数';
+                sensorData.deviceAddress = item.querySelector('.pe-sensor-address')?.value?.trim() || '';
+                if (sensorData.deviceAddress && !/^28[0-9a-f]{14}$/i.test(sensorData.deviceAddress))
+                    this._peConfiguredSensorError = 'DS18B20 ROM须为28开头的16位十六进制，CRC由设备验证';
+            }
             if (normalized === 'ntc') {
                 var ntcB = parseFloat(item.querySelector('.pe-sensor-ntc-b')?.value);
                 var ntcSeries = parseFloat(item.querySelector('.pe-sensor-ntc-series')?.value);

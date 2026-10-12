@@ -1,0 +1,266 @@
+// Five complete production methods versus frozen originals. Real PointHistory
+// state types and ArduinoJson/helper; only locking/storage/lifecycle are seams.
+// Full real storage behavior is covered separately by test_point_history_persistence.
+#include "document_json_probe.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include <array>
+#include <iostream>
+#include <type_traits>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#define private public
+#include "core/PointHistory.h"
+#undef private
+#include "utils/CheckedText.h"
+#include "network/FixedJsonField.h"
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string value = "object{";
+        for (JsonPairConst field : object) {
+            value += std::string(field.key().c_str(), field.key().size());
+            value += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            value += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return value + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string value = "array[";
+        for (JsonVariantConst item : array) value += ArduinoJson::detail::accept(item, *this) + ";";
+        return value + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        assert(false); return "unsupported";
+    }
+};
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflow = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflow == other.overflow;
+    }
+};
+static Snapshot capture(const JsonDocument& doc) {
+    Shape shape;
+    return {documentBytes(doc), ArduinoJson::detail::accept(doc.as<JsonVariantConst>(), shape), doc.overflowed()};
+}
+struct Result {
+    bool returned = false, enabled = false, dirty = false, restored = false, configBusy = false;
+    unsigned initializations = 0, flushes = 0, commits = 0, locks = 0, unlocks = 0;
+    unsigned reserveCalls = 0, concatCalls = 0;
+    uint32_t revision = 0;
+    size_t sourceCount = 0, seriesCapacity = 0, allocations = 0, failures = 0;
+    std::string error, path;
+    std::vector<std::string> allowlist;
+    std::vector<Snapshot> documents, committed;
+    std::vector<DocumentProbeAllocator::Event> events;
+    bool operator==(const Result& o) const {
+        return returned == o.returned && enabled == o.enabled && dirty == o.dirty &&
+            restored == o.restored && configBusy == o.configBusy &&
+            initializations == o.initializations && flushes == o.flushes && commits == o.commits &&
+            locks == o.locks && unlocks == o.unlocks && revision == o.revision &&
+            sourceCount == o.sourceCount && seriesCapacity == o.seriesCapacity &&
+            allocations == o.allocations && failures == o.failures &&
+            reserveCalls == o.reserveCalls && concatCalls == o.concatCalls &&
+            error == o.error && path == o.path && allowlist == o.allowlist &&
+            documents == o.documents && committed == o.committed && events == o.events;
+    }
+};
+static Result* activeResult = nullptr;
+static DocumentProbeAllocator* activeAllocator = nullptr;
+static bool lockBusy = false, storageOk = true, flushOk = true;
+static BaseType_t takeHistoryMutex(SemaphoreHandle_t, TickType_t) {
+    ++activeResult->locks; return lockBusy ? pdFALSE : pdTRUE;
+}
+static BaseType_t giveHistoryMutex(SemaphoreHandle_t) {
+    ++activeResult->unlocks; return pdTRUE;
+}
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { assert(activeAllocator && activeResult); }
+    ~TrackedDocument() { activeResult->documents.push_back(capture(*this)); }
+};
+
+namespace FastBee {
+#define xSemaphoreTake takeHistoryMutex
+#define xSemaphoreGive giveHistoryMutex
+@PRODUCTION_HISTORY_LOCK@
+#undef xSemaphoreTake
+#undef xSemaphoreGive
+
+class PointFixture : public PointHistory {
+public:
+    bool initialize() { ++activeResult->initializations; _initialized = true; return true; }
+    bool flushNow() { ++activeResult->flushes; return flushOk; }
+    bool getSeries(const String& sourceRef, PointHistorySeriesSnapshot& out) const;
+    static bool validSourceRef(const String& sourceRef);
+    static bool atomicWriteJsonWithBackup(const String& path, JsonDocument& doc) {
+        ++activeResult->commits; activeResult->path = std::string(path);
+        activeResult->committed.push_back(capture(doc));
+        return !doc.overflowed() && storageOk;
+    }
+};
+@PRODUCTION_GET_SERIES@
+@PRODUCTION_VALID_SOURCE@
+#define DECLARE_WRITER(Name) class Name : public PointFixture { public: \
+    bool configure(bool enabled, const std::vector<String>& sourceAllowlist, String& error, bool persist, const uint32_t* expectedRevision); \
+    void appendSeriesJson(const String& sourceRef, JsonObject out) const; \
+    void appendConfigJson(JsonObject out) const; \
+    void appendStatusJson(JsonObject out) const; \
+    bool writeHistorySnapshot(const std::vector<Series>& snapshot, uint32_t sequence) const; \
+};
+DECLARE_WRITER(PointOracle)
+DECLARE_WRITER(PointCurrent)
+DECLARE_WRITER(PointDraft)
+#undef DECLARE_WRITER
+
+#define JsonDocument TrackedDocument
+@POINT_WRITERS@
+#undef JsonDocument
+} // namespace FastBee
+
+template<class Writer> static void populate(Writer& writer, unsigned scenario) {
+    writer._mutex = reinterpret_cast<void*>(1);
+    writer._initialized = true;
+    writer._enabled = scenario != 0;
+    writer._dirty = scenario % 2 != 0;
+    writer._restored = scenario >= 2;
+    writer._lastFlushSucceeded = scenario < 2;
+    writer._firstDirtyAt = scenario == 3 ? UINT32_MAX : scenario * 1234;
+    writer._configRevision = scenario == 3 ? UINT32_MAX : 7;
+    writer._bootId = "boot-current";
+    if (!scenario) return;
+    const size_t count = scenario == 4 ? Writer::MAX_SOURCES : 1;
+    for (size_t i = 0; i < count; ++i) {
+        typename Writer::Series series;
+        series.sourceRef = i ? String("sensor.") + static_cast<unsigned>(i) : String("sensor.temp");
+        series.sourceRevision = scenario >= 2 ? String(std::string(56, 'r')) + "\"\n旧" : "r1";
+        series.unit = scenario >= 2 ? "°C\t\"\\" : "";
+        series.stale = scenario >= 2;
+        series.staleReason = scenario >= 2 ? String(std::string(70, 'e')) + "\n\"重映射" : "";
+        series.containsRestoredSamples = scenario >= 2;
+        series.count = scenario >= 2 ? Writer::MAX_SAMPLES_PER_SOURCE : 1;
+        series.head = scenario >= 2 ? 7 : 0;
+        for (size_t j = 0; j < Writer::MAX_SAMPLES_PER_SOURCE; ++j) {
+            auto& sample = series.samples[j];
+            sample.value = scenario == 3 ? -std::numeric_limits<double>::max() :
+                (j == 0 ? -0.0 : 12.25 + static_cast<double>(j));
+            sample.sequence = scenario == 3 ? UINT32_MAX - static_cast<uint32_t>(j) : static_cast<uint32_t>(j + 1);
+            sample.sampleIdentity = static_cast<uint32_t>(j + 12);
+            sample.uptimeMs = scenario == 3 ? UINT32_MAX : static_cast<uint32_t>(j * 300);
+            sample.epochMs = j % 2 ? 0 : scenario == 3 ? UINT64_MAX : 1800000000000ULL + j;
+            sample.bootId = j % 2 ? "boot-before-restart" : "boot-current";
+            sample.restored = j % 2 != 0;
+        }
+        writer._sourceAllowlist.push_back(series.sourceRef);
+        writer._series.push_back(std::move(series));
+    }
+}
+template<class Writer> static void overwriteInputs(Writer& writer, String& reference) {
+    reference = "replaced-reference";
+    writer._bootId = "replaced-boot";
+    for (auto& allowed : writer._sourceAllowlist) allowed = "replaced-allowlist";
+    for (auto& series : writer._series) {
+        series.sourceRef = series.sourceRevision = series.unit = series.staleReason = "replaced-owned-field";
+        for (auto& sample : series.samples) sample.bootId = "replaced-sample-boot";
+    }
+}
+enum class Kind { Series, Config, Status, History, Configure };
+template<class Writer> static Result run(Kind kind, unsigned scenario, unsigned rootMode,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false,
+        unsigned stringFault = 0) {
+    Result result;
+    DocumentProbeAllocator allocator(failAt, persistent);
+    activeAllocator = &allocator; activeResult = &result;
+    lockBusy = rootMode == 3; storageOk = rootMode != 4; flushOk = rootMode != 5;
+    {
+        Writer writer; populate(writer, scenario);
+        StatusStringProbe::reset(stringFault);
+        String reference("sensor.temp"), error;
+        if (kind == Kind::History) {
+            result.returned = writer.writeHistorySnapshot(writer._series, scenario == 3 ? UINT32_MAX : 17);
+        } else if (kind == Kind::Configure) {
+            std::vector<String> allowlist = {"sensor.temp", "sensor.humidity"};
+            if (rootMode == 6) allowlist = {"bad/source"};
+            if (rootMode == 7) allowlist = {"sensor.temp", "sensor.temp"};
+            if (rootMode == 8) allowlist.assign(Writer::MAX_SOURCES + 1, "sensor.temp");
+            const uint32_t expected = writer._configRevision + 1;
+            result.returned = writer.configure(scenario % 2 == 0, allowlist, error, rootMode != 2,
+                                               rootMode == 1 ? &expected : nullptr);
+            result.error = std::string(error);
+        } else {
+            JsonDocument doc(&allocator);
+            JsonObject object = rootMode == 2 ? JsonObject() : doc.to<JsonObject>();
+            if (rootMode == 1) {
+                object["prior"] = "keep";
+                object["count"] = "old-type";
+                object["enabled"] = 5;
+                object["staleReason"] = "old-reason";
+            }
+            if (kind == Kind::Series) writer.appendSeriesJson(reference, object);
+            if (kind == Kind::Config) writer.appendConfigJson(object);
+            if (kind == Kind::Status) writer.appendStatusJson(object);
+            const auto beforeOverwrite = capture(doc);
+            overwriteInputs(writer, reference);
+            // Output strings must own the original bytes after source/stack data changes.
+            assert(capture(doc) == beforeOverwrite);
+            result.documents.push_back(beforeOverwrite);
+        }
+        result.enabled = writer._enabled; result.dirty = writer._dirty;
+        result.restored = writer._restored; result.configBusy = writer._configWriteInProgress;
+        result.revision = writer._configRevision; result.sourceCount = writer._series.size();
+        result.seriesCapacity = writer._series.capacity();
+        for (const auto& allowed : writer._sourceAllowlist) result.allowlist.emplace_back(allowed);
+        result.reserveCalls = StatusStringProbe::reserveCalls;
+        result.concatCalls = StatusStringProbe::concatCalls;
+    }
+    assert(allocator.blocks.empty());
+    result.events = allocator.events; result.allocations = allocator.eligible; result.failures = allocator.failures;
+    activeAllocator = nullptr; activeResult = nullptr;
+    return result;
+}
+static Result compare(Kind kind, unsigned scenario, unsigned rootMode,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false, unsigned stringFault = 0) {
+    const auto expected = run<FastBee::PointOracle>(kind, scenario, rootMode, failAt, persistent, stringFault);
+    assert(run<FastBee::PointCurrent>(kind, scenario, rootMode, failAt, persistent, stringFault) == expected);
+    assert(run<FastBee::PointDraft>(kind, scenario, rootMode, failAt, persistent, stringFault) == expected);
+    return expected;
+}
+static void values(Kind kind) {
+    const unsigned roots = kind == Kind::Configure ? 9 : 6;
+    for (unsigned scenario = 0; scenario < 5; ++scenario)
+        for (unsigned root = 0; root < roots; ++root) compare(kind, scenario, root);
+}
+static void oom(Kind kind) {
+    for (unsigned scenario : {1u, 2u}) for (unsigned root : {0u, 1u, 2u}) {
+        const auto baseline = compare(kind, scenario, root);
+        for (bool persistent : {false, true}) for (size_t fault = 0; fault < baseline.allocations; ++fault) {
+            const auto failed = compare(kind, scenario, root, fault, persistent);
+            assert(failed.failures > 0);
+            if ((kind == Kind::Configure || kind == Kind::History) && failed.returned)
+                for (const auto& committed : failed.committed) assert(!committed.overflow);
+        }
+    }
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode(argv[1]);
+    const std::vector<std::pair<std::string, Kind>> kinds = {
+        {"series", Kind::Series}, {"config", Kind::Config}, {"status", Kind::Status},
+        {"history", Kind::History}, {"configure", Kind::Configure}};
+    bool matched = false;
+    for (const auto& item : kinds) {
+        if (mode == item.first + "-values") { values(item.second); matched = true; }
+        if (mode == item.first + "-oom") { oom(item.second); matched = true; }
+    }
+    if (mode == "configure-string-faults") {
+        for (unsigned fault = 1; fault <= 4; ++fault)
+            assert(!compare(Kind::Configure, 2, 0, std::numeric_limits<size_t>::max(), false, fault).returned);
+        matched = true;
+    }
+    assert(matched);
+    std::cout << "PASS " << mode << "; actual method JSON/types/ownership/order/OOM; no storage/device\n";
+}

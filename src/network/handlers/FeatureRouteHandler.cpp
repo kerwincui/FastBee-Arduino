@@ -12,10 +12,14 @@
 
 #include <ArduinoJson.h>
 #include <memory>
-#include <vector>
+#include <new>
+#include "network/FeatureStatusResponse.h"
 
 #include "core/FeatureFlags.h"
 #include "core/RuntimeFeatureManager.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+#include "core/RuleScriptManager.h"
+#endif
 #if FASTBEE_ENABLE_SCREEN_PANEL
 #include "core/ScreenPanelManager.h"
 #endif
@@ -58,6 +62,26 @@ void appendFileLoggingApplyState(JsonObject data) {
             ? "POLICY_DISABLED" : "NOT_APPLIED";
     }
 }
+#if FASTBEE_ENABLE_RULE_SCRIPT
+void appendRuleScriptApplyState(JsonObject data) {
+    auto& features = FastBee::RuntimeFeatureManager::instance();
+    auto& scripts = RuleScriptManager::getInstance();
+    const auto observed = scripts.observeFeatureInstance();
+    const bool requested = features.isUserEnabled("ruleScript");
+    const bool enabled = scripts.isRunning();
+    const bool pending = observed.state == FastBee::FeatureInstanceState::CleanupPending;
+    JsonObject state = data["ruleScript"].to<JsonObject>();
+    state["requested"] = requested;
+    state["enabled"] = enabled;
+    state["applied"] = requested == enabled && !pending;
+    state["cleanupPending"] = pending;
+    state["instanceState"] = observed.name();
+    if (requested != enabled || pending) {
+        state["warning"] = pending ? "CLEANUP_PENDING" : requested && !features.shouldEnable("ruleScript")
+            ? "POLICY_DISABLED" : "NOT_APPLIED";
+    }
+}
+#endif
 }  // namespace
 
 FeatureRouteHandler::FeatureRouteHandler(WebHandlerContext* ctx) : ctx(ctx) {}
@@ -114,7 +138,7 @@ bool FeatureRouteHandler::parseBody(AsyncWebServerRequest* request, JsonDocument
         ctx->sendBadRequest(request, "Missing JSON body");
         return false;
     }
-    DeserializationError err = deserializeJson(doc, *(*body));
+    DeserializationError err = deserializeJson(doc, (*body)->c_str(), (*body)->length());
     // ArduinoJson 默认深拷贝字符串，解析完成后即可释放原始 body
     releaseBody(request);
     if (err) {
@@ -144,7 +168,17 @@ FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
         // Apply only after both persistent configuration writes succeed.
         // The registry changes immediately, so the logger must follow it even
         // when screenPanel did not change. shouldEnable retains memory guards.
+        LOGGER.enableLogViewer(mgr.shouldEnable("logViewer"));
         LOGGER.enableFileLogging(mgr.shouldEnable("fileLogging"));
+#if FASTBEE_ENABLE_RULE_SCRIPT
+        auto& scripts = RuleScriptManager::getInstance();
+        if (mgr.shouldEnable("ruleScript")) {
+            // Failure retains persisted intent; a later explicit apply retries.
+            scripts.initialize();
+        } else {
+            scripts.stop();
+        }
+#endif
 #if FASTBEE_ENABLE_SCREEN_UI
         const bool screenPanelEnabled = mgr.isUserEnabled("screenPanel");
         if (screenPanelEnabled == previousScreenPanel) return;
@@ -194,73 +228,18 @@ FeatureRouteHandler::PersistResult FeatureRouteHandler::persistFeatureUpdate(
 void FeatureRouteHandler::handleStatus(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
-    auto& mgr = FastBee::RuntimeFeatureManager::instance();
-    std::vector<String> items;
-    items.reserve(mgr.featureCount());
-
-    // Build one small feature object at a time. The old path retained the
-    // complete ArduinoJson tree, a ~5.6 KB serialized String and the
-    // AsyncBasicResponse copy concurrently, which exhausts fragmented DRAM on
-    // no-PSRAM C3 targets and can yield a truncated HTTP 200 response.
-    for (size_t i = 0; i < mgr.featureCount(); ++i) {
-        auto itemDoc = FastBee::makeJsonDocument(1024);
-        if (!mgr.getFeatureStatusJson(i, itemDoc.to<JsonObject>()) || itemDoc.overflowed()) {
-            HandlerUtils::sendJsonError(request, 503,
-                                        "Feature status temporarily unavailable (JSON allocation failed)", 5);
-            return;
-        }
-
-        const size_t expectedSize = measureJson(itemDoc);
-        String item;
-        if (!item.reserve(expectedSize + 1)) {
-            HandlerUtils::sendJsonError(request, 503,
-                                        "Feature status temporarily unavailable (response allocation failed)", 5);
-            return;
-        }
-        const size_t written = serializeJson(itemDoc, item);
-        if (written != expectedSize || item.length() != expectedSize) {
-            HandlerUtils::sendJsonError(request, 503,
-                                        "Feature status temporarily unavailable (response serialization failed)", 5);
-            return;
-        }
-        items.push_back(std::move(item));
-    }
-
-    auto summaryDoc = FastBee::makeJsonDocument(1024);
-    mgr.getStatusSummaryJson(summaryDoc.to<JsonObject>());
-    if (summaryDoc.overflowed()) {
+    // Capture once and preflight every bounded fragment before sending headers.
+    // A full list of serialized Strings used ~13 KB of scarce internal DRAM.
+    auto* response = new (std::nothrow) FastBee::FeatureStatusResponse(
+        FastBee::RuntimeFeatureManager::instance());
+    if (!response || !response->_sourceValid()) {
+        delete response;
         HandlerUtils::sendJsonError(request, 503,
-                                    "Feature status temporarily unavailable (summary allocation failed)", 5);
+                                    "Feature status temporarily unavailable (snapshot allocation failed)", 5);
         return;
     }
-
-    const size_t summarySize = measureJson(summaryDoc);
-    String summary;
-    if (!summary.reserve(summarySize + 1) ||
-        serializeJson(summaryDoc, summary) != summarySize ||
-        summary.length() != summarySize) {
-        HandlerUtils::sendJsonError(request, 503,
-                                    "Feature status temporarily unavailable (summary serialization failed)", 5);
-        return;
-    }
-
-    // JSON member order is not semantically significant. Putting the small
-    // summary in the header lets the shared list streamer keep a static footer.
-    String header;
-    const size_t headerSize = summary.length() + 64;
-    if (!header.reserve(headerSize)) {
-        HandlerUtils::sendJsonError(request, 503,
-                                    "Feature status temporarily unavailable (header allocation failed)", 5);
-        return;
-    }
-    header = F("{\"success\":true,\"data\":{\"summary\":");
-    header += summary;
-    header += F(",\"features\":[");
-
-    if (!HandlerUtils::sendJsonListChunked(request, header, std::move(items), "]}}")) {
-        HandlerUtils::sendJsonError(request, 503,
-                                    "Feature status temporarily unavailable (stream allocation failed)", 5);
-    }
+    response->addHeader("Connection", "close");
+    request->send(response);
 }
 
 void FeatureRouteHandler::handleConfig(AsyncWebServerRequest* request) {
@@ -305,6 +284,9 @@ void FeatureRouteHandler::handleUpdate(AsyncWebServerRequest* request, bool rebo
         data["requiresRestart"] = true;
     }
     appendFileLoggingApplyState(data);
+#if FASTBEE_ENABLE_RULE_SCRIPT
+    appendRuleScriptApplyState(data);
+#endif
     HandlerUtils::sendJsonStream(request, doc);
 
     // HTTP 响应已发送，调度 3 秒后重启使配置生效

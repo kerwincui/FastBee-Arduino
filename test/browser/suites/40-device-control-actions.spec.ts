@@ -16,6 +16,7 @@ test.beforeEach(async ({ page }) => {
     w.Notification = { success: (text: string) => w.__notices.push(['success', text]), error: (text: string) => w.__notices.push(['error', text]) };
     w.apiPost = async (url: string, body: object) => { w.__posts.push({ url, body }); return { success: true, state: 'queued', operationId: 31 }; };
   });
+  await page.addScriptTag({ content: source('web-src/js/utils.js') });
   for (const file of ['core', 'render', 'layout', 'modbus-ops']) await page.addScriptTag({ content: source(`web-src/modules/runtime/device-control/${file}.js`) });
   await page.evaluate(() => (window as any).AppState.setupDeviceControlEvents());
 });
@@ -122,7 +123,7 @@ test('busy rule submits exactly once even across rerender; queued is not executi
   await page.evaluate(() => { const w = window as any; const b = document.querySelector('button[data-id="poll"]') as HTMLButtonElement; b.disabled = false; b.click(); w.__finish({ success: true, state: 'queued' }); });
   await expect(page.locator('button[data-id="poll"]')).toBeEnabled();
   expect(await page.evaluate(() => (window as any).__posts.length)).toBe(1);
-  expect(await page.evaluate(() => (window as any).__notices)).toEqual([['success', '执行已提交']]);
+  expect(await page.evaluate(() => (window as any).__notices)).toEqual([['success', '执行已提交；输出结果待确认']]);
 });
 
 test('whole mixed system rule confirms first; numeric input cancels or sends zero without losing it', async ({ page }) => {

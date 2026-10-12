@@ -3,6 +3,10 @@
 
 #include "peripherals/SensorDriver.h"
 #include "core/RuntimeFeatureManager.h"
+#include "core/CheckedAdc.h"
+#include "core/Ds18b20Address.h"
+#include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include <DHT.h>
 #if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
@@ -14,6 +18,33 @@
 #include <freertos/semphr.h>
 #include <atomic>
 #include <math.h>
+#include <new>
+#include <esp_timer.h>
+
+static uint64_t sensorSampleNowMs() {
+    const int64_t us = esp_timer_get_time();
+    return us < 0 ? UINT64_MAX : static_cast<uint64_t>(us) / 1000;
+}
+
+static bool readLegacyAdcSamples(uint8_t pin, uint16_t* samples, uint8_t count) {
+    return FastBee::readTransientAdcBatch(pin, samples, count) == FastBee::AdcStatus::Ok;
+}
+
+struct LegacyAdcPinGuard {
+    PeripheralManager& manager;
+    RecursiveMutexGuard lock;
+    bool acquired;
+    explicit LegacyAdcPinGuard(uint8_t pin) : manager(PeripheralManager::getInstance()),
+        lock(manager.getMutex(), pdMS_TO_TICKS(50)),
+        acquired(lock.isLocked() && !manager.isReservedPin(pin) && manager.managedPinAvailableForAdc(pin)) {}
+};
+
+static float deliverSensorSample(float value, uint64_t sampledAt, uint32_t maxAgeMs,
+                                 bool healthy, FastBee::SensorSampleMetadata* sample) {
+    const uint64_t now = sensorSampleNowMs();
+    if (now == UINT64_MAX) { if (sample) *sample = {}; return NAN; }
+    return FastBee::describeSensorSample(value, sampledAt, now, maxAgeMs, healthy, sample);
+}
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp32-hal-rmt.h>
 #include <driver/gpio.h>
@@ -74,12 +105,13 @@ static constexpr uint32_t DHT_TRANSACTION_TIMEOUT_US = 150000;
 // The mutex is created lazily from the SensorDriver singleton constructor. The
 // atomic CAS keeps the fallback safe even if a read arrives before that
 // constructor has completed (for example during an unusual startup race).
-static SemaphoreHandle_t sensor_bus_mutex() {
+static SemaphoreHandle_t sensor_bus_mutex(bool create = true) {
     static std::atomic<SemaphoreHandle_t> busMutex(nullptr);
     SemaphoreHandle_t mutex = busMutex.load(std::memory_order_acquire);
     if (mutex) {
         return mutex;
     }
+    if (!create) return nullptr;
 
     SemaphoreHandle_t created = xSemaphoreCreateMutex();
     if (!created) {
@@ -291,16 +323,62 @@ SensorDriver::SensorDriver() {
     (void)sensor_bus_mutex();
 }
 
+void SensorDriver::snapshotDhtRmtResources(FastBee::DhtRmtResourceSnapshot& result) {
+    result = FastBee::DhtRmtResourceSnapshot{};
+#if defined(ARDUINO_ARCH_ESP32) && SOC_RMT_SUPPORTED
+    result.supported = true;
+    const auto mutex = sensor_bus_mutex(false);
+    // No capture can have started without this mutex. Do not allocate it just
+    // to answer a diagnostic request, or construct the SensorDriver singleton.
+    if (!mutex) return;
+    if (xSemaphoreTake(mutex, 0) != pdTRUE) {
+        result.status = FastBee::ResourceObservation::Busy;
+        return;
+    }
+    snapshotDhtRmtCaptureLocked(result);
+    xSemaphoreGive(mutex);
+#endif
+}
+
 SensorDriver& SensorDriver::getInstance() {
     static SensorDriver instance;
+#if FASTBEE_ENABLE_DS18B20
+    static const FastBee::FeatureInstanceObserver observer{"ds18b20", [](const void* context) {
+        return static_cast<const SensorDriver*>(context)->observeDs18b20Instances();
+    }, &instance};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
+#endif
     return instance;
+}
+
+FastBee::FeatureInstanceSnapshot SensorDriver::observeDs18b20Instances() const {
+    using namespace FastBee;
+    const auto mutex = sensor_bus_mutex(false);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTake(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    auto state = _ds18b20Instances.empty() ? FeatureInstanceState::Stopped : FeatureInstanceState::Allocated;
+    // The uint8_t pin key bounds this map to 256 entries. Objects can remain
+    // allocated after a failed read; never claim fresh data or detected probes.
+    for (const auto& entry : _ds18b20Instances) {
+        if (!entry.second.oneWire || !entry.second.sensors) { state = FeatureInstanceState::Unobserved; break; }
+    }
+    xSemaphoreGive(mutex);
+    return state == FeatureInstanceState::Unobserved
+        ? FeatureInstanceSnapshot::unavailable(FeatureInstanceReason::InvalidSnapshot, FeatureInstanceScope::ServiceLifecycle)
+        : FeatureInstanceSnapshot::lifecycle(state);
 }
 
 SensorDriver::~SensorDriver() {
     releaseAll();
 }
 
-float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& field) {
+float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& field,
+                           FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
+    if ((type != SensorDriverType::DHT11 && type != SensorDriverType::DHT22) ||
+        (field != "temperature" && field != "humidity")) return NAN;
     // 引脚有效性预检：避免对无效 pin 反复 new DHT 导致内存泄漏
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
@@ -324,6 +402,11 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 
     // 查找或创建 DHT 实例
     auto it = _dhtInstances.find(pin);
+    if (it != _dhtInstances.end() && it->second.type != type) {
+        delete static_cast<DHT*>(it->second.dht);
+        _dhtInstances.erase(it);
+        it = _dhtInstances.end();
+    }
     if (it == _dhtInstances.end()) {
         // 惰性初始化
         uint8_t dhtType = (type == SensorDriverType::DHT11) ? DHT11 : DHT22;
@@ -346,7 +429,7 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 
     DHTInstance& inst = it->second;
     DHT* dht = static_cast<DHT*>(inst.dht);
-    unsigned long now = millis();
+    const uint64_t now = sensorSampleNowMs();
 
     // A failed DHT transaction can spend tens of milliseconds with interrupts
     // disabled. Do not immediately start another physical transaction from a
@@ -354,7 +437,8 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
     if (!inst.lastRead.success && retry_pending(now, inst.nextRetryAt)) {
         if (inst.lastRead.timestamp != 0 &&
             (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS) {
-            return dht_cached_field(inst.lastRead, field);
+            return deliverSensorSample(dht_cached_field(inst.lastRead, field), inst.lastRead.timestamp,
+                DHT_MIN_INTERVAL, false, sample);
         }
         return NAN;
     }
@@ -362,7 +446,8 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
     // 缓存有效性检查：避免过于频繁读取
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < DHT_MIN_INTERVAL) {
         // 使用缓存值
-        return dht_cached_field(inst.lastRead, field);
+        return deliverSensorSample(dht_cached_field(inst.lastRead, field), inst.lastRead.timestamp,
+            DHT_MIN_INTERVAL, true, sample);
     }
 
     // 执行实际读取。ESP32 使用有界连续脉冲采集，避免 Adafruit DHT 库
@@ -406,7 +491,8 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 
         // Keep the last successful value/timestamp for the bounded stale
         // fallback, while marking the transaction itself as failed.
-        return hasStaleValue ? staleValue : NAN;
+        return hasStaleValue ? deliverSensorSample(staleValue, inst.lastRead.timestamp,
+            DHT_MIN_INTERVAL, false, sample) : NAN;
     }
 
     // 更新缓存
@@ -419,12 +505,29 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 
     LOGGER.debugf("[SensorDriver] DHT pin=%d temp=%.1f humi=%.1f", pin, temperature, humidity);
 
-    if (field == "humidity") return humidity;
-    return temperature;
+    return deliverSensorSample(field == "humidity" ? humidity : temperature, inst.lastRead.timestamp,
+        DHT_MIN_INTERVAL, true, sample);
 }
 
-float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
+float SensorDriver::readDS18B20(uint8_t pin, uint8_t index, FastBee::SensorSampleMetadata* sample,
+                              const uint8_t* address) {
+    uint64_t generation = 0;
+    uint32_t waitMs = 0;
+    const float result = readDS18B20Step(pin, index, sample, address, 0, &generation, &waitMs);
+    if (!waitMs) return result;
+    // Step owns and releases the sensor mutex. Never retain a raw instance or
+    // OneWire pointer across this yielding wait; release/reinit may run here.
+    delay(waitMs);
+    return readDS18B20Step(pin, index, sample, address, generation);
+}
+
+float SensorDriver::readDS18B20Step(uint8_t pin, uint8_t index, FastBee::SensorSampleMetadata* sample,
+    const uint8_t* address, uint64_t expectedGeneration, uint64_t* generation, uint32_t* waitMs) {
+    if (sample) *sample = {};
+    if (generation) *generation = 0;
+    if (waitMs) *waitMs = 0;
 #if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
+    if (index > 15 || (address && !FastBee::validDs18b20Address(address))) return NAN;
     // 运行时功能门控：用户可在 Web UI 禁用 ds18b20
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("ds18b20")) {
         return NAN;
@@ -451,19 +554,25 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
         return NAN;
     }
     auto it = _ds18b20Instances.find(pin);
+    if (expectedGeneration && (it == _ds18b20Instances.end() || it->second.generation != expectedGeneration)) return NAN;
     if (it == _ds18b20Instances.end()) {
         // 惰性初始化
-        OneWire* ow = new OneWire(pin);
-        DallasTemperature* sensors = new DallasTemperature(ow);
+        static uint64_t nextGeneration = 0; // Protected by the sensor mutex; never reused.
+        if (nextGeneration == UINT64_MAX) return NAN;
+        OneWire* ow = new (std::nothrow) OneWire(pin);
+        if (!ow) return NAN;
+        DallasTemperature* sensors = new (std::nothrow) DallasTemperature(ow);
+        if (!sensors) { delete ow; return NAN; }
         sensors->begin();
-        // 设置为 12 位精度（默认），但使用非阻塞模式
-        sensors->setWaitForConversion(true);  // 在异步任务中可以阻塞等待
+        sensors->setWaitForConversion(false);
 
         DS18B20Instance inst;
         inst.oneWire = ow;
         inst.sensors = sensors;
+        inst.generation = ++nextGeneration;
         inst.lastRead = {false, NAN, NAN, 0};
-        _ds18b20Instances[pin] = inst;
+        try { _ds18b20Instances.emplace(pin, inst); }
+        catch (const std::bad_alloc&) { delete sensors; delete ow; return NAN; }
         it = _ds18b20Instances.find(pin);
 
         LOGGER.infof("[SensorDriver] DS18B20 initialized on pin %d, devices=%d",
@@ -471,27 +580,72 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
     }
 
     DS18B20Instance& inst = it->second;
+    if (generation) *generation = inst.generation;
     DallasTemperature* sensors = static_cast<DallasTemperature*>(inst.sensors);
-    unsigned long now = millis();
+    const uint64_t now = sensorSampleNowMs();
+    if (now == UINT64_MAX || ((inst.conversionPending || inst.conversionAvailable) &&
+                             now < inst.conversionStartedAt)) {
+        inst.conversionPending = inst.conversionAvailable = false;
+        inst.lastRead = {false, NAN, NAN, 0};
+        return NAN;
+    }
+    // No OneWire transaction while a conversion may be using parasite power.
+    // Other pins and sensor workers are free to run after this short lock ends.
+    if (inst.conversionPending && now - inst.conversionStartedAt < FastBee::Ds18b20ConversionMs) {
+        if (waitMs) *waitMs = FastBee::Ds18b20ConversionMs - static_cast<uint32_t>(now - inst.conversionStartedAt);
+        const bool same = address ? std::memcmp(address, inst.address, 8) == 0 :
+            !inst.selectedByAddress && index == inst.index;
+        return same && std::isfinite(inst.lastRead.temperature) && now >= inst.lastRead.timestamp &&
+            now - inst.lastRead.timestamp < DHT_STALE_CACHE_WINDOW_MS ?
+            deliverSensorSample(inst.lastRead.temperature, inst.lastRead.timestamp,
+                FastBee::Ds18b20SampleMaxAgeMs, false, sample) : NAN;
+    }
+    if (inst.conversionPending) {
+        inst.conversionPending = false;
+        inst.conversionAvailable = true;
+    }
+    uint8_t selected[8];
+    if (address) std::memcpy(selected, address, 8);
+    else if (!sensors->getAddress(selected, index) || !FastBee::validDs18b20Address(selected)) return NAN;
+    if (std::memcmp(selected, inst.address, 8) != 0) {
+        std::memcpy(inst.address, selected, 8);
+        inst.lastRead = {false, NAN, NAN, 0};
+        inst.nextRetryAt = 0;
+        inst.consecutiveFailures = 0;
+    }
+    inst.index = index;
+    inst.selectedByAddress = address != nullptr;
 
     if (!inst.lastRead.success && retry_pending(now, inst.nextRetryAt)) {
-        if (inst.lastRead.timestamp != 0 &&
+        if (std::isfinite(inst.lastRead.temperature) && now >= inst.lastRead.timestamp &&
             (now - inst.lastRead.timestamp) < DHT_STALE_CACHE_WINDOW_MS) {
-            return inst.lastRead.temperature;
+            return deliverSensorSample(inst.lastRead.temperature, inst.lastRead.timestamp,
+                FastBee::Ds18b20SampleMaxAgeMs, false, sample);
         }
         return NAN;
     }
 
     // 缓存有效性检查
-    if (inst.lastRead.success && (now - inst.lastRead.timestamp) < DS18B20_MIN_INTERVAL) {
-        return inst.lastRead.temperature;
+    if (inst.lastRead.success && (now - inst.lastRead.timestamp) < FastBee::Ds18b20SampleMaxAgeMs) {
+        return deliverSensorSample(inst.lastRead.temperature, inst.lastRead.timestamp,
+            FastBee::Ds18b20SampleMaxAgeMs, true, sample);
     }
 
-    // 发起温度转换并读取
-    sensors->requestTemperatures();
-    float temperature = sensors->getTempCByIndex(index);
+    if (!inst.conversionAvailable) {
+        sensors->requestTemperatures(); // Broadcast lets all bound ROMs share one conversion.
+        if (waitMs) *waitMs = FastBee::Ds18b20ConversionMs;
+        inst.conversionStartedAt = now;
+        inst.conversionPending = true;
+        inst.conversionAvailable = false;
+        return std::isfinite(inst.lastRead.temperature) && now >= inst.lastRead.timestamp &&
+            now - inst.lastRead.timestamp < DHT_STALE_CACHE_WINDOW_MS ?
+            deliverSensorSample(inst.lastRead.temperature, inst.lastRead.timestamp,
+                FastBee::Ds18b20SampleMaxAgeMs, false, sample) : NAN;
+    }
+    float temperature = sensors->getTempC(selected);
 
-    if (temperature == DEVICE_DISCONNECTED_C || temperature == -127.0f) {
+    if (!std::isfinite(temperature) || temperature < -55.0f || temperature > 125.0f) {
+        inst.conversionAvailable = false; // A retry needs a newly requested conversion.
         LOGGER.warningf("[SensorDriver] DS18B20 read failed on pin %d index %d", pin, index);
         const bool hasStaleValue =
             inst.lastRead.success &&
@@ -503,20 +657,32 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
         inst.lastRead.success = false;
         inst.nextRetryAt = static_cast<uint32_t>(now) +
                            failure_backoff_ms(inst.consecutiveFailures);
-        return hasStaleValue ? staleValue : NAN;
+        return hasStaleValue ? deliverSensorSample(staleValue, inst.lastRead.timestamp,
+            FastBee::Ds18b20SampleMaxAgeMs, false, sample) : NAN;
     }
 
     // 更新缓存
     inst.lastRead.success = true;
     inst.lastRead.temperature = temperature;
-    inst.lastRead.timestamp = now;
+    // Conservative timestamp: conversion request, never the later poll time.
+    inst.lastRead.timestamp = inst.conversionStartedAt;
     inst.consecutiveFailures = 0;
     inst.nextRetryAt = 0;
 
     LOGGER.debugf("[SensorDriver] DS18B20 pin=%d idx=%d temp=%.2f", pin, index, temperature);
-    return temperature;
+    // Late polls consume the completed conversion with its original age, then
+    // start the next one. A slow rule can never make old data look fresh.
+    if (now - inst.conversionStartedAt >= FastBee::Ds18b20SampleMaxAgeMs) {
+        sensors->requestTemperatures();
+        if (waitMs) *waitMs = FastBee::Ds18b20ConversionMs;
+        inst.conversionStartedAt = now;
+        inst.conversionPending = true;
+        inst.conversionAvailable = false;
+    }
+    return now - inst.lastRead.timestamp < DHT_STALE_CACHE_WINDOW_MS ?
+        deliverSensorSample(temperature, inst.lastRead.timestamp, FastBee::Ds18b20SampleMaxAgeMs, true, sample) : NAN;
 #else
-    (void)pin; (void)index;
+    (void)pin; (void)index; (void)address; (void)expectedGeneration;
     LOGGER.warning("[SensorDriver] DS18B20 not available (FASTBEE_ENABLE_DS18B20=0)");
     return NAN;
 #endif
@@ -524,7 +690,8 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
 
 // ========== 超声波测距 (HC-SR04) ==========
 
-float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
+float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin, FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
     // 引脚有效性预检
     if (!sensor_pin_valid(trigPin) || !sensor_pin_valid(echoPin)) {
         static unsigned long s_lastWarn = 0;
@@ -548,6 +715,10 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
 
     // 查找或创建实例
     auto it = _ultrasonicInstances.find(trigPin);
+    if (it != _ultrasonicInstances.end() && it->second.echoPin != echoPin) {
+        _ultrasonicInstances.erase(it);
+        it = _ultrasonicInstances.end();
+    }
     if (it == _ultrasonicInstances.end()) {
         // 惰性初始化
         pinMode(trigPin, OUTPUT);
@@ -567,11 +738,11 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
     }
 
     UltrasonicInstance& inst = it->second;
-    unsigned long now = millis();
+    const uint64_t now = sensorSampleNowMs();
 
     // 缓存有效性检查
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < ULTRASONIC_MIN_INTERVAL) {
-        return inst.lastRead.value;
+        return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ULTRASONIC_MIN_INTERVAL, true, sample);
     }
 
     // 发送 10us 触发脉冲
@@ -588,7 +759,7 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
         LOGGER.warningf("[SensorDriver] Ultrasonic timeout on trig=%d", trigPin);
         // 返回旧缓存（10s 内有效）
         if (inst.lastRead.success && (now - inst.lastRead.timestamp) < 10000) {
-            return inst.lastRead.value;
+            return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ULTRASONIC_MIN_INTERVAL, false, sample);
         }
         inst.lastRead.success = false;
         return NAN;
@@ -601,7 +772,7 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
     if (distance < 2.0f || distance > 400.0f) {
         LOGGER.warningf("[SensorDriver] Ultrasonic out of range: %.1f cm", distance);
         if (inst.lastRead.success && (now - inst.lastRead.timestamp) < 10000) {
-            return inst.lastRead.value;
+            return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ULTRASONIC_MIN_INTERVAL, false, sample);
         }
         inst.lastRead.success = false;
         return NAN;
@@ -613,12 +784,17 @@ float SensorDriver::readUltrasonic(uint8_t trigPin, uint8_t echoPin) {
     inst.lastRead.timestamp = now;
 
     LOGGER.debugf("[SensorDriver] Ultrasonic trig=%d dist=%.1f cm", trigPin, distance);
-    return distance;
+    return deliverSensorSample(distance, inst.lastRead.timestamp, ULTRASONIC_MIN_INTERVAL, true, sample);
 }
 
 // ========== 电流传感器 (ACS712 等) ==========
 
-float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
+float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal, FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
+    LegacyAdcPinGuard pinGuard(pin);
+    if (!pinGuard.acquired) return NAN;
+    SensorBusLock busLock;
+    if (!busLock.acquired) return NAN;
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
         unsigned long now = millis();
@@ -633,11 +809,9 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
     auto it = _adcSensorInstances.find(pin);
     if (it == _adcSensorInstances.end()) {
         // 惰性初始化：配置 ADC 引脚
-        analogReadResolution(12);  // 12-bit
-        analogSetAttenuation(ADC_11db);  // 0~3.3V 范围
 
         ADCSensorInstance inst;
-        inst.initialized = true;
+        inst.initialized = false;
         inst.type = SensorDriverType::CURRENT;
         inst.cal = cal;
         inst.lastRead = {false, NAN, 0};
@@ -663,20 +837,24 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
         inst.lastRead = {false, NAN, millis()};
         return NAN;
     }
-    unsigned long now = millis();
+    const uint64_t now = sensorSampleNowMs();
 
     // 缓存有效性检查
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
-        return inst.lastRead.value;
+        return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
     }
 
     // 多次采样平均（减少噪声）
     const int SAMPLES = 10;
-    long adcSum = 0;
-    for (int i = 0; i < SAMPLES; i++) {
-        adcSum += analogRead(pin);
-        delayMicroseconds(100);
+    uint16_t rawSamples[SAMPLES]{};
+    if (!readLegacyAdcSamples(pin, rawSamples, SAMPLES)) {
+        inst.initialized = false;
+        inst.lastRead = {false, NAN, now};
+        return NAN;
     }
+    inst.initialized = true;
+    long adcSum = 0;
+    for (int i = 0; i < SAMPLES; ++i) adcSum += rawSamples[i];
     float adcAvg = (float)adcSum / SAMPLES;
 
     // ADC 值转电压
@@ -692,12 +870,17 @@ float SensorDriver::readCurrent(uint8_t pin, const ADCSensorCalibration& cal) {
     inst.lastRead.timestamp = now;
 
     LOGGER.debugf("[SensorDriver] Current pin=%d adc=%.0f V=%.3f I=%.3fA", pin, adcAvg, voltage, current);
-    return current;
+    return deliverSensorSample(current, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
 }
 
 // ========== 4-20 mA current loop (shunt resistor) ==========
 
-float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& cal) {
+float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& cal, FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
+    LegacyAdcPinGuard pinGuard(pin);
+    if (!pinGuard.acquired) return NAN;
+    SensorBusLock busLock;
+    if (!busLock.acquired) return NAN;
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
         const unsigned long now = millis();
@@ -722,11 +905,9 @@ float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& c
 
     auto it = _adcSensorInstances.find(pin);
     if (it == _adcSensorInstances.end()) {
-        analogReadResolution(12);
-        analogSetAttenuation(ADC_11db);
 
         ADCSensorInstance inst;
-        inst.initialized = true;
+        inst.initialized = false;
         inst.type = SensorDriverType::CURRENT_LOOP;
         inst.cal = ADCSensorCalibration();
         inst.loopCal = cal;
@@ -745,20 +926,24 @@ float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& c
         inst.lastRead = {false, NAN, 0};
     }
 
-    const unsigned long now = millis();
+    const uint64_t now = sensorSampleNowMs();
     if (inst.lastRead.success &&
         (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
-        return inst.lastRead.value;
+        return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
     }
 
     uint8_t sampleCount = cal.sampleCount;
     if (sampleCount == 0) sampleCount = 1;
     if (sampleCount > 32) sampleCount = 32;
-    uint32_t adcSum = 0;
-    for (uint8_t i = 0; i < sampleCount; ++i) {
-        adcSum += static_cast<uint32_t>(analogRead(pin));
-        delayMicroseconds(100);
+    uint16_t rawSamples[32]{};
+    if (!readLegacyAdcSamples(pin, rawSamples, sampleCount)) {
+        inst.initialized = false;
+        inst.lastRead = {false, NAN, now};
+        return NAN;
     }
+    inst.initialized = true;
+    uint32_t adcSum = 0;
+    for (uint8_t i = 0; i < sampleCount; ++i) adcSum += rawSamples[i];
 
     const float adcAvg = static_cast<float>(adcSum) / static_cast<float>(sampleCount);
     const float measuredVoltage = adcAvg * cal.vRef / static_cast<float>(cal.adcMax);
@@ -791,12 +976,17 @@ float SensorDriver::readCurrentLoop(uint8_t pin, const CurrentLoopCalibration& c
     inst.lastRead = {true, value, now};
     LOGGER.debugf("[SensorDriver] 4-20mA pin=%d adc=%.0f V=%.3f I=%.3f mA value=%.3f",
                   pin, adcAvg, measuredVoltage, currentMa, value);
-    return value;
+    return deliverSensorSample(value, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
 }
 
 // ========== 电压传感器 (分压器 ADC) ==========
 
-float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal) {
+float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal, FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
+    LegacyAdcPinGuard pinGuard(pin);
+    if (!pinGuard.acquired) return NAN;
+    SensorBusLock busLock;
+    if (!busLock.acquired) return NAN;
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
         unsigned long now = millis();
@@ -810,11 +1000,9 @@ float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal) {
     // 查找或创建实例
     auto it = _adcSensorInstances.find(pin);
     if (it == _adcSensorInstances.end()) {
-        analogReadResolution(12);
-        analogSetAttenuation(ADC_11db);
 
         ADCSensorInstance inst;
-        inst.initialized = true;
+        inst.initialized = false;
         inst.type = SensorDriverType::VOLTAGE;
         inst.cal = cal;
         inst.lastRead = {false, NAN, 0};
@@ -826,20 +1014,30 @@ float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal) {
     }
 
     ADCSensorInstance& inst = it->second;
-    unsigned long now = millis();
+    if (inst.type != SensorDriverType::VOLTAGE || !adc_calibration_equal(inst.cal, cal)) {
+        inst.type = SensorDriverType::VOLTAGE;
+        inst.cal = cal;
+        inst.lastRead = {false, NAN, 0};
+    }
+    if (!finite_positive(cal.vRef) || !finite_positive(cal.ratio) || !cal.adcMax) return NAN;
+    const uint64_t now = sensorSampleNowMs();
 
     // 缓存有效性检查
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
-        return inst.lastRead.value;
+        return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
     }
 
     // 多次采样平均
     const int SAMPLES = 10;
-    long adcSum = 0;
-    for (int i = 0; i < SAMPLES; i++) {
-        adcSum += analogRead(pin);
-        delayMicroseconds(100);
+    uint16_t rawSamples[SAMPLES]{};
+    if (!readLegacyAdcSamples(pin, rawSamples, SAMPLES)) {
+        inst.initialized = false;
+        inst.lastRead = {false, NAN, now};
+        return NAN;
     }
+    inst.initialized = true;
+    long adcSum = 0;
+    for (int i = 0; i < SAMPLES; ++i) adcSum += rawSamples[i];
     float adcAvg = (float)adcSum / SAMPLES;
 
     // ADC 值转电压（ADC 测量的是分压后的电压）
@@ -855,12 +1053,17 @@ float SensorDriver::readVoltage(uint8_t pin, const ADCSensorCalibration& cal) {
 
     LOGGER.debugf("[SensorDriver] Voltage pin=%d adc=%.0f measV=%.3f actualV=%.2fV",
                  pin, adcAvg, measuredVoltage, actualVoltage);
-    return actualVoltage;
+    return deliverSensorSample(actualVoltage, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
 }
 
 // ========== NTC 热敏电阻 (分压器 + B 参数法) ==========
 
-float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal) {
+float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal, FastBee::SensorSampleMetadata* sample) {
+    if (sample) *sample = {};
+    LegacyAdcPinGuard pinGuard(pin);
+    if (!pinGuard.acquired) return NAN;
+    SensorBusLock busLock;
+    if (!busLock.acquired) return NAN;
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
         unsigned long now = millis();
@@ -874,11 +1077,9 @@ float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal) {
     // 查找或创建实例
     auto it = _ntcInstances.find(pin);
     if (it == _ntcInstances.end()) {
-        analogReadResolution(12);
-        analogSetAttenuation(ADC_11db);
 
         NTCSensorInstance inst;
-        inst.initialized = true;
+        inst.initialized = false;
         inst.cal = cal;
         inst.lastRead = {false, NAN, 0};
         _ntcInstances[pin] = inst;
@@ -889,20 +1090,32 @@ float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal) {
     }
 
     NTCSensorInstance& inst = it->second;
-    unsigned long now = millis();
+    if (inst.cal.seriesResistor != cal.seriesResistor || inst.cal.nominalResistance != cal.nominalResistance ||
+        inst.cal.nominalTempC != cal.nominalTempC || inst.cal.bCoefficient != cal.bCoefficient ||
+        inst.cal.vRef != cal.vRef || inst.cal.adcMax != cal.adcMax) {
+        inst.cal = cal;
+        inst.lastRead = {false, NAN, 0};
+    }
+    if (!finite_positive(cal.seriesResistor) || !finite_positive(cal.nominalResistance) ||
+        !finite_positive(cal.bCoefficient) || !finite_positive(cal.vRef) ||
+        !finite_positive(cal.nominalTempC + 273.15f) || !cal.adcMax) return NAN;
+    const uint64_t now = sensorSampleNowMs();
 
     // 缓存有效性检查
     if (inst.lastRead.success && (now - inst.lastRead.timestamp) < ADC_SENSOR_MIN_INTERVAL) {
-        return inst.lastRead.value;
+        return deliverSensorSample(inst.lastRead.value, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
     }
 
     // 多次采样中值滤波（NTC 对脉冲噪声敏感，中值更稳健）
     const int SAMPLES = 10;
-    int samples[SAMPLES];
-    for (int i = 0; i < SAMPLES; i++) {
-        samples[i] = analogRead(pin);
-        delayMicroseconds(100);
+    uint16_t samples[SAMPLES]{};
+    if (!readLegacyAdcSamples(pin, samples, SAMPLES)) {
+        inst.initialized = false;
+        inst.lastRead = {false, NAN, now};
+        return NAN;
     }
+    inst.initialized = true;
+
     // 简单插入排序后取中值
     for (int i = 1; i < SAMPLES; i++) {
         int key = samples[i];
@@ -941,12 +1154,14 @@ float SensorDriver::readNTC(uint8_t pin, const NTCSensorCalibration& cal) {
     inst.lastRead.timestamp = now;
 
     LOGGER.debugf("[SensorDriver] NTC pin=%d adc=%.0f R=%.0f T=%.2fC", pin, adcVal, rNtc, tempC);
-    return tempC;
+    return deliverSensorSample(tempC, inst.lastRead.timestamp, ADC_SENSOR_MIN_INTERVAL, true, sample);
 }
 
 // ========== 资源释放 ==========
 
 void SensorDriver::release(uint8_t pin) {
+    SensorBusLock busLock;
+    if (!busLock.acquired) return;
     // 释放 DHT
     auto dhtIt = _dhtInstances.find(pin);
     if (dhtIt != _dhtInstances.end()) {
@@ -971,6 +1186,8 @@ void SensorDriver::release(uint8_t pin) {
 }
 
 void SensorDriver::releaseAll() {
+    SensorBusLock busLock;
+    if (!busLock.acquired) return;
     for (auto& pair : _dhtInstances) {
         delete static_cast<DHT*>(pair.second.dht);
     }

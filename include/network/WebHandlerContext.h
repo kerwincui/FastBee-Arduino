@@ -77,6 +77,20 @@ public:
     int    getParamInt(AsyncWebServerRequest* request, const String& paramName,
                        int defaultValue = 0);
 
+
+    // Keep literal-to-String construction in one shared bridge. Mixed calls
+    // retain the original String overload and its parsing/error behavior.
+    String getParamValue(AsyncWebServerRequest* request, const char* paramName,
+                         const char* defaultValue = "");
+    String getParamValue(AsyncWebServerRequest* request, const char* paramName,
+                         const String& defaultValue);
+    String getParamValue(AsyncWebServerRequest* request, const String& paramName,
+                         const char* defaultValue);
+    bool   getParamBool(AsyncWebServerRequest* request, const char* paramName,
+                        bool defaultValue = false);
+    int    getParamInt(AsyncWebServerRequest* request, const char* paramName,
+                       int defaultValue = 0);
+
     // ============ 认证辅助方法 ============
     bool       requiresAuth(AsyncWebServerRequest* request);
     AuthResult authenticateRequest(AsyncWebServerRequest* request);
@@ -92,12 +106,15 @@ public:
     void sendJsonResponse(AsyncWebServerRequest* request, int code,
                           const JsonDocument& doc);
     void sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data);
-    void sendSuccess(AsyncWebServerRequest* request, const String& message = "");
+    void sendSuccess(AsyncWebServerRequest* request, const String& message);
+    void sendSuccess(AsyncWebServerRequest* request, const char* message = "");
     void sendError(AsyncWebServerRequest* request, int code, const String& message);
+    void sendError(AsyncWebServerRequest* request, int code, const char* message);
     void sendUnauthorized(AsyncWebServerRequest* request);
     void sendForbidden(AsyncWebServerRequest* request);
     void sendNotFound(AsyncWebServerRequest* request);
     void sendBadRequest(AsyncWebServerRequest* request, const String& message);
+    void sendBadRequest(AsyncWebServerRequest* request, const char* message);
 
     // ============ 内置页面 ============
     void sendBuiltinSetupPage(AsyncWebServerRequest* request);

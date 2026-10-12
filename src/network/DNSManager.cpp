@@ -18,7 +18,63 @@
 
 #if FASTBEE_ENABLE_MDNS
 
+#include <freertos/semphr.h>
+
+namespace {
+// MDNS is one SDK-global backend. Protect all of its owner fields and SDK
+// mutations with one process-lifetime recursive mutex, including replacement
+// DNSManager objects. Readers never hold a pointer to a destructible owner.
+std::atomic<SemaphoreHandle_t> mdnsLifecycleMutex{nullptr};
+bool mdnsBackendRunning = false;
+uint32_t mdnsMutationDepth = 0;
+
+SemaphoreHandle_t ensureMdnsLifecycleMutex() {
+    auto mutex = mdnsLifecycleMutex.load(std::memory_order_acquire);
+    if (mutex) return mutex;
+    const auto created = xSemaphoreCreateRecursiveMutex();
+    if (!created) return nullptr;
+    if (mdnsLifecycleMutex.compare_exchange_strong(mutex, created,
+            std::memory_order_acq_rel, std::memory_order_acquire)) return created;
+    vSemaphoreDelete(created);
+    return mutex;
+}
+
+class MdnsLifecycleGuard {
+public:
+    MdnsLifecycleGuard() : mutex_(ensureMdnsLifecycleMutex()),
+        locked_(mutex_ && xSemaphoreTakeRecursive(mutex_, portMAX_DELAY) == pdTRUE) {
+        if (locked_) ++mdnsMutationDepth;
+    }
+    ~MdnsLifecycleGuard() {
+        if (locked_) { --mdnsMutationDepth; xSemaphoreGiveRecursive(mutex_); }
+    }
+    bool locked() const { return locked_; }
+    MdnsLifecycleGuard(const MdnsLifecycleGuard&) = delete;
+    MdnsLifecycleGuard& operator=(const MdnsLifecycleGuard&) = delete;
+private:
+    SemaphoreHandle_t mutex_;
+    bool locked_;
+};
+}
+
+FastBee::FeatureInstanceSnapshot DNSManager::observeFeatureInstance(const void*) {
+    using namespace FastBee;
+    const auto mutex = mdnsLifecycleMutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(FeatureInstanceReason::SynchronizationUnavailable,
+        FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTakeRecursive(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    const auto state = mdnsMutationDepth ? FeatureInstanceState::Busy :
+        (mdnsBackendRunning ? FeatureInstanceState::Running : FeatureInstanceState::Stopped);
+    xSemaphoreGiveRecursive(mutex);
+    return FeatureInstanceSnapshot::lifecycle(state);
+}
+
 DNSManager::DNSManager() {
+    ensureMdnsLifecycleMutex();
+    static const FastBee::FeatureInstanceObserver observer{
+        "mdns", &DNSManager::observeFeatureInstance, nullptr};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
 }
 
 DNSManager::~DNSManager() {
@@ -26,13 +82,17 @@ DNSManager::~DNSManager() {
 }
 
 bool DNSManager::initialize() {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return false;
     LOG_INFO("DNSManager: Initializing...");
-    mdnsStarted = false;
+    // Do not forget an already started backend on repeated initialization.
     LOG_INFO("DNSManager: Initialized successfully");
     return true;
 }
 
 bool DNSManager::startMDNS(const String& hostname) {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return false;
     // 如果已经启动，先检查是否仍然有效
     if (mdnsStarted) {
         // 在AP+STA模式下，只要任一接口可用就保持服务
@@ -123,6 +183,7 @@ bool DNSManager::startMDNS(const String& hostname) {
         LOG_INFOF("DNSManager: Starting mDNS with hostname '%s.local'...", tryHostname.c_str());
         
         if (MDNS.begin(tryHostname.c_str())) {
+            mdnsBackendRunning = true;
             actualHostname = tryHostname;
             MDNS.setInstanceName(tryHostname.c_str());
             
@@ -148,8 +209,11 @@ bool DNSManager::startMDNS(const String& hostname) {
 }
 
 void DNSManager::stopMDNS() {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return;
     if (mdnsStarted) {
         MDNS.end();
+        mdnsBackendRunning = false;
         mdnsStarted = false;
         LOG_INFO("DNSManager: mDNS stopped");
     }
@@ -158,10 +222,14 @@ void DNSManager::stopMDNS() {
 
 
 bool DNSManager::isMDNSStarted() const {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return false;
     return mdnsStarted;
 }
 
 void DNSManager::setCustomDomain(const String& domain) {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return;
     if (customDomain != domain) {
         customDomain = domain;
         // 如果 mDNS 正在运行且 hostname 变化，立即重启以应用新域名
@@ -173,10 +241,14 @@ void DNSManager::setCustomDomain(const String& domain) {
 }
 
 String DNSManager::getCustomDomain() const {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return String();
     return customDomain;
 }
 
 void DNSManager::setMDNSEnabled(bool enabled) {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return;
     mdnsEnabled = enabled;
     if (!enabled && mdnsStarted) {
         stopMDNS();
@@ -184,6 +256,8 @@ void DNSManager::setMDNSEnabled(bool enabled) {
 }
 
 bool DNSManager::checkMDNSHealth() {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return false;
     // 检查mDNS服务是否仍然有效
     if (!mdnsStarted) {
         // mDNS未启动，检查是否应该启动
@@ -282,6 +356,8 @@ bool DNSManager::checkMDNSHealth() {
 }
 
 void DNSManager::restartMDNS(const String& hostname) {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return;
     LOG_INFO("DNSManager: Restarting mDNS service...");
     stopMDNS();
     delay(100);  // 短暂延迟确保资源释放
@@ -289,6 +365,8 @@ void DNSManager::restartMDNS(const String& hostname) {
 }
 
 String DNSManager::getActualHostname() const {
+    MdnsLifecycleGuard guard;
+    if (!guard.locked()) return String();
     return actualHostname;
 }
 

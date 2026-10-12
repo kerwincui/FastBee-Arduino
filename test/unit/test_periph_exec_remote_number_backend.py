@@ -13,7 +13,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANAGER = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
-    "src/core/PeriphExecManager.cpp", "src/core/PeriphExecRuleQueries.cpp", "include/core/PeriphExecRemoteBindings.h"))
+    "src/core/PeriphExecManager.cpp", "src/core/PeriphExecConfigStore.cpp",
+    "src/core/PeriphExecRuleQueries.cpp", "include/core/PeriphExecRemoteBindings.h"))
 ROUTE = (
     ROOT / "src/network/handlers/PeriphExecRouteHandler.cpp"
 ).read_text(encoding="utf-8")
@@ -114,7 +115,8 @@ int main() {
                        "bool PeriphExecManager::dispatchAsync("):
             self.assertIn("hasRetiredRemoteSource(trigger)", braced_function(MANAGER,marker))
         dispatch=braced_function(MANAGER,"bool PeriphExecManager::dispatchAsync(")
-        self.assertLess(dispatch.index("hasRetiredRemoteSource(trigger)"),dispatch.index("shouldAvoidSyncFallback(rule)"))
+        self.assertLess(dispatch.index("hasRetiredRemoteSource(trigger)"),dispatch.index("ruleRequiresWorkerPool(rule)"))
+        self.assertLess(dispatch.index("hasRetiredRemoteSource(trigger)"),dispatch.index("ensureWorkerPoolForRule(rule)"))
 
     def test_retired_actions_are_rejected_before_normal_admission(self):
         validation = source_between(MANAGER,

@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { safeObservationError, safeObservationEvents, safeObservationCaptureStats } from '../../scripts/lib/safe-observer-error.mjs';
 import { isReadOnlyBatch, isReadOnlyMotorStatus } from '../../scripts/lib/read-only-device-requests.mjs';
 import { waitForMainShellStyles } from '../../scripts/lib/browser-main-style-check.mjs';
 
@@ -90,7 +91,7 @@ function loadDeviceConfig(configPath) {
     const text = fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '');
     parsed = JSON.parse(text);
   } catch (error) {
-    throw new Error(`unable to read device config ${configPath}: ${error.message}`);
+    throw new Error(`unable to read device config ${configPath}: ${safeObservationError(error, 'input')}`);
   }
 
   const entries = Array.isArray(parsed) ? parsed : parsed?.devices;
@@ -445,7 +446,7 @@ async function timedFetch(url, timeoutMs = 10_000, { requireJson = false } = {})
     }
     return result;
   } catch (e) {
-    return { ok: false, status: 0, rtt: Date.now() - t0, error: String(e?.cause?.code || e?.message || e) };
+    return { ok: false, status: 0, rtt: Date.now() - t0, error: safeObservationError(e, 'probe') };
   }
 }
 
@@ -591,9 +592,9 @@ async function browserRound(
   });
   page.on('request', req => requestGenerations.set(req, pageGeneration));
   page.on('console', m => {
-    if (m.type() === 'error') round.consoleErrors.push(m.text().slice(0, 300));
+    if (m.type() === 'error') round.consoleErrors.push(safeObservationError(m.text(), 'console'));
   });
-  page.on('pageerror', e => round.pageErrors.push(String(e).slice(0, 300)));
+  page.on('pageerror', e => round.pageErrors.push(safeObservationError(e, 'pageerror')));
   page.on('requestfailed', req => {
     if (closing) return;
     const url = req.url();
@@ -613,7 +614,7 @@ async function browserRound(
       round.ignoredNavigationAborts++;
       return;
     }
-    if (!url.includes('favicon')) round.httpErrors.push(`failed ${req.method()} ${url.slice(0, 120)} ${failure}`);
+    if (!url.includes('favicon')) round.httpErrors.push(safeObservationError(`failed ${req.method()} ${url} ${failure}`, 'request'));
   });
   page.on('response', resp => {
     const expectedSessionProbe = !authenticated && resp.status() === 401 &&
@@ -715,10 +716,10 @@ async function browserRound(
       };
     } catch (error) {
       const styleFailure = {
-        error: String(error?.message || error).slice(0, 1000),
-        issues: Array.isArray(error?.issues) ? error.issues.slice(0, 20) : [],
-        ruleCount: error?.evidence?.ruleCount ?? null,
-        href: error?.evidence?.href || '',
+        error: safeObservationError(error, 'browser'),
+        issues: Array.isArray(error?.issues)
+          ? error.issues.slice(0, 20).map(issue => safeObservationError(issue, 'browser')) : [],
+        ruleCount: Number.isFinite(error?.evidence?.ruleCount) ? error.evidence.ruleCount : null,
       };
       round.mainShellStyle = { ok: false, ...styleFailure };
       round.mainShellStyleFailures.push(styleFailure);
@@ -760,7 +761,7 @@ async function browserRound(
         }, `#${p}-page`, { timeout: 20_000 });
         m.ok = true;
       } catch (e) {
-        m.error = String(e?.message || e).split('\n')[0].slice(0, 200);
+        m.error = safeObservationError(e, 'menu');
       }
       m.ms = Date.now() - t1;
       round.menus.push(m);
@@ -780,7 +781,7 @@ async function browserRound(
     navigationAbortUntil = Date.now() + NAVIGATION_ABORT_WINDOW_MS;
     await page.click('.menu-item[data-page="dashboard"]', { timeout: 10_000 }).catch(() => {});
   } catch (e) {
-    round.login.error = String(e?.message || e).split('\n')[0].slice(0, 300);
+    round.login.error = safeObservationError(e, 'login');
   } finally {
     closing = true;
     await page.close().catch(() => {});
@@ -952,7 +953,7 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
               if (cycleTimedOut) break;
             }
           } catch (e) {
-            rec.error = String(e?.message || e).slice(0, 300);
+            rec.error = safeObservationError(e, 'browser');
             await dropContext();
             log(`${dev.label} #${cycle} 浏览器轮异常: ${rec.error}`);
             break;
@@ -1006,7 +1007,7 @@ async function monitorDevice(dev, browserHolder, stopFlag) {
         }, OPTS.cycleTimeout);
       })]);
     } catch (e) {
-      rec.error = rec.error || `watchdog: ${e.message}`;
+      rec.error = rec.error || safeObservationError(e, 'watchdog');
       await dropContext();
       await runOnce.catch(() => {});
       log(`${dev.label} #${cycle} 周期超时/异常: ${rec.error}`);
@@ -1078,6 +1079,8 @@ function generateReport(extraReasons = []) {
   L.push(`- **内存风险线**：freeHeap < ${RISK_GUARD_TRIGGER}B 触发 WebGuard 503；< ${RISK_GUARD_RECOVERY}B 无法恢复；< ${RISK_WATCH}B 为观察线`);
   L.push('- **重启检测**：uptime 回退即记一次重启事件');
   L.push('');
+  fs.writeFileSync(path.join(OUT_DIR, 'observer-error-disposition.json'),
+    JSON.stringify({ safeObservationEvents, safeObservationCaptureStats }, null, 2), 'utf8');
   fs.writeFileSync(REPORT_PATH, L.join('\n'), 'utf8');
   fs.writeFileSync(path.join(OUT_DIR, 'fleet-stability-verdict.json'), JSON.stringify(verdict, null, 2), 'utf8');
   return { reportPath: REPORT_PATH, verdict };
@@ -1432,7 +1435,7 @@ function renderDeviceSection(dev, s) {
 export function collectWorkerErrors(workerResults, devices) {
   return workerResults
     .map((result, index) => result?.status === 'rejected'
-      ? `${devices[index]?.label || `device-${index + 1}`}: worker ${String(result.reason?.message || result.reason)}`
+      ? `${devices[index]?.label || `device-${index + 1}`}: worker ${safeObservationError(result.reason, 'worker')}`
       : null)
     .filter(Boolean);
 }
@@ -1492,7 +1495,7 @@ async function main() {
 
   // 报告周期生成器
   const reportTimer = setInterval(() => {
-    try { generateReport(); log('📄 定期报告已更新'); } catch (e) { log(`报告生成失败: ${e.message}`); }
+    try { generateReport(); log('📄 定期报告已更新'); } catch (e) { log(`报告生成失败: ${safeObservationError(e, 'report')}`); }
   }, OPTS.interval * OPTS.reportEvery * 1000);
 
   // 各设备错峰启动（30s 间隔，避免同时冲击各自设备的 Web 服务）
@@ -1515,7 +1518,7 @@ const isMainModule = process.argv[1] &&
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMainModule) {
   main().catch(e => {
-    console.error('监测器致命错误:', e);
+    console.error('监测器致命错误:', safeObservationError(e, 'fatal'));
     try { generateReport(); } catch {}
     process.exit(1);
   });

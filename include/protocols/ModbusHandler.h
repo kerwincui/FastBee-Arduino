@@ -10,9 +10,14 @@
 #include <core/SystemConstants.h>
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include "core/FeatureOwnerLifetime.h"
 #include "protocols/MotorProtocol.h"
+#include "protocols/MotorTravelDraft.h"
 #include "protocols/ModbusReadDiagnostics.h"
+#include "protocols/ModbusRegisterMapping.h"
 #include "core/MotorTravelInterlock.h"
+#include "core/UartPortLease.h"
+#include "core/ModbusOrdinaryControl.h"
 
 // Modbus异常码
 enum ModbusException : uint8_t {
@@ -30,16 +35,29 @@ enum OneShotError : uint8_t {
     ONESHOT_EXCEPTION        = 3,   // 从站返回异常响应
     ONESHOT_NOT_INITIALIZED  = 4,   // Modbus未初始化
     ONESHOT_BUSY             = 5,   // 正在执行另一次读取
-    ONESHOT_TRAVEL_BLOCKED   = 6
+    ONESHOT_TRAVEL_BLOCKED   = 6,
+    ONESHOT_CONTROL_REJECTED = 7
 };
 
 // 一次性读取结果
+// Runtime-only receipt. Issued under the real bus semaphore after an exact
+// FC05/FC06 echo; a copied/late receipt cannot arm a new delayed command.
+struct ModbusDelayReceipt {
+    uint32_t instance = 0, configuration = 0;
+    uint64_t writeSequence = 0;
+    uint8_t slave = 0, function = 0;
+    uint16_t address = 0;
+};
+
 struct OneShotResult {
     OneShotError error;
     uint16_t data[Protocols::MODBUS_ONESHOT_BUFFER_SIZE]; // 原始寄存器数据
     uint16_t count;          // 实际读取的寄存器数量
     uint8_t exceptionCode;   // error==ONESHOT_EXCEPTION时有效
     const char* travelError = nullptr;
+    ModbusDelayReceipt delayReceipt;
+    bool outputAttempted = false;
+    const char* controlReason = nullptr;
 
     OneShotResult() : error(ONESHOT_NOT_INITIALIZED), count(0), exceptionCode(0) {
         memset(data, 0, sizeof(data));
@@ -50,22 +68,6 @@ struct OneShotResult {
 enum ModbusMode : uint8_t {
     MODBUS_SLAVE  = 0,   // 从站模式（被动响应）
     MODBUS_MASTER = 1    // 主站模式（主动轮询）
-};
-
-// 寄存器映射定义（将原始寄存器值转换为传感器数据）
-struct RegisterMapping {
-    uint8_t  regOffset;      // 寄存器偏移量（相对于PollTask.startAddress）
-    uint8_t  dataType;       // 数据类型: 0=uint16, 1=int16, 2=uint32, 3=int32, 4=float32
-    float    scaleFactor;    // 缩放因子（原始值 * scaleFactor = 最终值）
-    uint8_t  decimalPlaces;  // 小数位数（JSON格式化用）
-    char     sensorId[Protocols::MODBUS_SENSOR_ID_MAX_LEN]; // 传感器标识符
-    char     unit[8];        // 显示单位（如 °C, %RH, ppm, dB, kPa, Lux, V, A 等）
-
-    RegisterMapping()
-        : regOffset(0), dataType(0), scaleFactor(1.0f), decimalPlaces(1) {
-        memset(sensorId, 0, sizeof(sensorId));
-        memset(unit, 0, sizeof(unit));
-    }
 };
 
 // 轮询任务定义（由 PeriphExec POLL_TRIGGER 调度执行）
@@ -116,14 +118,22 @@ struct PollTask {
 
 // 线圈延时任务（通用：到期后将指定线圈写为目标值）
 struct CoilDelayTask {
-    uint8_t  slaveAddress;
-    uint16_t coilAddress;
-    unsigned long triggerTime;  // millis() 到期时间
-    bool active;
-    bool coilValue;             // 到期后写入的值（NO模式=false断开, NC模式=true断开）
-    bool isRegisterMode;        // true=使用writeRegisterOnce, false=使用writeCoilOnce
+    enum class Phase : uint8_t { Empty, Pending, Acknowledged, ResultUnknown, Retired };
+    ModbusDelayReceipt receipt;
+    uint64_t operation = 0, dueMs = 0;
+    Phase phase = Phase::Empty;
+    bool coilValue = false, attempted = false;
+    OneShotError error = ONESHOT_NOT_INITIALIZED;
+    uint8_t exceptionCode = 0;
+    const char* reason = "EMPTY";
+};
 
-    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false), coilValue(false), isRegisterMode(false) {}
+struct OrdinaryCoilDelayTask : CoilDelayTask {
+    FastBee::ModbusControlTarget target;
+    FastBee::OrdinaryControlContext context;
+    uint64_t workGeneration=0;
+    uint32_t hardwareWindowMs=0;
+    bool running=false, hardwareOnly=false;
 };
 
 // Modbus 子设备（控制类设备：继电器/PWM/PID）
@@ -151,6 +161,7 @@ struct ModbusSubDevice {
     // Motor 扩展（电机控制器：步进/伺服通用）
     uint16_t motorRegs[5];      // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
     MotorProtocol motorProtocol;
+    MotorTravelDraft motorTravelDraft;
     uint8_t  motorDecimals;     // 电机参数小数位(速度/脉冲缩放)
     int32_t  motorMinPosition;  // 软限位最小位置（步数）
     int32_t  motorMaxPosition;  // 软限位最大位置（步数，> min 时启用）
@@ -424,16 +435,60 @@ public:
     // Strings. Never expose a reference that another transaction can reallocate.
     bool getDebugSnapshot(String& tx, String& rx);
 
+    bool addOrdinaryCoilDelayTask(uint8_t slave,uint16_t address,unsigned long delayMs,
+        bool value,bool registerMode,const ModbusDelayReceipt& receipt,
+        const FastBee::OrdinaryControlContext& context,uint64_t* operationId=nullptr);
+    bool retainOrdinaryHardwareDelay(uint8_t slave,unsigned long delayMs,
+        const ModbusDelayReceipt& receipt,const FastBee::OrdinaryControlContext& context,
+        uint64_t* operationId=nullptr);
+private:
+    // Receipt-only primitives are private; public control must supply its source.
     // 线圈延时任务管理（到期后自动将线圈写为目标值，支持 NC 模式反转）
     bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue = false);
     bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue, bool isRegisterMode);
+    bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs,
+        bool coilValue, bool isRegisterMode, const ModbusDelayReceipt& receipt,
+        uint64_t* operationId = nullptr);
+public:
+    bool getCoilDelayStatus(JsonObject output);
     
     // RAW模式辅助：将寄存器数据重构为Modbus响应帧的十六进制字符串
     String formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count);
 
 private:
+    // Ordinary writes are synchronous; the caller retains its ProtocolManager
+    // handler lease from snapshot through PM terminal acknowledgement.
+public:
+    bool snapshotOrdinaryFrame(const FastBee::ModbusOutputFrame& frame,
+        FastBee::ModbusControlTarget& target);
+    OneShotResult writeOrdinaryFrameOnce(const FastBee::ModbusControlTarget& target,
+        const FastBee::ModbusOutputFrame& frame, const FastBee::ModbusWriteTicket& ticket,
+        uint16_t timeout = 0, uint8_t* rawResponse = nullptr, size_t rawCapacity = 0,
+        size_t* rawLength = nullptr);
+    bool snapshotOrdinaryMotorReference(const String& ref, ModbusSubDevice& device,
+        FastBee::ModbusControlTarget& target);
+    bool snapshotOrdinaryRelay(uint8_t index, ModbusSubDevice& device,
+        FastBee::ModbusControlTarget& target);
+    bool snapshotControlDevice(uint8_t index, ModbusSubDevice& device,
+        FastBee::ModbusControlTarget& target);
+    bool snapshotOrdinaryRelayEndpoint(uint8_t slave, uint8_t function, uint16_t address,
+        ModbusSubDevice& device, FastBee::ModbusControlTarget& target);
+    bool snapshotControlSensor(const String& sensorId, SensorIdMatch& match,
+        ModbusSubDevice& device, FastBee::ModbusControlTarget& target);
+    OneShotResult writeOrdinaryRelayOnce(const FastBee::ModbusControlTarget& target,
+        uint8_t function, uint16_t address, uint16_t value,
+        const FastBee::ModbusWriteTicket& ticket, uint16_t timeout = 0, bool toggle = false);
+private:
+    bool ordinaryFrameTargetLocked(const FastBee::ModbusOutputFrame& frame,
+        FastBee::ModbusControlTarget& target) const;
+    bool ordinaryRelayTargetLocked(uint8_t index, FastBee::ModbusControlTarget& target) const;
+    bool ordinaryMotorTargetLocked(uint8_t index, FastBee::ModbusControlTarget& target) const;
+    const FastBee::ModbusWriteTicket* _ordinaryWriteTicket = nullptr; // Bus lock only.
+    bool _ordinaryWriteAttempted = false;
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::Modbus};
     bool isInitialized;
     HardwareSerial* modbusSerial;
+    FastBee::UartPortLease _uartLease;
     ModbusConfig config;
     
     // 回调函数
@@ -560,7 +615,15 @@ private:
                                            OneShotError error);
     
     // 线圈延时任务处理
+    void processOrdinaryCoilDelayTasks();
+    void retireOrdinaryDelayWork();
+    void appendOrdinaryDelayStatusLocked(JsonArray records);
+    bool scheduleOrdinaryDelay(uint8_t,uint16_t,unsigned long,bool,bool,const ModbusDelayReceipt&,
+        const FastBee::OrdinaryControlContext&,uint64_t*,bool);
     void processCoilDelayTasks();
+    void invalidateCoilDelayTasksLocked(const char* reason);
+    void trackCoilDelayWriteLocked(const uint8_t* request, size_t length);
+    bool coilDelayTimeLocked(uint64_t& now);
     
     // 一次性操作互斥标志和信号量
     volatile bool isOneShotReading;
@@ -575,6 +638,19 @@ private:
     
     // 线圈延时任务队列
     CoilDelayTask coilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];
+    OrdinaryCoilDelayTask ordinaryCoilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];
+    FastBee::ModbusControlTarget _ordinaryDelayAckTarget;
+    FastBee::OrdinaryControlContext _ordinaryDelayAckContext;
+    FastBee::OrdinaryControl::Actor _ordinaryDelayAckActor;
+    uint64_t _ordinaryDelayAckOperation=0;
+    uint32_t _ordinaryDelayAckWindowMs=0;
+    uint32_t _delayInstance = 0, _delayConfiguration = 1;
+    uint64_t _delayWriteSequence = 0, _delayNextOperation = 0, _delayLastTimeMs = 0;
+    uint64_t _delayArmedSequence = 0;
+    ModbusDelayReceipt _delayLastWrite;
+    uint32_t _delayFailures = 0;
+    uint64_t _delayFirstFailureOperation = 0;
+    OneShotError _delayFirstFailure = ONESHOT_SUCCESS;
 
     // 调试帧缓冲区（最近一次 OneShot TX/RX）
     String _lastTxHex;

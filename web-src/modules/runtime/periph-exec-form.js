@@ -1,12 +1,14 @@
 /**
  * 外设执行管理 - 表单模块
  * 规则编辑表单渲染、字段验证、表单提交处理
- * 依赖：periph-exec.js；Modbus、传感器和灯效能力由独立模块按需补充
+ * 依赖：periph-exec.js 与编辑器序列的 periph-exec-templates.js；传感器和灯效按需补充
  */
 (function() {
     // The editor can be opened before the peripheral configuration module.
     var t = typeof window.t === 'function' ? window.t : function(key, fallback) { return fallback || key; };
     Object.assign(AppState, {
+
+
 
         // ============ Trigger/action element creation ============
 
@@ -127,75 +129,8 @@
         },
 
         _mountPeriphExecLazyActionPanel(block, actionType, data, forceMount) {
-            if (!block) return;
-            var host = block.querySelector('.pe-action-lazy-host');
-            if (!host) return;
-            var oldType = block.dataset.peLazyActionType;
-            var requestedType = String(actionType);
-            var targetId = block.querySelector('.pe-target-periph')?.value || (data && data.targetPeriphId) || '';
-            if (!forceMount && !data && oldType === requestedType) {
-                if (actionType !== 10) return;
-                var hasNeoPixelPanel = !!host.querySelector('.pe-neopixel-preset');
-                if (hasNeoPixelPanel === this._isNeoPixelTarget(targetId)) return;
-            }
-            block._peLazyPanelDrafts = block._peLazyPanelDrafts || {};
-            if (oldType !== undefined && (oldType !== requestedType || host.querySelector('input, select, textarea'))) {
-                block._peLazyPanelDrafts[oldType] = this._snapshotPeriphExecLazyPanel(host);
-            }
-            block._peLazyLoadToken = (block._peLazyLoadToken || 0) + 1;
-            host.innerHTML = '';
-            var actionValue = data && data.actionValue ? data.actionValue : '';
-            var moduleName = this._getPeriphExecLazyActionModule(actionType, targetId);
-            var moduleReady = !moduleName ||
-                (moduleName === 'periph-exec-sensor' && typeof this._buildPeriphExecSensorPanel === 'function') ||
-                (moduleName === 'periph-exec-effects' && typeof this._buildPeriphExecEffectsDisplayPanel === 'function');
-            block.dataset.peLazyActionType = requestedType;
-            if (!moduleReady) {
-                this._loadPeriphExecLazyActionModule(moduleName, block, actionType, data);
-                return;
-            }
-            delete block.dataset.peLazyModuleError;
-            if (actionType === 18) {
-                host.innerHTML = this._buildPeriphExecModbusPanel();
-                this._populateModbusDevicePanel(host.querySelector('.pe-poll-tasks-list'), actionValue);
-            } else if (actionType === 19) {
-                host.innerHTML = this._buildPeriphExecSensorPanel(data || {});
-            } else if (actionType === 15 || actionType === 21) {
-                host.innerHTML = this._buildPeriphExecInlineActionPanel(actionType, actionValue);
-            } else if (moduleName === 'periph-exec-effects') {
-                host.innerHTML = this._buildPeriphExecEffectsDisplayPanel(actionType, actionValue);
-            }
-            this._restorePeriphExecLazyPanel(host, block._peLazyPanelDrafts[requestedType]);
-            if (actionType === 19) {
-                var category = host.querySelector('.pe-sensor-category');
-                this._populateSensorPeriphSelect(block, category ? category.value : 'analog', targetId);
-                if (category) this.onSensorCategoryChange(category, this._getPeriphExecBlockIndex(block), true);
-                if (category?.value === 'configured') {
-                    var configuredSensor = {};
-                    try { configuredSensor = JSON.parse(actionValue || '{}'); } catch (error) {}
-                    this._syncConfiguredSensorAction(block, configuredSensor);
-                }
-            }
-            if (actionType === 21 && actionValue) {
-                var eventSelect = host.querySelector('.pe-trigger-event-select');
-                if (eventSelect) eventSelect.value = actionValue;
-            }
-            if (actionType === 27) {
-                var oled = host.querySelector('.pe-action-value-oled');
-                var counter = host.querySelector('.pe-oled-counter');
-                if (oled && counter) {
-                    oled.addEventListener('input', function() {
-                        var lines = this.value ? this.value.split('\n').length : 0;
-                        counter.textContent = '已输入 ' + this.value.length + '/512 字符，' + lines + '/6 行';
-                        counter.style.color = lines > 6 ? '#e74c3c' : '';
-                    });
-                    oled.dispatchEvent(new Event('input'));
-                }
-            }
-            if (moduleName === 'periph-exec-effects') {
-                this._initNeoPixelPresetFromData(block, actionValue || block.querySelector('.pe-action-value')?.value || '', actionType);
-                this._updateNeoPixelPresetVisibility(block);
-            }
+            if (!block?.querySelector('.pe-action-lazy-host')) return;
+            return this._renderPeriphExecLazyActionPanel(block, actionType, data, forceMount);
         },
 
         _populateRemoteResourceSelect(selectEl, actionType, selectedValue) {
@@ -249,6 +184,39 @@
             }
         },
 
+        _populateRtcTargetSelect(select, selectedValue) {
+            if (!select) return;
+            var rtc = (this._pePeripherals || []).filter(p => p.type === 50);
+            select.innerHTML = '<option value="">-- 选择 DS1302 RTC --</option>' + rtc.map(p =>
+                '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name || p.id) +
+                (p.enabled === false ? ' [未启用]' : '') + '</option>').join('') +
+                (selectedValue && !rtc.some(p => p.id === selectedValue)
+                    ? '<option value="' + escapeHtml(selectedValue) + '" disabled>目标不是可用的 DS1302 RTC</option>' : '');
+            select.value = selectedValue || '';
+        },
+
+        _populateSdTargetSelect(select, selectedValue, enabledOnly) {
+            if (!select) return;
+            const cards = (this._pePeripherals || []).filter(p => p.type === 37 && (!enabledOnly || p.enabled === true));
+            select.innerHTML = '<option value="">-- 选择 SD 外设 --</option>' + cards.map(p =>
+                '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name || p.id) +
+                (p.enabled === false ? ' [未启用]' : '') + '</option>').join('') +
+                (selectedValue && !cards.some(p => p.id === selectedValue)
+                    ? '<option value="' + escapeHtml(selectedValue) + '" disabled>SD 目标不可用</option>' : '');
+            select.value = selectedValue || '';
+        },
+
+        _renderRtcCommandOptions(value) {
+            return '<option value=""' + (!['start', 'stop'].includes(value) ? ' selected' : '') + '>-- 选择计时操作 --</option>' +
+                '<option value="start"' + (value === 'start' ? ' selected' : '') + '>启动计时（不校时）</option>' +
+                '<option value="stop"' + (value === 'stop' ? ' selected' : '') + '>暂停计时</option>';
+        },
+
+        _renderRtcSetOptions(value) {
+            return '<option value=""' + (value !== 'system-local' ? ' selected' : '') + '>-- 选择校时来源 --</option>' +
+                '<option value="system-local"' + (value === 'system-local' ? ' selected' : '') + '>系统本地时间（不发起 NTP）</option>';
+        },
+
         _createPeriphExecActionElement(data, index) {
             const container = document.getElementById('periph-exec-actions');
             if (!container) return;
@@ -263,7 +231,7 @@
             if (!isPollMode && actionType === '9') {
                 actionType = '0';
             }
-            const isModbusTarget = data.targetPeriphId && data.targetPeriphId.indexOf('modbus:') === 0;
+            const isModbusTarget = !['35', '36', '37', '38', '39', '40'].includes(actionType) && data.targetPeriphId && data.targetPeriphId.indexOf('modbus:') === 0;
             if (isModbusTarget && !['16', '17', '18'].includes(actionType)) actionType = '18';
             const actionTypeInt = parseInt(actionType);
             const isModbusWrite = actionTypeInt === 16 || actionTypeInt === 17;
@@ -274,6 +242,10 @@
             const isRuleCtrlAction = (actionTypeInt === 22 || actionTypeInt === 23);
             const isRemoteChannel = actionTypeInt === 33;
             const isRemoteRead = actionTypeInt === 34;
+            const isRtcControl = actionTypeInt === 35;
+            const isRtcRead = actionTypeInt === 36;
+            const isRtcSet = actionTypeInt === 37;
+            const isSdStatus = actionTypeInt === 38;
             const isRemoteAction = isRemoteChannel || isRemoteRead;
             const isDisplayAction = (actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 26);
             const isOledDisplay = (actionTypeInt === 27);
@@ -344,6 +316,11 @@
                         '<option value="21" ' + sel(21) + '>' + t('pef-action-trigger-event', '触发设备事件') + '</option>' +
                         '<option value="15" ' + sel(15) + '>' + t('pef-action-script', '命令脚本') + '</option></optgroup>' +
                         remoteOptions +
+                        '<optgroup label="RTC"><option value="35" ' + sel(35) + '>RTC 计时启停</option>' +
+                        '<option value="36" ' + sel(36) + '>RTC 日历读取（无时区）</option>' +
+                        '<option value="37" ' + sel(37) + '>RTC 复制系统本地时间</option></optgroup>' +
+                        '<optgroup label="存储"><option value="38" ' + sel(38) + '>SD 状态快照（只读）</option><option value="40" ' + sel(40) + '>SD 持续数值记录</option></optgroup>' +
+                        '<optgroup label="持续控制"><option value="39" ' + sel(39) + '>温控继电器（低电平吸合）</option></optgroup>' +
                         '<optgroup label="' + t('pef-action-rule-ctrl', '规则控制') + '">' +
                         '<option value="22" ' + sel(22) + '>' + t('pef-action-enable-rule', '启用执行规则') + '</option>' +
                         '<option value="23" ' + sel(23) + '>' + t('pef-action-disable-rule', '禁用执行规则') + '</option></optgroup>' +
@@ -364,6 +341,16 @@
                     '<option value="off"' + (remoteValue === 'off' ? ' selected' : '') + '>' + t('pef-remote-off', '关闭 (off)') + '</option>' +
                     '<option value="trigger"' + (remoteValue === 'trigger' ? ' selected' : '') + '>' + t('pef-remote-trigger', '触发 (trigger)') + '</option>' +
                     '</select></div>' +
+                    '<div class="fb-form-group pe-sd-status-group' + this._hiddenClass(isSdStatus) + '"><label>SD 状态快照</label>' +
+                    '<small class="pe-help-text">只读挂载与上次操作容量，含快照年龄和质量；不是实时插卡或健康检测。以外设 ID 上报 JSON 文本属性，不记录数值历史。忙碌或目标不匹配返回失败空值；不挂载、不读写文件。</small></div>' +
+                    '<div class="fb-form-group pe-rtc-control-group' + this._hiddenClass(isRtcControl) + '"><label>RTC 操作</label>' +
+                    '<select class="pe-rtc-command">' + this._renderRtcCommandOptions(isRtcControl ? data.actionValue : '') + '</select>' +
+                    '<small class="pe-help-text">仅控制已配置 DS1302 的计时状态；暂停后时间停止推进。先在外设操作页设置有效日期。不校时、不修改系统时间，不接受平台值替换；不记录历史或发布数值属性。</small></div>' +
+                    '<div class="fb-form-group pe-rtc-read-group' + this._hiddenClass(isRtcRead) + '"><label>RTC 日历读取</label>' +
+                    '<small class="pe-help-text">只读正在计时且有效的日历，格式 YYYY-MM-DD HH:MM:SS，不含时区，不等于 UTC 或准确校时证明。勾选上报时，以外设 ID 绑定平台文本属性；暂停/无效/忙碌返回失败及空值，不沿用旧值。不写 RTC，不记录数值历史。</small></div>' +
+                    '<div class="fb-form-group pe-rtc-set-group' + this._hiddenClass(isRtcSet) + '"><label>RTC 校时来源（明确选择）</label>' +
+                    '<select class="pe-rtc-set-source">' + this._renderRtcSetOptions(isRtcSet ? data.actionValue : '') + '</select>' +
+                    '<small class="pe-help-text">仅复制24小时内有来源记录且未被另行改动的系统本地时间；未知、失鲜或来源变化时拒绝。请先确认时间和时区正确。本动作不请求 NTP，也不证明时间源准确；保留 RTC 暂停/运行状态，写入 24 小时制。不修改系统时间或充电，不接受平台值替换。无效 RTC 请先在外设操作页初始化；写后核验失败可能已经改时，勿盲目重试。</small></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(showScalarValue) + '">' +
                     '<label>' + '动作参数' + '</label>' +
                     '<input type="text" class="pe-action-value" value="' + escapeHtml(scalarActionValue) + '" placeholder="' + escapeHtml(actionTypeInt === 17 && receiveChecked ? '可选：地址:$value' : isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (receiveChecked && actionTypeInt !== 17 ? ' readonly' : '') + '>' +
@@ -375,10 +362,21 @@
                     t('pef-use-recv-value', '勾选后动作参数将使用平台下发或触发源的值') + '</label></div>' +
                     '</div>';
             container.appendChild(div);
+            div.addEventListener('click', event => {
+                if (event.target.closest('.pe-thermostat-setup')) this._setupThermostatRuleForm();
+                if (event.target.closest('.pe-sd-record-setup')) this._setupSdRecorderRuleForm();
+            });
             var initActType = parseInt(actionType, 10);
+            if (initActType === 29 || (initActType === 10 && (this._pePeripherals || []).some(p => p.id === data.targetPeriphId && Number(p.type) === 1))) {
+                const uartHelp = div.querySelector('.pe-action-value-group .pe-help-text');
+                if (uartHelp) uartHelp.textContent = this._uartSendHelp();
+            }
             // 先恢复目标，再挂载依赖目标类型的动态面板（如 NeoPixel 与传感器）。
             var effectivePollOnly = isPollMode && isModbusPoll && !isModbusTarget;
-            if (isRemoteAction) this._populateRemoteResourceSelect(div.querySelector('.pe-target-periph'), initActType, data.targetPeriphId || '');
+            if (isRtcControl || isRtcRead || isRtcSet) this._populateRtcTargetSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '');
+            else if (actionTypeInt === 39) this._populateThermostatTargetSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '');
+            else if (isSdStatus || actionTypeInt === 40) this._populateSdTargetSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', actionTypeInt === 40);
+            else if (isRemoteAction) this._populateRemoteResourceSelect(div.querySelector('.pe-target-periph'), initActType, data.targetPeriphId || '');
             else this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', effectivePollOnly, initActType === 21, (initActType === 22 || initActType === 23));
             this._syncRemoteActionValueState(div);
             this._mountPeriphExecLazyActionPanel(div, isModbusTarget ? -1 : actionTypeInt, data);
@@ -421,6 +419,7 @@
                 this._updateNeoPixelPresetVisibility(div);
             }
             this._updatePeriphExecAddButtons();
+            this._syncPca9685ActionFields(div);
         },
 
         _getPeriphExecBlockLimit(kind) {
@@ -628,6 +627,7 @@
                     else valueInput.removeAttribute('readonly');
                 }
                 self._syncRemoteActionValueState(item);
+                self._syncPca9685ActionFields(item);
             });
         },
 
@@ -723,9 +723,17 @@
             const isRuleCtrlAction = (actionType === 22 || actionType === 23);
             const isRemoteChannel = actionType === 33;
             const isRemoteRead = actionType === 34;
+            const isRtcControl = actionType === 35;
+            const isRtcRead = actionType === 36;
+            const isRtcSet = actionType === 37;
+            const isSdStatus = actionType === 38;
+            this._setSectionVisible(block.querySelector('.pe-sd-status-group'), isSdStatus);
+            this._setSectionVisible(block.querySelector('.pe-rtc-control-group'), isRtcControl);
+            this._setSectionVisible(block.querySelector('.pe-rtc-read-group'), isRtcRead);
+            this._setSectionVisible(block.querySelector('.pe-rtc-set-group'), isRtcSet);
             const isRemoteAction = isRemoteChannel || isRemoteRead;
             // 检查当前目标是否为 Modbus 设备（与创建路径保持一致）
-            const isModbusTarget = (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
+            const isModbusTarget = actionType !== 39 && actionType !== 40 && !isRtcControl && !isRtcRead && !isRtcSet && !isSdStatus && (block.querySelector('.pe-target-periph')?.value || '').indexOf('modbus:') === 0;
             const showTargetGroup = isModbusTarget || isRuleCtrlAction || !((actionType >= 6 && actionType <= 9) || isModbusPoll || isTriggerEvent);
             this._setSectionVisible(targetGroup, showTargetGroup);
             // 切换目标分组的 label 和空选项提示（规则 vs 外设）
@@ -745,11 +753,14 @@
                 // 提示文案同步切换
                 const helpEl = valueGroup.querySelector('.pe-help-text');
                 if (helpEl) {
-                    if (actionType === 10) helpEl.textContent = t('pef-help-send-cmd', '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值');
+                    if (actionType === 10 && (this._pePeripherals || []).some(p => p.id === block.querySelector('.pe-target-periph')?.value && Number(p.type) === 57))
+                        helpEl.textContent = '仅操作人工初始化后的会话。固定 JSON：{"action":"duty","channel":0,"value":10}；另支持 pulse/angle/enable/disable/stop。禁止 prepare/start、$value 和接收值替换；不是实际输出测量。';
+                    else if (actionType === 10) helpEl.textContent = (this._pePeripherals || []).some(p => p.id === block.querySelector('.pe-target-periph')?.value && Number(p.type) === 1)
+                        ? this._uartSendHelp() : t('pef-help-send-cmd', '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值');
                     else if (actionType === 11) helpEl.textContent = t('pef-help-led', '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值');
                     else if (actionType === 12) helpEl.textContent = t('pef-help-motor', '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)');
                     else if (actionType === 28) helpEl.textContent = t('pef-help-rf', '输入射频编码，如十六进制编码字符串');
-                    else if (actionType === 29) helpEl.textContent = t('pef-help-uart', '输入要发送的文本，支持 $value 占位符');
+                    else if (actionType === 29) helpEl.textContent = this._uartSendHelp();
                     else if (actionType === 17 && block.querySelector('.pe-use-received-value')?.checked) helpEl.textContent = 'FC06 可留空、填 $value 或固定寄存器地址:$value';
                     else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = t('pef-help-template', '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值');
                     else helpEl.textContent = t('pef-help-default', '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255');
@@ -772,6 +783,12 @@
                 var effectivePollOnly = this._isPollTriggerActive() && isModbusPoll && !isModbusTarget;
                 if (isSensorRead && typeof this._populateSensorPeriphSelect === 'function') {
                     this._populateSensorPeriphSelect(block, block.querySelector('.pe-sensor-category')?.value || 'analog', peSelect?.value);
+                } else if (isRtcControl || isRtcRead || isRtcSet) {
+                    this._populateRtcTargetSelect(peSelect, peSelect ? peSelect.value : '');
+                } else if (actionType === 39) {
+                    this._populateThermostatTargetSelect(peSelect, peSelect ? peSelect.value : '');
+                } else if (isSdStatus || actionType === 40) {
+                    this._populateSdTargetSelect(peSelect, peSelect ? peSelect.value : '', actionType === 40);
                 } else if (isRemoteAction) {
                     this._populateRemoteResourceSelect(peSelect, actionType, '');
                 } else {
@@ -812,6 +829,7 @@
                 }
             }
             this._updatePeriphExecPanelOptions();
+            this._syncPca9685ActionFields(block);
         },
 
         // ============ NeoPixel 预设灯效 ============
@@ -819,108 +837,48 @@
         // ============ Event population ============
 
         _clearPeriphExecEventCatalogCache() {
-            this._peEventCategories = null;
-            this._peEventCategoriesFetchedAt = 0;
-            this._peEventCategoriesPromise = null;
-            this._peStaticEvents = null;
-            this._peStaticEventsFetchedAt = 0;
-            this._peStaticEventsPromise = null;
-            this._peDynamicEvents = null;
-            this._peDynamicEventsFetchedAt = 0;
-            this._peDynamicEventsPromise = null;
+            for (const key of ['_peEventCategories', '_peStaticEvents', '_peDynamicEvents']) {
+                this[key] = null;
+                this[key + 'FetchedAt'] = 0;
+                this[key + 'Promise'] = null;
+            }
+        },
+
+        _getPeriphExecEventCatalog(key, endpoint, ttl, forceFresh) {
+            var self = this;
+            var fetchedAt = key + 'FetchedAt';
+            var pending = key + 'Promise';
+            if (!forceFresh && Array.isArray(this[key]) && (Date.now() - this[fetchedAt]) < ttl) {
+                return Promise.resolve(this[key]);
+            }
+            if (!forceFresh && this[pending]) return this[pending];
+
+            var getter = (forceFresh && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            this[pending] = getter('/api/periph-exec/events/' + endpoint)
+                .then(function(res) {
+                    var list = (res && res.success && Array.isArray(res.data)) ? res.data.slice() : [];
+                    self[key] = list;
+                    self[fetchedAt] = Date.now();
+                    return list;
+                })
+                .catch(function(err) {
+                    if (Array.isArray(self[key]) && self[key].length > 0) return self[key];
+                    throw err;
+                })
+                .finally(function() { self[pending] = null; });
+            return this[pending];
         },
 
         _getPeriphExecEventCategories(forceFresh) {
-            var self = this;
-            var now = Date.now();
-            if (!forceFresh && Array.isArray(this._peEventCategories) &&
-                (now - this._peEventCategoriesFetchedAt) < 120000) {
-                return Promise.resolve(this._peEventCategories);
-            }
-            if (!forceFresh && this._peEventCategoriesPromise) {
-                return this._peEventCategoriesPromise;
-            }
-
-            var getter = (forceFresh && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            this._peEventCategoriesPromise = getter('/api/periph-exec/events/categories')
-                .then(function(res) {
-                    var list = (res && res.success && Array.isArray(res.data)) ? res.data.slice() : [];
-                    self._peEventCategories = list;
-                    self._peEventCategoriesFetchedAt = Date.now();
-                    return list;
-                })
-                .catch(function(err) {
-                    if (Array.isArray(self._peEventCategories) && self._peEventCategories.length > 0) {
-                        return self._peEventCategories;
-                    }
-                    throw err;
-                })
-                .finally(function() {
-                    self._peEventCategoriesPromise = null;
-                });
-            return this._peEventCategoriesPromise;
+            return this._getPeriphExecEventCatalog('_peEventCategories', 'categories', 120000, forceFresh);
         },
 
         _getPeriphExecStaticEvents(forceFresh) {
-            var self = this;
-            var now = Date.now();
-            if (!forceFresh && Array.isArray(this._peStaticEvents) &&
-                (now - this._peStaticEventsFetchedAt) < 120000) {
-                return Promise.resolve(this._peStaticEvents);
-            }
-            if (!forceFresh && this._peStaticEventsPromise) {
-                return this._peStaticEventsPromise;
-            }
-
-            var getter = (forceFresh && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            this._peStaticEventsPromise = getter('/api/periph-exec/events/static')
-                .then(function(res) {
-                    var list = (res && res.success && Array.isArray(res.data)) ? res.data.slice() : [];
-                    self._peStaticEvents = list;
-                    self._peStaticEventsFetchedAt = Date.now();
-                    return list;
-                })
-                .catch(function(err) {
-                    if (Array.isArray(self._peStaticEvents) && self._peStaticEvents.length > 0) {
-                        return self._peStaticEvents;
-                    }
-                    throw err;
-                })
-                .finally(function() {
-                    self._peStaticEventsPromise = null;
-                });
-            return this._peStaticEventsPromise;
+            return this._getPeriphExecEventCatalog('_peStaticEvents', 'static', 120000, forceFresh);
         },
 
         _getPeriphExecDynamicEvents(forceFresh) {
-            var self = this;
-            var now = Date.now();
-            if (!forceFresh && Array.isArray(this._peDynamicEvents) &&
-                (now - this._peDynamicEventsFetchedAt) < 15000) {
-                return Promise.resolve(this._peDynamicEvents);
-            }
-            if (!forceFresh && this._peDynamicEventsPromise) {
-                return this._peDynamicEventsPromise;
-            }
-
-            var getter = (forceFresh && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            this._peDynamicEventsPromise = getter('/api/periph-exec/events/dynamic')
-                .then(function(res) {
-                    var list = (res && res.success && Array.isArray(res.data)) ? res.data.slice() : [];
-                    self._peDynamicEvents = list;
-                    self._peDynamicEventsFetchedAt = Date.now();
-                    return list;
-                })
-                .catch(function(err) {
-                    if (Array.isArray(self._peDynamicEvents) && self._peDynamicEvents.length > 0) {
-                        return self._peDynamicEvents;
-                    }
-                    throw err;
-                })
-                .finally(function() {
-                    self._peDynamicEventsPromise = null;
-                });
-            return this._peDynamicEventsPromise;
+            return this._getPeriphExecEventCatalog('_peDynamicEvents', 'dynamic', 15000, forceFresh);
         },
 
         _populateEventCategoriesInBlock(blockEl, eventIdToSet, compareValue) {
@@ -1325,7 +1283,7 @@
                 }
                 // 非 Modbus 轮询动作：继续正常采集流程
                 const targetPeriphId = item.querySelector('.pe-target-periph')?.value || '';
-                const isModbusTarget = targetPeriphId && targetPeriphId.indexOf('modbus:') === 0;
+                const isModbusTarget = ![35, 36, 37, 38, 39, 40].includes(curActType) && targetPeriphId && targetPeriphId.indexOf('modbus:') === 0;
                 const actionType = item.querySelector('.pe-action-type')?.value || '0';
                 const action = {
                     targetPeriphId: targetPeriphId,
@@ -1389,15 +1347,38 @@
                             : (item.querySelector('.pe-remote-action-value')?.value || ''));
                 } else if (action.actionType === 34) {
                     action.actionValue = '';
+                } else if (action.actionType === 35) {
+                    action.actionValue = item.querySelector('.pe-rtc-command')?.value || '';
+                } else if (action.actionType === 36 || action.actionType === 38) {
+                    action.actionValue = '';
+                } else if (action.actionType === 39) {
+                    if (item.querySelector('.pe-thermostat-sourceRef') && typeof this._collectThermostatConfig === 'function') {
+                        action.actionValue = JSON.stringify(this._collectThermostatConfig(item));
+                    } else {
+                        this._peLazyModuleError = 'periph-exec-sensor';
+                        action.actionValue = item._peThermostatData?.actionValue || '';
+                    }
+                } else if (action.actionType === 37) {
+                    action.actionValue = item.querySelector('.pe-rtc-set-source')?.value || '';
+                } else if (action.actionType === 40) {
+                    if (item.querySelector('.pe-sd-record-sourceRef') && typeof this._collectSdRecorderConfig === 'function') {
+                        action.actionValue = JSON.stringify(this._collectSdRecorderConfig(item));
+                    } else {
+                        this._peLazyModuleError = 'periph-exec-sensor';
+                        action.actionValue = item._peSdRecorderData?.actionValue || '';
+                    }
                 } else {
                     var hasEffectsPanel = !!item.querySelector('.pe-neopixel-preset');
                     if (hasEffectsPanel && typeof this._collectPeriphExecEffectsAction === 'function') {
                         this._collectPeriphExecEffectsAction(item, action);
                     } else {
-                        action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
+                        const rawValue = item.querySelector('.pe-action-value')?.value || '';
+                        const target = (this._pePeripherals || []).find(p => p.id === action.targetPeriphId);
+                        action.actionValue = action.actionType === 29 || (action.actionType === 10 && target && Number(target.type) === 1)
+                            ? rawValue : rawValue.trim();
                     }
                 }
-                action.useReceivedValue = action.actionType === 34 ? false : useReceivedValue;
+                action.useReceivedValue = [34, 35, 36, 37, 38, 39, 40].includes(action.actionType) ? false : useReceivedValue;
                 action.syncDelayMs = parseInt(item.querySelector('.pe-sync-delay')?.value || '0', 10) || 0;
                 action.execMode = parseInt(item.querySelector('.pe-exec-mode')?.value || '0', 10) || 0;
                 actions.push(action);
@@ -1476,6 +1457,32 @@
                 return;
             }
             ruleData.actions = actions;
+            if (actions.some(action => action.actionType === 40)) {
+                // Editing otherwise inherits an old, hidden rule-level script.
+                ruleData.scriptContent = '';
+                let cfg;
+                try { cfg = JSON.parse(actions.find(action => action.actionType === 40).actionValue); } catch (_) {}
+                const error = this._validateSdRecorderForm(ruleData, cfg);
+                if (error) { this.showInlineError(errEl, error); return; }
+            }
+            if (actions.some(action => action.actionType === 39)) {
+                let cfg = {};
+                try { cfg = JSON.parse(actions.find(action => action.actionType === 39).actionValue); } catch (_) {}
+                const thermostatError = this._validateThermostatForm(ruleData, cfg);
+                if (thermostatError) { this.showInlineError(errEl, thermostatError); return; }
+            }
+            if (actions.some(action => action.actionType === 38 &&
+                !(this._pePeripherals || []).some(p => p.id === action.targetPeriphId && p.type === 37))) {
+                this.showInlineError(errEl, 'SD 快照动作需要选择已配置的 SD 外设');
+                return;
+            }
+            if (actions.some(action => [35, 36, 37].includes(action.actionType) &&
+                ((action.actionType === 35 && !['start', 'stop'].includes(action.actionValue)) ||
+                 (action.actionType === 37 && action.actionValue !== 'system-local') ||
+                 !(this._pePeripherals || []).some(p => p.id === action.targetPeriphId && p.type === 50)))) {
+                this.showInlineError(errEl, 'RTC 动作需要选择 DS1302 外设，并明确选择启停操作或校时来源');
+                return;
+            }
             if (ruleData.recordHistory && !actions.some(function(action) {
                 return action.actionType === 18 || action.actionType === 19 || action.actionType === 34;
             })) {
@@ -1513,6 +1520,11 @@
             for (let i = 0; i < actions.length; i++) {
                 var at = actions[i].actionType;
                 var blk = actionBlocks[i];
+                const pcaError = this._pca9685CommandError(actions[i]);
+                if (pcaError) {
+                    this._highlightFieldError(blk?.querySelector('.pe-pca-command') || blk?.querySelector('.pe-action-value'), pcaError, errEl);
+                    return;
+                }
                 if (blk?.querySelector('.pe-action-type')?.selectedOptions[0]?.dataset.ioUnsupported) {
                     this._highlightFieldError(blk.querySelector('.pe-action-type'), '该 IO 扩展通道不支持此动作，请选择兼容的数字 IO 操作', errEl);
                     return;
@@ -1602,11 +1614,23 @@
             const seq = this._peEditLoadSeq;
             const generation = this._getPeriphExecPageGeneration();
             const active = () => this._isPeriphExecEditLoadActive(seq, generation);
+            const formFingerprint = this._periphExecFormFingerprint();
+            const unchanged = () => {
+                if (!active()) return false;
+                if (formFingerprint === null || formFingerprint !== this._periphExecFormFingerprint()) {
+                    this._pePreflightReview = null;
+                    document.getElementById('periph-exec-preflight')?.remove();
+                    throw new Error('检查期间配置已变化，请再次保存以重新检查');
+                }
+                return true;
+            };
             const button = document.getElementById('save-periph-exec-btn');
             this._peSavePending = true;
             if (button) button.disabled = true;
-            return apiPostJson(url, ruleData)
+            return this._preflightPeriphExecSave(ruleData, isEdit, seq, generation, unchanged)
+                .then(allowed => allowed && unchanged() ? apiPostJson(url, ruleData) : null)
                 .then(res => {
+                    if (!res) return;
                     if (!active()) {
                         if (res && res.success && this._invalidatePeriphExecRuntimeCaches) this._invalidatePeriphExecRuntimeCaches();
                         return;
@@ -1637,7 +1661,7 @@
                             err.message.includes('network')
                         ))
                     );
-                    this.showInlineError(errEl, isNetworkError ? t('pef-err-offline', '设备离线或不可达，请检查网络连接') : t('pef-err-save-failed', '保存失败'));
+                    this.showInlineError(errEl, isNetworkError ? t('pef-err-offline', '设备离线或不可达，请检查网络连接') : (err?.message || t('pef-err-save-failed', '保存失败')));
                 }).finally(() => {
                     this._peSavePending = false;
                     const currentButton = document.getElementById('save-periph-exec-btn');

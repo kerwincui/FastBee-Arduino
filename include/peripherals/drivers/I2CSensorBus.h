@@ -62,8 +62,12 @@ public:
         }
         if (frequency != 100000 && frequency != 400000) return fail("SENSOR_I2C_FREQUENCY_INVALID");
         String error;
-        if (!manager.acquire(owner, sda, scl, frequency, error)) return fail(error.c_str());
+        if (!manager.acquire(owner, sda, scl, frequency, error, ResourceConsumerRole::Sensor)) return fail(error.c_str());
         _owner = owner;
+        if (!manager.claimAddress(owner, static_cast<uint8_t>(address), error)) {
+            close();
+            return fail(error.c_str());
+        }
         _wire = manager.wire(owner);
         _address = static_cast<uint8_t>(address);
         if (!_wire) { close(); return fail("SENSOR_I2C_NOT_READY"); }
@@ -88,9 +92,11 @@ public:
     }
 
     bool write(const uint8_t* data, size_t length) {
+        // Empty writes intentionally remain address-only probes (SHT30/31).
+        if (length && !data) return fail("SENSOR_I2C_WRITE_ARGUMENT_INVALID");
         I2CBusLock lock(100);
         if (!lock.locked()) return fail("SENSOR_I2C_BUSY");
-        if (!_wire) return fail("SENSOR_I2C_NOT_READY");
+        if (!ownsAddress()) return fail("SENSOR_I2C_NOT_READY");
         _wire->beginTransmission(_address);
         const size_t written = length ? _wire->write(data, length) : 0;
         const uint8_t status = _wire->endTransmission();
@@ -100,18 +106,23 @@ public:
     }
 
     bool read(uint8_t* data, size_t length) {
+        if (!validRead(data, length)) return false;
         I2CBusLock lock(100);
         if (!lock.locked()) return fail("SENSOR_I2C_BUSY");
         return readLocked(data, length);
     }
 
     bool readRegister(uint8_t reg, uint8_t* data, size_t length) {
+        if (!validRead(data, length)) return false;
         I2CBusLock lock(100);
         if (!lock.locked()) return fail("SENSOR_I2C_BUSY");
-        if (!_wire) return fail("SENSOR_I2C_NOT_READY");
+        if (!ownsAddress()) return fail("SENSOR_I2C_NOT_READY");
         _wire->beginTransmission(_address);
-        _wire->write(reg);
-        if (_wire->endTransmission(false) != 0) return fail("SENSOR_I2C_WRITE_FAILED");
+        const size_t written = _wire->write(reg);
+        // A short pointer write must terminate, not arm a repeated-start read
+        // of the previously selected register. Do not retry a partial transfer.
+        const uint8_t status = _wire->endTransmission(written != 1);
+        if (written != 1 || status != 0) return fail("SENSOR_I2C_WRITE_FAILED");
         return readLocked(data, length);
     }
 
@@ -128,13 +139,42 @@ public:
     }
 
 private:
+    // Called only while holding the recursive transaction lock. A retired
+    // cached Wire pointer must never bypass address ownership after release.
+    bool ownsAddress() const {
+        return _wire && I2CBusManager::instance().ownsAddress(_owner, _address);
+    }
+    bool validRead(const uint8_t* data, size_t length) {
+        // requestFrom below takes uint8_t; reject before narrowing or setting
+        // the device pointer. No allocation and no zero-length dummy sample.
+        if (!data || !length || length > 255) return fail("SENSOR_I2C_READ_ARGUMENT_INVALID");
+        return true;
+    }
+
+    void discardReceived() {
+        // Defensive bound: an inconsistent adapter must not hold the shared
+        // bus forever, or repeatedly consume -1 as though it were a byte.
+        for (size_t i = 0; i < 255 && _wire->available() > 0; ++i) {
+            if (_wire->read() < 0) break;
+        }
+    }
+
     bool readLocked(uint8_t* data, size_t length) {
-        if (!_wire) return fail("SENSOR_I2C_NOT_READY");
+        if (!ownsAddress()) return fail("SENSOR_I2C_NOT_READY");
         if (_wire->requestFrom(_address, static_cast<uint8_t>(length)) != length) {
-            while (_wire->available()) _wire->read();
+            discardReceived();
             return fail("SENSOR_I2C_SHORT_READ");
         }
-        for (size_t i = 0; i < length; ++i) data[i] = static_cast<uint8_t>(_wire->read());
+        // Raw buffers may contain a prefix on failure; callers must not
+        // publish it. readRegister16 stages locally and leaves value unchanged.
+        for (size_t i = 0; i < length; ++i) {
+            const int byte = _wire->available() > 0 ? _wire->read() : -1;
+            if (byte < 0 || byte > 255) {
+                discardReceived();
+                return fail("SENSOR_I2C_SHORT_READ");
+            }
+            data[i] = static_cast<uint8_t>(byte);
+        }
         _error[0] = '\0';
         return true;
     }

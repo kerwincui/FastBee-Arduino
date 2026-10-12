@@ -10,7 +10,10 @@ constexpr uint8_t BOARD_PIN_NONE = 0xFF;
 enum class BoardProfileId : uint8_t {
     PUZHONG_PZ_ESP32 = 0,
     ESP32_C6_DEVKITC_1 = 1,
-    ESP32_S3_GENERIC = 2
+    ESP32_S3_GENERIC = 2,
+    ESP32_C3_GENERIC = 3,
+    ESP32_WROOM_GENERIC = 4,
+    ESP32_WROVER_GENERIC = 5
 };
 
 // A policy is intentionally separate from electrical capabilities. A pin can
@@ -44,17 +47,28 @@ enum PinRisk : uint32_t {
     PIN_RISK_JTAG = 1UL << 6,
     PIN_RISK_ONBOARD_RGB = 1UL << 7,
     PIN_RISK_LP_I2C = 1UL << 8,
-    PIN_RISK_ADC2_WIFI = 1UL << 9
+    PIN_RISK_ADC2_WIFI = 1UL << 9,
+    PIN_RISK_PSRAM = 1UL << 10
 };
 
 struct BoardPinProfile {
-    uint8_t gpio;
-    uint16_t capabilities;
-    PinPolicy policy;
+    // Keep native alignment while avoiding padding in every immutable pin row.
     uint32_t risks;
+    uint16_t capabilities;
+    uint8_t gpio;
+    PinPolicy policy;
     uint8_t adcUnit;
     uint8_t adcChannel;
+
+    // Preserve the established positional order used by board tables/fixtures.
+    constexpr BoardPinProfile(uint8_t gpioValue = 0, uint16_t capabilityValue = 0,
+                              PinPolicy policyValue = PinPolicy::RECOMMENDED,
+                              uint32_t riskValue = 0, uint8_t adcUnitValue = 0,
+                              uint8_t adcChannelValue = 0)
+        : risks(riskValue), capabilities(capabilityValue), gpio(gpioValue),
+          policy(policyValue), adcUnit(adcUnitValue), adcChannel(adcChannelValue) {}
 };
+static_assert(sizeof(BoardPinProfile) == 12, "Board pin rows must stay compact");
 
 struct BoardResourceLimits {
     uint8_t i2cBusCount;
@@ -96,7 +110,9 @@ struct BoardProfile {
 };
 
 const BoardProfile& getPuzhongPzEsp32Profile();
+const BoardProfile& getEsp32ModuleProfile(bool psram = false);
 const BoardProfile& getEsp32C6DevKitC1Profile();
+const BoardProfile& getEsp32C3Profile();
 const BoardProfile& getEsp32S3Profile(bool octalPsram = true);
 const BoardProfile& getCompiledBoardProfile();
 const BoardProfile& getBoardProfile(BoardProfileId id);

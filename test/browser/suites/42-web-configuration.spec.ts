@@ -82,10 +82,10 @@ for(const form of ['wifi','ap','advanced','ethernet','cellular']) test('network 
 });
 
 test('script create edit disable delete preserves content and displays failed saves',async({authPage,navigateTo})=>{
-  const rules:any[]=[];const writes:any[]=[];let fail=true;
+  const rules:any[]=[];const writes:any[]=[];let fail=true,reads=0;
   await authPage.route('**/api/rule-script**',async route=>{
     const method=route.request().method(),url=new URL(route.request().url());
-    if(method==='GET') return route.fulfill({json:{success:true,data:rules}});
+    if(method==='GET') {reads++;return route.fulfill({json:{success:true,data:rules}});}
     const body=payload(route);writes.push({path:url.pathname,body});
     if(fail)return route.fulfill({json:{success:false,error:'保存未落盘'}});
     if(url.pathname.endsWith('disable')) rules[0].enabled=false;
@@ -98,10 +98,25 @@ test('script create edit disable delete preserves content and displays failed sa
   await authPage.locator('[data-action=openRuleScriptModal]').click();
   await authPage.locator('#rule-script-name').fill('规则回归');
   await authPage.locator('#rule-script-content').fill('payload.value = 42;');
+  const initialReads=reads;
   await authPage.locator('#save-rule-script-btn').click();
   await expect(authPage.locator('#rule-script-error')).toContainText('保存未落盘');
   await expect(authPage.locator('#rule-script-content')).toHaveValue('payload.value = 42;');
+  await expect(authPage.locator('#rule-script-error')).toContainText('核验列表');
+  await expect(authPage.locator('#save-rule-script-btn')).toBeDisabled();
+  await expect.poll(()=>reads).toBeGreaterThan(initialReads);
+  // An unconfirmed write must not be repeated from the same editor session,
+  // even when invoked directly rather than through the disabled button.
+  await authPage.evaluate(()=>(window as any).AppState.saveRuleScript());
+  expect(writes).toHaveLength(1);
+  expect(rules).toHaveLength(0);
+  await authPage.locator('#close-rule-script-modal').click();
+  await expect(authPage.locator('#rule-script-modal')).toHaveCount(0);
   fail=false;
+  await authPage.locator('[data-action=openRuleScriptModal]').click();
+  await expect(authPage.locator('#save-rule-script-btn')).toBeEnabled();
+  await authPage.locator('#rule-script-name').fill('规则回归');
+  await authPage.locator('#rule-script-content').fill('payload.value = 42;');
   await authPage.locator('#save-rule-script-btn').click();
   await expect(authPage.locator('#rule-script-modal')).toHaveCount(0);
   await expect(authPage.locator('#rule-script-table-body')).toContainText('规则回归');

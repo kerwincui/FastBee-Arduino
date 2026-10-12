@@ -1,0 +1,697 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
+#include "utils/ConsumedStringJsonReader.h"
+#include "utils/SharedJsonDeserializer.h"
+#include "core/ModbusOrdinaryControl.h"
+#include "core/SystemConstants.h"
+#include "core/ActionReportIdentity.h"
+#include <cassert>
+#include <initializer_list>
+#include <utility>
+using Context=FastBee::OrdinaryControlContext;
+using Control=FastBee::OrdinaryControlResult;
+using Frame=FastBee::ModbusOutputFrame;
+using Target=FastBee::ModbusControlTarget;
+namespace OC=FastBee::OrdinaryControl;
+struct ActionExecResult {
+    FastBee::ActionReportIdentity reportIdentity=FastBee::ActionReportIdentity::Invalid;
+    uint16_t reportIdBytes=0;
+    String targetPeriphId,dataField,actualValue,remark;
+    bool success=false;
+};
+// @types@
+inline void convertToJson(const String& value,JsonVariant destination) { destination.set(value.c_str()); }
+inline size_t serializeJson(const JsonDocument& doc,String& output) {
+    std::string text;const size_t size=ArduinoJson::serializeJson(doc,text);output=text;return size;
+}
+inline DeserializationError deserializeJson(JsonDocument& doc,const String& text) {
+    return ArduinoJson::deserializeJson(doc,text.c_str(),text.length());
+}
+struct AsyncWebParameter {
+    String key,text; bool post=true,file=false;
+    const String& name() const { return key; }
+    const String& value() const { return text; }
+    bool isPost() const { return post; }
+    bool isFile() const { return file; }
+};
+struct AsyncWebServerRequest {
+    std::vector<AsyncWebParameter> fields;
+    int status=0; String error; std::string body;
+    ~AsyncWebServerRequest() {
+        std::printf("HTTP %d %zu %zu\n", status, error.length(), body.size());
+        std::fwrite(error.c_str(), 1, error.length(), stdout);
+        std::fputc('\n', stdout);
+        std::fwrite(body.data(), 1, body.size(), stdout);
+        std::fputc('\n', stdout);
+    }
+    void add(const char* key,const String& text,bool post=true) { fields.push_back({key,text,post,false}); }
+    void set(const char* key,const String& text) {
+        for(auto& field:fields) if(field.key==key) { field.text=text;return; }
+        add(key,text);
+    }
+    size_t params() const { return fields.size(); }
+    const AsyncWebParameter* getParam(size_t i) const { return i<fields.size()?&fields[i]:nullptr; }
+    const AsyncWebParameter* getParam(const char* key,bool post) const {
+        for(const auto& field:fields) if(field.key==key && field.post==post) return &field;
+        return nullptr;
+    }
+    bool hasParam(const char* key,bool post) const { return getParam(key,post)!=nullptr; }
+};
+struct ModbusSubDevice {
+    uint8_t slaveAddress=7,channelCount=8,baudRateMode=0;
+    uint16_t baudRateReg=0x33;
+    bool ncMode=false;
+    char sensorId[32]="relay";
+};
+static unsigned leased=0, reports=0;
+static bool pressure=false;
+static uint8_t reportIndex=0;
+static uint16_t reportChannel=0;
+static String reportValue,reportSensor;
+struct FakeMqtt {
+    bool connected=true;
+    unsigned publishes=0;
+    String payload;
+    bool getIsConnected() const { return connected; }
+    void publishReportData(const String& value) { assert(leased);++publishes;payload=value; }
+} mqtt;
+namespace FastBee {
+struct MqttClientLease {
+    FakeMqtt* client=nullptr;
+    MqttClientLease(FakeMqtt* value=nullptr):client(value) {}
+    explicit operator bool() const { return client!=nullptr; }
+    FakeMqtt* operator->() const { return client; }
+};
+}
+struct PeriphExecManager {
+    unsigned events=0;String id,value;
+    static PeriphExecManager& getInstance() { static PeriphExecManager instance;return instance; }
+    void triggerEventById(const String& nextId,const String& nextValue) {
+        assert(leased);++events;id=nextId;value=nextValue;
+    }
+};
+enum ModbusMode { MODBUS_SLAVE,MODBUS_MASTER };
+struct ModbusHandler {
+    bool mapping=true,capture=true,relayCapture=false;
+    unsigned snapshots=0,reads=0,driftAt=0;
+    unsigned endpointSnapshots=0;
+    uint8_t endpointFunction=0;
+    uint32_t instance=11,configuration=13,reportConfiguration=13;
+    uint16_t relayFirst=10;
+    ModbusMode mode=MODBUS_MASTER;
+    ModbusSubDevice device;
+    Target snapshotTarget(const Frame& frame) const {
+        Target out;out.instance=instance;out.configuration=configuration;
+        out.slave=frame.access==FastBee::ModbusFrameAccess::Maintenance?0:frame.bytes[0];
+        out.index=2;out.first=frame.address();out.function=frame.bytes[1];
+        out.frameQuantity=frame.quantity();out.frameSlave=frame.bytes[0];out.frameAccess=frame.access;
+        out.kind=frame.access==FastBee::ModbusFrameAccess::Maintenance?Target::Kind::Maintenance:Target::Kind::Frame;
+        return out;
+    }
+    bool snapshotOrdinaryFrame(const Frame& frame,Target& out) {
+        assert(leased && frame.valid());
+        if(++snapshots==driftAt) ++configuration;
+        out=snapshotTarget(frame);
+        return mapping;
+    }
+    bool snapshotOrdinaryRelayEndpoint(uint8_t slave,uint8_t function,uint16_t address,
+        ModbusSubDevice& saved,Target& out) {
+        assert(leased && (function==5 || function==6));++endpointSnapshots;
+        saved=device;out.instance=instance;out.configuration=reportConfiguration;out.slave=slave;
+        out.index=2;out.first=relayFirst;out.count=device.channelCount;out.function=endpointFunction?endpointFunction:function;
+        out.nc=device.ncMode;
+        return relayCapture && slave==device.slaveAddress && address>=relayFirst &&
+            uint32_t(address)<uint32_t(relayFirst)+device.channelCount;
+    }
+    bool snapshotControlDevice(int index,ModbusSubDevice& saved,Target& out) {
+        assert(leased && index==0);saved=device;out.instance=instance;out.configuration=configuration;
+        out.slave=device.slaveAddress;out.index=0;return capture;
+    }
+    uint8_t getSubDeviceCount() const { assert(leased);return 1; }
+    const ModbusSubDevice& getSubDevice(uint8_t index) const { assert(leased && !index);return device; }
+    ModbusMode getMode() const { return mode; }
+    OneShotResult readRegistersOnce(uint8_t slave,uint8_t function,uint16_t address,uint16_t count,bool control) {
+        assert(leased && !slave && function==3 && address==0x32 && count==1 && control);
+        ++reads;OneShotResult result;result.error=ONESHOT_SUCCESS;result.data[0]=7;return result;
+    }
+} bus;
+struct ProtocolManager {
+    bool available=true;
+    bool mqttAvailable=true;
+    FastBee::MqttClientLease acquireMQTTClient() { return {mqttAvailable?&mqtt:nullptr}; }
+    struct ModbusHandlerLease {
+        ModbusHandler* value=nullptr;
+        ModbusHandlerLease(ModbusHandler* p=nullptr):value(p) { if(value) ++leased; }
+        ModbusHandlerLease(ModbusHandlerLease&& other):value(other.value) { other.value=nullptr; }
+        ModbusHandlerLease(const ModbusHandlerLease&)=delete;
+        ~ModbusHandlerLease() { if(value) --leased; }
+        ModbusHandler* get() const { return value; }
+    };
+    ModbusHandlerLease acquireModbusHandler(unsigned wait) { assert(wait==2000);return ModbusHandlerLease(available?&bus:nullptr); }
+} protocol;
+#define pdMS_TO_TICKS(value) (value)
+struct AuthResult { bool success=true;uint64_t outputActor=42; };
+struct WebHandlerContext {
+    bool authorized=true,developer=true;AuthResult auth;
+    ProtocolManager* protocolManager=&protocol;
+    bool requireAuth(AsyncWebServerRequest* r) { if(!authorized) r->status=401;return authorized; }
+    bool requireDeveloperMode(AsyncWebServerRequest* r) { if(!developer) r->status=403;return developer; }
+    AuthResult authenticateRequest(AsyncWebServerRequest*) { return auth; }
+    void sendError(AsyncWebServerRequest* r,int status,const String& reason) { r->status=status;r->error=reason; }
+    void sendBadRequest(AsyncWebServerRequest* r,const String& reason) { sendError(r,400,reason); }
+    void sendJsonResponse(AsyncWebServerRequest* r,int status,const JsonDocument& doc) {
+        r->status=status;r->body.clear();serializeJson(doc,r->body);
+    }
+    String getParamValue(AsyncWebServerRequest* r,const char* key,const char* fallback) {
+        const auto* field=r->getParam(key,true);return field?field->value():String(fallback);
+    }
+};
+struct PeripheralManager {
+    unsigned begins=0,submits=0,finishes=0,failAt=0;
+    bool contextReady=true,outputAttempted=true;
+    bool expectedOverride=false,toggleState=true,mutateAfterRelay=false,sourceRetired=false,configRetired=false;
+    bool submittedToggle=false;
+    uint64_t expectedGeneration=0;
+    String expectedReviewTarget;
+    uint16_t submittedValue=0;
+    OneShotError failure=ONESHOT_TIMEOUT;
+    Context context;
+    std::vector<Frame> frames;
+    std::vector<Target> targets;
+    static PeripheralManager& getInstance() { static PeripheralManager pm;return pm; }
+    bool beginOrdinaryControl(OC::Source source,uint64_t actor,uint32_t hold,bool confirmed,
+        uint64_t generation,const String& reviewed,uint32_t epoch,const FastBee::UartEventOrigin& uart,Context& out) {
+        assert(leased && source==OC::Source::Http && actor==42 && confirmed==expectedOverride &&
+            generation==expectedGeneration && reviewed==expectedReviewTarget &&
+            epoch==FastBee::SensorConfigEpoch::current() && uart.unbound());
+        ++begins;out.request.actor={source,actor};out.request.holdMs=hold;
+        out.request.overrideConfirmed=confirmed;out.request.reviewedGeneration=generation;
+        out.request.operation=begins;out.configEpoch=epoch;context=out;return contextReady;
+    }
+    bool beginOrdinaryModbusMaintenance(uint64_t actor,uint32_t epoch,Context& out) {
+        if(!beginOrdinaryControl(OC::Source::Http,actor,OC::DefaultManualHoldMs,false,0,"",epoch,{},out)) return false;
+        out.modbusMaintenance=true;out.request.holdMs=0;context=out;return true;
+    }
+    void finishOrdinaryControl(const Context& out) {
+        assert(leased && out.request.operation==context.request.operation);++finishes;
+    }
+    OneShotResult submitOrdinaryModbusFrame(ModbusHandler& handler,const Target& target,
+        const Frame& frame,const Context& out,Control& control) {
+        assert(leased && &handler==&bus && frame.valid() && target.valid() &&
+            out.request.operation==context.request.operation);
+        ++submits;frames.push_back(frame);targets.push_back(target);
+        OneShotResult result;result.error=submits==failAt?failure:ONESHOT_SUCCESS;
+        result.outputAttempted=outputAttempted;
+        result.exceptionCode=result.error==ONESHOT_EXCEPTION?2:0;
+        result.controlReason=result.error==ONESHOT_SUCCESS?"CONTROL_MODBUS_ACKNOWLEDGED":"INJECTED_FAILURE";
+        for(unsigned i=0;i<6;++i) result.data[i]=frame.bytes[i];
+        result.count=6;
+        control.evaluated=true;control.accepted=result.error==ONESHOT_SUCCESS;
+        control.attempted=result.outputAttempted;control.reason=result.controlReason;
+        control.actor=out.request.actor;control.operation=out.request.operation;
+        control.generation=9;control.phase=OC::Phase::Held;
+        control.acknowledgedSteps=control.accepted?1:0;
+        // Exercise the real serializer override suppression on a denied result.
+        if(!control.accepted) { control.decision=OC::Decision::Conflict;control.actor={OC::Source::Rule,99}; }
+        return result;
+    }
+    OneShotResult submitOrdinaryModbusRelay(ModbusHandler& handler,const Target& target,uint8_t function,
+        uint16_t address,uint16_t value,const Context& out,Control& control,uint16_t timeout,bool toggle) {
+        assert(leased && !timeout && target.function==function && address>=target.first &&
+            uint32_t(address)<uint32_t(target.first)+target.count);
+        submittedToggle=toggle;submittedValue=value;
+        Frame frame;assert(frame.single(target.slave,function,address,value));
+        if(sourceRetired || configRetired) { failAt=submits+1;failure=ONESHOT_CONTROL_REJECTED;outputAttempted=false; }
+        auto result=submitOrdinaryModbusFrame(handler,target,frame,out,control);
+        if(result.error==ONESHOT_SUCCESS && toggle) {
+            const uint16_t echo=toggleState?(function==5?0xff00:1):0;
+            result.data[4]=echo>>8;result.data[5]=echo&255;
+        }
+        if(mutateAfterRelay) {
+            std::strcpy(bus.device.sensorId,"replacement");bus.device.ncMode=!bus.device.ncMode;
+            bus.device.channelCount=1;bus.relayFirst=30;++bus.configuration;
+        }
+        return result;
+    }
+};
+namespace FastBee {
+namespace OC=OrdinaryControl;
+// @serializer@
+}
+// @http_helpers@
+// @route_helpers@
+static bool rejectModbusHeavyRequest(AsyncWebServerRequest* r,const char*,size_t) {
+    if(pressure) r->status=503;
+    return pressure;
+}
+static bool rejectModbusCriticalControl(AsyncWebServerRequest* r,const char*,size_t) {
+    if(pressure) r->status=503;
+    return pressure;
+}
+static void addModbusDebug(JsonDocument&,ModbusHandler*) {}
+static void sendOneShotError(WebHandlerContext* web,AsyncWebServerRequest* r,const OneShotResult&) {
+    web->sendError(r,504,"READ_UNCONFIRMED");
+}
+static void publishFrozenModbusReport(WebHandlerContext*,const ModbusSubDevice& device,
+    uint8_t index,uint16_t channel,const String& value,const char* remark) {
+    assert(leased && String(remark)=="modbus_command_acknowledged");
+    ++reports;reportIndex=index;reportChannel=channel;reportValue=value;reportSensor=device.sensorId;
+}
+namespace HandlerUtils {
+void sendJsonStream(AsyncWebServerRequest* r,const JsonDocument& doc) {
+    r->status=200;r->body.clear();serializeJson(doc,r->body);
+}
+}
+class ModbusRouteHandler {
+    WebHandlerContext* ctx;
+public:
+    explicit ModbusRouteHandler(WebHandlerContext* web):ctx(web) {}
+    void handleModbusWrite(AsyncWebServerRequest*);
+    void handleModbusRegisterWrite(AsyncWebServerRequest*);
+    void handleModbusRegisterBatchWrite(AsyncWebServerRequest*);
+    void handleModbusDeviceAddress(AsyncWebServerRequest*);
+    void handleModbusDeviceBaudrate(AsyncWebServerRequest*);
+    void handleModbusCoilControl(AsyncWebServerRequest*);
+};
+// @routes@
+static void reset(WebHandlerContext& web) {
+    assert(!leased);bus=ModbusHandler{};protocol=ProtocolManager{};web=WebHandlerContext{};
+    PeripheralManager::getInstance()=PeripheralManager{};reports=0;pressure=false;
+    mqtt=FakeMqtt{};PeriphExecManager::getInstance()=PeriphExecManager{};
+    reportValue="";reportSensor="";
+}
+static AsyncWebServerRequest requestFor(unsigned route) {
+    AsyncWebServerRequest r;r.add("slaveAddress","7");
+    if(route==0) { r.add("regAddress","12");r.add("value","4660"); }
+    if(route==1) { r.add("registerAddress","12");r.add("value","4660"); }
+    if(route==2) { r.add("startAddress","12");r.add("values","[0,4660,65535]"); }
+    if(route==3) { r.add("addressRegister","50");r.add("newAddress","8"); }
+    if(route==4) r.add("baudRate","19200");
+    if(route==5) {r.add("coilBase","10");r.add("channel","2");r.add("action","on");r.add("mode","coil");}
+    return r;
+}
+static void invoke(ModbusRouteHandler& route,unsigned index,AsyncWebServerRequest& r) {
+    using Method=void(ModbusRouteHandler::*)(AsyncWebServerRequest*);
+    const Method methods[]={&ModbusRouteHandler::handleModbusWrite,&ModbusRouteHandler::handleModbusRegisterWrite,
+        &ModbusRouteHandler::handleModbusRegisterBatchWrite,&ModbusRouteHandler::handleModbusDeviceAddress,
+        &ModbusRouteHandler::handleModbusDeviceBaudrate,&ModbusRouteHandler::handleModbusCoilControl};
+    assert(index<6);(route.*methods[index])(&r);assert(!leased);
+}
+static JsonDocument decoded(const AsyncWebServerRequest& r) {
+    JsonDocument doc;assert(!deserializeJson(doc,r.body));return doc;
+}
+static void bytes(const Frame& frame,std::initializer_list<uint8_t> expected) {
+    assert(frame.length==expected.size());
+    assert(std::equal(expected.begin(),expected.end(),frame.bytes));
+}
+static void acknowledged(const AsyncWebServerRequest& r,unsigned count=1) {
+    assert(r.status==200);auto doc=decoded(r);
+    assert(doc["success"].as<bool>() && doc["data"]["outputAttempted"].as<bool>());
+    assert(doc["data"]["commandAcknowledged"].as<bool>());
+    assert(doc["data"]["acknowledgedCommandCount"].as<unsigned>()==count);
+    assert(!doc["data"]["physicalOutputVerified"].as<bool>());
+    assert(!doc["data"]["control"]["canConfirmOverride"].as<bool>());
+    assert(!doc["data"]["control"]["physicalVerified"].as<bool>());
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const String mode=argv[1];
+    WebHandlerContext web;ModbusRouteHandler route(&web);
+    auto& pm=PeripheralManager::getInstance();
+    if(mode.startsWith("coil_")) {
+        const String scenario=mode.substring(5);
+        auto prepare=[&] {reset(web);bus.relayCapture=true;return requestFor(5);};
+        auto rejected=[&](AsyncWebServerRequest& request,int status,bool early=false) {
+            invoke(route,5,request);assert(request.status==status && !pm.submits && !pm.finishes &&
+                !mqtt.publishes && !PeriphExecManager::getInstance().events);
+            if(early)assert(!bus.endpointSnapshots && !pm.begins);
+        };
+        auto success=[&](AsyncWebServerRequest& request) {
+            invoke(route,5,request);assert(request.status==200 && pm.begins==1 && pm.submits==1 && pm.finishes==1);
+            auto doc=decoded(request);assert(doc["success"].as<bool>() && doc["data"]["commandAcknowledged"].as<bool>());
+            assert(!doc["data"]["physicalOutputVerified"].as<bool>() && !doc["data"]["control"]["physicalVerified"].as<bool>());
+            assert(pm.context.request.actor.source==OC::Source::Http && pm.context.request.actor.identity==42);
+            assert(PeriphExecManager::getInstance().events==1);return doc;
+        };
+        auto review=[&](AsyncWebServerRequest& request) {
+            request.add("confirmOverride","true");request.add("controlGeneration","18446744073709551615");
+            request.add("controlTargetId","mb:11:7");
+            request.add("controlConfigEpoch",String(FastBee::SensorConfigEpoch::current()));
+        };
+        if(scenario=="numeric") {
+            const char* bad[]={"","-1","+1"," 1","1 ","1.5","1e0","0x01","1tail","65536","4294967296","99999999999999999999"};
+            for(const char* key:{"slaveAddress","channel","coilBase"}) {
+                for(const char* value:bad) {auto r=prepare();r.set(key,value);rejected(r,400,true);}
+                auto r=prepare();r.set(key,String("1\0x",3));rejected(r,400,true);
+            }
+            for(const char* value:{"0","248","256"}) {auto r=prepare();r.set("slaveAddress",value);rejected(r,400,true);}
+            for(const char* value:{"32","65535"}) {auto r=prepare();r.set("channel",value);rejected(r,400,true);}
+        } else if(scenario=="fields") {
+            for(const char* key:{"source","actor","operation","id","ncMode","unexpected"}) {
+                auto r=prepare();r.add(key,"1");rejected(r,400,true);
+            }
+            for(const char* key:{"slaveAddress","channel","coilBase","action","mode"}) {
+                auto r=prepare();r.add(key,"1");rejected(r,400,true);
+            }
+            for(const char* key:{"holdMs","confirmOverride","controlGeneration","controlTargetId","controlConfigEpoch"}) {
+                auto r=prepare();r.add(key,"1");r.add(key,"2");rejected(r,400,true);
+            }
+            for(unsigned variant=0;variant<4;++variant) {
+                auto r=prepare();
+                if(variant==0)r.fields[0].post=false;
+                if(variant==1)r.fields[0].file=true;
+                if(variant==2)r.fields[0].key=String("slaveAddress\0x",14);
+                if(variant==3)for(unsigned n=0;n<17;++n)r.add("holdMs","1");
+                rejected(r,400,true);
+            }
+        } else if(scenario=="bounds") {
+            for(unsigned channel:{0U,31U}) {
+                auto r=prepare();bus.device.slaveAddress=247;bus.device.channelCount=static_cast<uint8_t>(channel+1);
+                bus.relayFirst=static_cast<uint16_t>(65535-channel);
+                r.set("slaveAddress","247");r.set("coilBase",String(bus.relayFirst));r.set("channel",String(channel));
+                auto doc=success(r);assert(pm.frames[0].address()==65535 && doc["data"]["channel"].as<unsigned>()==channel);
+            }
+            auto r=prepare();r.set("coilBase","65535");r.set("channel","1");rejected(r,400,true);
+        } else if(scenario=="defaults") {
+            prepare();bus.device.slaveAddress=1;bus.relayFirst=0;AsyncWebServerRequest r;
+            auto doc=success(r);assert(pm.frames[0].bytes[0]==1 && pm.frames[0].address()==0 && pm.submittedToggle);
+            assert(doc["data"]["action"]=="toggle" && pm.context.request.holdMs==OC::DefaultManualHoldMs);
+        } else if(scenario=="action") {
+            for(const char* value:{"","ON","1","on ","onx"}) {auto r=prepare();r.set("action",value);rejected(r,400,true);}
+            for(const char* value:{"","Coil","0","register ","raw"}) {auto r=prepare();r.set("mode",value);rejected(r,400,true);}
+            auto r=prepare();r.set("action",String("on\0x",4));rejected(r,400,true);
+        } else if(scenario=="auth") {
+            auto r=prepare();web.authorized=false;rejected(r,401,true);
+        } else if(scenario=="session") {
+            for(unsigned variant=0;variant<2;++variant) {
+                auto r=prepare();if(variant)web.auth.outputActor=0;else web.auth.success=false;
+                rejected(r,401);assert(!pm.begins);
+            }
+        } else if(scenario=="hold") {
+            for(const char* value:{"0","1","300000","300001","-1","+1","1.5","1tail","4294967296"}) {
+                auto r=prepare();r.add("holdMs",value);
+                if(String(value)=="1" || String(value)=="300000") {
+                    success(r);assert(pm.context.request.holdMs==std::strtoul(value,nullptr,10));
+                } else {rejected(r,400);assert(!pm.begins);}
+            }
+        } else if(scenario=="review_valid") {
+            auto r=prepare();review(r);r.add("holdMs","12345");
+            pm.expectedOverride=true;pm.expectedGeneration=UINT64_MAX;pm.expectedReviewTarget="mb:11:7";
+            success(r);assert(pm.context.request.overrideConfirmed && pm.context.request.reviewedGeneration==UINT64_MAX &&
+                pm.context.request.holdMs==12345);
+        } else if(scenario=="review_invalid") {
+            for(unsigned variant=0;variant<9;++variant) {
+                auto r=prepare();review(r);
+                if(variant==0)r.set("confirmOverride","1");
+                if(variant==1)r.set("controlTargetId","mb:11:8");
+                if(variant==2)r.set("controlGeneration","0");
+                if(variant==3)r.set("controlGeneration","18446744073709551616");
+                if(variant==4)r.set("controlGeneration","9tail");
+                if(variant==5)r.set("controlConfigEpoch",String(FastBee::SensorConfigEpoch::current()+1));
+                if(variant==6)r.set("controlConfigEpoch","4294967296");
+                if(variant==7)r.set("controlTargetId",String("mb:11:7\0x",9));
+                if(variant==8)r.set("controlGeneration","");
+                rejected(r,400);assert(!pm.begins);
+            }
+        } else if(scenario=="review_unexpected") {
+            for(const char* key:{"controlGeneration","controlTargetId","controlConfigEpoch"}) {
+                auto r=prepare();r.add("confirmOverride","false");r.add(key,"1");rejected(r,400);assert(!pm.begins);
+            }
+            auto r=prepare();r.add("confirmOverride","false");success(r);assert(!pm.context.request.overrideConfirmed);
+        } else if(scenario=="context") {
+            auto r=prepare();pm.contextReady=false;rejected(r,409);assert(pm.begins==1);
+        } else if(scenario=="mapping") {
+            for(unsigned variant=0;variant<3;++variant) {
+                auto r=prepare();if(variant==0)bus.relayCapture=false;
+                if(variant==1)bus.endpointFunction=6;
+                if(variant==2)r.set("channel","9");
+                rejected(r,409);assert(!pm.begins);
+            }
+        } else if(scenario=="frames") {
+            for(const char* modeValue:{"coil","register"}) for(const char* action:{"on","off","toggle"}) {
+                auto r=prepare();r.set("mode",modeValue);r.set("action",action);
+                const bool coil=String(modeValue)=="coil",toggle=String(action)=="toggle";
+                auto doc=success(r);assert(pm.frames[0].bytes[1]==(coil?5:6) && pm.frames[0].address()==12);
+                assert(pm.submittedToggle==toggle && pm.submittedValue==(String(action)=="on"?(coil?0xff00:1):0));
+                assert(doc["data"]["state"].as<bool>()==(String(action)!="off"));
+            }
+        } else if(scenario=="nc" || scenario=="report_frozen") {
+            auto r=prepare();bus.device.ncMode=true;pm.mutateAfterRelay=scenario=="report_frozen";
+            auto doc=success(r);assert(doc["data"]["state"].as<bool>() && mqtt.publishes==1);
+            JsonDocument report;assert(!deserializeJson(report,mqtt.payload));
+            assert(report[0]["id"]=="relay_ch2" && report[0]["value"]=="0" && !report[0]["physicalOutputVerified"].as<bool>());
+            JsonDocument event;assert(!deserializeJson(event,PeriphExecManager::getInstance().value));
+            assert(PeriphExecManager::getInstance().id=="mc:2" && event["d"]==2 && event["c"]==2 && event["a"]=="off");
+        } else if(scenario=="unattempted" || scenario=="attempted" || scenario=="source_retired" || scenario=="config_retired") {
+            auto r=prepare();pm.failAt=1;pm.outputAttempted=scenario=="attempted";
+            pm.sourceRetired=scenario=="source_retired";pm.configRetired=scenario=="config_retired";
+            invoke(route,5,r);assert(r.status==(scenario=="attempted"?502:409));
+            auto doc=decoded(r);assert(!doc["success"].as<bool>() && pm.submits==1 && pm.finishes==1 &&
+                !mqtt.publishes && !PeriphExecManager::getInstance().events);
+            assert(doc["control"]["attempted"].as<bool>()==(scenario=="attempted"));
+        } else if(scenario=="no_mqtt") {
+            for(unsigned variant=0;variant<2;++variant) {
+                auto r=prepare();if(variant)mqtt.connected=false;else protocol.mqttAvailable=false;
+                success(r);assert(!mqtt.publishes);
+            }
+        } else if(scenario=="pressure") {
+            auto r=prepare();pressure=true;rejected(r,503,true);
+        } else {
+            assert(scenario=="lease");
+            for(unsigned variant=0;variant<3;++variant) {
+                auto r=prepare();if(variant==0)web.protocolManager=nullptr;
+                if(variant==1)protocol.available=false;
+                if(variant==2)bus.mode=MODBUS_SLAVE;
+                rejected(r,variant==0?500:variant==1?503:400,true);
+            }
+        }
+        return 0;
+    }
+    if(mode=="auth" || mode=="developer" || mode=="session" || mode=="context" ||
+       mode=="mapping" || mode=="attempted" || mode=="pressure" || mode=="lease") {
+        for(unsigned i=0;i<5;++i) {
+            const unsigned variants=mode=="session"?2:mode=="attempted"?3:mode=="lease"?3:1;
+            for(unsigned variant=0;variant<variants;++variant) {
+                reset(web);auto r=requestFor(i);int expected=200;
+                if(mode=="auth") { web.authorized=false;expected=401; }
+                if(mode=="developer") { web.developer=false;expected=i>=3?403:200; }
+                if(mode=="session") { if(variant) web.auth.outputActor=0;else web.auth.success=false;expected=401; }
+                if(mode=="context") { pm.contextReady=false;expected=409; }
+                if(mode=="mapping") { bus.mapping=false;expected=409; }
+                if(mode=="attempted") {
+                    pm.failAt=1;pm.outputAttempted=variant!=0;
+                    pm.failure=variant==2?ONESHOT_EXCEPTION:ONESHOT_TIMEOUT;expected=variant?502:409;
+                }
+                if(mode=="pressure") { pressure=true;expected=503; }
+                if(mode=="lease") {
+                    if(variant==0) { web.protocolManager=nullptr;expected=500; }
+                    if(variant==1) { protocol.available=false;expected=503; }
+                    if(variant==2) { bus.mode=MODBUS_SLAVE;expected=400; }
+                }
+                invoke(route,i,r);assert(r.status==expected);
+                if(mode=="attempted") {
+                    auto doc=decoded(r);
+                    assert(!doc["success"].as<bool>() && pm.submits==1 && pm.finishes==1);
+                    assert(doc["data"]["outputAttempted"].as<bool>()==(variant!=0));
+                    assert(doc["data"]["resultUnknown"].as<bool>()==(variant==1));
+                    assert(doc["data"]["manualReviewRequired"].as<bool>()==(variant!=0));
+                    assert(!doc["data"]["commandAcknowledged"].as<bool>());
+                    assert(doc["data"]["acknowledgedSteps"].size()==0);
+                    assert(!doc["data"]["control"]["canConfirmOverride"].as<bool>());
+                } else if(expected==200) { acknowledged(r);assert(pm.submits==1 && pm.finishes==1); }
+                else assert(!pm.submits);
+                if(mode=="context") assert(pm.begins==1 && !pm.finishes);
+                if(mode=="auth" || mode=="session" || mode=="pressure" || mode=="lease")
+                    assert(!pm.begins && !pm.finishes);
+            }
+        }
+    } else if(mode=="fields") {
+        for(unsigned i=0;i<5;++i) for(unsigned variant=0;variant<12;++variant) {
+            reset(web);auto r=requestFor(i);
+            const char* invalid[]={"source","actor","operation","id","confirmOverride","controlGeneration","controlConfigEpoch"};
+            if(variant<7) r.add(invalid[variant],"1");
+            if(variant==7) r.add("slaveAddress","8");
+            if(variant==8) r.fields[0].post=false;
+            if(variant==9) r.fields[0].file=true;
+            if(variant==10) { for(unsigned n=0;n<17;++n) r.add("value","1"); }
+            if(variant==11) r.fields[0].key=String("slaveAddress\0extra",18);
+            invoke(route,i,r);assert(r.status==400 && !pm.begins && !pm.submits);
+        }
+    } else if(mode=="numeric") {
+        const char* bad[]={"","-1","+1"," 1","1 ","1.5","1e0","0x01","256","65536","4294967296","99999999999999999999"};
+        for(unsigned i=0;i<5;++i) for(const char* value:bad) {
+            reset(web);auto r=requestFor(i);r.set("slaveAddress",value);
+            invoke(route,i,r);assert(r.status==400 && !pm.begins && !pm.submits);
+        }
+        for(unsigned i=0;i<5;++i) {
+            reset(web);auto r=requestFor(i);r.set("slaveAddress",String("7\0x",3));
+            invoke(route,i,r);assert(r.status==400 && !pm.begins);
+        }
+        for(unsigned i=0;i<4;++i) for(const char* value:{"65536","-1","+1","1.5"," 1","4294967296"}) {
+            reset(web);auto r=requestFor(i);
+            r.set(i==0?"regAddress":i==1?"registerAddress":i==2?"startAddress":"addressRegister",value);
+            invoke(route,i,r);assert(r.status==400 && !pm.begins);
+        }
+        for(unsigned i=0;i<2;++i) for(const char* value:{"65536","-1","1.1","4294967296"}) {
+            reset(web);auto r=requestFor(i);r.set("value",value);
+            invoke(route,i,r);assert(r.status==400 && !pm.begins);
+        }
+        for(const char* value:{"0","248","256","-1","1.5","4294967296"}) {
+            reset(web);auto r=requestFor(3);r.set("newAddress",value);
+            invoke(route,3,r);assert(r.status==400 && !pm.begins);
+        }
+        for(const char* value:{"0","115201","-1","1.5","4294967296"}) {
+            reset(web);auto r=requestFor(4);r.set("baudRate",value);
+            invoke(route,4,r);assert(r.status==400 && !pm.begins);
+        }
+        reset(web);auto r=requestFor(4);r.add("mode","2");
+        invoke(route,4,r);assert(r.status==400 && !pm.begins);
+        reset(web);r=requestFor(4);r.add("baudRateReg","65536");
+        invoke(route,4,r);assert(r.status==400 && !pm.begins);
+    } else if(mode=="numeric_boundaries") {
+        for(unsigned i=0;i<3;++i) {
+            reset(web);auto r=requestFor(i);r.set("slaveAddress","247");
+            r.set(i==0?"regAddress":i==1?"registerAddress":"startAddress","65535");
+            if(i<2) r.set("value","65535");else r.set("values","[65535]");
+            invoke(route,i,r);acknowledged(r);
+            assert(pm.frames[0].bytes[0]==247 && pm.frames[0].address()==65535);
+        }
+        uint32_t value=0;assert(ModbusHttp::decimal("4294967295",0,UINT32_MAX,value)&&value==UINT32_MAX);
+        assert(!ModbusHttp::decimal("4294967296",0,UINT32_MAX,value));
+        assert(!ModbusHttp::decimal("9",0,1,value));
+    } else if(mode=="hold") {
+        for(unsigned i=0;i<5;++i) for(const char* hold:{"0","1","300000","300001","-1","1.1"," 1","4294967296"}) {
+            reset(web);auto r=requestFor(i);r.add("holdMs",hold);
+            const bool allowed=i<3 && (String(hold)=="1" || String(hold)=="300000");
+            invoke(route,i,r);assert(r.status==(allowed?200:400));
+            if(allowed) assert(pm.context.request.holdMs==static_cast<uint32_t>(std::strtoul(hold,nullptr,10)));
+            else assert(!pm.begins && !pm.submits);
+        }
+    } else if(mode=="single_frames") {
+        for(unsigned i=0;i<2;++i) {
+            reset(web);auto r=requestFor(i);invoke(route,i,r);acknowledged(r);
+            bytes(pm.frames[0],{7,6,0,12,0x12,0x34});
+            assert(pm.context.request.holdMs==30000 && pm.finishes==1 && pm.frames[0].access==FastBee::ModbusFrameAccess::Standard);
+            auto doc=decoded(r);assert(doc["data"]["acknowledgedSteps"][0]["value"].as<unsigned>()==0x1234);
+            assert(!reports);
+        }
+    } else if(mode=="batch_values" || mode=="batch_limits" || mode=="batch_frame") {
+        if(mode=="batch_values") {
+            for(const char* value:{"[]","{}","null","[null]","[true]","[false]","[\"1\"]","[-1]","[65536]","[1.5]","[1.0]","[1e0]","[1,]","[1][2]","[1]suffix","[1] true","[1] /*comment*/"}) {
+                reset(web);auto r=requestFor(2);r.set("values",value);invoke(route,2,r);
+                assert(r.status==400 && !pm.begins && !pm.submits);
+            }
+            reset(web);auto r=requestFor(2);r.set("values",String("[1]\0[2]",7));
+            invoke(route,2,r);assert(r.status==400 && !pm.begins);
+            reset(web);r=requestFor(2);r.set("values",String(std::string(1025,' ')));
+            invoke(route,2,r);assert(r.status==400 && !pm.begins);
+        } else if(mode=="batch_limits") {
+            for(unsigned size:{1U,123U,124U}) {
+                reset(web);auto r=requestFor(2);std::string json="[";
+                for(unsigned i=0;i<size;++i) { if(i) json+=",";json+="65535"; } json+="]";
+                r.set("values",String(json));invoke(route,2,r);
+                assert(r.status==(size<=123?200:400));
+                if(size<=123) { acknowledged(r);assert(pm.frames[0].length==7+size*2 && pm.frames[0].quantity()==size); }
+                else assert(!pm.submits && !pm.begins);
+            }
+            reset(web);auto r=requestFor(2);r.set("startAddress","65535");r.set("values","[1,2]");
+            invoke(route,2,r);assert(r.status==400 && !pm.begins);
+        } else {
+            auto r=requestFor(2);invoke(route,2,r);acknowledged(r);
+            bytes(pm.frames[0],{7,16,0,12,0,3,6,0,0,0x12,0x34,0xff,0xff});
+            auto doc=decoded(r);assert(doc["data"]["acknowledgedSteps"][0]["quantity"].as<unsigned>()==3);
+            assert(doc["data"]["values"][2].as<unsigned>()==65535);
+        }
+    } else if(mode=="address_read" || mode=="address_write") {
+        auto r=requestFor(3);
+        if(mode=="address_read") { r.set("newAddress","");web.developer=false; }
+        invoke(route,3,r);assert(r.status==200);auto doc=decoded(r);
+        if(mode=="address_read") {
+            assert(bus.reads==1 && !pm.begins && !pm.submits && !pm.finishes);
+            assert(doc["data"]["currentAddress"].as<unsigned>()==7);
+            assert(doc["data"]["control"].isNull());
+        } else {
+            acknowledged(r);bytes(pm.frames[0],{0,16,0,0x32,0,1,2,0,8});
+            assert(pm.frames[0].access==FastBee::ModbusFrameAccess::Maintenance && !pm.context.request.holdMs);
+            assert(!doc["data"]["configurationUpdated"].as<bool>() && bus.device.slaveAddress==7);
+        }
+    } else if(mode=="baud_codes") {
+        const unsigned baud[][8]={{1200,2400,4800,9600,19200,115200,0,0},
+                                 {4800,9600,14400,19200,38400,56000,57600,115200}};
+        for(unsigned form=0;form<2;++form) for(unsigned code=0;code<(form?8U:6U);++code) {
+            reset(web);auto r=requestFor(4);r.set("baudRate",String(baud[form][code]));r.add("mode",String(form));
+            invoke(route,4,r);acknowledged(r);assert(!pm.context.request.holdMs && pm.finishes==1);
+            if(form) bytes(pm.frames[0],{7,6,0,0x33,0,static_cast<uint8_t>(code)});
+            else bytes(pm.frames[0],{7,0xb0,0,0,static_cast<uint8_t>(code),0});
+            assert(pm.frames[0].access==FastBee::ModbusFrameAccess::Maintenance);
+        }
+        for(unsigned form=0;form<2;++form) {
+            reset(web);auto r=requestFor(4);r.set("baudRate","12345");r.add("mode",String(form));
+            invoke(route,4,r);assert(r.status==400 && !pm.begins);
+        }
+    } else if(mode=="baud_override") {
+        for(unsigned form=0;form<2;++form) for(const char* value:{"0","255","256","65535","65536","-1","1.5"," 1"}) {
+            reset(web);auto r=requestFor(4);r.add("mode",String(form));r.add("baudCode",value);
+            const bool ok=String(value)=="0" || String(value)=="255" ||
+                (form && (String(value)=="256" || String(value)=="65535"));
+            invoke(route,4,r);assert(r.status==(ok?200:400));
+            if(ok) { acknowledged(r);assert(pm.frames[0].word()==std::strtoul(value,nullptr,10)*(form?1U:256U)); }
+            else assert(!pm.submits);
+        }
+    } else if(mode=="baud_saved" || mode=="baud_saved_drift" || mode=="baud_submit_drift") {
+        bus.device.baudRateMode=1;bus.device.baudRateReg=0x1234;
+        if(mode=="baud_saved_drift") bus.driftAt=1;
+        if(mode=="baud_submit_drift") bus.driftAt=2;
+        auto r=requestFor(4);invoke(route,4,r);
+        if(mode=="baud_saved") {
+            acknowledged(r);bytes(pm.frames[0],{7,6,0x12,0x34,0,3});
+            auto doc=decoded(r);assert(doc["data"]["mode"]=="register");
+            assert(!doc["data"]["configurationUpdated"].as<bool>());
+        } else {
+            assert(r.status==409 && !pm.submits);
+            if(mode=="baud_saved_drift") assert(!pm.begins);
+            else assert(pm.begins==1 && pm.finishes==1);
+        }
+        assert(bus.device.baudRateMode==1 && bus.device.baudRateReg==0x1234);
+    } else if(mode=="report" || mode=="report_drift") {
+        bus.relayCapture=true;bus.device.ncMode=true;
+        if(mode=="report_drift") bus.reportConfiguration=12;
+        auto r=requestFor(1);r.set("value","1");invoke(route,1,r);acknowledged(r);
+        if(mode=="report") assert(reports==1 && reportIndex==2 && reportChannel==2 && reportValue=="0" && reportSensor=="relay");
+        else assert(!reports);
+    } else {
+        assert(mode=="prefix" || mode=="prefix_cap" || mode=="prefix_mapping" || mode=="invalid_frame");
+        auto r=requestFor(0);
+        {
+            auto lease=getModbusMaster(&web,&r);assert(lease.get());
+            ModbusHttp::Output output(web,&r,*lease.get());assert(output.begin());
+            if(mode=="invalid_frame") {
+                Frame empty;const auto result=output.submit(empty);output.fail(result);
+                assert(r.status==409 && !pm.submits && !bus.snapshots);
+            } else {
+                const unsigned count=mode=="prefix_cap"?34:2;
+                for(unsigned i=0;i<count;++i) {
+                    Frame frame;assert(frame.single(7,6,100+i,i+1));
+                    assert(output.submit(frame).error==ONESHOT_SUCCESS);
+                }
+                if(mode=="prefix_mapping") bus.driftAt=bus.snapshots+1;
+                else pm.failAt=pm.submits+1;
+                Frame last;assert(last.single(7,6,200,9));
+                const auto result=output.submit(last);assert(result.error!=ONESHOT_SUCCESS);
+                output.fail(result);assert(r.status==502);
+                auto doc=decoded(r);const auto data=doc["data"];
+                assert(!doc["success"].as<bool>() && data["commandAcknowledged"].as<bool>());
+                assert(data["manualReviewRequired"].as<bool>() && data["outputAttempted"].as<bool>());
+                assert(data["acknowledgedCommandCount"].as<unsigned>()==count);
+                assert(data["acknowledgedSteps"].size()==std::min(count,32U));
+                for(unsigned i=0;i<std::min(count,32U);++i) {
+                    assert(data["acknowledgedSteps"][i]["address"].as<unsigned>()==100+i);
+                    assert(data["acknowledgedSteps"][i]["value"].as<unsigned>()==i+1);
+                    assert(!data["acknowledgedSteps"][i]["physicalOutputVerified"].as<bool>());
+                }
+                assert(pm.submits==count+(mode=="prefix_mapping"?0:1));
+            }
+        }
+        assert(!leased && pm.finishes==1);
+    }
+}

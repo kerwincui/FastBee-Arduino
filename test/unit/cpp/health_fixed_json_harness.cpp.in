@@ -1,0 +1,179 @@
+// Full production HealthMonitor writers; only telemetry/SDK getters are seams.
+// ArduinoJson/FixedJsonField and the old full methods are real. No device access.
+#include "document_json_probe.h"
+#include "network/FixedJsonField.h"
+#include <algorithm>
+#include <iostream>
+#include <climits>
+@HEALTH_TYPES@
+static DocumentProbeAllocator* healthAllocator = nullptr;
+static std::vector<std::string> calls;
+struct Shape {
+    std::string bytes, types;
+    size_t size=0,nesting=0;
+    bool overflow=false;
+    bool operator==(const Shape& other) const {
+        return bytes==other.bytes && types==other.types && size==other.size &&
+               nesting==other.nesting && overflow==other.overflow;
+    }
+};
+static std::string valueShape(JsonVariantConst value) {
+    std::string result;
+    result += value.isNull() ? 'N' : '-';
+    result += value.is<bool>() ? 'B' : '-';
+    result += value.is<int64_t>() ? 'I' : '-';
+    result += value.is<uint64_t>() ? 'U' : '-';
+    result += value.is<double>() ? 'D' : '-';
+    if(value.is<const char*>()) result += value.as<JsonString>().isStatic() ? 'S' : 's';
+    if(value.is<JsonObjectConst>()) for(JsonPairConst pair:value.as<JsonObjectConst>()) {
+        result += pair.key().isStatic() ? 'K' : 'k';
+        result += pair.key().c_str();result += valueShape(pair.value());
+    }
+    if(value.is<JsonArrayConst>()) for(JsonVariantConst child:value.as<JsonArrayConst>()) result+=valueShape(child);
+    return result;
+}
+static Shape capture(const JsonDocument& doc) {
+    return {documentBytes(doc),valueShape(doc.as<JsonVariantConst>()),doc.size(),doc.nesting(),doc.overflowed()};
+}
+static Shape metricsShape;
+static size_t captureMetrics(const JsonDocument& doc,String& out) {
+    calls.push_back("serialize");metricsShape=capture(doc);return serializeJson(doc,out);
+}
+struct EspFixture {
+    uint32_t total=0,free=0;bool found=false;
+    uint32_t getPsramSize() const { calls.push_back("psram-size");return total; }
+    uint32_t getFreePsram() const { calls.push_back("psram-free");return free; }
+} espFixture;
+static bool psramFoundFixture() { calls.push_back("psram-found");return espFixture.found; }
+struct PeripheralManager {
+    static PeripheralManager& getInstance() { static PeripheralManager p;return p; }
+    uint32_t getIsrQueueOverrunCount() { calls.push_back("isr-overrun");return UINT32_MAX; }
+    uint8_t getIsrQueueWaiting() { calls.push_back("isr-waiting");return UINT8_MAX; }
+};
+static uint8_t usedPool() { calls.push_back("pool-used");return UINT8_MAX; }
+static uint32_t exhaustedPool() { calls.push_back("pool-exhaust");return UINT32_MAX; }
+struct HealthState {
+    @HEALTH_MEMBERS@
+    @POOL_TYPE@
+    static constexpr uint8_t MAX_TRACKED_POOLS=4;
+    PoolStatsEntry _trackedPools[MAX_TRACKED_POOLS]{};
+    uint8_t _trackedPoolCount=0;
+    bool fixtureFragmented=false,fixtureLeak=false,fixtureDegraded=false,fixtureWorker=false,fixturePending=false;
+    unsigned long fixtureCritical=0;
+    bool isMemoryDegraded() const { calls.push_back("degraded");return fixtureDegraded; }
+    bool isFragmentationHigh() const { calls.push_back("fragmented");return fixtureFragmented; }
+    bool detectMemoryLeak() const { calls.push_back("leak");return fixtureLeak; }
+    bool arePeriphExecWorkersSuspendedForMemory() const { calls.push_back("worker-suspended");return fixtureWorker; }
+    bool isPeriphExecWorkerSuspensionPending() const { calls.push_back("worker-pending");return fixturePending; }
+    unsigned long getCriticalDurationMs() const { calls.push_back("critical-duration");return fixtureCritical; }
+};
+struct HealthOracle:HealthState {void fillDegradationJson(JsonObject) const;void fillMetricsJson(String&);};
+struct HealthCurrent:HealthState {void fillDegradationJson(JsonObject) const;void fillMetricsJson(String&);};
+#define ESP espFixture
+#define psramFound psramFoundFixture
+#define serializeJson captureMetrics
+@HEALTH_METHODS@
+#undef serializeJson
+#undef psramFound
+#undef ESP
+struct Outcome {
+    Shape shape;
+    std::string output;
+    std::vector<std::string> calls;
+    std::vector<DocumentProbeAllocator::Event> allocations;
+    size_t eligible=0,failures=0;
+    bool operator==(const Outcome& other) const {
+        return shape==other.shape && output==other.output && calls==other.calls &&
+               allocations==other.allocations && eligible==other.eligible && failures==other.failures;
+    }
+};
+static HealthState stateFor(unsigned value) {
+    HealthState s;
+    s.currentHealth.freeHeap=UINT32_MAX;s.currentHealth.minFreeHeap=0;
+    s.currentHealth.largestFreeBlock=UINT32_MAX-1;s.currentHealth.heapFragmentation=UINT8_MAX;
+    s.currentHealth.uptime=ULONG_MAX;s.currentHealth.bootTimeMs=ULONG_MAX;
+    s.currentHealth.dramFreeHeap=UINT32_MAX;s.currentHealth.dramLargestBlock=0;
+    s.mqttQueueDepth=UINT8_MAX;s.sseClientCount=UINT8_MAX;s.pollDurationMs=UINT32_MAX;
+    s._currentLevel=static_cast<MemoryGuardLevel>(value%5==4 ? UINT8_MAX : value%5);
+    s._mqttsMemoryDowngrade=value&1;s._modbusStoppedForMemory=value&2;
+    s._periphExecPausedForMemory=value&4;s._optionalPeripheralsSuspendedForMemory=value&8;
+    s._mqttStoppedForMemory=value&16;s._mqttRestorePendingForMemory=value&32;
+    s._mqttDisabledForMemory=value&64;s._mqttRecoveryBlockedForStorage=value&128;
+    s.fixtureDegraded=(value%3)!=0;s.fixtureFragmented=value&1;s.fixtureLeak=value&2;
+    s.fixtureWorker=value&4;s.fixturePending=value&8;s.fixtureCritical=ULONG_MAX;
+    s._dramHistoryCount=value&1 ? 6:5;s._memorySuspendedPeripheralCount=UINT16_MAX;
+    static char escaped[]="pool-\"\\\n-name";
+    static const char* names[]={"",escaped,"duplicate","duplicate"};
+    s._trackedPoolCount=value%5;
+    for(uint8_t i=0;i<s._trackedPoolCount;++i)
+        s._trackedPools[i]={names[i],UINT16_MAX,UINT8_MAX,i%2?nullptr:usedPool,i%2?exhaustedPool:nullptr};
+    return s;
+}
+template<class Health>
+static Outcome metrics(const HealthState& state,size_t failAt=SIZE_MAX,bool persistent=false) {
+    DocumentProbeAllocator allocator(failAt,persistent);healthAllocator=&allocator;
+    calls.clear();metricsShape={};
+    Health health;static_cast<HealthState&>(health)=state;
+    String output(std::string(1024,'x'));health.fillMetricsJson(output);
+    assert(allocator.blocks.empty());
+    Outcome result{metricsShape,std::string(output.c_str()),calls,allocator.events,allocator.eligible,allocator.failures};
+    assert(result.output==result.shape.bytes);
+    return result;
+}
+template<class Health>
+static Outcome degradation(const HealthState& state,const char* initial,
+        size_t failAt=SIZE_MAX,bool persistent=false) {
+    DocumentProbeAllocator allocator;Outcome result;
+    {
+        JsonDocument doc(&allocator);assert(!deserializeJson(doc,initial));
+        const size_t setup=allocator.eligible;
+        allocator.failAt=failAt==SIZE_MAX ? SIZE_MAX : setup+failAt;
+        allocator.persistent=persistent;
+        calls.clear();Health health;static_cast<HealthState&>(health)=state;
+        health.fillDegradationJson(doc.as<JsonObject>());
+        result.shape=capture(doc);result.calls=calls;
+        result.eligible=allocator.eligible-setup;result.failures=allocator.failures;
+        // Return JSON owns copied strings/keys; mutating the source flags has no
+        // effect on a document already emitted by either real writer.
+        health._currentLevel=MemoryGuardLevel::NORMAL;health._mqttDisabledForMemory=!health._mqttDisabledForMemory;
+        assert(capture(doc)==result.shape);
+    }
+    assert(allocator.blocks.empty());result.allocations=allocator.events;
+    return result;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];size_t cases=0;
+    if(mode=="metrics") {
+        for(unsigned i=0;i<40;++i) {
+            auto state=stateFor(i);
+            espFixture={i%2?UINT32_MAX:0U,i%3?UINT32_MAX-1:0U,(i%4)<2};
+            assert(metrics<HealthOracle>(state)==metrics<HealthCurrent>(state));++cases;
+        }
+    } else if(mode=="degradation") {
+        const char* seeds[]={"{}","null","[]","7",
+            "{\"unrelated\":[1,true,\"owned\"],\"active\":false,\"actions\":{\"old\":1}}",
+            "{\"actions\":[\"old\"],\"level\":\"old-level\"}"};
+        for(unsigned i=0;i<256;++i) for(const char* seed:seeds) {
+            auto state=stateFor(i);
+            assert(degradation<HealthOracle>(state,seed)==degradation<HealthCurrent>(state,seed));++cases;
+        }
+    } else if(mode=="metrics-oom") {
+        for(unsigned i:{0U,7U,19U,255U}) {
+            auto state=stateFor(i);espFixture={UINT32_MAX,UINT32_MAX-1,true};
+            const auto baseline=metrics<HealthOracle>(state);
+            assert(baseline==metrics<HealthCurrent>(state));
+            for(bool persistent:{false,true}) for(size_t at=0;at<=baseline.eligible+1;++at) {
+                assert(metrics<HealthOracle>(state,at,persistent)==metrics<HealthCurrent>(state,at,persistent));++cases;
+            }
+        }
+    } else if(mode=="degradation-oom") {
+        for(unsigned i:{0U,7U,19U,255U}) for(const char* seed:{"{}","{\"actions\":{\"old\":1},\"unrelated\":true}"}) {
+            auto state=stateFor(i);const auto baseline=degradation<HealthOracle>(state,seed);
+            assert(baseline==degradation<HealthCurrent>(state,seed));
+            for(bool persistent:{false,true}) for(size_t at=0;at<=baseline.eligible+1;++at) {
+                assert(degradation<HealthOracle>(state,seed,at,persistent)==degradation<HealthCurrent>(state,seed,at,persistent));++cases;
+            }
+        }
+    } else {std::cerr<<"unknown mode\n";return 2;}
+    std::cout<<"PASS "<<mode<<" "<<cases<<" cases feature="<<FASTBEE_ENABLE_PERIPH_EXEC<<"\n";
+}

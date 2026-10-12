@@ -1,0 +1,78 @@
+#include "core/RuntimeResourceSnapshot.h"
+#include <atomic>
+#include <cassert>
+#include <future>
+#include <mutex>
+#include <string>
+#include <thread>
+#define FASTBEE_ENABLE_SCREEN_UI 1
+#define ARDUINO_ARCH_ESP32 1
+using String=std::string;
+static unsigned runtimeAccesses=0,deviceAccesses=0,deviceCopies=0,deviceStops=0,observerLocks=0;
+static bool stopWorks=false,publishLockWorks=true;
+static std::mutex stateMutex;
+static constexpr int pdTRUE=1;
+static uint32_t now=100;
+uint32_t millis() { return now; }
+bool xSemaphoreTake(std::mutex* mutex,unsigned timeout) { assert(timeout==0);++observerLocks;return mutex->try_lock(); }
+void xSemaphoreGive(std::mutex* mutex) { mutex->unlock(); }
+namespace FastBee { namespace Screen {
+struct RuntimeState {
+    std::atomic<std::mutex*> observationMutex{nullptr};
+    std::atomic<bool> backlightChanging{true};
+    BacklightResourceSnapshot backlightResources;
+} state;
+std::atomic<RuntimeState*> runtimeObserverState{nullptr};
+RuntimeState& runtimeState() { ++runtimeAccesses;runtimeObserverState.store(&state);return state; }
+struct StateLock {
+    bool held;
+    StateLock():held(publishLockWorks && stateMutex.try_lock()) {}
+    ~StateLock() { if(held)stateMutex.unlock(); }
+    bool locked() const { return held; }
+};
+struct ScreenDevice {
+    BacklightResourceSnapshot resource;
+    static ScreenDevice& instance() { ++deviceAccesses;static ScreenDevice value;return value; }
+    void snapshotBacklightResource(BacklightResourceSnapshot& value) { ++deviceCopies;value=resource; }
+    bool deactivate(String*) {
+        ++deviceStops;assert(state.backlightChanging.load());
+        resource.available=true;resource.retained=!stopWorks;resource.cleanupFailed=!stopWorks;
+        resource.pin=stopWorks?-1:45;resource.channel=stopWorks?-1:3;
+        return stopWorks;
+    }
+};
+class ScreenRuntime { public: static void snapshotBacklightResources(BacklightResourceSnapshot&); };
+// @production@
+} }
+int main() {
+    using namespace FastBee;using namespace FastBee::Screen;
+    BacklightResourceSnapshot result;
+    ScreenRuntime::snapshotBacklightResources(result);
+    assert(!result.available && runtimeAccesses==0 && deviceAccesses==0 && observerLocks==0);
+    runtimeState();
+    ScreenRuntime::snapshotBacklightResources(result);
+    assert(!result.available && runtimeAccesses==1 && observerLocks==0);
+    state.observationMutex.store(&stateMutex);
+    ScreenRuntime::snapshotBacklightResources(result);
+    assert(result.status==ResourceObservation::Busy && !result.available);
+    String error;assert(!deactivateScreenDeviceResources(&error));
+    const unsigned runtimes=runtimeAccesses,devices=deviceAccesses,copies=deviceCopies;
+    for(unsigned i=0;i<1000;++i) {
+        ScreenRuntime::snapshotBacklightResources(result);
+        assert(result.available && result.retained && result.cleanupFailed && result.pin==45 && result.sampledAt==100);
+    }
+    assert(runtimeAccesses==runtimes && deviceAccesses==devices && deviceCopies==copies && deviceStops==1);
+    std::promise<void> entered,release;auto released=release.get_future();
+    std::thread blocker([&] { std::lock_guard<std::mutex> lock(stateMutex);entered.set_value();released.wait(); });
+    entered.get_future().wait();ScreenRuntime::snapshotBacklightResources(result);
+    assert(result.status==ResourceObservation::Busy && !result.available && !result.retained);
+    release.set_value();blocker.join();
+    // Failed publication invalidates the previous retained snapshot, including
+    // when a later cleanup succeeded. A reader cannot infer either result.
+    publishLockWorks=false;stopWorks=true;
+    assert(deactivateScreenDeviceResources(&error));ScreenRuntime::snapshotBacklightResources(result);
+    assert(result.status==ResourceObservation::Busy && !result.available);
+    publishLockWorks=true;now=200;publishBacklightResources();
+    ScreenRuntime::snapshotBacklightResources(result);
+    assert(result.available && !result.retained && !result.cleanupFailed && result.pin==-1 && result.sampledAt==200);
+}

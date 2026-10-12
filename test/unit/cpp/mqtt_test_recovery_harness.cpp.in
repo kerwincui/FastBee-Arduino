@@ -1,0 +1,231 @@
+#include <ArduinoJson.h>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <map>
+#include <string>
+#include <thread>
+#include "systems/ProtocolConfigGuard.h"
+#include "core/ReportInstanceBinding.h"
+#include "protocols/MqttClientLease.h"
+struct String : std::string {
+    using std::string::string;
+    using std::string::operator=;
+    String() = default;
+    String(const std::string& s):std::string(s) {}
+    String(uint32_t n,int=10):std::string(std::to_string(n)) {}
+    bool isEmpty() const { return empty(); }
+};
+constexpr int HEX=16;
+uint32_t esp_random() { return 123; }
+#define LOG_INFO(...) do {} while(false)
+#define LOG_WARNING(...) do {} while(false)
+namespace FileSystem { const char* PROTOCOL_CONFIG_FILE="/config/protocol.json"; }
+static const char* MQTT_TEST_BACKUP_PATH="/config/mqtt-backup.json";
+static String s_mqttTestId;
+static std::atomic<bool> s_mqttTestPendingRestore{false},s_mqttTestWasConnected{false},
+    s_mqttTestJustRestored{false},s_mqttTestRestoreBlocked{false};
+static FastBee::MqttClientLifetime s_mqttTestGate;
+static unsigned long s_mqttTestStartTime=0,s_lastRestoreCheck=0;
+unsigned long fakeNow=10000;
+unsigned long millis() { return fakeNow; }
+struct Probe {
+    bool test=true,connected=true,stopped=false;
+    String id;
+    bool isConnectionTestOnly() const { return test; }
+    const String& getConnectionTestId() const { return id; }
+    bool getIsConnected() const { return connected; }
+    bool isStopped() const { return stopped; }
+} probe;
+struct ProtocolManager {
+    unsigned stops=0,restarts=0;
+    Probe* acquireMQTTClient() { return &probe; }
+    void stopMQTT() { ++stops; }
+    void restartMQTTDeferred(bool) { ++restarts; }
+} pm;
+struct FastBeeFramework {
+    static FastBeeFramework* getInstance() { static FastBeeFramework value;return &value; }
+    ProtocolManager* getProtocolManager() { return &pm; }
+};
+struct MqttRouteHandler { static void checkPendingTestRestore(); };
+std::map<std::string,std::string> disk;
+bool openWriteFailure=false,shortWrite=false,openReadFailure=false,removeFailure=false;
+struct File {
+    std::string path;
+    size_t cursor=0;
+    bool valid=false;
+    explicit operator bool() const { return valid; }
+    size_t write(const uint8_t* data,size_t count) {
+        if(shortWrite)count=0;
+        if(valid)disk[path].append(reinterpret_cast<const char*>(data),count);
+        return valid?count:0;
+    }
+    size_t write(uint8_t byte) { return write(&byte,1); }
+    int read() {
+        return valid && cursor<disk[path].size()?static_cast<unsigned char>(disk[path][cursor++]):-1;
+    }
+    size_t readBytes(char* out,size_t count) {
+        size_t n=0;int value;
+        while(n<count && (value=read())>=0)out[n++]=static_cast<char>(value);
+        return n;
+    }
+    void flush() {}
+    void close() { valid=false; }
+};
+struct FS {
+    bool exists(const char* path) { return disk.count(path)!=0; }
+    File open(const char* path,const char* mode) {
+        if(mode[0]=='w') {
+            if(openWriteFailure)return {};
+            disk[path]="";
+        } else if(openReadFailure || !exists(path)) return {};
+        return {path,0,true};
+    }
+    bool remove(const char* path) { return !removeFailure && disk.erase(path)!=0; }
+} LittleFS;
+struct ConfigStorage {
+    bool failSave=false,failLoad=false;
+    unsigned writes=0;
+    std::function<void()> duringLoad;
+    static ConfigStorage& getInstance() { static ConfigStorage value;return value; }
+    bool saveJSONConfig(const String&,const JsonDocument&);
+    bool loadJSONConfig(const String&,JsonDocument&);
+    bool compareExchangeMqttConfig(JsonVariantConst,JsonVariantConst);
+    bool saveJSONConfigImpl(const String& path,const JsonDocument& doc) {
+        if(failSave)return false;
+        ++writes;std::string json;serializeJson(doc,json);disk[path]=json;return true;
+    }
+    bool loadJSONConfigImpl(const String& path,JsonDocument& doc) {
+        if(failLoad)return false;
+        if(duringLoad)duringLoad();
+        return !deserializeJson(doc,disk[path]);
+    }
+    bool loadProtocolConfig(JsonDocument& doc) { return loadJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,doc); }
+};
+@METHODS@
+
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];
+    auto& storage=ConfigStorage::getInstance();
+    const std::string initial=R"({"mqtt":{"server":"old","password":"old-secret","autoReconnect":false,"topics":[1,2]},"sibling":{"revision":1}})";
+    disk[FileSystem::PROTOCOL_CONFIG_FILE]=initial;
+    if(mode=="loop_disabled")disk[FileSystem::PROTOCOL_CONFIG_FILE]=R"({"mqtt":{"server":"old","enabled":false}})";
+    const auto stage=[] { return saveMqttTestConfig("probe",1883,"user","probe-secret","",0,"","mqtt","client"); };
+    if(mode=="backup_open")openWriteFailure=true;
+    if(mode=="backup_short")shortWrite=true;
+    if(mode=="backup_read")openReadFailure=true;
+    if(mode=="preserve_existing")disk[MQTT_TEST_BACKUP_PATH]="previous-evidence";
+    if(mode=="legacy" || mode=="corrupt") {
+        disk[MQTT_TEST_BACKUP_PATH]=mode=="legacy"?R"({"mqtt":{"server":"older"}})":"invalid";
+        const auto record=disk[MQTT_TEST_BACKUP_PATH];
+        assert(!restoreMqttConfigFromBackup());
+        assert(disk[MQTT_TEST_BACKUP_PATH]==record && storage.writes==0);return 0;
+    }
+    if(mode=="malformed") {
+        JsonDocument bad,good;bad.set(1);good["server"]="next";
+        assert(!storage.compareExchangeMqttConfig(bad.as<JsonVariantConst>(),good.as<JsonVariantConst>()));
+        assert(!backupMqttConfig(bad.as<JsonVariantConst>(),good.as<JsonVariantConst>()));
+        assert(storage.writes==0 && !LittleFS.exists(MQTT_TEST_BACKUP_PATH));return 0;
+    }
+    if(mode=="cas_load_fail") {
+        JsonDocument before;assert(storage.loadProtocolConfig(before));
+        storage.failLoad=true;
+        assert(!storage.compareExchangeMqttConfig(before["mqtt"],before["mqtt"]));
+        assert(storage.writes==0);return 0;
+    }
+    if(mode=="busy") {
+        FastBee::ProtocolConfigGuard held;
+        JsonDocument doc;doc["mqtt"]["server"]="next";
+        assert(!stage());
+        assert(!storage.compareExchangeMqttConfig(doc["mqtt"],doc["mqtt"]));
+        assert(!storage.saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,doc));
+        assert(storage.saveJSONConfig("/config/unrelated.json",doc));
+        assert(disk[FileSystem::PROTOCOL_CONFIG_FILE]==initial);return 0;
+    }
+    if(mode=="concurrent_save") {
+        unsigned rejected=0;
+        storage.duringLoad=[&] {
+            JsonDocument other;other["mqtt"]["server"]="racer";
+            std::thread rival([&] {
+                if(!storage.saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,other))++rejected;
+            });
+            rival.join();
+        };
+        assert(stage());assert(rejected>=2);
+        storage.duringLoad={};assert(restoreMqttConfigFromBackup());return 0;
+    }
+    if(mode=="save_fail")storage.failSave=true;
+    const bool staged=stage();
+    if(mode=="backup_open"||mode=="backup_short"||mode=="backup_read"||mode=="preserve_existing"||mode=="save_fail") {
+        assert(!staged && storage.writes==0 && disk[FileSystem::PROTOCOL_CONFIG_FILE]==initial);
+        if(mode=="preserve_existing")assert(disk[MQTT_TEST_BACKUP_PATH]=="previous-evidence");
+        if(mode=="save_fail") {
+            storage.failSave=false;assert(restoreMqttConfigFromBackup());
+            assert(storage.writes==0);
+        }
+        return 0;
+    }
+    assert(staged && storage.writes==1 && LittleFS.exists(MQTT_TEST_BACKUP_PATH));
+    if(mode.find("loop_")==0) {
+        probe.id=s_mqttTestId;
+        s_mqttTestPendingRestore=true;s_mqttTestStartTime=fakeNow;
+        if(mode=="loop_reboot") { s_mqttTestPendingRestore=false;s_mqttTestId=""; }
+        if(mode=="loop_other_client")probe.id="not-this-test";
+        if(mode=="loop_retry")storage.failSave=true;
+        if(mode=="loop_busy") {
+            FastBee::MqttClientLifetime::Write held(s_mqttTestGate);
+            MqttRouteHandler::checkPendingTestRestore();
+            assert(s_mqttTestPendingRestore && storage.writes==1 && pm.stops==0);
+            return 0;
+        }
+        MqttRouteHandler::checkPendingTestRestore();
+        if(mode=="loop_other_client") {
+            assert(s_mqttTestPendingRestore && !s_mqttTestWasConnected && pm.stops==0);
+            fakeNow+=21000;MqttRouteHandler::checkPendingTestRestore();
+            assert(!s_mqttTestPendingRestore && !s_mqttTestWasConnected);return 0;
+        }
+        if(mode=="loop_retry") {
+            assert(s_mqttTestPendingRestore && s_mqttTestRestoreBlocked && !s_mqttTestJustRestored);
+            assert(LittleFS.exists(MQTT_TEST_BACKUP_PATH) && pm.stops==0);
+            storage.failSave=false;fakeNow+=2000;
+            MqttRouteHandler::checkPendingTestRestore();
+        }
+        assert(!s_mqttTestPendingRestore && !s_mqttTestRestoreBlocked && s_mqttTestJustRestored);
+        assert(pm.stops==1 && pm.restarts==(mode=="loop_disabled"?0:1));
+        assert(s_mqttTestWasConnected==(mode!="loop_reboot"));
+        return 0;
+    }
+    JsonDocument candidate;assert(storage.loadProtocolConfig(candidate));
+    assert(candidate["mqtt"]["connectionTestOnly"]==true && candidate["mqtt"]["autoReconnect"]==true);
+    assert(candidate["mqtt"]["topics"].size()==2);
+    assert(candidate["mqtt"]["connectionTestId"].as<std::string>()==s_mqttTestId);
+    assert(!stage()); // Cannot overwrite pending backup or stage a test on a test.
+    if(mode=="conflict"||mode=="sibling_edit") {
+        if(mode=="conflict")candidate["mqtt"]["password"]="user-edit";
+        candidate["sibling"]["revision"]=2;
+        assert(storage.saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,candidate));
+    }
+    const auto saved=disk[FileSystem::PROTOCOL_CONFIG_FILE];
+    const auto evidence=disk[MQTT_TEST_BACKUP_PATH];
+    if(mode=="restore_fail")storage.failSave=true;
+    if(mode=="cleanup_fail")removeFailure=true;
+    const bool restored=restoreMqttConfigFromBackup();
+    if(mode=="conflict"||mode=="restore_fail") {
+        assert(!restored && disk[FileSystem::PROTOCOL_CONFIG_FILE]==saved);
+        assert(disk[MQTT_TEST_BACKUP_PATH]==evidence);
+        if(mode=="restore_fail") { storage.failSave=false;assert(restoreMqttConfigFromBackup()); }
+        return 0;
+    }
+    if(mode=="cleanup_fail") {
+        assert(!restored && LittleFS.exists(MQTT_TEST_BACKUP_PATH));
+        const unsigned writes=storage.writes;
+        removeFailure=false;assert(restoreMqttConfigFromBackup());
+        assert(storage.writes==writes);
+    } else assert(restored);
+    JsonDocument result;assert(storage.loadProtocolConfig(result));
+    assert(result["mqtt"]["server"]=="old" && result["mqtt"]["password"]=="old-secret");
+    assert(result["mqtt"]["connectionTestOnly"].isNull());
+    assert(result["sibling"]["revision"]==(mode=="sibling_edit"?2:1));
+    assert(!LittleFS.exists(MQTT_TEST_BACKUP_PATH));
+}

@@ -3,6 +3,11 @@
  * 包含规则脚本的 CRUD 操作
  */
 (function() {
+    // This template follows its lazy page module and mounts only on demand.
+    if (typeof PageLoader !== 'undefined') {
+        PageLoader._cacheModalTemplates("<div id=\"rule-script-modal\" class=\"modal\"><div class=\"modal-content u-modal-content-700\"><div class=\"modal-header\"><h2 class=\"modal-title\" id=\"rule-script-modal-title\"> 新增规则脚本</h2><button id=\"close-rule-script-modal\" class=\"modal-close-btn\">&times;</button></div><div class=\"modal-body\"><form id=\"rule-script-form\" class=\"fb-form\"><fieldset><input type=\"hidden\" id=\"rule-script-original-id\" value=\"\"><div class=\"fb-form-group\"><label for=\"rule-script-name\">规则名称</label><input type=\"text\" id=\"rule-script-name\" class=\"\" placeholder=\"例如: 数据格式转换\" required></div><div class=\"fb-form-group\"><label>启用</label><label class=\"toggle-switch\"><input type=\"checkbox\" id=\"rule-script-enabled\" checked><span class=\"toggle-slider\"></span></label></div><div class=\"fb-form-group\"><label for=\"rule-script-trigger-type\">触发类型</label><select id=\"rule-script-trigger-type\" class=\"\"><option value=\"0\">数据接收</option><option value=\"1\">数据上报</option></select></div><div class=\"fb-form-group\"><label for=\"rule-script-protocol-type\">协议类型</label><select id=\"rule-script-protocol-type\" class=\"\"><option value=\"0\">MQTT</option><option value=\"1\">Modbus RTU</option></select></div><div id=\"rule-script-topic-fields\" style=\"display:none;\"><div class=\"fb-form-group\"><label for=\"rule-script-source-topic\">源主题</label><input type=\"text\" id=\"rule-script-source-topic\" class=\"\" placeholder=\"例如: /device/sensor/data 或 /device/+/data\"><small>留空匹配所有 MQTT 消息，支持 + (单级) / # (多级) 通配符</small></div><div class=\"fb-form-group\"><label for=\"rule-script-target-topic\">目标主题</label><input type=\"text\" id=\"rule-script-target-topic\" class=\"\" placeholder=\"例如: /cloud/telemetry\"><small>留空不重定向，转换后发布到此主题</small></div></div><div class=\"fb-form-group\"><label for=\"rule-script-content\">脚本内容</label><textarea id=\"rule-script-content\" class=\"textarea-code\" maxlength=\"2048\" placeholder='{\"temp\": ${temperature}, \"humi\": ${humidity}}'></textarea><small>使用 ${key} 引用输入数据中的值，例如 ${temperature}</small></div><div id=\"rule-script-error\" class=\"message message-error is-hidden\"></div></fieldset></form></div><div class=\"modal-footer\"><button class=\"fb-btn\" id=\"cancel-rule-script-btn\" type=\"button\">取消</button><button class=\"fb-btn fb-btn-primary\" id=\"save-rule-script-btn\" type=\"button\">保存</button></div></div></div>", '', ['rule-script-modal']);
+    }
+
     AppState.registerModule('rule-script', {
         _ruleScriptEventsBound: false,
 
@@ -235,6 +240,18 @@
             this.hideModal('rule-script-modal');
         },
 
+        _refreshRuleScriptAfterWrite() {
+            try {
+                if (typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/rule-script');
+            } catch (error) {
+                console.warn('[rule-script] cache invalidation failed', error);
+            }
+            if (this.currentPage === 'rule-script') {
+                Promise.resolve().then(() => this.loadRuleScriptPage({ noCache: true }))
+                    .catch(error => console.warn('[rule-script] verification read failed', error));
+            }
+        },
+
         saveRuleScript() {
             if (!this.guardDeveloperModeAction() || this._rsSavePending || !this._rsEditorReady) return;
             this.clearInlineError('rule-script-error');
@@ -260,22 +277,22 @@
             this._rsSavePending = true;
             if (button) button.disabled = true;
             return apiPost(url, ruleData).then(res => {
-                if (res && res.success && typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/rule-script');
                 if (!this._ruleScriptActive(seq)) return;
-                if (res && res.success) {
+                if (res && res.success === true) {
                     Notification.success(isEdit ? '规则脚本更新成功' : '规则脚本添加成功', '规则脚本');
                     this.closeRuleScriptModal();
-                    if (typeof window.apiInvalidateCache === 'function') {
-                        window.apiInvalidateCache('/api/rule-script');
-                    }
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
                 } else {
-                    this.showInlineError('rule-script-error', res?.error || '保存失败');
+                    this._rsEditorReady = false;
+                    this.showInlineError('rule-script-error', (res?.error || '保存未确认') + '；请先核验列表，关闭后重新编辑，勿重复提交');
                 }
             }).catch(() => {
-                if (this._ruleScriptActive(seq)) this.showInlineError('rule-script-error', '保存失败');
+                if (this._ruleScriptActive(seq)) {
+                    this._rsEditorReady = false;
+                    this.showInlineError('rule-script-error', '保存结果未知；请先核验列表，关闭后重新编辑，勿重复提交');
+                }
             }).finally(() => {
                 this._rsSavePending = false;
+                this._refreshRuleScriptAfterWrite();
                 const currentButton = document.getElementById('save-rule-script-btn');
                 if (currentButton) currentButton.disabled = !this._rsEditorReady;
             });
@@ -314,37 +331,29 @@
             if (this._rsActions.has(id)) return Promise.resolve(null);
             this._rsActions.add(id);
             return Promise.resolve().then(action).then(res => {
-                if (!res || !res.success) throw new Error(res && res.error || '操作失败，请重试');
+                if (!res || res.success !== true) throw new Error(res && res.error || '操作结果未确认');
                 return res;
             }).catch(err => {
-                Notification.error(err.message || '操作失败，请重试', '规则脚本');
+                Notification.error((err.message || '操作结果未知') + '；请先核验列表，勿直接重复操作', '规则脚本');
                 return null;
-            }).finally(() => this._rsActions.delete(id));
+            }).finally(() => {
+                this._rsActions.delete(id);
+                this._refreshRuleScriptAfterWrite();
+            });
         },
 
         toggleRuleScript(id, enable) {
             if (!this.guardDeveloperModeAction()) return;
             const url = enable ? '/api/rule-script/enable' : '/api/rule-script/disable';
-            return this._runRuleScriptAction(id, () => apiPost(url, { id: id })).then(res => {
-                if (res && res.success) {
-                    if (typeof window.apiInvalidateCache === 'function') {
-                        window.apiInvalidateCache('/api/rule-script');
-                    }
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
-                }
-            });
+            return this._runRuleScriptAction(id, () => apiPost(url, { id: id }));
         },
 
         deleteRuleScript(id) {
             if (!this.guardDeveloperModeAction()) return;
             if (!confirm('确定要删除此规则吗？')) return;
             return this._runRuleScriptAction(id, () => apiDelete('/api/rule-script/', { id: id })).then(res => {
-                if (res && res.success) {
+                if (res && res.success === true) {
                     Notification.success('规则脚本已删除', '规则脚本');
-                    if (typeof window.apiInvalidateCache === 'function') {
-                        window.apiInvalidateCache('/api/rule-script');
-                    }
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
                 }
             });
         }

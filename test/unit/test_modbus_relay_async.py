@@ -43,10 +43,31 @@ class ModbusRelayAsyncTests(unittest.TestCase):
         for suffix in ("Control", "Batch", "Delay", "Status"):
             self.assertIn("dispatchRelayRequest(request, &ModbusRouteHandler::handleModbusCoil" + suffix + ")", setup)
         control = definition(source, "void ModbusRouteHandler::handleModbusCoilControl(")
-        self.assertIn("validRelayChannel(slaveInput, channelInput, baseInput)", control)
-        self.assertIn("slaveAddr, 0x01, coilAddr, 1, true", control)
-        self.assertNotIn("readR.data[channel]", control)
-        self.assertEqual(control.count("readR.count < 1"), 2)
+        self.assertIn("validRelayChannel(slave, channel, base)", control)
+        self.assertIn("snapshotOrdinaryRelayEndpoint(", control)
+        self.assertLess(control.index("snapshotOrdinaryRelayEndpoint("),
+                        control.index("beginHttpModbusRelayOutput("))
+        self.assertIn("*modbus, target, function, address, value, control, result, 0, toggle", control)
+        self.assertNotIn("readRegistersOnce", control)
+        self.assertNotIn("writeCoilOnce", control)
+        self.assertNotIn("writeRegisterOnce", control)
+        adapter = (ROOT / "src/protocols/ModbusOrdinaryControl.cpp").read_text(encoding="utf-8")
+        write = definition(adapter, "OneShotResult ModbusHandler::writeOrdinaryRelayOnce(")
+        # Toggle reads one exact endpoint and writes it under the same bus guard.
+        # Actual RTU success, malformed read and retirement between read/write
+        # are exercised by test_modbus_ordinary_control.
+        self.assertEqual(write.count("OrdinaryBusGuard lock(_oneShotSemaphore)"), 1)
+        self.assertLess(write.index("OrdinaryBusGuard lock("), write.index("if (toggle)"))
+        self.assertIn("static_cast<uint8_t>(function == 5 ? 1 : 3)", write)
+        self.assertIn("static_cast<uint8_t>(address), 0, 1, 0, 0", write)
+        self.assertIn("result.count != (coil ? 6 : 7)", write)
+        self.assertIn("result.data[2] != (coil ? 1 : 2)", write)
+        self.assertLess(write.index("CONTROL_TOGGLE_READ_UNCONFIRMED"),
+                        write.index("_ordinaryWriteTicket = &ticket"))
+        # The shared buffer also supports an 11-byte single-word FC16 motor
+        # write. Ordinary FC05/06 relay writes still transmit only eight bytes.
+        self.assertIn("const size_t length = function == 16 ? 11 : 8", write)
+        self.assertIn("request, length, target.slave, timeout, 0, true", write)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ using err_t=int;
 constexpr err_t ERR_OK=0,ERR_CONN=-11,ERR_MEM=-1;
 using AsyncClient=Client;
 struct tcpip_api_call_data {};
-struct tcp_pcb {Client* client;bool aborted=false;size_t discarded=0;};
+struct tcp_pcb {Client* client;bool aborted=false;size_t discarded=0;int state=4;};
 struct tcp_api_call_t:tcpip_api_call_data {
     tcp_pcb** pcb;Client* close;err_t err=ERR_CONN;
 };
@@ -84,6 +84,7 @@ void timeoutAndCancel() {
         assert(weak.expired()&&disconnects==1&&closes==unsigned(!cancel));
     }
 }
+#ifndef FASTBEE_PEER_DRAIN_NO_MAIN
 int main() {
     for(bool lost:{false,true}) for(bool oom:{false,true}) {
         finalPacket<AsyncBasicResponse>(false,lost,oom);
@@ -93,3 +94,4 @@ int main() {
     timeoutAndCancel();
     std::cout<<"peer drain: final packet, lost/duplicate ACK, ERR_MEM, timeout and cancellation passed\n";
 }
+#endif

@@ -14,6 +14,7 @@
 #define BLE_PROVISIONER_H
 
 #include "core/FeatureFlags.h"
+#include "core/FeatureOwnerLifetime.h"
 #include "network/BLEProvisionTypes.h"
 
 #if FASTBEE_ENABLE_BLE
@@ -93,6 +94,7 @@ public:
     void _onRxData(const char* data, size_t len);
 
 private:
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::Ble};
     FBNetworkManager* netMgr;
 
     NimBLEServer* server = nullptr;

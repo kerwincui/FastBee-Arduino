@@ -5,9 +5,11 @@
 #include <memory>
 #include <vector>
 #include "core/FeatureFlags.h"
+#include "protocols/MqttClientLease.h"
 #if FASTBEE_ENABLE_MQTT
 #include "MQTTClient.h"
 #include <freertos/queue.h>
+#include "protocols/OtaReplyQueueOwner.h"
 #endif
 #if FASTBEE_ENABLE_MODBUS
 #include "ModbusHandler.h"
@@ -138,11 +140,16 @@ public:
     ModbusHandler* getModbusHandler() const { return nullptr; }
 #endif
 
-    // 获取 MQTTClient 指针（供路由处理器访问MQTT状态接口）
+    // MQTT callers must keep the lease alive for every use of its pointer.
 #if FASTBEE_ENABLE_MQTT
-    MQTTClient* getMQTTClient() const { return mqttClient.get(); }
+    FastBee::MqttClientLease acquireMQTTClient(bool* absent = nullptr) const;
+    bool mqttLifetimeAvailable() const { return mqttLifetime.available(); }
 #else
-    MQTTClient* getMQTTClient() const { return nullptr; }
+    bool mqttLifetimeAvailable() const { return true; }
+    FastBee::MqttClientLease acquireMQTTClient(bool* absent = nullptr) const {
+        if (absent) *absent = true;
+        return {};
+    }
 #endif
 
 #if FASTBEE_ENABLE_MQTT
@@ -155,7 +162,8 @@ public:
      * @brief 非阻塞重启MQTT（重新加载配置，由loop自动重连）
      * 用于HTTP handler中避免阻塞Web服务器
      */
-    bool restartMQTTDeferred(bool forceRebuild = false);
+    bool restartMQTTDeferred(bool forceRebuild = false,
+                             FastBee::MqttRestartResult* result = nullptr);
 
     /**
      * @brief 异步请求重启MQTT（仅置标志，由 handle() 在 loopTask 中执行）
@@ -167,7 +175,15 @@ public:
     /**
      * @brief 停止MQTT连接
      */
-    void stopMQTT();
+    // true: local stop completed; false: retained for loopTask after leases drain.
+    bool stopMQTT();
+
+    // Empty lease: do not change/destroy adapters. On success the caller must
+    // hold this exclusive lease through adapter recreation and all fallbacks.
+    FastBee::MqttClientLifetime::Write prepareMqttNetworkSwitch();
+
+    // Store policy independently of instance availability; loop/rebuild applies it.
+    void setMqttMinReportInterval(uint32_t ms) { mqttMinReportInterval.store(ms); }
 
     /**
      * @brief 标记 MQTT 已被配置禁用（供调试打印可观测区分）
@@ -229,6 +245,10 @@ private:
     // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
 #if FASTBEE_ENABLE_MQTT
     std::unique_ptr<MQTTClient> mqttClient;
+    mutable FastBee::MqttClientLifetime mqttLifetime;
+    std::atomic<bool> mqttStopPending{false};
+    std::atomic<bool> mqttShutdownPending{false};
+    std::atomic<uint32_t> mqttMinReportInterval{0};
 #endif
 #if FASTBEE_ENABLE_MODBUS
     std::unique_ptr<ModbusHandler> modbusHandler;
@@ -255,7 +275,7 @@ private:
     ModbusRestartResult modbusLastRestartResult = ModbusRestartResult::Failed;
 #endif
 #if FASTBEE_ENABLE_MQTT
-    volatile bool mqttRestartPending = false;  // MQTT 热重建标志，由 handle() 在 loopTask 中消费
+    std::atomic<bool> mqttRestartPending{false}; // Consumed by loopTask after leases drain.
     bool mqttDisabledByConfig = false;         // 配置 mqtt.enabled=false，由统一守卫置位，调试打印区分“禁用”与“启动失败”
 
     struct FastBeeOtaReplyEvent {
@@ -265,9 +285,7 @@ private:
         char version[32];
         char error[96];
     };
-    QueueHandle_t fastBeeOtaActiveTerminalQueue = nullptr; // active task status 3/4
-    QueueHandle_t fastBeeOtaReplyQueue = nullptr;          // non-owner terminal replies
-    QueueHandle_t fastBeeOtaProgressQueue = nullptr;       // latest status 2 only
+    FastBee::OtaReplyQueueOwner fastBeeOtaReplyQueues{sizeof(FastBeeOtaReplyEvent)};
     FastBeeOtaReplyEvent fastBeeOtaPendingReply{};
     bool fastBeeOtaHasPendingReply = false;
     unsigned long fastBeeOtaLastPublishAttemptMs = 0;
@@ -286,6 +304,7 @@ private:
     // 初始化具体协议
 #if FASTBEE_ENABLE_MQTT
     bool initMQTT(void* config);
+    bool finishMqttStop();
     void handleMqttMessage(const String& topic, const String& message, MqttTopicType topicType);
     void handleFastBeeOtaCommand(const String& message, MqttTopicType topicType);
     void queueFastBeeOtaReply(int32_t taskId, const String& version,

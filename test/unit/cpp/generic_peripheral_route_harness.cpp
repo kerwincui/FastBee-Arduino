@@ -2,7 +2,10 @@
 #include <ArduinoJson.h>
 #include "core/PeripheralConfig.h"
 #include "core/SensorConfigSupport.h"
+#include "core/Pca9685ConfigSupport.h"
+#include "core/H1ParameterContract.h"
 #include "core/RuntimeFeatureManager.h"
+#include "network/FixedJsonField.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -95,8 +98,16 @@ static void logicalOutputRoundTrip() {
     assert(startupHigh(output) && startupHigh(rebooted) == startupHigh(output));
     AsyncWebServerRequest numeric{{{"ioSource", "1"}, {"channel", "0"}}};
     assert(applyIoPeripheralRequestParameters(&ctx, &numeric, rebooted, false, error));
+    // Request parsing admits the widest supported provider. The manager then
+    // checks the selected parent's real 8/16-channel capability.
+    for (const char* channel : {"8", "15"}) {
+        AsyncWebServerRequest wide{{{"channel", channel}}};
+        PeripheralConfig copy = rebooted;
+        assert(applyIoPeripheralRequestParameters(&ctx, &wide, copy, false, error));
+        assert(copy.params.gpio.channel == std::atoi(channel));
+    }
     for (const auto& invalid : std::initializer_list<std::pair<const char*, const char*>>{
-        {"ioSource", "2"}, {"channel", "8"}, {"channel", "256"}, {"channel", "1.2"},
+        {"ioSource", "2"}, {"channel", "16"}, {"channel", "256"}, {"channel", "1.2"},
         {"channel", ""}, {"providerId", ""}, {"invertLogic", "yes"}, {"initialState", "2"},
         {"inputMode", "1"}, {"providerId", "12345678901234567890123456789012345678901"}}) {
         AsyncWebServerRequest bad{{{invalid.first, invalid.second}}};

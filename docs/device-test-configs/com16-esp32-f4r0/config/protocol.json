@@ -1,0 +1,109 @@
+{
+  "modbusRtu": {
+    "enabled": false,
+    "peripheralId": "",
+    "mode": "master",
+    "dePin": 14,
+    "transferType": 0,
+    "master": {
+      "tasks": [],
+      "devices": []
+    }
+  },
+  "mqtt": {
+    "enabled": false,
+    "scheme": "mqtt",
+    "server": "iot.fastbee.cn",
+    "port": 1883,
+    "clientId": "",
+    "username": "",
+    "password": "",
+    "keepAlive": 60,
+    "autoReconnect": true,
+    "authType": 1,
+    "mqttSecret": "",
+    "authCode": "",
+    "willTopic": "",
+    "willPayload": "",
+    "willQos": 0,
+    "willRetain": false,
+    "longitude": 0,
+    "latitude": 0,
+    "iccid": "",
+    "cardPlatformId": 0,
+    "summary": "",
+    "publishTopics": [
+      {
+        "topic": "/property/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 0
+      },
+      {
+        "topic": "/info/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 2
+      },
+      {
+        "topic": "/event/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 4
+      },
+      {
+        "topic": "/monitor/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 7
+      }
+    ],
+    "subscribeTopics": [
+      {
+        "topic": "/function/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 1
+      },
+      {
+        "topic": "/info/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 2
+      },
+      {
+        "topic": "/monitor/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "topicType": 7
+      }
+    ],
+    "disabled_by_memory": true
+  }
+}

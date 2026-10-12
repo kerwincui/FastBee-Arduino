@@ -23,6 +23,8 @@ class LoggerAsyncFlushTests(unittest.TestCase):
             "LoggerSystem::LoggerSystem(", "LoggerSystem::~LoggerSystem(",
             "bool LoggerSystem::initialize(", "void LoggerSystem::enableFileLogging(",
             "void LoggerSystem::cancelFileLoggingRequest(",
+            "void LoggerSystem::enableLogViewer(", "void LoggerSystem::appendRecentLine(",
+            "size_t LoggerSystem::recentLogLineCount(",
             "void LoggerSystem::logToBuffer(", "size_t LoggerSystem::bufferedDataSize(",
             "void LoggerSystem::flushBufferInternal(", "void LoggerSystem::flushBuffer(",
             "void LoggerSystem::flushBufferIfDue(", "void LoggerSystem::flushTask(",
@@ -30,6 +32,7 @@ class LoggerAsyncFlushTests(unittest.TestCase):
             "const char* LoggerSystem::getLevelString(", "int LoggerSystem::espLogCallback(",
             "void LoggerSystem::captureRecentLine(", "size_t LoggerSystem::snapshotRecentLogs(",
             "bool LoggerSystem::lockLogFiles(", "void LoggerSystem::unlockLogFiles(",
+            "FastBee::FeatureInstanceSnapshot LoggerSystem::observeFeatureInstance(",
             "bool LoggerSystem::rotateLogFile(", "bool LoggerSystem::rotateLogFileInternal(",
             "bool LoggerSystem::clearLogFile(", "void LoggerSystem::writeRawLog(",
         )
@@ -62,7 +65,7 @@ class LoggerAsyncFlushTests(unittest.TestCase):
             executable = temporary / ("logger.exe" if os.name == "nt" else "logger")
             result = subprocess.run(
                 [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DFASTBEE_USE_PSRAM=1",
-                 f"-I{temporary}", f"-I{ROOT / 'test/unit/cpp'}",
+                 f"-I{temporary}", f"-I{ROOT / 'test/unit/cpp'}", f"-I{ROOT / 'include'}",
                  str(ROOT / "test/unit/cpp/logger_async_flush_harness.cpp"), "-o", str(executable)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path(os.environ.get(
-    "FASTBEE_ECM50A_CONFIG_DIR", ROOT / "docs/ecm50a-s3-f16r8"))
+    "FASTBEE_ECM50A_CONFIG_DIR", ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config"))
 
 
 def load(name):

@@ -11,7 +11,9 @@ inline void vSemaphoreDelete(SemaphoreHandle_t handle) {
 }
 inline BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t handle, TickType_t timeout) {
     lastSemaphoreTimeout = timeout;
-    return static_cast<std::recursive_timed_mutex*>(handle)->try_lock_for(
+    auto* mutex = static_cast<std::recursive_timed_mutex*>(handle);
+    if (timeout == 0) return mutex->try_lock() ? pdTRUE : pdFALSE;
+    return mutex->try_lock_for(
         std::chrono::milliseconds(timeout)) ? pdTRUE : pdFALSE;
 }
 inline BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t handle) {

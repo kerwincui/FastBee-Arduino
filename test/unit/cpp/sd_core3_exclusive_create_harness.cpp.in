@@ -1,0 +1,138 @@
+// Actual installed FS::open/VFSImpl::open/exists/VFSFileImpl lifetime methods
+// are inserted below. Only OS directory/stat/fopen and the FS type facade are
+// seams. No production methods are reimplemented here.
+#include <cassert>
+#include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+static std::map<std::string, std::string> files;
+static std::vector<std::string> events;
+static bool statFailure = false, raceAtOpen = false;
+static const char* evidence = "historical evidence must remain byte exact";
+static const char* filePath = "/fastbee/rec-00112233-0011223344556677-0.jsonl";
+static const std::string mountedPath = std::string("/sd") + filePath;
+struct ProbeStat { unsigned st_mode = 0; size_t st_blksize = 0; };
+struct ProbeFile {};
+struct ProbeDir {};
+static int probeStat(const char* path, ProbeStat* stat) {
+    events.emplace_back(std::string("stat:") + path);
+    if (statFailure || !files.count(path)) return -1;
+    stat->st_mode = 1; stat->st_blksize = 512; return 0;
+}
+static ProbeFile* probeFopen(const char* path, const char* mode) {
+    events.emplace_back(std::string("fopen:") + path + ":" + mode);
+    if (*mode != 'r' && raceAtOpen) { raceAtOpen = false; files[path] = evidence; }
+    auto found = files.find(path);
+    // This is explicitly the filesystem boundary. Target interpretation of
+    // 'x' and O_EXCL was read from the installed newlib/libfatfs binaries.
+    if (std::strchr(mode, 'x') && found != files.end()) return nullptr;
+    if (*mode == 'r' && found == files.end()) return nullptr;
+    if (*mode == 'w') files[path] = "";
+    else if (*mode == 'a' && found == files.end()) files[path] = "";
+    return new ProbeFile;
+}
+static ProbeDir* probeOpendir(const char* path) {
+    events.emplace_back(std::string("opendir:") + path); return nullptr;
+}
+static int probeClosedir(ProbeDir* dir) { delete dir; return 0; }
+static int probeFclose(ProbeFile* file) { delete file; return 0; }
+static int probeSetvbuf(ProbeFile*, char*, int, size_t) { return 0; }
+class String {
+public:
+    explicit String(const char* text) : text_(text) {}
+    const char* c_str() const { return text_.c_str(); }
+private: std::string text_;
+};
+class VFSFileImpl;
+using FileImplPtr = std::shared_ptr<VFSFileImpl>;
+class File {
+public:
+    File() = default;
+    explicit File(FileImplPtr impl) : impl_(std::move(impl)) {}
+    explicit operator bool() const;
+private: FileImplPtr impl_;
+};
+class VFSImpl {
+public:
+    const char* _mountpoint = "/sd";
+    FileImplPtr open(const char* fpath, const char* mode, bool create);
+    bool exists(const char* fpath);
+    bool mkdir(const char* path) {
+        events.emplace_back(std::string("mkdir:") + path);
+        // A parent directory request cannot create/truncate the final file.
+        assert(std::string(path) == "/fastbee"); return true;
+    }
+};
+class VFSFileImpl {
+public:
+    VFSFileImpl(VFSImpl* fs, const char* fpath, const char* mode);
+    ~VFSFileImpl();
+    void close();
+    explicit operator bool();
+private:
+    VFSImpl* _fs;
+    ProbeFile* _f;
+    ProbeDir* _d;
+    char* _path;
+    bool _isDirectory, _written;
+    ProbeStat _stat;
+};
+File::operator bool() const { return impl_ && static_cast<bool>(*impl_); }
+class FS {
+public:
+    explicit FS(VFSImpl* impl) : _impl(impl) {}
+    File open(const String& path, const char* mode, bool create);
+    File open(const char* path, const char* mode, bool create);
+private: VFSImpl* _impl;
+};
+
+#define DEFAULT_FILE_BUFFER_SIZE 4096
+#define log_e(...) ((void)0)
+#define S_ISREG(mode) ((mode) == 1)
+#define S_ISDIR(mode) ((mode) == 2)
+#define stat probeStat
+#define fopen probeFopen
+#define fclose probeFclose
+#define opendir probeOpendir
+#define closedir probeClosedir
+#define setvbuf probeSetvbuf
+@SDK_METHODS@
+#undef setvbuf
+#undef closedir
+#undef opendir
+#undef fclose
+#undef fopen
+#undef stat
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    VFSImpl impl; FS fs(&impl);
+    if (mode == "new") {
+        assert(fs.open(String(filePath), "wx", true));
+        assert(files.count(mountedPath) == 1 && files.at(mountedPath).empty());
+        assert(events.size() == 3 && events[0] == "mkdir:/fastbee" &&
+               events[1] == "fopen:" + mountedPath + ":wx" && events[2] == "stat:" + mountedPath);
+    } else if (mode == "exists-error" || mode == "create-race") {
+        if (mode == "exists-error") { files[mountedPath] = evidence; statFailure = true; }
+        assert(!impl.exists(filePath));
+        statFailure = false;
+        if (mode == "create-race") raceAtOpen = true;
+        events.clear();
+        assert(!fs.open(String(filePath), "wx", true));
+        assert(files.at(mountedPath) == evidence);
+        assert(events[0] == "mkdir:/fastbee" && events[1] == "fopen:" + mountedPath + ":wx");
+        // Negative control: these exact SDK methods with the old mode truncate
+        // the same evidence. The test is sensitive to a regression to FILE_WRITE.
+        assert(fs.open(filePath, "w", true));
+        assert(files.at(mountedPath).empty());
+    } else assert(false);
+    std::cout << "PASS " << mode << '\n';
+}

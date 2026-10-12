@@ -1,16 +1,18 @@
 #define millis realMillis
 #include <Arduino.h>
+#include "network/LiteralStringMatch.h"
 #undef millis
 #include <cassert>
 #include <cctype>
+#include "security/OutputActorIdentity.h"
 static uint32_t clockMs = 1000;
 uint32_t millis() { return clockMs; }
 struct SessionsLock { explicit SessionsLock(void*) {} };
-struct AuthResult { bool success=false; String username,sessionId,errorMessage; };
+struct AuthResult { bool success=false; String username,sessionId,errorMessage; uint64_t outputActor=0; };
 struct SessionStatus { bool valid=false,expired=false,locked=false; String username; };
 struct User { bool enabled=true; };
 struct Users { User user; User* getUser(const String&) { return &user; } };
-struct UserSession { String username; uint32_t lastAccessTime=0,expireTime=0; bool isActive=true; };
+struct UserSession { String username; uint32_t lastAccessTime=0,expireTime=0; bool isActive=true; uint64_t outputActor=0; };
 PRODUCTION_SECURITY_CONFIG
 struct AsyncWebServerResponse {
     int status=200; bool started=false; std::map<String,String> headers;
@@ -75,6 +77,29 @@ void seed(AuthManager& manager) {
 int main(int argc,char** argv) {
     assert(argc==2); const std::string testCase=argv[1];
     AuthManager manager; WebHandlerContext ctx{&manager}; seed(manager);
+    if(testCase=="output-actor") {
+        const auto first=manager.verifySession("test-session",false);
+        assert(first.success && first.outputActor);
+        assert(manager.verifySession("test-session",true).outputActor==first.outputActor);
+        assert(manager.verifySession("test-session",false).outputActor==first.outputActor);
+        const auto missing=manager.verifySession("not-a-session");
+        assert(!missing.success && !missing.outputActor);
+        manager.activeSessions["other-session"]={"admin",clockMs,uint32_t(clockMs+3600000),true};
+        const auto other=manager.verifySession("other-session");
+        assert(other.success && other.outputActor>first.outputActor);
+        manager.activeSessions.clear(); seed(manager);
+        const auto relogin=manager.verifySession("test-session");
+        assert(relogin.outputActor>other.outputActor);
+        AuthManager recreated; seed(recreated);
+        assert(recreated.verifySession("test-session").outputActor>relogin.outputActor);
+        clockMs+=manager.securityConfig.sessionTimeout;
+        const auto expired=manager.verifySession("test-session");
+        assert(!expired.success && !expired.outputActor);
+        FastBee::OutputActorSequence exhausted(UINT32_MAX-1);
+        assert(exhausted.issue()==UINT32_MAX);
+        assert(exhausted.issue()==0 && exhausted.issue()==0);
+        return 0;
+    }
     if(testCase=="emit-cookie") {
         AsyncWebServerResponse response;loginCookie(&response,manager.securityConfig);
         std::cout << response.headers["Set-Cookie"].c_str() << '\n';

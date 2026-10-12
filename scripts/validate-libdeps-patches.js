@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const PATCHES_DIR = path.join(ROOT_DIR, 'patches', 'libdeps');
@@ -23,6 +24,36 @@ const CURRENT_ASYNC_TCP_VERSION = '3.5.0';
 
 const REQUIRED_PATCH_DIRS = ['AsyncTCP@3.4.10', 'ESPAsyncWebServer@3.11.1'];
 const ISSUES = [];
+
+function checkNeoPixelPatchAssets() {
+    const folder = path.join(PATCHES_DIR, 'Adafruit_NeoPixel@1.15.5');
+    const upstream = path.join(folder, 'esp.upstream.c');
+    const payload = path.join(folder, 'esp-idf5.c');
+    const abi = path.join(ROOT_DIR, 'include/peripherals/NeoPixelTransport.h');
+    if (![upstream, payload, abi].every(fs.existsSync)) {
+        ISSUES.push('NeoPixel 1.15.5: reviewed patch assets missing');
+        return;
+    }
+    const abiDigest = crypto.createHash('sha256').update(readText(abi).replace(/\r\n/g, '\n')).digest('hex');
+    if (abiDigest !== 'bc2afcd3bf070ca0d5b9f543f6f6877fcfa6e8a3a49ebbc82ee0f8728a3254ef') {
+        ISSUES.push('NeoPixel: canonical project ABI SHA256 mismatch');
+    }
+    const digest = crypto.createHash('sha256').update(readText(upstream).replace(/\r\n/g, '\n')).digest('hex');
+    if (digest !== '1f158b01845a3798f5cba7094c8fffba7effd96fe1903a379472ddc563ef1905') {
+        ISSUES.push('NeoPixel 1.15.5: pinned upstream SHA256 mismatch');
+    }
+    const hook = readText(PATCH_HOOK);
+    const source = readText(payload);
+    for (const marker of ['apply_to_neopixel_library', '_NEOPIXEL_UPSTREAM_SHA256', 'unsupported source SHA256',
+        'configure_neopixel_include_path(env, _project_dir)', 'build_env.PrependUnique(CPPPATH=', '_NEOPIXEL_ABI_SHA256']) {
+        if (!hook.includes(marker)) ISSUES.push(`NeoPixel patch hook missing ${marker}`);
+    }
+    for (const marker of ['fastbeeNeoPixelWrite', 'fastbeeNeoPixelRelease', 'fastbeeNeoPixelPinRetained',
+        'pdMS_TO_TICKS(100)', 'ESP_ARDUINO_VERSION_VAL(3, 3, 8)', 'fastbeeNeoPixelQuarantine']) {
+        if (!source.includes(marker)) ISSUES.push(`NeoPixel payload missing ${marker}`);
+    }
+    console.log('  - NeoPixel patch assets checked; installed source verified by build hook and checked-ABI linkage');
+}
 
 function readText(filePath) {
     return fs.readFileSync(filePath, 'utf8');
@@ -103,6 +134,116 @@ function hasAsyncTcpAdmissionContract(header, source) {
         tcpError >= 0 && tcpErrorRelease > tcpError &&
         tcpErrorAllocation > tcpErrorRelease &&
         close >= 0 && closeRelease > close;
+}
+
+function hasFiniteProgressContract(requestHeader, header, source, requestSource) {
+    // Inspect executable declarations/bodies in all four files, not a patch comment.
+    const code = (text) => text.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, ' ').trim();
+    const block = (text, signature) => {
+        const start = text.indexOf(signature);
+        if (start < 0 || text.indexOf(signature, start + signature.length) >= 0) return null;
+        const opening = text.indexOf('{', start + signature.length);
+        if (opening < 0) return null;
+        let depth = 0;
+        for (let at = opening; at < text.length; at++) {
+            if (text[at] === '{') depth++;
+            if (text[at] === '}' && --depth === 0) return text.slice(opening + 1, at);
+        }
+        return null;
+    };
+    const once = (text, fragment) => text.split(fragment).length === 2;
+    const base = block(requestHeader, 'virtual bool _fastbeeCheckProgress(AsyncWebServerRequest *request)');
+    if (base === null || code(base) !== '(void)request; return true;') return false;
+    const abstract = block(header, 'class AsyncAbstractResponse : public AsyncWebServerResponse');
+    const basic = block(header, 'class AsyncBasicResponse : public AsyncWebServerResponse');
+    if (abstract === null || basic === null) return false;
+    for (const declaration of [
+        'bool _fastbeeProgressInitialized{false};',
+        'uint32_t _fastbeeLastProgressMs{0};',
+        'size_t _fastbeeObservedWritten{0};',
+        'size_t _fastbeeDrainedHighWater{0};',
+        'bool _fastbeeCheckProgress(AsyncWebServerRequest *request) final;'
+    ]) {
+        if (!once(abstract, declaration) || !once(basic, declaration)) return false;
+    }
+    const progress = block(source, 'bool AsyncAbstractResponse::_fastbeeCheckProgress(AsyncWebServerRequest *request)');
+    const expectedProgress = `
+        if (_chunked || !_sendContentLength) return true;
+        if (_state == RESPONSE_FAILED) return false;
+        if (_state == RESPONSE_SETUP || _state == RESPONSE_END) return true;
+        const size_t tcpSpace = std::min<size_t>(TCP_SND_BUF, request->client()->space());
+        if (_state == RESPONSE_WAIT_ACK && !_send_buffer_len &&
+            !_fastbeePendingOutputBytes && tcpSpace == TCP_SND_BUF) {
+            _state = RESPONSE_END;
+            return true;
+        }
+        const size_t outstanding = TCP_SND_BUF - tcpSpace;
+        const size_t drained = _writtenLength - std::min(_writtenLength, outstanding);
+        const uint32_t now = millis();
+        if (!_fastbeeProgressInitialized) {
+            _fastbeeProgressInitialized = true;
+            _fastbeeLastProgressMs = now;
+            _fastbeeObservedWritten = _writtenLength;
+            _fastbeeDrainedHighWater = drained;
+            return true;
+        }
+        if (_writtenLength > _fastbeeObservedWritten || drained > _fastbeeDrainedHighWater) {
+            _fastbeeLastProgressMs = now;
+            _fastbeeObservedWritten = std::max(_fastbeeObservedWritten, _writtenLength);
+            _fastbeeDrainedHighWater = std::max(_fastbeeDrainedHighWater, drained);
+        }
+        if (static_cast<uint32_t>(now - _fastbeeLastProgressMs) >= 10000U) {
+            _state = RESPONSE_FAILED;
+            return false;
+        }
+        return true;
+    `;
+    if (progress === null || code(progress) !== code(expectedProgress)) return false;
+    const basicProgress = block(source, 'bool AsyncBasicResponse::_fastbeeCheckProgress(AsyncWebServerRequest *request)');
+    const expectedBasicProgress = expectedProgress
+        .replace('if (_chunked || !_sendContentLength) return true;', '')
+        .replace(' && !_send_buffer_len', '');
+    if (basicProgress === null || code(basicProgress) !== code(expectedBasicProgress)) return false;
+    const basicResponse = block(source, 'size_t AsyncBasicResponse::write_send_buffs(AsyncWebServerRequest *request, size_t len, uint32_t time)');
+    if (basicResponse === null) return false;
+    for (const observation of [
+        '(void)time; if (!_fastbeeCheckProgress(request)) return 0;',
+        '_writtenHeadersLength += pcb_written; if (pcb_written) _fastbeeCheckProgress(request);',
+        'payloadlen += pcb_written; if (pcb_written) _fastbeeCheckProgress(request);'
+    ]) {
+        if (!once(code(basicResponse), observation)) return false;
+    }
+    const response = block(source, 'size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, size_t len, uint32_t time)');
+    if (response === null) return false;
+    for (const observation of [
+        '(void)time; if (!_fastbeeCheckProgress(request)) return 0;',
+        '_writtenLength += pcb_written; if (pcb_written) _fastbeeCheckProgress(request);',
+        '_writtenLength += payloadlen; if (payloadlen) _fastbeeCheckProgress(request);'
+    ]) {
+        if (!once(code(response), observation)) return false;
+    }
+    const requestPrefix = code(`
+        std::shared_ptr<AsyncWebServerRequest> self = _this;
+        if (_response && _client && !_response->_fastbeeCheckProgress(this)) {
+            _client->close();
+            return;
+        }
+    `);
+    for (const signature of [
+        'void AsyncWebServerRequest::_onPoll()',
+        'void AsyncWebServerRequest::_onTimeout(uint32_t time)'
+    ]) {
+        const body = block(requestSource, signature);
+        if (body === null) return false;
+        const normalized = code(body);
+        const prefix = signature.includes('_onTimeout') ? '(void)time; ' + requestPrefix : requestPrefix;
+        if (!normalized.startsWith(prefix) ||
+            !once(normalized, '_response->_fastbeeCheckProgress(this)') ||
+            normalized.indexOf('_client->canSend()') < prefix.length) return false;
+        if (signature.includes('_onTimeout') &&
+            normalized.indexOf('!_ackTimeoutRecoveryAttempted') < prefix.length) return false;
+    }
+    return true;
 }
 
 function checkPatchDir(patchName) {
@@ -235,7 +376,10 @@ function checkRuntimePatchHook() {
         'FASTBEE_ASYNC_TCP_ERROR_EVENT_POOL_SIZE',
         '_fastbee_alloc_error_event(client)', '_fastbee_release_error_event(evpkt)',
         'client->_fastbee_release_accepted();', 'c->_fastbee_release_accepted();',
-        'delete c;']) {
+        'delete c;', '_patch_finite_progress_base', '_patch_finite_progress_impl',
+        '_patch_finite_progress_request', '_patch_finite_progress_response',
+        '_fastbeeDrainedHighWater', '_fastbeeObservedWritten',
+        '>= 10000U', '_response->_fastbeeCheckProgress(this)']) {
         if (!hook.includes(marker)) {
             ISSUES.push(`apply-libdeps-patches.py: missing marker ${marker}`);
         }
@@ -291,7 +435,8 @@ function checkRuntimePatchHook() {
                             !hasFileRetryContract(sourceText) ||
                             !hasSendProgressContract(sourceText) ||
                             !hasFinalBufferDrainContract(sourceText) ||
-                            !hasAckTimeoutRecoveryContract(requestHeaderText, requestSourceText)) {
+                            !hasAckTimeoutRecoveryContract(requestHeaderText, requestSourceText) ||
+                            !hasFiniteProgressContract(requestHeaderText, headerText, sourceText, requestSourceText)) {
                             ISSUES.push(`${envName}/ESPAsyncWebServer v${CURRENT_WEB_SERVER_VERSION}: runtime patch not applied`);
                         }
                     }
@@ -354,6 +499,7 @@ function main() {
     // 3. Check the current dependency version is patched in the build path
     console.log('\n[3] Verifying runtime dependency patch hook...');
     checkRuntimePatchHook();
+    checkNeoPixelPatchAssets();
     
     // Summary
     console.log('\n' + '='.repeat(50));
@@ -362,9 +508,11 @@ function main() {
         ISSUES.forEach(issue => console.error(`  - ${issue}`));
         process.exit(1);
     } else {
-        console.log('WP-72 PASSED: AsyncTCP/ESPAsyncWebServer patches verified');
+        console.log('WP-72 PASSED: AsyncTCP/ESPAsyncWebServer patches and NeoPixel patch assets verified');
         process.exit(0);
     }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { hasFiniteProgressContract };

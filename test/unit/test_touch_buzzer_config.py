@@ -24,6 +24,7 @@ class TouchBuzzerConfigTests(unittest.TestCase):
         self.compile_run(r'''
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.cpp"
 #include <math.h>
 #include "core/PeripheralConfig.h"
 #include <cassert>
@@ -69,7 +70,7 @@ int main(){
  loadDisplay(stored.as<JsonObject>(),legacy,error);assert(!error.isEmpty());
 }
 '''.replace('DEFINITIONS', definitions).replace('SAVE', save).replace('LOAD', load),
-                         [ROOT / 'test/mocks', ROOT / 'include', json])
+                         [ROOT / 'test/mocks', ROOT / 'include', ROOT / 'src', json])
 
 
 if __name__ == '__main__':

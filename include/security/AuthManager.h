@@ -28,6 +28,7 @@ struct UserSession {
     String ipAddress;
     String userAgent;
     bool isActive;
+    uint64_t outputActor = 0; // Not persisted; stable for this authenticated session.
 
     UserSession() : loginTime(0),
                    lastAccessTime(0), expireTime(0), isActive(false) {}

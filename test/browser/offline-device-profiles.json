@@ -18,7 +18,7 @@
         "mqttEnabled": false,
         "modbusEnabled": true
       },
-      "evidence": "docs/ecm50a-s3-f16r8 plus deploy-config-bundle ecm50a feature inference"
+      "evidence": "docs/device-test-configs/com15-esp32s3-f16r8/config plus deploy-config-bundle ecm50a feature inference"
     },
     "esp32c3-F4R0": {
       "chipModel": "ESP32-C3",
@@ -36,7 +36,7 @@
         "mqttEnabled": false,
         "modbusEnabled": true
       },
-      "evidence": "docs/esp32c3-deployment-config.json plus deploy-config-bundle feature inference"
+      "evidence": "docs/device-test-configs/com4-esp32c3-f4r0/config plus deploy-config-bundle feature inference"
     },
     "esp32c6-F4R0": {
       "chipModel": "ESP32-C6",
@@ -54,6 +54,23 @@
       },
       "evidence": "docs/c6-rgb-led-f4r0 plus deploy-config-bundle feature inference"
     },
+    "esp32c6-F8R0": {
+      "chipModel": "ESP32-C6",
+      "flashBytes": 8388608,
+      "psramBytes": 0,
+      "memoryProfile": "none",
+      "enabledFeatures": [
+        "webServer",
+        "mdns",
+        "i2cSensors",
+        "modbus"
+      ],
+      "protocol": {
+        "mqttEnabled": false,
+        "modbusEnabled": true
+      },
+      "evidence": "C6-F8R0 software fixture; platformio.ini compiled capabilities; not hardware acceptance"
+    },
     "esp32-F4R0": {
       "chipModel": "ESP32",
       "flashBytes": 4194304,
@@ -66,7 +83,7 @@
         "mqttEnabled": false,
         "modbusEnabled": false
       },
-      "evidence": "docs/puzhong-esp32-config.json after deploy-config-bundle classic-no-psram reduction"
+      "evidence": "docs/device-test-configs/com16-esp32-f4r0/config after deploy-config-bundle classic-no-psram reduction"
     }
   }
 }

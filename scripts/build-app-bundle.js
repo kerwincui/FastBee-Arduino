@@ -19,7 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { minifyJS } = require('./minify-js');
+const { minifyRuntimeJS } = require('./minify-js');
 const { withWebPublishLock } = require('./web-publish-lock');
 
 const ROOT_DIR = path.join(__dirname, '..');
@@ -162,7 +162,9 @@ function buildAppChunks(options = {}) {
 
     CHUNK_GROUPS.forEach((chunk) => {
         const raw = buildChunkContent(chunk, options);
-        const finalContent = noMinify ? raw : minifyJS(raw);
+        // Parse each complete classic-script chunk and shorten local bindings
+        // only. Cross-chunk globals, properties and function names stay public.
+        const finalContent = noMinify ? raw : minifyRuntimeJS(raw);
         const outPath = path.join(WWW_JS_DIR, chunk.outName);
         fs.writeFileSync(outPath, finalContent, 'utf8');
         results.push({

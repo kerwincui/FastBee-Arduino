@@ -17,10 +17,10 @@ class RmtDhtTests(unittest.TestCase):
         cls.temp=tempfile.TemporaryDirectory(prefix='fastbee-dht-rmt-')
         cls.addClassCleanup(cls.temp.cleanup)
         directory=Path(cls.temp.name)
-        include=definition(source,'struct DhtReadDiagnostic')+';\n'+(source_path.parent/'DhtRmtCapture.h').read_text(encoding='utf-8').replace('#pragma once','')+'\n'+definition(source,'static bool readDhtBounded(')
+        include=definition(source,'struct DhtReadDiagnostic')+';\n'+(source_path.parent/'DhtRmtCapture.h').read_text(encoding='utf-8').replace('#pragma once','')+'\n'+definition(source,'static bool readDhtBounded(')+'\n'+definition(source,'void SensorDriver::snapshotDhtRmtResources(')
         (directory/'dht_rmt_reader.inc').write_text(include,encoding='utf-8')
         cls.exe=directory/'test.exe'
-        result=subprocess.run([compiler,'-std=c++17','-O2','-Wall','-Wextra','-Werror','-I'+str(directory),str(ROOT/'test/unit/cpp/dht_rmt_harness.cpp'),'-o',str(cls.exe)],capture_output=True,text=True,timeout=60)
+        result=subprocess.run([compiler,'-std=c++17','-O2','-Wall','-Wextra','-Werror','-pthread','-I'+str(directory),'-I'+str(ROOT/'include'),str(ROOT/'test/unit/cpp/dht_rmt_harness.cpp'),'-o',str(cls.exe)],capture_output=True,text=True,timeout=60)
         if result.returncode: raise AssertionError(result.stdout+result.stderr)
 
 def make_test(name):
@@ -28,6 +28,6 @@ def make_test(name):
         result=subprocess.run([str(self.exe),name],capture_output=True,text=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
     return test
-for case in ['valid','dht22','negative','no-prefix','release-prefix','cpu-preempted','wrap','stuck-low','init-fail','config-fail','arm-fail','timeout','no-response','truncated','long-pulse','checksum','range','cleanup-recovery','arm-preempted','arm-preempted-dht22','arm-preempted-repeat','arm-retry-fail','arm-delay-short','arm-expiry-after-check']:
+for case in ['snapshot-empty','snapshot-busy','snapshot-retained','valid','dht22','negative','no-prefix','release-prefix','cpu-preempted','wrap','stuck-low','init-fail','config-fail','arm-fail','timeout','no-response','truncated','long-pulse','checksum','range','cleanup-recovery','arm-preempted','arm-preempted-dht22','arm-preempted-repeat','arm-retry-fail','arm-delay-short','arm-expiry-after-check']:
     setattr(RmtDhtTests,'test_'+case.replace('-','_'),make_test(case))
 if __name__=='__main__': unittest.main(verbosity=2)

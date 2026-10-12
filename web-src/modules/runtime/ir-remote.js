@@ -1,7 +1,7 @@
 /**
  * 红外遥控管理模块（嵌入式面板）
  * 对码（限时学习窗口）、清码（单个/全部）、按键库维护
- * 通过 /api/ir/* 与固件 IrRouteHandler 通信；按键持久化到 /config/ir_keys.json
+ * 通过 /api/ir/* 与固件 IrRouteHandler 通信；按键随 /config/periph_exec.json 的 irKeys 数组持久化
  * 懒加载：由 peripherals.js 在外设编辑弹窗切换到红外接收头(type=53)时按需加载
  * 面板嵌入在外设编辑弹窗 #ir-manage-section 内，无独立模态窗
  */

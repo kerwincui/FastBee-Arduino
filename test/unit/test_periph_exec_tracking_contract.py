@@ -60,12 +60,13 @@ class PeriphExecTrackingContractTests(unittest.TestCase):
         dispatch = braced_block(
             MANAGER, "bool PeriphExecManager::dispatchAsync(const PeriphExecRule& rule"
         )
-        begin_at = dispatch.index("beginOperation(rule, true, queuePosition, operation)")
+        begin_at = dispatch.index("beginOperation(rule, true, queuePosition, operation, uartOrigin, capturedControl)")
         copy_at = dispatch.index("ctx->operationId = operation.operationId", begin_at)
         enqueue_at = dispatch.index("_workerPool->enqueue(ctx)", copy_at)
         accepted_at = dispatch.index("*admittedOperation = operation", enqueue_at)
         self.assertLess(begin_at, copy_at)
         self.assertLess(copy_at, enqueue_at)
+        self.assertLess(dispatch.index("ctx->ordinaryControl = operation.ordinaryControl"), enqueue_at)
         self.assertLess(enqueue_at, accepted_at)
         self.assertIn('"tracking_unavailable"', dispatch)
 
@@ -116,12 +117,16 @@ class PeriphExecTrackingContractTests(unittest.TestCase):
             ROUTE,
             "void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request)",
         )
+        accepted = braced_block(run, "if (submitted)")
+        for field in ("operationId", "queuedAt", "deadlineAt", "queuePosition"):
+            self.assertIn(
+                f'FastBee::setFixedJsonField(doc, "{field}", operation.{field});', accepted
+            )
+        self.assertIn(
+            'FastBee::setFixedJsonField(doc, "state", asyncExecStatusName(operation.status));', accepted
+        )
         for token in (
-            'doc["operationId"]',
-            'doc["queuedAt"]',
-            'doc["deadlineAt"]',
-            'doc["queuePosition"]',
-            "? 202 : 200",
+            "operation.asyncExecution && !asyncExecStatusIsTerminal(operation.status) ? 202 : 200",
             "runOnceRejectionStatus(rejectionReason)",
         ):
             self.assertIn(token, run)

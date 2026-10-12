@@ -20,6 +20,31 @@ int main() {
     MotorProtocol restored;
     assert(!loadMotorProtocol(saved.as<JsonObjectConst>(), restored) && restored.stopValue == 0);
     assert(saved["motorProtocol"] == doc["motorProtocol"]);
+    doc["motorProtocol"]["positionTracking"] = "commanded";
+    assert(!loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && profile.commandPosition);
+    saveMotorProtocol(saved.as<JsonObject>(), profile);
+    assert(!loadMotorProtocol(saved.as<JsonObjectConst>(), restored) && restored.commandPosition);
+    doc["motorMinPosition"] = -400; doc["motorMaxPosition"] = 400;
+    doc["motorProtocol"]["startupPosition"] = 0;
+    assert(!loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && profile.startupReference && profile.startupPosition == 0);
+    saved["motorMinPosition"] = -400; saved["motorMaxPosition"] = 400;
+    saveMotorProtocol(saved.as<JsonObject>(), profile);
+    assert(!loadMotorProtocol(saved.as<JsonObjectConst>(), restored) && restored.startupReference && restored.startupPosition == 0);
+    doc["motorProtocol"]["startupPosition"] = 401;
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
+    doc["motorProtocol"]["startupPosition"] = "0";
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
+    doc["motorProtocol"]["startupPosition"] = 0;
+    doc["motorProtocol"]["positionTracking"] = "conservative";
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
+    doc["motorProtocol"].remove("startupPosition");
+    doc["motorProtocol"]["positionTracking"] = "commanded";
+    doc["motorProtocol"]["finitePulseMove"] = false;
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
+    doc["motorProtocol"]["positionTracking"] = "unknown";
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
+    doc["motorProtocol"]["positionTracking"] = true;
+    assert(loadMotorProtocol(doc.as<JsonObjectConst>(), profile) && !profile.valid);
     for (const char* field : {"version", "readFunction", "writeFunction", "speedReadRegister", "pulseReadRegister",
                              "forwardValue", "reverseValue", "stopValue", "finitePulseMove"}) {
         assert(!deserializeJson(doc, generic)); doc["motorProtocol"].remove(field);

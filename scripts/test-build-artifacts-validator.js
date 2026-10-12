@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { BuildArtifactsValidator, sha256 } = require('./test-build-artifacts');
+const { BuildArtifactsValidator, REQUIRED_BUILD_FILES, sha256 } = require('./test-build-artifacts');
 
 const ENVIRONMENT = 'esp32c3-F4R0';
 const HEAD_SHA = 'a'.repeat(40);
@@ -102,7 +102,31 @@ function createReleaseManifest(fixture, gitSha = HEAD_SHA.slice(0, 12)) {
 }
 
 function validator(root) {
-    return new BuildArtifactsValidator({ rootDir: root, headSha: HEAD_SHA, gitDirty: false, quiet: true });
+    // Existing fixtures always select their own build tree, including when the
+    // surrounding consolidated gate exports a real PlatformIO build cache.
+    return new BuildArtifactsValidator({
+        rootDir: root, buildDir: path.join(root, '.pio', 'build'),
+        headSha: HEAD_SHA, gitDirty: false, quiet: true
+    });
+}
+
+function withPlatformioBuildDir(value, check) {
+    const previous = process.env.PLATFORMIO_BUILD_DIR;
+    if (value === undefined) delete process.env.PLATFORMIO_BUILD_DIR;
+    else process.env.PLATFORMIO_BUILD_DIR = value;
+    try {
+        check();
+    } finally {
+        if (previous === undefined) delete process.env.PLATFORMIO_BUILD_DIR;
+        else process.env.PLATFORMIO_BUILD_DIR = previous;
+    }
+}
+
+function copyBuildToCache(fixture, cacheRoot) {
+    for (const name of REQUIRED_BUILD_FILES) {
+        const source = path.join(fixture.root, '.pio', 'build', fixture.environment, name);
+        write(path.join(cacheRoot, fixture.environment, name), fs.readFileSync(source));
+    }
 }
 
 const roots = [];
@@ -111,6 +135,67 @@ try {
     roots.push(complete.root);
     assert.strictEqual(validator(complete.root).validateCurrentBuild([ENVIRONMENT]), true,
         'all four manifest-defined flash segments must pass at non-default offsets');
+
+    withPlatformioBuildDir(undefined, () => {
+        const defaultValidator = new BuildArtifactsValidator({ rootDir: complete.root, quiet: true });
+        assert.strictEqual(defaultValidator.buildDir, path.join(complete.root, '.pio', 'build'));
+        assert.strictEqual(defaultValidator.validateCurrentBuild([ENVIRONMENT]), true,
+            'without an explicit build selection, the fixture default build must validate');
+    });
+
+    const cached = createFixture();
+    roots.push(cached.root);
+    const cacheRoot = path.join(cached.root, 'registered build cache');
+    copyBuildToCache(cached, cacheRoot);
+    // A stale default tree must not be substituted for the registered cache.
+    write(path.join(cached.root, '.pio', 'build', ENVIRONMENT, 'firmware.bin'), 'stale default firmware');
+    for (const buildSelection of [cacheRoot, 'registered build cache']) {
+        withPlatformioBuildDir(buildSelection, () => {
+            const cacheValidator = new BuildArtifactsValidator({ rootDir: cached.root, quiet: true });
+            assert.strictEqual(cacheValidator.buildDir, cacheRoot,
+                'absolute and project-relative PlatformIO cache selections must resolve identically');
+            assert.strictEqual(cacheValidator.validateCurrentBuild([ENVIRONMENT]), true,
+                'matching files in the selected cache must pass even with a stale default tree');
+        });
+    }
+
+    const validDefault = createFixture();
+    roots.push(validDefault.root);
+    const missingCache = path.join(validDefault.root, 'missing registered cache');
+    withPlatformioBuildDir(missingCache, () => {
+        const missingCacheValidator = new BuildArtifactsValidator({ rootDir: validDefault.root, quiet: true });
+        assert.strictEqual(missingCacheValidator.validateCurrentBuild([ENVIRONMENT]), false,
+            'an explicitly selected missing cache must fail even when the default tree matches');
+        assert.ok(missingCacheValidator.errors.some((error) =>
+            error.includes('current build directory is missing') &&
+            error.includes(path.join(missingCache, ENVIRONMENT))));
+        const explicitValidator = validator(validDefault.root);
+        assert.strictEqual(explicitValidator.buildDir, path.join(validDefault.root, '.pio', 'build'));
+        assert.strictEqual(explicitValidator.validateCurrentBuild([ENVIRONMENT]), true,
+            'the pre-existing explicit constructor buildDir override must outrank the environment');
+    });
+
+    const mismatchedCache = path.join(validDefault.root, 'mismatched registered cache');
+    copyBuildToCache(validDefault, mismatchedCache);
+    write(path.join(mismatchedCache, ENVIRONMENT, 'firmware.bin'), 'stale selected firmware');
+    withPlatformioBuildDir(mismatchedCache, () => {
+        const mismatchValidator = new BuildArtifactsValidator({ rootDir: validDefault.root, quiet: true });
+        assert.strictEqual(mismatchValidator.validateCurrentBuild([ENVIRONMENT]), false,
+            'selected cache bytes must match deployment bytes; a good default cannot rescue a mismatch');
+        assert.ok(mismatchValidator.errors.some((error) =>
+            error.includes('firmware.bin differs') && error.includes(mismatchedCache)));
+    });
+
+    const incompleteCache = path.join(validDefault.root, 'incomplete registered cache');
+    copyBuildToCache(validDefault, incompleteCache);
+    fs.rmSync(path.join(incompleteCache, ENVIRONMENT, 'littlefs.bin'));
+    withPlatformioBuildDir(incompleteCache, () => {
+        const incompleteValidator = new BuildArtifactsValidator({ rootDir: validDefault.root, quiet: true });
+        assert.strictEqual(incompleteValidator.validateCurrentBuild([ENVIRONMENT]), false,
+            'all four current-build files remain mandatory in the selected cache');
+        assert.ok(incompleteValidator.errors.some((error) =>
+            error.includes('littlefs.bin') && error.includes(incompleteCache)));
+    });
 
     const corruptedBootloader = createFixture();
     roots.push(corruptedBootloader.root);

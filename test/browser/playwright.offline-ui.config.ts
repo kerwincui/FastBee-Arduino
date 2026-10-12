@@ -5,6 +5,8 @@ import path from 'node:path';
 const host = process.env.OFFLINE_UI_HOST || '127.0.0.2';
 const port = process.env.OFFLINE_UI_PORT || '41739';
 const baseURL = `http://${host}:${port}`;
+const artifactRoot = process.env.FASTBEE_TEST_ARTIFACT_ROOT?.trim();
+const suiteArtifacts = artifactRoot ? path.resolve(artifactRoot, 'offline-ui') : '';
 const profileFixture = JSON.parse(readFileSync(
   path.join(__dirname, 'offline-device-profiles.json'),
   'utf8'
@@ -37,13 +39,13 @@ process.env.TEST_DELAY_MS = process.env.TEST_DELAY_MS || '0';
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: './test-results/offline-ui',
+  outputDir: suiteArtifacts ? path.join(suiteArtifacts, 'browser') : './test-results/offline-ui',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
   timeout: 240_000,
-  reporter: [['list']],
+  reporter: suiteArtifacts ? [['list'], ['json', { outputFile: path.join(suiteArtifacts, 'browser-results.json') }]] : [['list']],
   grep: /UI-005E|UI-007A|UI-025A|UI-026A|UI-027|FCFG-004A|WEB-(?:SEC|UX|GENERIC|MATRIX|PANEL)-|WEB-00[1-4]|AI-/,
   webServer: {
     command: 'node offline-ui-server.mjs',

@@ -1,0 +1,2 @@
+#define METADATA_ADDRESS_FUNCTION metadataAddressPeer
+#include "shared_metadata_address_probe.inc"

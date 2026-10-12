@@ -12,8 +12,11 @@
  */
 
 #include "systems/ConfigStorage.h"
+#include "systems/ProtocolConfigGuard.h"
+#include "systems/ConfigMigrationStorage.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include "utils/SharedJsonSerializer.h"
 #include <LittleFS.h>
 #include <core/SystemConstants.h>
 
@@ -21,18 +24,97 @@ namespace {
 bool verifyJsonFile(const String& path, JsonDocument* out = nullptr) {
     File file = LittleFS.open(path, FILE_READ);
     if (!file) return false;
-    JsonDocument parsed;
+    // Parse with the caller's allocator so ownership can be transferred without
+    // a second DOM. Keep the caller's valid document intact on parse/OOM failure.
+    JsonDocument parsed(out ? out->allocator() : JsonDocument().allocator());
     DeserializationError error = deserializeJson(parsed, file);
     file.close();
     if (error) return false;
-    if (out) *out = parsed;
+    if (out) swap(*out, parsed);
     return true;
+}
+
+// Raw serialized values can contain invalid JSON or hide extra nesting. Use
+// only public DOM types and bound recursion to the parser's original limit.
+// Exceptional sources retain the original full parse before byte comparison.
+bool requiresParsedJsonValidation(JsonVariantConst value, uint8_t remaining = ARDUINOJSON_DEFAULT_NESTING_LIMIT) {
+    if (value.is<JsonArrayConst>()) {
+        if (remaining == 0) return true;
+        for (JsonVariantConst child : value.as<JsonArrayConst>()) {
+            if (requiresParsedJsonValidation(child, remaining - 1)) return true;
+        }
+        return false;
+    }
+    if (value.is<JsonObjectConst>()) {
+        if (remaining == 0) return true;
+        for (JsonPairConst child : value.as<JsonObjectConst>()) {
+            if (requiresParsedJsonValidation(child.value(), remaining - 1)) return true;
+        }
+        return false;
+    }
+    return !(value.isNull() || value.is<bool>() || value.is<double>() || value.is<const char*>());
+}
+
+// Verify the complete serialized generation without allocating a second DOM.
+// The source is borrowed synchronously and stays alive through the rename.
+struct JsonFileCompareWriter {
+    File& file;
+    uint8_t buffer[128];
+    size_t index = 0;
+    size_t available = 0;
+    bool matched = true;
+
+    size_t write(uint8_t byte) {
+        if (!matched) return 0;
+        if (index == available) {
+            available = file.read(buffer, sizeof(buffer));
+            index = 0;
+            if (available > sizeof(buffer)) {
+                matched = false;
+                return 0;
+            }
+        }
+        if (index == available || buffer[index++] != byte) {
+            matched = false;
+            return 0;
+        }
+        return 1;
+    }
+
+    size_t write(const uint8_t* bytes, size_t size) {
+        size_t count = 0;
+        while (count < size && write(bytes[count])) ++count;
+        return count;
+    }
+
+    bool complete() {
+        return matched && index == available && file.read() < 0;
+    }
+};
+
+bool verifySerializedJsonFile(const String& path, const JsonDocument& source) {
+    if (source.overflowed()) return false;
+    if (requiresParsedJsonValidation(source.as<JsonVariantConst>()) && !verifyJsonFile(path)) return false;
+    File file = LittleFS.open(path, FILE_READ);
+    if (!file) return false;
+    const size_t expected = measureJson(source);
+    if (file.size() != expected) {
+        file.close();
+        return false;
+    }
+    JsonFileCompareWriter writer{file, {}};
+    const size_t verified = FastBee::serializeJsonShared(source.as<JsonVariantConst>(), writer);
+    const bool valid = verified == expected && writer.complete();
+    file.close();
+    return valid;
 }
 
 // Commit a verified temporary file while retaining the previous generation.
 // If power is lost after staging the primary, the next load uses .bak.
-bool atomicReplaceFromTmp(const String& tmpPath, const String& filename) {
-    if (!LittleFS.exists(tmpPath) || !verifyJsonFile(tmpPath)) return false;
+bool atomicReplaceFromTmp(const String& tmpPath, const String& filename,
+                          const JsonDocument* expected = nullptr) {
+    if (!LittleFS.exists(tmpPath) ||
+        !(expected ? verifySerializedJsonFile(tmpPath, *expected) : verifyJsonFile(tmpPath))) return false;
 
     const String backupPath = filename + ".bak";
     const bool hadPrimary = LittleFS.exists(filename);
@@ -79,6 +161,11 @@ bool ConfigStorage::initializeInternal() {
     }
 
     // 确保必要目录存在（首次启动或文件系统格式化后自动创建）
+    if (!FastBee::ConfigMigration::recoverAtBoot()) {
+        LOG_ERROR("ConfigStorage: Migration recovery unconfirmed; configuration loading blocked");
+        return false;
+    }
+
     const char* requiredDirs[] = {
         "/config",
 #if FASTBEE_ENABLE_FILE_LOGGING || FASTBEE_ENABLE_LOG_VIEWER
@@ -136,6 +223,17 @@ bool ConfigStorage::removeKey(const String& key) {
 // ── JSON 文件接口 ─────────────────────────────────────────────────────────────
 
 bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& config) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    return guard && saveJSONConfigImpl(filename, config);
+}
+
+bool ConfigStorage::saveImportedJSONConfig(const String& filename, const JsonDocument& config) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    return guard && saveJSONConfigImpl(filename, config, true);
+}
+
+bool ConfigStorage::saveJSONConfigImpl(const String& filename, const JsonDocument& config, bool forceImmediate) {
+    if (config.overflowed()) return false;
     if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 判断是否为关键配置（需立即写入）
@@ -148,7 +246,7 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     // load observe a generation that was never committed to disk.
     CacheLock lock(_cacheMutex);
     if (!lock) return false;
-    if (!isCritical && updateCacheEntry(filename, config, 0)) {
+    if (!forceImmediate && !isCritical && updateCacheEntry(filename, config, 0)) {
         ConfigCacheEntry* entry = findInCache(filename);
         if (entry) {
             entry->dirty = true;
@@ -171,6 +269,7 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     return result;
 #else
     // 未启用缓存：原子写入（临时文件 + rename 覆盖）
+    (void)forceImmediate;
     String tmpPath = filename + ".tmp";
     File file = LittleFS.open(tmpPath, FILE_WRITE);
     if (!file) {
@@ -184,15 +283,17 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     size_t written = serializeJson(config, file);
     file.flush();
     file.close();
-    if (written != expected || !verifyJsonFile(tmpPath)) {
+    if (written != expected || !verifySerializedJsonFile(tmpPath, config)) {
         LittleFS.remove(tmpPath);
         return false;
     }
-    return atomicReplaceFromTmp(tmpPath, filename);
+    return atomicReplaceFromTmp(tmpPath, filename, &config);
 #endif
 }
 
 bool ConfigStorage::saveFactoryJSONConfig(const String& filename, const char* jsonContent) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    if (!guard) return false;
     if (!_initialized && !initializeInternal()) return false;
     if (!jsonContent || jsonContent[0] == '\0') return false;
 
@@ -245,6 +346,8 @@ bool ConfigStorage::saveFactoryJSONConfig(const String& filename, const char* js
 }
 
 bool ConfigStorage::deleteJSONConfigGenerations(const String& filename) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    if (!guard) return false;
     if (!_initialized && !initializeInternal()) return false;
 
 #if FASTBEE_ENABLE_STORAGE_CACHE
@@ -277,6 +380,11 @@ bool ConfigStorage::deleteJSONConfigGenerations(const String& filename) {
 }
 
 bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    return guard && loadJSONConfigImpl(filename, config);
+}
+
+bool ConfigStorage::loadJSONConfigImpl(const String& filename, JsonDocument& config) {
     if (!_initialized && !initializeInternal()) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 1. 查询缓存（加锁）
@@ -302,7 +410,7 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
                     // 缓存命中：从 rawJson 反序列化到调用方 Doc
                     // （相比旧实现 config = *entry->cachedDoc 的 DOM 深拷贝，
                     //   绕行缓存是小文件 <=4KB，临时峰值几乎可忽）
-                    DeserializationError err = deserializeJson(config, entry->rawJson);
+                    DeserializationError err = deserializeJson(config, entry->rawJson.c_str(), entry->rawJson.length());
                     if (!err) {
                         entry->accessCount++;
                         return true;
@@ -359,6 +467,18 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
 
 // ── 特定配置快捷接口 ─────────────────────────────────────────────────────────
 
+bool ConfigStorage::compareExchangeMqttConfig(JsonVariantConst expected, JsonVariantConst desired) {
+    if (!expected.is<JsonObjectConst>() || !desired.is<JsonObjectConst>()) return false;
+    FastBee::ProtocolConfigGuard guard;
+    if (!guard) return false;
+    JsonDocument current;
+    if (!loadJSONConfigImpl(FileSystem::PROTOCOL_CONFIG_FILE, current)) return false;
+    if (current["mqtt"].as<JsonVariantConst>() != expected) return false;
+    current["mqtt"] = desired;
+    if (current.overflowed()) return false;
+    return saveJSONConfigImpl(FileSystem::PROTOCOL_CONFIG_FILE, current);
+}
+
 bool ConfigStorage::saveNetworkConfig(const JsonDocument& config)   { return saveJSONConfig(FileSystem::NETWORK_CONFIG_FILE,   config); }
 bool ConfigStorage::loadNetworkConfig(JsonDocument& config)         { return loadJSONConfig(FileSystem::NETWORK_CONFIG_FILE,   config); }
 bool ConfigStorage::saveUserConfig(const JsonDocument& config)      { return saveJSONConfig(FileSystem::USER_CONFIG_FILE,      config); }
@@ -376,6 +496,8 @@ bool ConfigStorage::loadProtocolSection(const String& section, JsonDocument& out
 // 通用分段加载：从任意 JSON 文件中仅反序列化指定顶层 section
 // 使用 ArduinoJson Filter 机制，堆峰值仅为对应子节点实际体积，而非整文件
 bool ConfigStorage::loadConfigSection(const char* filename, const String& section, JsonDocument& outDoc) {
+    FastBee::ProtocolConfigGuard guard(String(filename) == FileSystem::PROTOCOL_CONFIG_FILE);
+    if (!guard) return false;
     if (!_initialized && !initializeInternal()) {
         return false;
     }
@@ -442,6 +564,8 @@ bool ConfigStorage::isFileSystemOK() {
 }
 
 bool ConfigStorage::formatFileSystem() {
+    FastBee::ProtocolConfigGuard guard;
+    if (!guard) return false;
     LOG_WARNING("ConfigStorage: Formatting file system...");
     bool result = LittleFS.format();
     if (result) {
@@ -471,6 +595,8 @@ void ConfigStorage::listConfigFiles() {
 }
 
 bool ConfigStorage::deleteConfigFile(const String& filename) {
+    FastBee::ProtocolConfigGuard guard(filename == FileSystem::PROTOCOL_CONFIG_FILE);
+    if (!guard) return false;
 #if FASTBEE_ENABLE_STORAGE_CACHE
     // 删除文件时也清除对应缓存（不 flush）
     {
@@ -585,6 +711,7 @@ bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
 }
 
 bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& config) {
+    if (config.overflowed()) return false;
     // 原子写：先写临时文件再 rename 覆盖，断电时保留旧版本而非半截文件
     String tmpPath = filename + ".tmp";
     File file = LittleFS.open(tmpPath, FILE_WRITE);
@@ -598,11 +725,11 @@ bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& conf
     size_t written = serializeJson(config, file);
     file.flush();
     file.close();
-    if (written != expected || !verifyJsonFile(tmpPath)) {
+    if (written != expected || !verifySerializedJsonFile(tmpPath, config)) {
         LittleFS.remove(tmpPath);
         return false;
     }
-    return atomicReplaceFromTmp(tmpPath, filename);
+    return atomicReplaceFromTmp(tmpPath, filename, &config);
 }
 
 bool ConfigStorage::flushRawToDisk(const String& filename, const String& rawJson) {

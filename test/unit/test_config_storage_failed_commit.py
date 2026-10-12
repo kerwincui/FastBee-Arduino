@@ -38,6 +38,8 @@ class ConfigStorageFailedCommitTests(unittest.TestCase):
         source = (ROOT / "src/systems/ConfigStorage.cpp").read_text(encoding="utf-8")
         production = "\n".join(method(source, signature) for signature in (
             "bool ConfigStorage::saveJSONConfig(",
+            "bool ConfigStorage::saveImportedJSONConfig(",
+            "bool ConfigStorage::saveJSONConfigImpl(",
             "ConfigStorage::ConfigCacheEntry* ConfigStorage::findInCache(",
             "bool ConfigStorage::updateCacheEntry(",
             "void ConfigStorage::flushDirtyEntries(",
@@ -50,6 +52,8 @@ class ConfigStorageFailedCommitTests(unittest.TestCase):
 #include <map>
 #include <string>
 #include <utility>
+#include "systems/ProtocolConfigGuard.h"
+namespace FileSystem { const char* PROTOCOL_CONFIG_FILE="/config/protocol.json"; }
 
 struct String : std::string {
     using std::string::string;
@@ -91,6 +95,8 @@ struct ConfigStorage {
     bool initializeInternal() { return false; }
     bool evictLRUEntry() { return false; }
     bool saveJSONConfig(const String&,const JsonDocument&);
+    bool saveImportedJSONConfig(const String&,const JsonDocument&);
+    bool saveJSONConfigImpl(const String&,const JsonDocument&,bool forceImmediate=false);
     ConfigCacheEntry* findInCache(const String&);
     bool updateCacheEntry(const String&,const JsonDocument&,time_t);
     void flushDirtyEntries(bool force=false);
@@ -186,6 +192,42 @@ int main() {
         assert(!storage.saveJSONConfig("/config/protocol.json",next));
         assert(storage.diskWrites==0 && storage.cachedRevision("/config/protocol.json")==1);
     }
+    {
+        ConfigStorage storage; storage.seed("/config/ir_keys.json",1);
+        storage.diskFailure=true;
+        assert(!storage.saveImportedJSONConfig("/config/ir_keys.json",next));
+        assert(storage.diskWrites==1 && storage.diskRevision("/config/ir_keys.json")==1);
+        assert(storage.cachedRevision("/config/ir_keys.json")==1 && !storage.findInCache("/config/ir_keys.json")->dirty);
+    }
+    {
+        ConfigStorage storage; storage.seed("/config/ir_keys.json",1);
+        assert(storage.saveJSONConfig("/config/ir_keys.json",next));
+        JsonDocument imported; imported["revision"]=3;
+        storage.diskFailure=true;
+        assert(!storage.saveImportedJSONConfig("/config/ir_keys.json",imported));
+        assert(storage.diskRevision("/config/ir_keys.json")==1 && storage.cachedRevision("/config/ir_keys.json")==2);
+        assert(storage.findInCache("/config/ir_keys.json")->dirty);
+        storage.diskFailure=false;
+        assert(storage.saveImportedJSONConfig("/config/ir_keys.json",imported));
+        assert(storage.diskRevision("/config/ir_keys.json")==3 && storage.cachedRevision("/config/ir_keys.json")==-1);
+        storage.flushDirtyEntries(true);
+        assert(storage.rawWrites==0 && storage.diskRevision("/config/ir_keys.json")==3);
+    }
+    {
+        ConfigStorage storage; storage.seed("/config/ir_keys.json",1);
+        storage._cacheMutex.available=false;
+        assert(!storage.saveImportedJSONConfig("/config/ir_keys.json",next));
+        assert(storage.diskWrites==0 && storage.cachedRevision("/config/ir_keys.json")==1);
+    }
+    {
+        ConfigStorage storage;
+        FastBee::ProtocolConfigGuard held;
+        assert(held);
+        assert(!storage.saveImportedJSONConfig("/config/protocol.json",next));
+        assert(storage.diskWrites==0);
+        assert(storage.saveImportedJSONConfig("/config/ir_keys.json",next));
+        assert(storage.diskWrites==1 && storage.diskRevision("/config/ir_keys.json")==2);
+    }
 }
 '''
         with tempfile.TemporaryDirectory(prefix="fastbee-config-commit-") as temporary:
@@ -199,7 +241,7 @@ int main() {
                 compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                 "-DFASTBEE_ENABLE_STORAGE_CACHE=1", "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0",
                 "-DARDUINOJSON_ENABLE_STD_STRING=1", f"-I{json_headers[0].parent}",
-                str(cpp), "-o", str(binary),
+                f"-I{ROOT / 'include'}", str(cpp), "-o", str(binary),
             ], capture_output=True, text=True, encoding="utf-8", errors="replace", env=environment, timeout=60)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True,

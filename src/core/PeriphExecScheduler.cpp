@@ -13,6 +13,7 @@
 #include "core/MemoryBudget.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
+#include "core/ReportInstanceBinding.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
 #if FASTBEE_ENABLE_MODBUS
@@ -25,7 +26,9 @@
 #include "utils/HeapFragmentation.h"
 #include "core/PeripheralManager.h"
 #include "core/SensorConfigEpoch.h"
+#include "core/UartTextDiagnostics.h"
 #include <cstring>
+#include <algorithm>
 #include <esp_heap_caps.h>
 #include <WiFi.h>
 
@@ -63,9 +66,7 @@ constexpr uint32_t WEB_RESERVE_LARGEST_BLOCK_BYTES = 6144U;
 constexpr uint32_t WEB_RESERVE_FRAGMENTED_BLOCK_BYTES = 12288U;
 constexpr uint8_t WEB_RESERVE_FRAGMENTATION_PERCENT = 65U;
 constexpr unsigned long SERIAL_CHECK_INTERVAL_MS = 250UL;
-constexpr unsigned long SERIAL_FRAME_IDLE_MS = 500UL;
 constexpr size_t SERIAL_READ_CHUNK_BYTES = 64;
-constexpr size_t SERIAL_FRAME_MAX_BYTES = 160;
 // 内存保护暂停心跳：HealthMonitor 暂停定时器后，每 120s 放行一次（非 CRITICAL
 // 且 DRAM 高于外设执行门控时），避免无 PSRAM 板启用 MQTT 后 DRAM 基线长期
 // 停留 SEVERE、遥测定时规则永久停摆（NORMAL 恢复线在该机型不可达）
@@ -355,8 +356,10 @@ void PeriphExecScheduler::checkTimers() {
 
 // ========== 事件触发 ==========
 
-void PeriphExecScheduler::triggerEvent(EventType eventType, const String& eventData) {
+void PeriphExecScheduler::triggerEvent(EventType eventType, const String& eventData,
+                                      const FastBee::UartEventOrigin& uartOrigin, bool publishToMqtt) {
     if (!_manager) return;
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return;
 
     // 启动保护：PeriphExecManager 未初始化时（mutex 未创建），跳过事件处理
     if (!_manager->isInitialized()) return;
@@ -380,18 +383,20 @@ void PeriphExecScheduler::triggerEvent(EventType eventType, const String& eventD
     LOGGER.infof("[PeriphExec] Event triggered: %s (data=%s)", targetEventId, eventData.c_str());
 
     // 通过 manager 分发事件匹配的规则
-    _manager->dispatchEventMatchedRules(targetEventId, eventData);
+    _manager->dispatchEventMatchedRules(targetEventId, eventData, uartOrigin);
 
     // 同步通知 MQTT 层：若有订阅了此事件的 DEVICE_EVENT 主题，则上报
-    _manager->notifyMqttEventPublish(String(targetEventId),
+    if (publishToMqtt) _manager->notifyMqttEventPublish(String(targetEventId),
                                      targetEventName ? String(targetEventName) : String(),
-                                     eventData);
+                                     eventData, uartOrigin);
 }
 
-void PeriphExecScheduler::triggerEventById(const String& eventId, const String& eventData) {
+void PeriphExecScheduler::triggerEventById(const String& eventId, const String& eventData,
+                                          const FastBee::UartEventOrigin& uartOrigin, bool publishToMqtt) {
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return;
     const EventDef* def = findStaticEvent(eventId.c_str());
     if (def) {
-        triggerEvent(def->type, eventData);
+        triggerEvent(def->type, eventData, uartOrigin, publishToMqtt);
         return;
     }
 
@@ -400,13 +405,13 @@ void PeriphExecScheduler::triggerEventById(const String& eventId, const String& 
     if (!_manager->isInitialized()) return;
 
     if (eventId.startsWith("exec_")) {
-        triggerPeriphExecEvent(eventId, eventData);
+        triggerPeriphExecEvent(eventId, eventData, uartOrigin);
         return;
     }
     if (eventId.startsWith("mc:")) {
         // Modbus 控制类子设备事件
         LOGGER.infof("[PeriphExec] Modbus control event triggered: %s (data=%s)", eventId.c_str(), eventData.c_str());
-        _manager->dispatchEventMatchedRules(eventId, eventData);
+        _manager->dispatchEventMatchedRules(eventId, eventData, uartOrigin);
         return;
     }
 
@@ -419,35 +424,37 @@ void PeriphExecScheduler::triggerEventById(const String& eventId, const String& 
         LOGGER.infof("[PeriphExec] Device event triggered: %s (%s, data=%s)",
                      eventId.c_str(), eventName.c_str(), eventData.c_str());
         // 同时分发给规则（若有规则以此外设为触发源）与 MQTT
-        _manager->dispatchEventMatchedRules(eventId, eventData);
-        _manager->notifyMqttEventPublish(eventId, eventName, eventData);
+        _manager->dispatchEventMatchedRules(eventId, eventData, uartOrigin);
+        if (publishToMqtt) _manager->notifyMqttEventPublish(eventId, eventName, eventData, uartOrigin);
         return;
     }
 
     // 未匹配：仍尝试通知 MQTT（用户可能手动配置了某个非外设的事件 ID）
-    LOGGER.warningf("[PeriphExec] Unknown event ID: %s (forwarding to MQTT only)", eventId.c_str());
-    _manager->notifyMqttEventPublish(eventId, String(), eventData);
+    LOGGER.warningf("[PeriphExec] Unknown event ID: %s (no local event match)", eventId.c_str());
+    if (publishToMqtt) _manager->notifyMqttEventPublish(eventId, String(), eventData, uartOrigin);
 }
 
-void PeriphExecScheduler::triggerPeriphExecEvent(const String& ruleId, const String& eventData) {
+void PeriphExecScheduler::triggerPeriphExecEvent(const String& ruleId, const String& eventData,
+                                               const FastBee::UartEventOrigin& uartOrigin) {
     if (!_manager) return;
     if (!_manager->isInitialized()) return;
 
     LOGGER.infof("[PeriphExec] Periph exec event triggered: %s", ruleId.c_str());
 
     // 通过 manager 分发外设执行事件匹配的规则
-    _manager->dispatchPeriphExecEvent(ruleId, eventData);
+    _manager->dispatchPeriphExecEvent(ruleId, eventData, uartOrigin);
 }
 
 // ========== 消息/数据处理 ==========
 
-void PeriphExecScheduler::handleDataEvent(const String& source, const String& data, DataSourceType sourceType) {
+void PeriphExecScheduler::handleDataEvent(const String& source, const String& data, DataSourceType sourceType,
+                                         const FastBee::UartEventOrigin& uartOrigin) {
     if (!_manager) return;
 
     // 使用局部 JsonDocument 解析 JSON 数组: [{"id":"temperature","value":"27.43"}, ...]
     // 局部变量用完即销毁，避免静态 JsonDocument 内存池只增不减导致堆碎片化
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, data);
+    DeserializationError err = deserializeJson(doc, data.c_str(), data.length());
     if (err || !doc.is<JsonArray>()) return;
 
     JsonArray arr = doc.as<JsonArray>();
@@ -456,7 +463,7 @@ void PeriphExecScheduler::handleDataEvent(const String& source, const String& da
     if (sourceType == DataSourceType::MQTT) {
         _manager->processMqttMessageMatch(arr);
     } else {
-        _manager->processPollDataMatch(arr, source);
+        _manager->processPollDataMatch(arr, source, uartOrigin);
     }
 }
 
@@ -464,15 +471,21 @@ void PeriphExecScheduler::handleMqttMessage(const String& topic, const String& m
     handleDataEvent(topic, message, DataSourceType::MQTT);
 }
 
-void PeriphExecScheduler::handlePollData(const String& source, const String& data) {
-    handleDataEvent(source, data, DataSourceType::POLL);
+void PeriphExecScheduler::handlePollData(const String& source, const String& data,
+                                        const FastBee::UartEventOrigin& uartOrigin) {
+    handleDataEvent(source, data, DataSourceType::POLL, uartOrigin);
+}
+
+void PeriphExecScheduler::handlePollArray(const String& source, JsonArray& data,
+                                         const FastBee::UartEventOrigin& uartOrigin) {
+    if (_manager) _manager->processPollDataMatch(data, source, uartOrigin);
 }
 
 String PeriphExecScheduler::handleDataCommand(const String& message) {
     if (!_manager || !_executor) return "";
 
     JsonDocument cmdDoc;
-    DeserializationError err = deserializeJson(cmdDoc, message);
+    DeserializationError err = deserializeJson(cmdDoc, message.c_str(), message.length());
     if (err || !cmdDoc.is<JsonArray>()) {
         LOGGER.warning("[PeriphExec] Received command: INVALID JSON (parse failed)");
         return "";
@@ -515,80 +528,119 @@ void PeriphExecScheduler::checkSerialEvents() {
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
+    // Never run rule callbacks while iterating the live peripheral map: a rule
+    // may mutate it recursively. Keep only IDs, then revalidate each read.
+    std::vector<String> serialIds;
+    pm.forEachPeripheral([&](const PeripheralConfig& config) {
+        if (config.enabled && config.type == PeripheralType::UART) serialIds.push_back(config.id);
+    });
     // Drop buffers for deleted, disabled, or repurposed UARTs so repeated
-    // configuration churn cannot grow these maps indefinitely.
-    for (auto it = _serialRxBuffers.begin(); it != _serialRxBuffers.end();) {
-        PeripheralConfig snapshot;
-        if (!pm.getPeripheralSnapshot(it->first, snapshot) || !snapshot.enabled ||
-            snapshot.type != PeripheralType::UART || !_manager->hasDataSourceRule(it->first)) {
-            _serialRxLastByteAt.erase(it->first);
-            it = _serialRxBuffers.erase(it);
+    // configuration churn cannot grow this map indefinitely.
+    for (auto it = _serialRxFrames.begin(); it != _serialRxFrames.end();) {
+        if (std::find(serialIds.begin(), serialIds.end(), it->first) == serialIds.end() ||
+            !_manager->hasDataSourceRule(it->first)) {
+            it = _serialRxFrames.erase(it);
         } else {
             ++it;
         }
     }
 
-    auto dispatchFrame = [&](const String& id, String frame) {
+    auto dispatchFrame = [&](const String& id, SerialTextFrame& rx,
+                             uint32_t epoch, uint32_t generation) {
+        using Diag = FastBee::UartTextDiagnostics;
+        if (!generation || !FastBee::SensorConfigEpoch::matches(epoch) ||
+            pm.getUartReceiveGeneration(id) != generation) {
+            Diag::record(Diag::StaleFrame); rx.discard(now); return;
+        }
+        const size_t inputSize = rx.size();
+        String frame(rx.data(), static_cast<unsigned int>(inputSize));
+        rx.clear();
+        if (frame.length() != inputSize) { Diag::record(Diag::SerializationFailure); return; }
         frame.trim();
         if (frame.isEmpty()) return;
-        if (frame.length() > SERIAL_FRAME_MAX_BYTES) {
-            frame = frame.substring(0, SERIAL_FRAME_MAX_BYTES);
-        }
 
         JsonDocument doc;
         JsonArray arr = doc.to<JsonArray>();
         JsonObject item = arr.add<JsonObject>();
         item["id"] = id;
         item["value"] = frame;
+        if (doc.overflowed()) { Diag::record(Diag::SerializationFailure); return; }
 
         // 复用缓冲：避免每帧 alloc/free String
         _serializeBuffer.reserve(128);
         _serializeBuffer = "";
-        serializeJson(doc, _serializeBuffer);
-        _manager->handlePollData("serial", _serializeBuffer);
-        LOGGER.debugf("[PeriphExec] Serial data source: %s='%s'", id.c_str(), frame.c_str());
+        const size_t expected = measureJson(doc);
+        if (serializeJson(doc, _serializeBuffer) != expected ||
+            _serializeBuffer.length() != expected) { Diag::record(Diag::SerializationFailure); return; }
+        if (!FastBee::SensorConfigEpoch::matches(epoch) ||
+            pm.getUartReceiveGeneration(id) != generation) {
+            Diag::record(Diag::StaleFrame); rx.discard(now); return;
+        }
+        Diag::record(Diag::DispatchAttempt);
+        const auto uartOrigin = FastBee::UartEventOrigin::captured(epoch, generation);
+        _manager->handlePollData("serial", _serializeBuffer, uartOrigin);
+        LOGGER.debugf("[PeriphExec] Serial text frame submitted for matching: %u bytes", static_cast<unsigned>(inputSize));
     };
 
-    pm.forEachPeripheral([&](const PeripheralConfig& config) {
-        if (!config.enabled || config.type != PeripheralType::UART) return;
-        if (!_manager->hasDataSourceRule(config.id)) {
-            _serialRxBuffers.erase(config.id);
-            _serialRxLastByteAt.erase(config.id);
-            return;
+    for (const String& id : serialIds) {
+        if (!_manager->hasDataSourceRule(id)) {
+            _serialRxFrames.erase(id);
+            continue;
         }
 
         uint8_t bytes[SERIAL_READ_CHUNK_BYTES];
         size_t len = sizeof(bytes);
-        if (!pm.readData(config.id, bytes, len)) return;
-
-        String& rx = _serialRxBuffers[config.id];
+        uint32_t epoch = 0;
+        uint32_t generation = 0;
+        bool readOk = false;
+        {
+            RecursiveMutexGuard sourceGuard(pm.getMutex(), 0);
+            if (!sourceGuard.isLocked()) continue;
+            PeripheralConfig snapshot;
+            if (!pm.getPeripheralSnapshot(id, snapshot, &epoch) ||
+                !snapshot.enabled || snapshot.type != PeripheralType::UART) {
+                _serialRxFrames.erase(id);
+                continue;
+            }
+            generation = pm.getUartReceiveGeneration(id);
+            readOk = generation && pm.readData(id, bytes, len);
+        }
+        SerialRxState& source = _serialRxFrames[id];
+        SerialTextFrame& rx = source.frame;
+        using Diag = FastBee::UartTextDiagnostics;
+        if ((source.configEpoch && source.configEpoch != epoch) ||
+            (source.receiveGeneration && source.receiveGeneration != generation)) {
+            Diag::record(Diag::SourceChange); rx.discard(now);
+        }
+        source.configEpoch = epoch;
+        source.receiveGeneration = generation;
+        if (!readOk) {
+            if (generation) Diag::record(Diag::ReadFailure);
+            rx.discard(now); continue;
+        }
         if (len > 0) {
-            _serialRxLastByteAt[config.id] = now;
             for (size_t i = 0; i < len; i++) {
-                char ch = static_cast<char>(bytes[i]);
-                if (ch == '\r' || ch == '\n') {
-                    if (!rx.isEmpty()) {
-                        dispatchFrame(config.id, rx);
-                        rx = "";
-                    }
-                    continue;
+                // An earlier frame's rule may have reconfigured the source.
+                // Do not append the rest of that read to a new configuration.
+                if (FastBee::SensorConfigEpoch::current() != epoch ||
+                    pm.getUartReceiveGeneration(id) != generation) {
+                    Diag::record(Diag::SourceChange); rx.discard(now); break;
                 }
-                if (rx.length() < SERIAL_FRAME_MAX_BYTES) {
-                    rx += ch;
-                } else {
-                    dispatchFrame(config.id, rx);
-                    rx = "";
+                const auto framed = rx.push(bytes[i], now);
+                if (framed == SerialTextFrame::Result::Ready) dispatchFrame(id, rx, epoch, generation);
+                else if (framed == SerialTextFrame::Result::TooLong) {
+                    Diag::record(Diag::OversizedFrame);
+                    LOGGER.warning("[PeriphExec] UART_FRAME_TOO_LONG: discarded until text boundary");
+                } else if (framed == SerialTextFrame::Result::InvalidByte) {
+                    Diag::record(Diag::InvalidByteFrame);
+                    LOGGER.warning("[PeriphExec] UART_FRAME_INVALID_BYTE: discarded until text boundary");
                 }
             }
         }
 
-        auto lastIt = _serialRxLastByteAt.find(config.id);
-        if (!rx.isEmpty() && lastIt != _serialRxLastByteAt.end() &&
-            (now - lastIt->second) >= SERIAL_FRAME_IDLE_MS) {
-            dispatchFrame(config.id, rx);
-            rx = "";
-        }
-    });
+        if (!len && FastBee::SensorConfigEpoch::current() == epoch &&
+            pm.getUartReceiveGeneration(id) == generation && rx.idle(now) == SerialTextFrame::Result::Ready) dispatchFrame(id, rx, epoch, generation);
+    }
 }
 
 // ========== 数据上报 ==========
@@ -615,7 +667,7 @@ bool PeriphExecScheduler::tryReportDeviceData() {
         if (fw) {
             auto* protocolMgr = fw->getProtocolManager();
             if (protocolMgr) {
-                MQTTClient* mqtt = protocolMgr->getMQTTClient();
+                auto mqtt = protocolMgr->acquireMQTTClient();
                 if (mqtt && mqtt->getIsConnected()) {
                     bool ok = mqtt->publishReportData(periphData);
                     if (ok) {
@@ -850,7 +902,7 @@ void PeriphExecScheduler::checkComplementaryInputs(uint32_t now) {
         const bool entered = entry.second.sample(first, second, now, stableMs);
         bool publishReady = false;
 #if FASTBEE_ENABLE_MQTT
-        MQTTClient* mqtt = getMqttClient();
+        auto mqtt = getMqttClient();
         publishReady = entry.second.publishDue(now) && mqtt && mqtt->getIsConnected();
 #endif
         if (!entered && !publishReady) continue;
@@ -881,6 +933,14 @@ void PeriphExecScheduler::checkComplementaryInputs(uint32_t now) {
 void PeriphExecScheduler::handleStableDigitalInputChange(const PeripheralConfig& config, bool level) {
     if (!_manager) return;
 
+#if FASTBEE_ENABLE_MQTT
+    // Rule callbacks can rebuild MQTT. Bind before dispatch and release the
+    // temporary reference before entering any callback; never adopt its new ID.
+    const bool reportEnabled = shouldReportDigitalInputChange(config.params.gpio.reportMode);
+    const uint32_t reportOrigin = reportEnabled
+        ? FastBee::captureReportInstance([this] { return getMqttClient(); }) : 0;
+#endif
+
     StaticJsonDocument<192> doc;
     JsonArray arr = doc.to<JsonArray>();
     JsonObject item = arr.add<JsonObject>();
@@ -888,6 +948,7 @@ void PeriphExecScheduler::handleStableDigitalInputChange(const PeripheralConfig&
     item["value"] = level ? "1" : "0";
     item["remark"] = "change";
 
+    if (doc.overflowed()) return;
     char payload[192];
     const size_t payloadLen = serializeJson(doc, payload, sizeof(payload));
     if (payloadLen == 0 || payloadLen >= sizeof(payload)) return;
@@ -899,14 +960,16 @@ void PeriphExecScheduler::handleStableDigitalInputChange(const PeripheralConfig&
     }
 
 #if FASTBEE_ENABLE_MQTT
-    if (!shouldReportDigitalInputChange(config.params.gpio.reportMode)) return;
-    MQTTClient* mqtt = getMqttClient();
-    if (!mqtt) return;
-    if (mqtt->getIsConnected()) {
-        mqtt->queueReportData(payload, static_cast<uint16_t>(payloadLen));
-    } else {
-        _manager->queuePendingReport(String(payload));
-    }
+    if (!reportEnabled) return;
+    bool mqttAbsent = false;
+    auto mqtt = getMqttClient(&mqttAbsent);
+    if (mqttAbsent) return;
+    const String reportPayload(payload);
+    if (reportPayload.length() != payloadLen) return; // Never enqueue a partial allocation.
+    FastBee::submitBoundReport(mqtt.get(), reportOrigin, reportPayload,
+        [this](const String& value, uint32_t origin, uint32_t current) {
+            return _manager->queuePendingReport(value, origin, current);
+        });
 #endif
 }
 
@@ -1100,17 +1163,17 @@ String PeriphExecScheduler::collectPeripheralData() {
             }
         } else if (typeVal == 15 || typeVal == 26) {
             // 模拟输入或 ADC
-            if (config.params.adc.conversionEnabled &&
-                config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
-                const float value = pm.readAnalogValue(config.id);
+            AnalogReadSample sample;
+            if (!pm.readAnalogSample(config.id, sample)) return;
+            if (sample.conversionEnabled && sample.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+                const float value = sample.value;
                 if (isnan(value) || isinf(value)) return;
-                uint8_t decimals = config.params.adc.decimalPlaces;
-                if (decimals > 6) decimals = 6;
+                const uint8_t decimals = sample.decimalPlaces;
                 char valueBuf[32];
                 snprintf(valueBuf, sizeof(valueBuf), "%.*f", decimals, value);
                 obj["value"] = valueBuf;
             } else {
-                obj["value"] = String(pm.readAnalog(config.id));
+                obj["value"] = String(sample.raw);
             }
         }
     });
@@ -1144,7 +1207,7 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     }
 
     // 检查 MQTT 连接状态
-    MQTTClient* mqtt = protocolMgr->getMQTTClient();
+    auto mqtt = protocolMgr->acquireMQTTClient();
     if (mqtt && mqtt->getIsConnected()) {
         connectedProtocols |= PROTOCOL_MQTT_CONNECTED;
         hasConnectedProtocol = true;
@@ -1163,13 +1226,14 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     return hasConnectedProtocol;
 }
 
-MQTTClient* PeriphExecScheduler::getMqttClient() {
+FastBee::MqttClientLease PeriphExecScheduler::getMqttClient(bool* absent) {
     auto* fw = FastBeeFramework::getInstance();
     if (fw) {
         auto* pm = fw->getProtocolManager();
-        if (pm) return pm->getMQTTClient();
+        if (pm) return pm->acquireMQTTClient(absent);
     }
-    return nullptr;
+    if (absent) *absent = true;
+    return {};
 }
 
 #endif // FASTBEE_ENABLE_PERIPH_EXEC

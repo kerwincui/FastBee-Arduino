@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +20,20 @@
 
 using boolean = bool;
 using byte = uint8_t;
+using std::isinf;
+using std::isnan;
+
+#if defined(FASTBEE_TEST_NEEDS_STRLCPY)
+inline size_t strlcpy(char* destination, const char* source, size_t capacity) {
+    const size_t length = std::strlen(source);
+    if (capacity) {
+        const size_t copied = std::min(length, capacity - 1);
+        std::memcpy(destination, source, copied);
+        destination[copied] = '\0';
+    }
+    return length;
+}
+#endif
 
 class Stream;
 
@@ -52,9 +68,27 @@ public:
     String(double value, int decimals = 2) : _value(formatFloat(value, decimals)) {}
 
     const char* c_str() const { return _value.c_str(); }
+    void toCharArray(char* buffer, unsigned int capacity, unsigned int index = 0) const {
+        if (!capacity || !buffer) return;
+        const size_t start = std::min(static_cast<size_t>(index), _value.size());
+        const size_t copied = std::min(_value.size() - start, static_cast<size_t>(capacity - 1));
+        std::memcpy(buffer, _value.c_str() + start, copied);
+        buffer[copied] = '\0';
+    }
     size_t length() const { return _value.length(); }
     bool isEmpty() const { return _value.empty(); }
-    void reserve(size_t size) { _value.reserve(size); }
+    bool equalsIgnoreCase(const String& other) const {
+        if (_value.size() != other._value.size()) return false;
+        for (size_t i = 0; i < _value.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(_value[i])) !=
+                std::tolower(static_cast<unsigned char>(other._value[i]))) return false;
+        }
+        return true;
+    }
+    bool reserve(size_t size) { _value.reserve(size); return true; }
+    bool concat(const String& value) { _value += value._value; return true; }
+    bool concat(char value) { _value += value; return true; }
+    bool concat(const char* value, unsigned int length) { if (!value && length) return false; if (length) _value.append(value, length); return true; }
     void clear() { _value.clear(); }
     String substr(size_t pos) const { return _value.substr(pos); }
     String substr(size_t pos, size_t len) const { return _value.substr(pos, len); }

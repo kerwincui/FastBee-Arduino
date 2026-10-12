@@ -76,10 +76,13 @@ class P1PeripheralWebContractTests(unittest.TestCase):
             "data.busPeripheralId",
             "data.i2cAddress",
             "data.params.driverName",
-            "data.params.busPeripheralId",
             "data.params.i2cAddress",
         ):
             self.assertIn(field, ALL_WEB)
+        # The editor now restores scalar fields through a shared lookup table.
+        # Keep the bus-reference round-trip assertion on that actual binding.
+        self.assertIn("['generic-sensor-bus-id', 'busPeripheralId']", WEB)
+        self.assertIn("el.value = String(data.params[mapping[1]])", WEB)
         self.assertIn("descriptor.implemented !== true", WEB)
         self.assertIn("const selectedChannel", SAVE)
         self.assertIn("Number(savedParams.mode || 0) + 1", WEB)
@@ -128,7 +131,8 @@ class P1PeripheralWebContractTests(unittest.TestCase):
     def test_sd_and_rfid_actions_match_safe_backend_contract(self):
         for action in ("mount", "unmount", "write-file", "delete-file"):
             self.assertIn(f"'{action}'", IO)
-        self.assertIn("confirm: normalized === 'delete-file' ? 'DELETE' : ''", IO)
+        self.assertIn("if (normalized === 'delete-file' && !confirm(", IO)
+        self.assertIn("if (normalized === 'delete-file') Object.assign(payload, {path: path, confirm: 'DELETE'});", IO)
         self.assertIn("action: 'scan'", IO)
         self.assertIn("action === 'read-block' || action === 'write-block'", IO)
         self.assertIn("confirm: action === 'write-block' ? 'WRITE_BLOCK' : ''", IO)

@@ -47,7 +47,7 @@ struct RecursiveMutexGuard{explicit RecursiveMutexGuard(bool){++lockDepth;}~Recu
 enum class PeripheralType{SCREEN_DISPLAY,OTHER};
 enum class PeripheralStatus{PERIPHERAL_DISABLED,PERIPHERAL_ENABLED,PERIPHERAL_INITIALIZED};
 struct PeripheralConfig{PeripheralType type=PeripheralType::SCREEN_DISPLAY;bool enabled=false;};
-struct State{bool memorySuspended=true;PeripheralStatus status=PeripheralStatus::PERIPHERAL_DISABLED;String lastError;};
+struct State{bool memorySuspended=true,memoryCleanupPending=false;PeripheralStatus status=PeripheralStatus::PERIPHERAL_DISABLED;String lastError;};
 namespace FastBee{namespace Screen{
 struct ScreenRuntime{
  bool succeed=true;bool running=false;unsigned starts=0,stops=0;std::function<void()> duringStart;
@@ -66,6 +66,7 @@ struct PeripheralManager{
  std::map<String,State> runtimeStates;
  void invalidateSensorConfigurationLocked(){}
  bool initHardware(const String& id){assert(lockDepth>0);return initSucceeds && guard_initHardware(id);}
+ bool deinitHardware(const String& id){assert(lockDepth>0);runtimeStates[id].memoryCleanupPending=false;return true;}
  size_t restoreOptionalAfterMemory();
  GUARDS
 };

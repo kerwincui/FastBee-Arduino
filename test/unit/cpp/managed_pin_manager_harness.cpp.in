@@ -1,0 +1,184 @@
+#include "core/ManagedPinIo.h"
+#include "core/ChipConfig.h"
+#include "managed_pin_mock_state.h"
+#include <cstring>
+#include "core/PeripheralTypes.h"
+#include <future>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+using String=std::string;
+static bool adcBusy=false, adcRetained=false, controlClaim=false, configuredConflict=false;
+static bool neoPixelRetained=false;
+#define FASTBEE_ENABLE_NEOPIXEL 1
+bool fastbeeNeoPixelProjectPinRetained(uint8_t) { return neoPixelRetained; }
+namespace FastBee { bool adcPinUnavailable(uint8_t) { return adcBusy || adcRetained; } }
+class RecursiveMutexGuard {
+public:
+    explicit RecursiveMutexGuard(std::recursive_mutex* value,unsigned timeout=0):mutex(value) {
+        assert(timeout==0);held=mutex->try_lock();
+    }
+    ~RecursiveMutexGuard() { if(held)mutex->unlock(); }
+    bool isLocked() const { return held; }
+private:std::recursive_mutex* mutex;bool held;
+};
+static bool ledcAttached[64]{}, ledcAttachOk=true, ledcWriteOk=true, ledcDetachOk=true;
+static unsigned ledcAttaches=0, ledcWrites=0, ledcDetaches=0;
+bool ledcAttachChannel(uint8_t pin,uint32_t,uint8_t,uint8_t) {
+    ++ledcAttaches;if(!ledcAttachOk || ledcAttached[pin])return false;
+    ledcAttached[pin]=true;buses[pin]=ESP32_BUS_TYPE_LEDC;return true;
+}
+bool ledcAttach(uint8_t pin,uint32_t frequency,uint8_t resolution) { return ledcAttachChannel(pin,frequency,resolution,255); }
+bool ledcWrite(uint8_t pin,uint32_t) { ++ledcWrites;return ledcAttached[pin] && ledcWriteOk; }
+bool ledcDetach(uint8_t pin) {
+    ++ledcDetaches;if(!ledcDetachOk || !ledcAttached[pin])return false;
+    ledcAttached[pin]=false;buses[pin]=ESP32_BUS_TYPE_INIT;return true;
+}
+// @rf_mode@
+enum class GPIOState { STATE_UNDEFINED,STATE_LOW,STATE_HIGH };
+enum class DigitalInputMode { AUTO,FLOATING,PULL_UP,PULL_DOWN };
+struct PeripheralConfig {
+    String id="native";PeripheralType type=PeripheralType::GPIO_DIGITAL_OUTPUT;uint8_t pin=18;
+    struct { struct { bool passive=false;uint8_t inputMode=0;GPIOState initialState=GPIOState::STATE_HIGH; } gpio;
+        struct { uint8_t mode=RF_MODE_TX; } rf; } params;
+    uint8_t getPrimaryPin() const { return pin; }
+    uint8_t configuredPinCount() const { return 1; }
+    uint8_t configuredPinAt(uint8_t) const { return pin; }
+};
+struct Runtime {
+    String lastError;
+    struct { struct { GPIOState currentState=GPIOState::STATE_UNDEFINED;bool interruptAttached=false; } gpio; } state;
+};
+struct PeripheralManager {
+    std::recursive_mutex mutex;std::recursive_mutex* _mutex=&mutex;
+    FastBee::ManagedPinIo _managedPinIo;
+    FastBee::LedcResourceSnapshot::Lease _ledcResourceLeases[FastBee::LedcResourceSnapshot::CAPACITY]{};
+    std::map<String,Runtime> runtimeStates;
+    bool isValidPin(uint8_t pin) const { return pin<=CHIP_MAX_GPIO; }
+    bool isReservedPin(uint8_t pin) const { return pin==6; }
+    bool isInputOnlyPin(uint8_t pin) const { return CHIP_IS_CLASSIC_ESP32 && pin>=34; }
+    bool controlOutputPinIsClaimed(uint8_t) const { return controlClaim; }
+    bool controlOutputIsClaimed(const String&) const { return controlClaim; }
+    bool checkPinConflict(uint8_t,const String& = "") const { return configuredConflict; }
+    bool managedPinConflict(const PeripheralConfig&) const;
+    bool managedPinAvailableForAdc(uint8_t) const;
+    bool setupManagedDigital(const PeripheralConfig&);
+    bool releaseManagedDigital(const PeripheralConfig&);
+    bool writeManagedDac(const String&,uint8_t,uint8_t);
+    bool releaseManagedDac(const String&,uint8_t);
+    bool prepareScriptPin(uint8_t,uint8_t);
+    bool scriptPinReady(uint8_t,uint8_t) const;
+    bool writeScriptGpio(uint8_t,bool);
+    bool writeScriptDac(uint8_t,uint8_t);
+    bool writeScriptPwm(uint8_t,uint32_t);
+    bool releaseScriptPwm(uint8_t);
+    bool attachManagedLedc(const String&,uint8_t,uint32_t,uint8_t,uint8_t,bool=false);
+    bool detachManagedLedc(const String&,uint8_t,bool=false);
+    void snapshotGpioResources(FastBee::GpioResourceSnapshot&) const;
+    void snapshotDacResources(FastBee::DacResourceSnapshot&) const;
+    void snapshotLedcResources(FastBee::LedcResourceSnapshot&) const;
+};
+// @production@
+static FastBee::GpioResourceSnapshot gpio(PeripheralManager& pm) { FastBee::GpioResourceSnapshot out;pm.snapshotGpioResources(out);return out; }
+static FastBee::DacResourceSnapshot dac(PeripheralManager& pm) { FastBee::DacResourceSnapshot out;pm.snapshotDacResources(out);return out; }
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string scenario=argv[1];PeripheralManager pm;
+    if(scenario=="switch") {
+        assert(pm.prepareScriptPin(18,0) && pm.writeScriptGpio(18,true));
+        assert(gpio(pm).count==1 && gpio(pm).leases[0].commandScript);
+        assert(!pm.writeScriptPwm(18,12) && ledcAttaches==0); // No implicit destructive switch.
+        failure=Op::Config;assert(!pm.prepareScriptPin(18,1));assert(!pm.writeScriptPwm(18,12));
+        assert(gpio(pm).leases[0].cleanupPending && ledcAttaches==0);
+        failure=Op::Count;assert(pm.prepareScriptPin(18,1) && pm.writeScriptPwm(18,12));
+        assert(gpio(pm).count==0 && ledcAttached[18]);
+        ledcDetachOk=false;const auto before=count(Op::Config);
+        assert(!pm.prepareScriptPin(18,0));assert(!pm.writeScriptGpio(18,true));
+        assert(count(Op::Config)==before && ledcAttached[18]);
+        ledcDetachOk=true;assert(pm.prepareScriptPin(18,0) && pm.writeScriptGpio(18,false));
+        assert(!ledcAttached[18] && gpio(pm).count==1);
+    } else if(scenario=="dac_switch") {
+#if CHIP_HAS_DAC
+        assert(pm.prepareScriptPin(25,2) && pm.writeScriptDac(25,128));
+        assert(dac(pm).count==1 && !pm.writeScriptGpio(25,true));
+        failure=Op::DacDelete;assert(!pm.prepareScriptPin(25,0) && !pm.writeScriptGpio(25,true));
+        assert(dac(pm).leases[0].cleanupPending);failure=Op::Count;
+        assert(pm.prepareScriptPin(25,0) && pm.writeScriptGpio(25,true));
+        assert(dac(pm).count==0 && gpio(pm).count==1);
+        assert(pm.prepareScriptPin(25,2) && pm.writeScriptDac(25,0));
+        assert(gpio(pm).count==0 && dac(pm).count==1);
+#else
+        assert(!pm.prepareScriptPin(18,2) && !pm.writeScriptDac(18,1) && !dac(pm).supported);
+#endif
+        assert(pm.prepareScriptPin(18,0) && pm.writeScriptGpio(18,true));
+        const auto before=allCalls();assert(!pm.prepareScriptPin(18,2));
+        assert(allCalls()==before && gpio(pm).count>=1);
+    } else if(scenario=="native") {
+        PeripheralConfig config;pm.runtimeStates[config.id]=Runtime{};
+        assert(pm.setupManagedDigital(config));assert(pm.runtimeStates[config.id].state.gpio.currentState==GPIOState::STATE_HIGH);
+        assert(!pm.prepareScriptPin(18,0) && !pm.prepareScriptPin(18,1));
+        assert(!pm.attachManagedLedc(config.id,18,5000,8,0));
+        assert(!pm.managedPinAvailableForAdc(18));
+        PeripheralConfig other=config;other.id="other";assert(pm.managedPinConflict(other));
+        other=config;other.type=PeripheralType::DAC;assert(pm.managedPinConflict(other));
+        failure=Op::Config;assert(!pm.releaseManagedDigital(config));
+        assert(!pm.runtimeStates[config.id].lastError.empty());
+        assert(!pm.managedPinAvailableForAdc(18) && !pm.prepareScriptPin(18,0));
+        failure=Op::Count;assert(pm.releaseManagedDigital(config) && pm.managedPinAvailableForAdc(18));
+        assert(pm.runtimeStates[config.id].lastError.empty());
+    } else if(scenario=="adc_overlap") {
+        PeripheralConfig config;adcBusy=true;const auto before=allCalls();
+        assert(!pm.prepareScriptPin(18,0) && !pm.writeScriptGpio(18,true));
+        assert(!pm.writeScriptPwm(18,12) && !pm.attachManagedLedc("native",18,5000,8,0));
+        assert(!pm.setupManagedDigital(config) && pm.managedPinConflict(config));
+        assert(!pm.writeManagedDac("native",25,3));
+        assert(allCalls()==before && ledcAttaches==0);
+        adcBusy=false;adcRetained=true;
+        assert(!pm.prepareScriptPin(18,1) && !pm.writeScriptGpio(18,true));
+        config.type=PeripheralType::ADC;assert(!pm.managedPinConflict(config)); // Its own checked ADC layer validates owner.
+        adcRetained=false;assert(pm.prepareScriptPin(18,0) && pm.writeScriptGpio(18,true));
+        assert(!pm.managedPinAvailableForAdc(18));
+        assert(pm.prepareScriptPin(18,1) && pm.writeScriptPwm(18,8));
+        assert(!pm.managedPinAvailableForAdc(18));
+        assert(pm.releaseScriptPwm(18) && pm.managedPinAvailableForAdc(18));
+    } else if(scenario=="gpio_types") {
+        PeripheralConfig config;
+        config.type=PeripheralType::RADAR_SENSOR;
+        assert(isDigitalInputType(config.type) && !isGpioDigitalInputType(config.type));
+        const auto before=allCalls();assert(!pm.setupManagedDigital(config));assert(allCalls()==before);
+        config.type=PeripheralType::GPIO_DIGITAL_INPUT;assert(pm.setupManagedDigital(config));
+        // Radar now has its own checked digital-input owner. The common
+        // conflict classifier permits same-ID pads; its setup still refuses
+        // adoption without a current radar session, tested by the real radar fixture.
+        config.type=PeripheralType::RADAR_SENSOR;assert(!pm.managedPinConflict(config));
+        config.type=PeripheralType::ENCODER;assert(!pm.managedPinConflict(config));
+        config.type=PeripheralType::STEPPER_MOTOR;assert(!pm.managedPinConflict(config));
+        config.id="other";assert(pm.managedPinConflict(config));
+        for(auto type:{PeripheralType::ADC,PeripheralType::GPIO_ANALOG_INPUT}) {
+            PeripheralConfig analog;analog.pin=19;analog.type=type;adcRetained=true;
+            assert(!pm.managedPinConflict(analog));
+        }
+    } else if(scenario=="admission") {
+        for(uint8_t pin:{uint8_t(6),uint8_t(255)}) {
+            assert(!pm.prepareScriptPin(pin,0) && !pm.writeScriptGpio(pin,true));
+        }
+        assert(!pm.prepareScriptPin(18,3));
+        neoPixelRetained=true;assert(!pm.managedPinAvailableForAdc(18));neoPixelRetained=false;
+        controlClaim=true;assert(!pm.writeScriptGpio(18,true) && !pm.managedPinAvailableForAdc(18));
+        controlClaim=false;configuredConflict=true;assert(!pm.prepareScriptPin(18,1) && !pm.writeScriptPwm(18,1));
+        assert(allCalls()==0 && ledcAttaches==0);
+    } else if(scenario=="passive_busy") {
+        assert(pm.prepareScriptPin(18,0) && pm.writeScriptGpio(18,true));
+        const auto before=allCalls();for(int i=0;i<1000;++i){gpio(pm);dac(pm);}
+        assert(allCalls()==before);
+        std::promise<void> held,done;auto finished=done.get_future();
+        std::thread owner([&]{std::lock_guard<std::recursive_mutex> lock(pm.mutex);held.set_value();finished.wait();});
+        held.get_future().wait();
+        auto gs=gpio(pm);auto ds=dac(pm);
+        assert(gs.status==FastBee::ResourceObservation::Busy && gs.count==0);
+        assert(ds.status==FastBee::ResourceObservation::Busy && ds.count==0 && ds.supported==(CHIP_HAS_DAC!=0));
+        assert(!pm.managedPinAvailableForAdc(18) && !pm.prepareScriptPin(18,1));
+        assert(!pm.writeScriptGpio(18,false) && allCalls()==before);
+        done.set_value();owner.join();assert(gpio(pm).count==1);
+    } else return 2;
+}

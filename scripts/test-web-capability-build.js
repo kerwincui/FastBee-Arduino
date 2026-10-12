@@ -172,7 +172,9 @@ function parseBuiltSequenceMap(source) {
 }
 
 function parseBuiltPreloadPages(source) {
-    const match = source.match(/PageLoader\.preloadPages\((\[[^\]]*\])\s*,\s*self\._pageMapping\s*,\s*\{delayMs:1200\}\)/);
+    // Local callback bindings can be renamed by the parser-based minifier.
+    // The public call, mapping property and bounded delay remain the contract.
+    const match = source.match(/PageLoader\.preloadPages\((\[[^\]]*\])\s*,\s*[A-Za-z_$][\w$]*\._pageMapping\s*,\s*\{delayMs:1200\}\)/);
     assert.ok(match, 'built page preload list must be discoverable');
     return JSON.parse(match[1].replace(/'/g, '"'));
 }
@@ -252,13 +254,31 @@ function verifyCase({ environment, expected, buildFlags, expectedRequestConcurre
         `${environment}: save/preflight code must stay in an on-demand module`);
     assert.ok(/ModuleLoader\.loadModule\(["']peripheral-io["'],[A-Za-z_$][\w$]*\)/.test(peripheralsCore),
         `${environment}: diagnostics code must stay in an on-demand module`);
-    assert.ok(peripheralSave.includes("registerModule('peripheral-save'") && peripheralSave.includes('/api/peripherals/preflight'),
+    assert.ok(/registerModule\(["']peripheral-save["']\s*,/.test(peripheralSave) && peripheralSave.includes('/api/peripherals/preflight'),
         `${environment}: peripheral save/preflight module contract`);
     assert.ok(/registerModule\(["']peripheral-io["']\s*,/.test(peripheralIo) &&
         /loadFragment\(["']["']\s*,\s*["']peripheral-io["']\)/.test(peripheralIo),
         `${environment}: peripheral diagnostics module contract`);
 
     const modalsHtml = readGzipText('pages/modals.html');
+    assert.ok(!modalsHtml.includes('config-transfer-modal') && !modalsHtml.includes('config-board-migration-modal'),
+        `${environment}: transfer dialogs must not be eagerly retained in shared modals`);
+    if (manifest.compiledCapabilities.configTransfer) {
+        const transfer = readGzipText('js/modules/device-config-transfer.js');
+        assert.ok(transfer.includes('config-transfer-modal') && transfer.includes('config-board-migration-modal') &&
+            transfer.includes('_cacheModalTemplates'), `${environment}: compiled transfer tools must retain both lazy dialog templates`);
+    }
+    for (const [modalId, moduleId, capability] of [
+        ['rule-script-modal', 'rule-script', 'ruleScript'],
+        ['add-user-modal', 'users', 'userAdmin']
+    ]) {
+        assert.ok(!modalsHtml.includes(modalId), `${environment}: #${modalId} must follow its lazy module`);
+        if (manifest.compiledCapabilities[capability]) {
+            const module = readGzipText(`js/modules/${moduleId}.js`);
+            assert.ok(module.includes(modalId) && module.includes('_cacheModalTemplates'),
+                `${environment}: #${modalId} must remain available in its compiled module`);
+        }
+    }
     Object.entries(MODAL_CAPABILITY_REQUIREMENTS).forEach(([modalId, rule]) => {
         assert.strictEqual(
             modalsHtml.includes(`id="${modalId}"`),
@@ -304,14 +324,18 @@ function verifyCase({ environment, expected, buildFlags, expectedRequestConcurre
         const editorSequence = moduleSequences['periph-exec-editor'] || [];
         assert.ok(editorSequence.includes('periph-exec-form'),
             `${environment}: periph exec editor must load the core form`);
+        assert.ok(editorSequence.includes('periph-exec-templates'),
+            `${environment}: periph exec editor must load the read-only draft wizard`);
+        assert.ok(readGzipText('js/modules/periph-exec-templates.js').includes('applyPeriphExecTemplate'),
+            `${environment}: draft wizard must be packaged, not only referenced`);
         assert.ok(!editorSequence.includes('periph-exec-sensor') && !editorSequence.includes('periph-exec-effects'),
             `${environment}: sensor/effects modules must remain on demand`);
         const periphExecCore = readGzipText('js/modules/periph-exec.js');
         assert.ok(periphExecCore.includes('periph-exec-sensor') && periphExecCore.includes('periph-exec-effects'),
             `${environment}: periph exec core must route lazy action modules`);
-        assert.ok(readGzipText('js/modules/periph-exec-sensor.js').includes("registerModule('periph-exec-sensor'"),
+        assert.ok(/registerModule\(["']periph-exec-sensor["']\s*,/.test(readGzipText('js/modules/periph-exec-sensor.js')),
             `${environment}: sensor extension must register with ModuleLoader`);
-        assert.ok(readGzipText('js/modules/periph-exec-effects.js').includes("registerModule('periph-exec-effects'"),
+        assert.ok(/registerModule\(["']periph-exec-effects["']\s*,/.test(readGzipText('js/modules/periph-exec-effects.js')),
             `${environment}: effects extension must register with ModuleLoader`);
     }
     const chunk3 = readGzipText('js/chunk-3-state.js');
@@ -323,7 +347,7 @@ function verifyCase({ environment, expected, buildFlags, expectedRequestConcurre
         `${environment}: page preloads must not request omitted pages`);
     if (!manifest.compiledCapabilities.mqtt && protocolPublished) {
         const expectedDefaultTab = 'modbus-rtu';
-        assert.ok(chunk3.includes(`this.loadProtocolConfig('${expectedDefaultTab}')`),
+        assert.ok(["'", '"'].some(quote => chunk3.includes(`this.loadProtocolConfig(${quote}${expectedDefaultTab}${quote})`)),
             `${environment}: protocol-only build must open its first compiled tab`);
     }
 }

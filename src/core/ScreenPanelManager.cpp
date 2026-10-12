@@ -1,8 +1,10 @@
 #include "core/FeatureFlags.h"
+#include "network/FixedJsonField.h"
 #if FASTBEE_ENABLE_SCREEN_PANEL
 
 #include "core/ScreenPanelManager.h"
 #include "core/ScreenPanelMigration.h"
+#include "utils/CheckedText.h"
 
 #include <LittleFS.h>
 #include <algorithm>
@@ -29,6 +31,8 @@
 #include "core/MotorControlService.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/ScreenOutputIdentity.h"
 #include "core/PointHistory.h"
 #include "systems/LoggerSystem.h"
 #include "systems/SystemRebooter.h"
@@ -150,6 +154,8 @@ const char* panelAsyncExecErrorName(AsyncExecError error) {
         case AsyncExecError::INCOMPLETE_ACTIONS: return "incomplete_actions";
         case AsyncExecError::CANCELLED_BY_SYSTEM: return "cancelled_by_system";
         case AsyncExecError::WORKER_QUEUE_FULL: return "worker_queue_full";
+        case AsyncExecError::UART_SOURCE_UNCONFIRMED: return "uart_source_unconfirmed";
+        case AsyncExecError::RULE_REVISION_UNCONFIRMED: return "rule_revision_unconfirmed";
     }
     return "unknown";
 }
@@ -654,15 +660,15 @@ void appendPanelClock(JsonObject clock) {
     }
     // A valid device wall clock may come from NTP or another existing time
     // source. Do not claim a fresh NTP exchange or substitute browser time.
-    clock["valid"] = valid;
-    clock["quality"] = valid ? "good" : "unknown";
+    FastBee::setFixedJsonField(clock, "valid", valid);
+    FastBee::setFixedJsonField(clock, "quality", valid ? "good" : "unknown");
     if (!valid) return;
     char timeText[8];
     char dateText[16];
     strftime(timeText, sizeof(timeText), "%H:%M", &local);
     strftime(dateText, sizeof(dateText), "%Y-%m-%d", &local);
-    clock["time"] = JsonString(timeText);
-    clock["date"] = JsonString(dateText);
+    FastBee::setFixedJsonField(clock, "time", JsonString(timeText));
+    FastBee::setFixedJsonField(clock, "date", JsonString(dateText));
 }
 
 bool backupPanelBeforeTouchMigration(const String& sourcePath) {
@@ -747,7 +753,7 @@ bool ScreenPanelManager::initialize() {
     }
 
     JsonDocument parsed;
-    if (deserializeJson(parsed, loaded)) return false;
+    if (deserializeJson(parsed, loaded.c_str(), loaded.length())) return false;
     // Startup only: normal config/state GETs never rewrite the file. Upgrade
     // a copy, validate it, preserve one original backup, then use the existing
     // atomic envelope replacement and .bak recovery path.
@@ -764,6 +770,7 @@ bool ScreenPanelManager::initialize() {
     }
     _configJson = loaded;
     _revision = loadedRevision;
+    FastBee::ScreenOutputIdentity::publish(persisted ? loadedRevision : 0);
     _persisted = persisted;
     _displayRef = String(parsed["displayRef"] | "");
     _activePageId = parsed["settings"]["homePageId"] | "home";
@@ -805,7 +812,7 @@ bool ScreenPanelManager::copyConfig(JsonDocument& out, uint32_t& revision,
                                     bool& persisted) const {
     PanelLock lock(_mutex);
     if (!lock.locked() || !_initialized) return false;
-    if (deserializeJson(out, _configJson)) return false;
+    if (deserializeJson(out, _configJson.c_str(), _configJson.length())) return false;
     revision = _revision;
     persisted = _persisted;
     return true;
@@ -1283,10 +1290,10 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
                 return false;
             }
 
-            int motorSpeed = 50, motorPulse = 1600, motorSpeedStep = 1, motorPulseStep = 100;
+            int motorSpeed = 10, motorPulse = 100, motorSpeedStep = 1, motorPulseStep = 100;
             if (visual == ScreenVisualType::MOTOR_CONTROL) {
-                if (!readBoundedInt(card["motorSpeed"], 0, 65535, 50, motorSpeed, cardPath + ".motorSpeed", error) ||
-                    !readBoundedInt(card["motorPulse"], 0, 65535, 1600, motorPulse, cardPath + ".motorPulse", error) ||
+                if (!readBoundedInt(card["motorSpeed"], 0, 65535, 10, motorSpeed, cardPath + ".motorSpeed", error) ||
+                    !readBoundedInt(card["motorPulse"], 0, 65535, 100, motorPulse, cardPath + ".motorPulse", error) ||
                     !readBoundedInt(card["motorSpeedStep"], 1, 65535, 1, motorSpeedStep, cardPath + ".motorSpeedStep", error) ||
                     !readBoundedInt(card["motorPulseStep"], 1, 65535, 100, motorPulseStep, cardPath + ".motorPulseStep", error)) return false;
             } else if (!card["motorSpeed"].isNull() || !card["motorPulse"].isNull() || !card["motorSpeedStep"].isNull() || !card["motorPulseStep"].isNull()) {
@@ -1324,7 +1331,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
             normalizedCard["rect"]["w"] = w;
             normalizedCard["rect"]["h"] = h;
             if (!card["iconId"].isNull()) normalizedCard["iconId"] = card["iconId"];
-            normalizedCard["requireConfirmation"] = visual == ScreenVisualType::MOTOR_CONTROL || confirmation;
+            normalizedCard["requireConfirmation"] = confirmation;
             normalizedCard["historyMode"] = historyMode;
             if (hasMin) {
                 normalizedCard["rangeMin"] = rangeMin;
@@ -1424,6 +1431,25 @@ String ScreenPanelManager::ruleFingerprint(const PeriphExecRule& rule) {
     char buffer[9];
     snprintf(buffer, sizeof(buffer), "%08lx", static_cast<unsigned long>(hash));
     return String(buffer);
+}
+
+bool ScreenPanelManager::validateMigrationControl(const PeriphExecRule& rule,
+                                                  JsonObjectConst card, String& error) {
+    if (!rule.enabled || !panelSafeRule(rule)) { error = "MIGRATION_PANEL_RULE_UNSAFE"; return false; }
+    PanelNumericConstraints numeric;
+    const PanelRuleInputKind kind = resolvePanelRuleInputKind(rule, &numeric);
+    if (!validatePanelControlInput(kind, String(card["visualType"] | ""), error)) return false;
+    if (kind == PanelRuleInputKind::NUMBER &&
+        ((numeric.integerOnly && (card["precision"] | 0) != 0) ||
+         (numeric.bounded && (card["rangeMin"].as<double>() < numeric.minimum ||
+                              card["rangeMax"].as<double>() > numeric.maximum)))) {
+        error = "MIGRATION_PANEL_RANGE_INVALID"; return false;
+    }
+    const String expected = ruleFingerprint(rule);
+    if (expected.length() != 8 || expected != (card["bindingFingerprint"] | "")) {
+        error = "MIGRATION_PANEL_BINDING_CHANGED"; return false;
+    }
+    return true;
 }
 
 bool ScreenPanelManager::validateAndBindReferences(JsonDocument& normalized,
@@ -1526,8 +1552,16 @@ ScreenPanelManager::SaveResult ScreenPanelManager::saveConfig(
     }
 
     String serialized;
-    serializeJson(normalized, serialized);
-    const String nextDisplayRef = String(normalized["displayRef"] | "");
+    const size_t serializedSize = measureJson(normalized);
+    String nextDisplayRef;
+    const JsonString displayRef = normalized["displayRef"].as<JsonString>();
+    if (normalized.overflowed() || serializedSize > MAX_CONFIG_BYTES ||
+        !serialized.reserve(serializedSize) || serializeJson(normalized, serialized) != serializedSize ||
+        serialized.length() != serializedSize ||
+        !FastBee::copyCheckedText(nextDisplayRef, displayRef.c_str(), displayRef.size(), MAX_CONFIG_BYTES)) {
+        error = "Unable to prepare screen panel configuration";
+        return SaveResult::STORAGE_ERROR;
+    }
     bool displayChanged = false;
     {
         PanelLock lock(_mutex);
@@ -1539,8 +1573,21 @@ ScreenPanelManager::SaveResult ScreenPanelManager::saveConfig(
             error = "Screen panel configuration revision conflict";
             return SaveResult::REVISION_CONFLICT;
         }
-        uint32_t nextRevision = _revision + 1;
-        if (nextRevision == 0) nextRevision = 1;
+        if (_revision == UINT32_MAX) {
+            error = "Screen panel configuration revision exhausted";
+            return SaveResult::REVISION_CONFLICT;
+        }
+        const uint32_t nextRevision = _revision + 1;
+        bool activeFound = false;
+        for (JsonObjectConst page : normalized["pages"].as<JsonArrayConst>()) {
+            activeFound = activeFound || _activePageId == (page["id"] | "");
+        }
+        String nextActivePage;
+        const JsonString homePage = normalized["settings"]["homePageId"].as<JsonString>();
+        if (!activeFound && !FastBee::copyCheckedText(nextActivePage, homePage.c_str(), homePage.size(), MAX_CONFIG_BYTES)) {
+            error = "Unable to prepare screen panel page";
+            return SaveResult::STORAGE_ERROR;
+        }
         // Keep the revision check, durable write and in-memory publication in
         // one critical section so concurrent editors cannot both commit the
         // same expected revision.
@@ -1548,19 +1595,16 @@ ScreenPanelManager::SaveResult ScreenPanelManager::saveConfig(
             error = "Failed to persist screen panel configuration";
             return SaveResult::STORAGE_ERROR;
         }
-        _configJson = serialized;
+        _configJson = std::move(serialized);
         _revision = nextRevision;
+        FastBee::ScreenOutputIdentity::publish(nextRevision);
         _persisted = true;
         displayChanged = _displayRef != nextDisplayRef;
-        _displayRef = nextDisplayRef;
+        _displayRef = std::move(nextDisplayRef);
         _applied = false;
         _restartRequired = false;
         _applicationError = "";
-        bool activeFound = false;
-        for (JsonObjectConst page : normalized["pages"].as<JsonArrayConst>()) {
-            activeFound = activeFound || _activePageId == String(page["id"] | "");
-        }
-        if (!activeFound) _activePageId = normalized["settings"]["homePageId"].as<String>();
+        if (!activeFound) _activePageId = std::move(nextActivePage);
     }
 #if FASTBEE_ENABLE_SCREEN_UI
     auto& runtime = FastBee::Screen::ScreenRuntime::instance();
@@ -1668,8 +1712,8 @@ bool ScreenPanelManager::writeEnvelope(JsonVariantConst config,
     }
     File verifyFile = LittleFS.open(tmp, FILE_READ);
     JsonDocument verify;
-    const bool valid = verifyFile && !deserializeJson(verify, verifyFile) &&
-                       verify["storageVersion"] == 1;
+    const bool valid = verifyFile && verifyFile.size() == expected && !deserializeJson(verify, verifyFile) &&
+                       verify.as<JsonVariantConst>() == envelope.as<JsonVariantConst>();
     if (verifyFile) verifyFile.close();
     if (!valid) {
         LittleFS.remove(tmp);
@@ -1677,7 +1721,7 @@ bool ScreenPanelManager::writeEnvelope(JsonVariantConst config,
     }
 
     const bool hadPrimary = LittleFS.exists(path);
-    if (LittleFS.exists(backup) && !LittleFS.remove(backup)) {
+    if (hadPrimary && LittleFS.exists(backup) && !LittleFS.remove(backup)) {
         LittleFS.remove(tmp);
         return false;
     }
@@ -1697,30 +1741,30 @@ void ScreenPanelManager::appendCapabilities(JsonObject out) const {
     actionCapabilities =
         FastBee::Screen::ScreenRuntime::instance().systemActionCapabilities();
 #endif
-    out["schemaVersion"] = 1;
-    out["maxPages"] = ScreenPanelSnapshot::MAX_PAGES;
-    out["maxCards"] = ScreenPanelSnapshot::MAX_CARDS;
-    out["maxHistorySamples"] = ScreenPanelSnapshot::MAX_HISTORY;
-    out["maxSourcesPerCard"] = 4;
-    out["templates"] = true;
-    out["canvas"] = true;
-    out["motorControls"] = FASTBEE_ENABLE_MODBUS != 0;
-    out["touchSettings"] = true;
-    out["charts"] = true;
-    out["systemRestart"] = actionCapabilities.restart;
-    out["brightness"] = actionCapabilities.brightness;
-    out["brightnessContinuous"] = actionCapabilities.brightnessContinuous;
-    out["minVisibleBrightnessPercent"] = actionCapabilities.minVisibleBrightnessPercent;
-    out["sleep"] = actionCapabilities.sleep;
-    out["touchWake"] = actionCapabilities.touchWake;
-    out["buzzer"] = actionCapabilities.buzzer;
-    out["touchBeep"] = actionCapabilities.buzzer;
-    out["displayReady"] = actionCapabilities.displayReady;
-    out["touchConfigured"] = actionCapabilities.touchConfigured;
-    out["touchReady"] = actionCapabilities.touchReady;
-    out["touchError"] = actionCapabilities.touchError;
-    out["controlConfirmIdle"] = FASTBEE_ENABLE_SCREEN_UI != 0;
-    out["maxBottomNavPages"] = ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES;
+    FastBee::setFixedJsonField(out, "schemaVersion", 1);
+    FastBee::setFixedJsonField(out, "maxPages", ScreenPanelSnapshot::MAX_PAGES);
+    FastBee::setFixedJsonField(out, "maxCards", ScreenPanelSnapshot::MAX_CARDS);
+    FastBee::setFixedJsonField(out, "maxHistorySamples", ScreenPanelSnapshot::MAX_HISTORY);
+    FastBee::setFixedJsonField(out, "maxSourcesPerCard", 4);
+    FastBee::setFixedJsonField(out, "templates", true);
+    FastBee::setFixedJsonField(out, "canvas", true);
+    FastBee::setFixedJsonField(out, "motorControls", FASTBEE_ENABLE_MODBUS != 0);
+    FastBee::setFixedJsonField(out, "touchSettings", true);
+    FastBee::setFixedJsonField(out, "charts", true);
+    FastBee::setFixedJsonField(out, "systemRestart", actionCapabilities.restart);
+    FastBee::setFixedJsonField(out, "brightness", actionCapabilities.brightness);
+    FastBee::setFixedJsonField(out, "brightnessContinuous", actionCapabilities.brightnessContinuous);
+    FastBee::setFixedJsonField(out, "minVisibleBrightnessPercent", actionCapabilities.minVisibleBrightnessPercent);
+    FastBee::setFixedJsonField(out, "sleep", actionCapabilities.sleep);
+    FastBee::setFixedJsonField(out, "touchWake", actionCapabilities.touchWake);
+    FastBee::setFixedJsonField(out, "buzzer", actionCapabilities.buzzer);
+    FastBee::setFixedJsonField(out, "touchBeep", actionCapabilities.buzzer);
+    FastBee::setFixedJsonField(out, "displayReady", actionCapabilities.displayReady);
+    FastBee::setFixedJsonField(out, "touchConfigured", actionCapabilities.touchConfigured);
+    FastBee::setFixedJsonField(out, "touchReady", actionCapabilities.touchReady);
+    FastBee::setFixedJsonField(out, "touchError", actionCapabilities.touchError);
+    FastBee::setFixedJsonField(out, "controlConfirmIdle", FASTBEE_ENABLE_SCREEN_UI != 0);
+    FastBee::setFixedJsonField(out, "maxBottomNavPages", ScreenPanelSnapshot::MAX_BOTTOM_NAV_PAGES);
     JsonObject disabledReasons = out["disabledReasons"].to<JsonObject>();
     String interactionReason;
     if (!FASTBEE_ENABLE_SCREEN_UI) interactionReason = "当前固件未启用屏幕运行时";
@@ -1730,14 +1774,14 @@ void ScreenPanelManager::appendCapabilities(JsonObject out) const {
         interactionReason = "触摸控制器未就绪，正在重试";
         if (actionCapabilities.touchError[0]) interactionReason += String("（") + actionCapabilities.touchError + "）";
     }
-    if (!actionCapabilities.brightness) disabledReasons["brightness"] = interactionReason.isEmpty() ? String("当前硬件不支持亮度调节") : interactionReason;
+    if (!actionCapabilities.brightness) FastBee::setFixedJsonField(disabledReasons, "brightness", interactionReason.isEmpty() ? String("当前硬件不支持亮度调节") : interactionReason);
     if (!actionCapabilities.brightnessContinuous) disabledReasons["brightnessContinuous"] = disabledReasons["brightness"];
-    if (actionCapabilities.brightness && !actionCapabilities.brightnessContinuous) disabledReasons["brightnessContinuous"] = "仅支持背光开关";
-    if (!actionCapabilities.sleep) disabledReasons["sleep"] = interactionReason.isEmpty() ? String("当前硬件不支持自动息屏") : interactionReason;
-    if (!actionCapabilities.touchWake) disabledReasons["touchWake"] = interactionReason;
-    if (!actionCapabilities.buzzer) disabledReasons["buzzer"] = interactionReason.isEmpty() ? String("显示外设未配置可用的蜂鸣器") : interactionReason;
-    if (!actionCapabilities.restart) disabledReasons["systemRestart"] = interactionReason;
-    if (!(FASTBEE_ENABLE_MODBUS != 0)) disabledReasons["motorControls"] = "当前固件不支持电机控制";
+    if (actionCapabilities.brightness && !actionCapabilities.brightnessContinuous) FastBee::setFixedJsonField(disabledReasons, "brightnessContinuous", "仅支持背光开关");
+    if (!actionCapabilities.sleep) FastBee::setFixedJsonField(disabledReasons, "sleep", interactionReason.isEmpty() ? String("当前硬件不支持自动息屏") : interactionReason);
+    if (!actionCapabilities.touchWake) FastBee::setFixedJsonField(disabledReasons, "touchWake", interactionReason);
+    if (!actionCapabilities.buzzer) FastBee::setFixedJsonField(disabledReasons, "buzzer", interactionReason.isEmpty() ? String("显示外设未配置可用的蜂鸣器") : interactionReason);
+    if (!actionCapabilities.restart) FastBee::setFixedJsonField(disabledReasons, "systemRestart", interactionReason);
+    if (!(FASTBEE_ENABLE_MODBUS != 0)) FastBee::setFixedJsonField(disabledReasons, "motorControls", "当前固件不支持电机控制");
     JsonArray systemActions = out["systemActions"].to<JsonArray>();
     if (actionCapabilities.brightness) systemActions.add("brightness");
     if (actionCapabilities.sleep) { systemActions.add("sleep"); systemActions.add("sleep-time"); }
@@ -1745,8 +1789,8 @@ void ScreenPanelManager::appendCapabilities(JsonObject out) const {
     if (FASTBEE_ENABLE_SCREEN_UI) systemActions.add("confirm-idle");
     if (actionCapabilities.buzzer) systemActions.add("buzzer");
     if (actionCapabilities.restart) systemActions.add("restart");
-    out["requiresUniqueCardIds"] = true;
-    out["allowsOverlap"] = false;
+    FastBee::setFixedJsonField(out, "requiresUniqueCardIds", true);
+    FastBee::setFixedJsonField(out, "allowsOverlap", false);
 }
 
 void ScreenPanelManager::appendChoices(JsonArray out) const {
@@ -1888,26 +1932,26 @@ void ScreenPanelManager::appendApplication(JsonObject out) const {
     {
         PanelLock lock(_mutex);
         if (!lock.locked()) return;
-        out["persisted"] = _persisted;
-        out["applied"] = _applied;
-        out["restartRequired"] = _restartRequired;
-        out["revision"] = _revision;
-        out["status"] = !_persisted ? "draft" : _applied ? "applied" :
-                        _applicationError.isEmpty() ? "saved" : "apply_failed";
-        if (!_applicationError.isEmpty()) out["error"] = _applicationError;
+        FastBee::setFixedJsonField(out, "persisted", _persisted);
+        FastBee::setFixedJsonField(out, "applied", _applied);
+        FastBee::setFixedJsonField(out, "restartRequired", _restartRequired);
+        FastBee::setFixedJsonField(out, "revision", _revision);
+        FastBee::setFixedJsonField(out, "status", !_persisted ? "draft" : _applied ? "applied" :
+                        _applicationError.isEmpty() ? "saved" : "apply_failed");
+        if (!_applicationError.isEmpty()) FastBee::setFixedJsonField(out, "error", _applicationError);
     }
 #if FASTBEE_ENABLE_SCREEN_UI
     auto& runtime = FastBee::Screen::ScreenRuntime::instance();
     JsonObject state = out["runtime"].to<JsonObject>();
-    state["running"] = runtime.running();
-    state["sleeping"] = runtime.sleeping();
-    state["allocatedBytes"] = runtime.allocatedBytes();
+    FastBee::setFixedJsonField(state, "running", runtime.running());
+    FastBee::setFixedJsonField(state, "sleeping", runtime.sleeping());
+    FastBee::setFixedJsonField(state, "allocatedBytes", runtime.allocatedBytes());
     String runtimeError;
     runtime.getLastError(runtimeError);
-    if (!runtimeError.isEmpty()) state["error"] = runtimeError;
-    state["internalFreeBytes"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    state["internalLargestBytes"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    state["psramFreeBytes"] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!runtimeError.isEmpty()) FastBee::setFixedJsonField(state, "error", runtimeError);
+    FastBee::setFixedJsonField(state, "internalFreeBytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    FastBee::setFixedJsonField(state, "internalLargestBytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    FastBee::setFixedJsonField(state, "psramFreeBytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #endif
 }
 
@@ -1924,16 +1968,16 @@ void ScreenPanelManager::appendState(JsonObject out) const {
     std::unique_ptr<ScreenPanelSnapshot> snapshot(
         new (std::nothrow) ScreenPanelSnapshot());
     if (!snapshot || !getSnapshot(*snapshot)) {
-        out["available"] = false;
+        FastBee::setFixedJsonField(out, "available", false);
         return;
     }
-    out["available"] = true;
-    out["revision"] = snapshot->revision;
-    out["activePageIndex"] = snapshot->activePageIndex;
-    out["brightnessPercent"] = snapshot->brightnessPercent;
-    out["idleSleepSeconds"] = snapshot->idleSleepSeconds;
-    out["touchBeepEnabled"] = snapshot->touchBeepEnabled;
-    out["controlConfirmIdleSeconds"] = snapshot->controlConfirmIdleSeconds;
+    FastBee::setFixedJsonField(out, "available", true);
+    FastBee::setFixedJsonField(out, "revision", snapshot->revision);
+    FastBee::setFixedJsonField(out, "activePageIndex", snapshot->activePageIndex);
+    FastBee::setFixedJsonField(out, "brightnessPercent", snapshot->brightnessPercent);
+    FastBee::setFixedJsonField(out, "idleSleepSeconds", snapshot->idleSleepSeconds);
+    FastBee::setFixedJsonField(out, "touchBeepEnabled", snapshot->touchBeepEnabled);
+    FastBee::setFixedJsonField(out, "controlConfirmIdleSeconds", snapshot->controlConfirmIdleSeconds);
     appendPanelClock(out["clock"].to<JsonObject>());
     JsonObject items = out["items"].to<JsonObject>();
     JsonArray cards = out["cards"].to<JsonArray>();
@@ -1942,64 +1986,64 @@ void ScreenPanelManager::appendState(JsonObject out) const {
         JsonObject item = cards.add<JsonObject>();
         // const char[N] is treated as a static literal by ArduinoJson 7.4.
         // This snapshot dies before the response is serialized, so copy text.
-        item["id"] = JsonString(card.id);
-        item["sourceRef"] = JsonString(card.sourceRef);
-        item["controlRef"] = JsonString(card.controlRef);
-        item["value"] = JsonString(card.value);
-        item["unit"] = JsonString(card.unit);
-        item["quality"] = qualityName(card.quality);
-        item["error"] = JsonString(card.error);
-        item["updatedMs"] = card.updatedMs;
-        item["pending"] = card.pending;
-        item["operationId"] = card.operationId;
-        item["motorSpeed"] = card.motorSpeed; item["motorPulse"] = card.motorPulse;
-        item["motorPrecision"] = card.motorPrecision;
-        item["motorKnown"] = card.motorKnown; item["systemActionId"] = JsonString(card.systemActionId);
+        FastBee::setFixedJsonField(item, "id", JsonString(card.id));
+        FastBee::setFixedJsonField(item, "sourceRef", JsonString(card.sourceRef));
+        FastBee::setFixedJsonField(item, "controlRef", JsonString(card.controlRef));
+        FastBee::setFixedJsonField(item, "value", JsonString(card.value));
+        FastBee::setFixedJsonField(item, "unit", JsonString(card.unit));
+        FastBee::setFixedJsonField(item, "quality", qualityName(card.quality));
+        FastBee::setFixedJsonField(item, "error", JsonString(card.error));
+        FastBee::setFixedJsonField(item, "updatedMs", card.updatedMs);
+        FastBee::setFixedJsonField(item, "pending", card.pending);
+        FastBee::setFixedJsonField(item, "operationId", card.operationId);
+        FastBee::setFixedJsonField(item, "motorSpeed", card.motorSpeed); FastBee::setFixedJsonField(item, "motorPulse", card.motorPulse);
+        FastBee::setFixedJsonField(item, "motorPrecision", card.motorPrecision);
+        FastBee::setFixedJsonField(item, "motorKnown", card.motorKnown); FastBee::setFixedJsonField(item, "systemActionId", JsonString(card.systemActionId));
         if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
-            item["motorCommandKnown"] = card.motorCommandKnown; item["motorCommandSuccess"] = card.motorCommandSuccess;
-            item["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
-            item["motorReadError"] = JsonString(card.motorReadError);
-            item["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
-            item["motorReferenceKnown"] = card.motorReferenceKnown;
-            item["motorStationaryConfirmed"] = card.motorStationaryConfirmed;
-            item["motorForwardReady"] = card.motorForwardReady; item["motorReverseReady"] = card.motorReverseReady;
+            FastBee::setFixedJsonField(item, "motorCommandKnown", card.motorCommandKnown); FastBee::setFixedJsonField(item, "motorCommandSuccess", card.motorCommandSuccess);
+            FastBee::setFixedJsonField(item, "motorCommandUpdatedMs", card.motorCommandUpdatedMs);
+            FastBee::setFixedJsonField(item, "motorReadError", JsonString(card.motorReadError));
+            FastBee::setFixedJsonField(item, "motorSoftLimitEnabled", card.motorSoftLimitEnabled);
+            FastBee::setFixedJsonField(item, "motorReferenceKnown", card.motorReferenceKnown);
+            FastBee::setFixedJsonField(item, "motorStationaryConfirmed", card.motorStationaryConfirmed);
+            FastBee::setFixedJsonField(item, "motorForwardReady", card.motorForwardReady); FastBee::setFixedJsonField(item, "motorReverseReady", card.motorReverseReady);
         }
-        item["historyCount"] = card.historyCount;
-        item["historyStale"] = card.historyStale;
-        item["historyError"] = JsonString(card.historyError);
-        item["seriesCount"] = card.seriesCount;
+        FastBee::setFixedJsonField(item, "historyCount", card.historyCount);
+        FastBee::setFixedJsonField(item, "historyStale", card.historyStale);
+        FastBee::setFixedJsonField(item, "historyError", JsonString(card.historyError));
+        FastBee::setFixedJsonField(item, "seriesCount", card.seriesCount);
 
         const char* stateRef = card.controlRef[0] ? card.controlRef : card.sourceRef;
         if (!stateRef[0]) continue;
         JsonObject state = items[stateRef].to<JsonObject>();
-        state["cardId"] = JsonString(card.id);
-        state["motorSpeed"] = card.motorSpeed; state["motorPulse"] = card.motorPulse;
-        state["motorPrecision"] = card.motorPrecision;
-        state["motorKnown"] = card.motorKnown;
+        FastBee::setFixedJsonField(state, "cardId", JsonString(card.id));
+        FastBee::setFixedJsonField(state, "motorSpeed", card.motorSpeed); FastBee::setFixedJsonField(state, "motorPulse", card.motorPulse);
+        FastBee::setFixedJsonField(state, "motorPrecision", card.motorPrecision);
+        FastBee::setFixedJsonField(state, "motorKnown", card.motorKnown);
         if (card.visualType == ScreenVisualType::MOTOR_CONTROL) {
-            state["motorCommandKnown"] = card.motorCommandKnown; state["motorCommandSuccess"] = card.motorCommandSuccess;
-            state["motorCommandUpdatedMs"] = card.motorCommandUpdatedMs;
-            state["motorReadError"] = JsonString(card.motorReadError);
-            state["motorSoftLimitEnabled"] = card.motorSoftLimitEnabled;
-            state["motorReferenceKnown"] = card.motorReferenceKnown;
-            state["motorStationaryConfirmed"] = card.motorStationaryConfirmed;
-            state["motorForwardReady"] = card.motorForwardReady; state["motorReverseReady"] = card.motorReverseReady;
+            FastBee::setFixedJsonField(state, "motorCommandKnown", card.motorCommandKnown); FastBee::setFixedJsonField(state, "motorCommandSuccess", card.motorCommandSuccess);
+            FastBee::setFixedJsonField(state, "motorCommandUpdatedMs", card.motorCommandUpdatedMs);
+            FastBee::setFixedJsonField(state, "motorReadError", JsonString(card.motorReadError));
+            FastBee::setFixedJsonField(state, "motorSoftLimitEnabled", card.motorSoftLimitEnabled);
+            FastBee::setFixedJsonField(state, "motorReferenceKnown", card.motorReferenceKnown);
+            FastBee::setFixedJsonField(state, "motorStationaryConfirmed", card.motorStationaryConfirmed);
+            FastBee::setFixedJsonField(state, "motorForwardReady", card.motorForwardReady); FastBee::setFixedJsonField(state, "motorReverseReady", card.motorReverseReady);
         }
-        state["value"] = JsonString(card.value);
-        state["unit"] = JsonString(card.unit);
-        state["quality"] = qualityName(card.quality);
-        state["error"] = JsonString(card.error);
-        state["updatedMs"] = card.updatedMs;
-        state["pending"] = card.pending;
-        state["operationId"] = card.operationId;
-        state["historyStale"] = card.historyStale;
-        if (card.historyError[0]) state["historyError"] = JsonString(card.historyError);
-        if (card.kind == ScreenCardKind::WEATHER) state["reason"] = JsonString(card.weatherReason);
+        FastBee::setFixedJsonField(state, "value", JsonString(card.value));
+        FastBee::setFixedJsonField(state, "unit", JsonString(card.unit));
+        FastBee::setFixedJsonField(state, "quality", qualityName(card.quality));
+        FastBee::setFixedJsonField(state, "error", JsonString(card.error));
+        FastBee::setFixedJsonField(state, "updatedMs", card.updatedMs);
+        FastBee::setFixedJsonField(state, "pending", card.pending);
+        FastBee::setFixedJsonField(state, "operationId", card.operationId);
+        FastBee::setFixedJsonField(state, "historyStale", card.historyStale);
+        if (card.historyError[0]) FastBee::setFixedJsonField(state, "historyError", JsonString(card.historyError));
+        if (card.kind == ScreenCardKind::WEATHER) FastBee::setFixedJsonField(state, "reason", JsonString(card.weatherReason));
         if (card.weatherCondition[0]) {
-            state["condition"] = JsonString(card.weatherCondition);
-            state["city"] = JsonString(card.weatherCity);
+            FastBee::setFixedJsonField(state, "condition", JsonString(card.weatherCondition));
+            FastBee::setFixedJsonField(state, "city", JsonString(card.weatherCity));
             if (card.hasWeatherTemperature) {
-                state["temperature"] = card.weatherTemperature;
+                FastBee::setFixedJsonField(state, "temperature", card.weatherTemperature);
             }
         }
         if (card.seriesCount) {
@@ -2008,12 +2052,12 @@ void ScreenPanelManager::appendState(JsonObject out) const {
                  ++seriesIndex) {
                 const auto& source = card.series[seriesIndex];
                 JsonObject seriesItem = series.add<JsonObject>();
-                seriesItem["sourceRef"] = JsonString(source.sourceRef);
-                seriesItem["label"] = JsonString(source.label);
-                seriesItem["unit"] = JsonString(source.unit);
-                seriesItem["value"] = JsonString(source.value);
-                seriesItem["quality"] = qualityName(source.quality);
-                seriesItem["updatedMs"] = source.updatedMs;
+                FastBee::setFixedJsonField(seriesItem, "sourceRef", JsonString(source.sourceRef));
+                FastBee::setFixedJsonField(seriesItem, "label", JsonString(source.label));
+                FastBee::setFixedJsonField(seriesItem, "unit", JsonString(source.unit));
+                FastBee::setFixedJsonField(seriesItem, "value", JsonString(source.value));
+                FastBee::setFixedJsonField(seriesItem, "quality", qualityName(source.quality));
+                FastBee::setFixedJsonField(seriesItem, "updatedMs", source.updatedMs);
             }
             // Per-card series remain distinct when two charts share a primary
             // source but compare different additional sources.
@@ -2131,7 +2175,7 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
 
     if (rebuild) {
         cache.invalidate();
-        if (deserializeJson(cache._layout, configJson)) return false;
+        if (deserializeJson(cache._layout, configJson.c_str(), configJson.length())) return false;
         // This 50KB initialization belongs to layout changes, never to the
         // screen's periodic data refresh. Removed pages/cards are cleared too.
         memset(&out, 0, sizeof(out));
@@ -2206,6 +2250,8 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                 terminal.id = result.operationId;
                 terminal.failed = result.status != AsyncExecStatus::COMPLETED;
                 terminal.error = static_cast<uint8_t>(result.errorCode);
+                terminal.controlReason = result.ordinaryControlResult.evaluated && result.ordinaryControlResult.reason
+                    ? result.ordinaryControlResult.reason : nullptr;
                 break;
             }
         }
@@ -2253,8 +2299,8 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                 copyText(cardOut.sourceRef, String(card["sourceRef"] | ""));
                 copyText(cardOut.controlRef, String(card["controlRef"] | ""));
                 copyText(cardOut.systemActionId, String(card["systemActionId"] | ""));
-                cardOut.motorSpeedInput = card["motorSpeed"] | 50;
-                cardOut.motorPulseInput = card["motorPulse"] | 1600;
+                cardOut.motorSpeedInput = card["motorSpeed"] | 10;
+                cardOut.motorPulseInput = card["motorPulse"] | 100;
                 cardOut.motorSpeedStep = card["motorSpeedStep"] | 1;
                 cardOut.motorPulseStep = card["motorPulseStep"] | 100;
                 copyText(cardOut.iconId, String(card["iconId"] | ""));
@@ -2445,7 +2491,8 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                         cardOut.pending = false;
                         if (terminal.failed) {
                             snprintf(cardOut.error, sizeof(cardOut.error), "%s",
-                                     panelAsyncExecErrorName(static_cast<AsyncExecError>(terminal.error)));
+                                     terminal.controlReason ? terminal.controlReason :
+                                         panelAsyncExecErrorName(static_cast<AsyncExecError>(terminal.error)));
                         }
                         break;
                     }
@@ -2454,7 +2501,8 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                         cardOut.pending = !panelAsyncExecStatusIsTerminal(operation.status);
                         if (!cardOut.pending && operation.status != AsyncExecStatus::COMPLETED) {
                             snprintf(cardOut.error, sizeof(cardOut.error), "%s",
-                                     panelAsyncExecErrorName(operation.errorCode));
+                                     operation.ordinaryControlResult.evaluated && operation.ordinaryControlResult.reason
+                                         ? operation.ordinaryControlResult.reason : panelAsyncExecErrorName(operation.errorCode));
                         }
                         break;
                     }
@@ -2491,7 +2539,8 @@ bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kin
 
 bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kind,
                                         const String& value, uint32_t& operationId,
-                                        String& error, const char* expectedControlRef) {
+                                        String& error, const char* expectedControlRef,
+                                        uint32_t expectedRevision) {
     operationId = 0;
     error = "";
     if (!cardId || !validIdentifier(String(cardId))) {
@@ -2507,8 +2556,12 @@ bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kin
     }
 
     JsonObjectConst selected;
+    uint32_t savedCardOrdinal = 0;
     for (JsonObjectConst page : config["pages"].as<JsonArrayConst>()) {
         for (JsonObjectConst card : page["cards"].as<JsonArrayConst>()) {
+            if (++savedCardOrdinal > ScreenPanelSnapshot::MAX_CARDS) {
+                error = "CONTROL_CARD_IDENTITY_UNCONFIRMED"; return false;
+            }
             if (String(card["id"] | "") == cardId) {
                 selected = card;
                 break;
@@ -2540,9 +2593,37 @@ bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kin
             }
             parameter = static_cast<int>(parsed); action = action.substring(0, colon);
         }
-        static uint32_t requestSequence = 0;
-        const String requestId = "panel-" + String(millis()) + "-" + String(++requestSequence);
-        return MotorControlService::instance().submit(String(selected["controlRef"] | ""), action, parameter, requestId, operationId, error);
+        if (!revision || revision == UINT32_MAX || !savedCardOrdinal ||
+            (expectedRevision && expectedRevision != revision)) {
+            error = "CONTROL_PANEL_REVISION_UNCONFIRMED"; return false;
+        }
+        {
+            PanelLock admissionLock(_mutex, 0);
+            if (!admissionLock.locked() || !_persisted || _revision != revision) {
+                error = "CONTROL_PANEL_REVISION_UNCONFIRMED"; return false;
+            }
+        }
+        if (action == "readStatus")
+            return MotorControlService::instance().submit(String(selected["controlRef"] | ""),
+                action, parameter, String(), operationId, error);
+        FastBee::OrdinaryControlContext control;
+        auto& pm = PeripheralManager::getInstance();
+        const uint64_t actor = (static_cast<uint64_t>(revision) << 32U) | savedCardOrdinal;
+        if (!pm.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Screen, actor,
+                FastBee::OrdinaryControl::DefaultManualHoldMs, false, 0, "",
+                FastBee::SensorConfigEpoch::current(), {}, control)) {
+            error = "CONTROL_CONTEXT_UNCONFIRMED"; return false;
+        }
+        bool accepted = false;
+        struct Terminal {
+            PeripheralManager& pm; const FastBee::OrdinaryControlContext& context; const bool& accepted;
+            ~Terminal() { pm.finishOrdinaryControl(context, !accepted); }
+        } terminal{pm, control, accepted};
+        char requestId[64];
+        snprintf(requestId, sizeof(requestId), "panel-%llu", static_cast<unsigned long long>(control.request.operation));
+        accepted = MotorControlService::instance().submit(String(selected["controlRef"] | ""),
+            action, parameter, String(requestId), operationId, error, &control);
+        return accepted;
     }
     const String cardKind = selected["kind"] | "";
     const bool target = value == "true" || value == "on" || value == "1";
@@ -2694,6 +2775,11 @@ bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kin
     }
 
     const String controlRef = selected["controlRef"] | "";
+    if (!revision || revision == UINT32_MAX || !savedCardOrdinal ||
+        (expectedRevision && expectedRevision != revision) ||
+        (expectedControlRef && std::strcmp(expectedControlRef, controlRef.c_str()))) {
+        error = "CONTROL_PANEL_REVISION_UNCONFIRMED"; return false;
+    }
     if (controlRef.isEmpty()) {
         error = "binding_unconfigured";
         return false;
@@ -2750,27 +2836,42 @@ bool ScreenPanelManager::dispatchAction(const char* cardId, ScreenActionKind kin
 
     String rejection;
     AsyncExecResult admitted;
+    // Never hold PanelLock across PM/rule admission: PM lifecycle callbacks
+    // acquire it in the reverse direction. The published revision also guards
+    // delayed output admission and producer callbacks through the actor token.
+    {
+        PanelLock admissionLock(_mutex, 0);
+        if (!admissionLock.locked() || !_persisted || _revision != revision) {
+            error = "CONTROL_PANEL_REVISION_UNCONFIRMED"; return false;
+        }
+    }
+    FastBee::OrdinaryControlContext control;
+    const uint64_t actor = (static_cast<uint64_t>(revision) << 32U) | savedCardOrdinal;
+    auto& pm = PeripheralManager::getInstance();
+    if (!pm.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Screen, actor,
+            FastBee::OrdinaryControl::DefaultManualHoldMs, false, 0, "",
+            FastBee::SensorConfigEpoch::current(), {}, control)) {
+        error = "CONTROL_CONTEXT_UNCONFIRMED"; return false;
+    }
     if (!PeriphExecManager::getInstance().runOnce(ruleId, receivedValue,
-                                                   &rejection, &admitted)) {
+                                                   &rejection, &admitted, &control)) {
+        pm.finishOrdinaryControl(control, true);
         error = rejection.isEmpty() ? String("Control execution was rejected") : rejection;
         return false;
     }
     operationId = admitted.operationId;
-    {
-        PanelLock lock(_mutex);
-        if (lock.locked()) {
-            size_t slot = _operationCardIds.size();
-            for (size_t i = 0; i < _operationCardIds.size(); ++i) {
-                if (_operationCardIds[i] == cardId || _operationCardIds[i].isEmpty()) {
-                    slot = i;
-                    break;
-                }
-            }
-            if (slot == _operationCardIds.size()) slot = operationId % _operationCardIds.size();
-            _operationCardIds[slot] = cardId;
-            _operationIds[slot] = operationId;
+    PanelLock resultLock(_mutex, 0);
+    if (!resultLock.locked() || _revision != revision) return true; // Already submitted; never replay.
+    size_t slot = _operationCardIds.size();
+    for (size_t i = 0; i < _operationCardIds.size(); ++i) {
+        if (_operationCardIds[i] == cardId || _operationCardIds[i].isEmpty()) {
+            slot = i;
+            break;
         }
     }
+    if (slot == _operationCardIds.size()) slot = operationId % _operationCardIds.size();
+    _operationCardIds[slot] = cardId;
+    _operationIds[slot] = operationId;
     return true;
 }
 

@@ -1,0 +1,127 @@
+#include <Arduino.h>
+#include "core/UartEventOrigin.h"
+#include "core/NativeOutputControl.h"
+#include "core/CheckedActionTimer.h"
+#include <cassert>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <new>
+#include <vector>
+
+static bool busy = false, timerWorks = true;
+static unsigned held = 0, liveTimers = 0;
+static uint32_t freeMemory = 100000;
+constexpr int MALLOC_CAP_INTERNAL = 1;
+#define LOG_WARNING(...) ((void)0)
+uint32_t heap_caps_get_free_size(int) { return freeMemory; }
+namespace FastBee { class DigitalIoProvider; namespace MemoryBudget { constexpr uint32_t ACTION_TICKER_MIN_DRAM = 4096; } }
+struct RecursiveMutexGuard {
+    bool acquired;
+    explicit RecursiveMutexGuard(int,int = 0): acquired(!busy) { if (acquired) ++held; }
+    ~RecursiveMutexGuard() { if (acquired) --held; }
+    bool isLocked() const { return acquired; }
+};
+struct Ticker {
+    bool enabled = false;
+    uint32_t token = 0;
+    void (*callback)(uint32_t) = nullptr;
+    Ticker() { ++liveTimers; }
+    ~Ticker() { --liveTimers; }
+    void detach() { enabled = false; }
+    void attach_ms(uint64_t, void (*cb)(uint32_t), uint32_t arg) {
+        callback = cb; token = arg; enabled = timerWorks;
+    }
+    bool active() const { return enabled; }
+};
+enum class GPIOState { STATE_UNDEFINED, STATE_HIGH };
+enum class PeripheralType { GPIO_DIGITAL_OUTPUT, GPIO_PWM_OUTPUT, GPIO_ANALOG_OUTPUT, INPUT };
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED, PERIPHERAL_RUNNING, PERIPHERAL_ERROR };
+struct PeripheralConfig {
+    bool enabled = true, expander = false, modbus = false;
+    uint8_t pin = 5;
+    // All native outputs require a trusted context. This harness validates the
+    // retired no-context entry; actual waveforms run in ordinary_control_harness.
+    PeripheralType type = PeripheralType::GPIO_PWM_OUTPUT;
+    struct { struct { uint8_t pwmResolution = 16; bool aoMode = false, passive = false; } gpio; } params;
+    bool isExpanderChannel() const { return expander; }
+    bool isModbusPeripheral() const { return modbus; }
+    uint8_t getPrimaryPin() const { return pin; }
+};
+struct Runtime { bool memorySuspended = false; PeripheralStatus status = PeripheralStatus::PERIPHERAL_RUNNING; String lastError; };
+// @globals@
+struct PeripheralManager {
+    // @context@
+    int _mutex = 1;
+    bool current = true, claimed = false, ordinaryClaimed = false, outputWorks = true;
+    uint32_t _nextActionTickerToken = 0;
+    unsigned toggles = 0;
+    std::vector<uint32_t> pwm;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, Runtime> runtimeStates;
+    std::map<String, ActionTickerData*> actionTickers;
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+        assert(held); return origin.unbound() || (current && origin.matches(7,19));
+    }
+    bool controlOutputIsClaimed(const String&) const { return busy || claimed; }
+    bool ordinaryDigitalClaimedLocked(const String&) const { assert(held); return ordinaryClaimed; }
+    bool isValidPin(uint8_t pin) const { return pin < 40; }
+    bool isReservedPin(uint8_t pin) const { return pin == 6; }
+    bool isInputOnlyPin(uint8_t pin) const { return pin == 34; }
+    PeripheralConfig* getPeripheral(const String& id) {
+        auto found = peripherals.find(id); return found == peripherals.end() ? nullptr : &found->second;
+    }
+    GPIOState readPin(const String&) const { return GPIOState::STATE_HIGH; }
+    bool togglePin(const String&) { assert(held); ++toggles; return outputWorks; }
+    bool writePWM(const String&,uint32_t duty) { assert(held); pwm.push_back(duty); return outputWorks; }
+    bool startActionTicker(const String&,uint8_t,uint16_t,const FastBee::UartEventOrigin& = {});
+    void stopActionTicker(const String&);
+    void serviceActionTicker(uint32_t);
+};
+// @production@
+
+int main(int argc, char** argv) {
+    assert(argc == 2); const String mode = argv[1];
+    auto& pm = PeripheralManager::getInstance();
+    pm.peripherals["led"] = {}; pm.runtimeStates["led"] = {};
+    auto& config = pm.peripherals.at("led");
+    auto origin = FastBee::UartEventOrigin::captured(7,19);
+    if (mode.indexOf("digital") >= 0 || mode.indexOf("passive") >= 0 ||
+        mode == "iox" || mode == "protocol") config.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
+    if (mode.indexOf("analog") >= 0) config.type = PeripheralType::GPIO_ANALOG_OUTPUT;
+    config.params.gpio.passive = mode.indexOf("passive") >= 0;
+    config.expander = mode == "iox";
+    config.modbus = mode == "protocol";
+    if (mode == "unsupported") config.type = PeripheralType::INPUT;
+    if (mode == "unbound") { origin = {}; pm.current = false; }
+    if (mode == "stale") pm.current = false;
+    if (mode == "malformed") origin.required = false;
+    if (mode.startsWith("legacy_")) {
+        auto* retained = new PeripheralManager::ActionTickerData();
+        retained->id = "led"; retained->pin = config.pin; retained->token = 43;
+        retained->mode = 2; retained->uartOrigin = origin;
+        pm.actionTickers.emplace("led", retained);
+        pm.ordinaryClaimed = true; // Existing PM claim owns this retained node.
+        pm.serviceActionTicker(0);
+        pm.serviceActionTicker(42);
+        pm.serviceActionTicker(43);
+        pm.current = false; pm.serviceActionTicker(43);
+        pm.stopActionTicker("led");
+        assert(pm.actionTickers.at("led") == retained && liveTimers == 1);
+        assert(pm.toggles == 0 && pm.pwm.empty() && timerCreates == 0 && ioBlinks().empty());
+        // Test-process cleanup only; production retirement was deliberately refused.
+        pm.actionTickers.clear(); delete retained;
+    } else {
+        for (const uint8_t action : {uint8_t(1), uint8_t(2)}) {
+            for (const uint16_t interval : {uint16_t(0), uint16_t(1), uint16_t(65535)}) {
+                assert(!pm.startActionTicker("led", action, interval, origin));
+                assert(liveTimers == 0 && pm.actionTickers.empty() && ioBlinks().empty());
+                assert(pm.toggles == 0 && pm.pwm.empty() && timerCreates == 0);
+            }
+        }
+        pm.serviceActionTicker(43);
+        pm.stopActionTicker("led");
+    }
+    assert(liveTimers == 0 && !held);
+}

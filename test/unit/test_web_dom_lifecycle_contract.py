@@ -16,6 +16,9 @@ PERIPH_EXEC = (ROOT / "web-src/modules/runtime/periph-exec.js").read_text(encodi
 PERIPH_EXEC_FORM = (
     ROOT / "web-src/modules/runtime/periph-exec-form.js"
 ).read_text(encoding="utf-8")
+PERIPH_EXEC_EDITOR_PANELS = (
+    ROOT / "web-src/modules/runtime/periph-exec-templates.js"
+).read_text(encoding="utf-8")
 PERIPH_EXEC_MODBUS = (
     ROOT / "web-src/modules/runtime/periph-exec-modbus.js"
 ).read_text(encoding="utf-8")
@@ -227,7 +230,6 @@ class WebDomLifecycleContractTests(unittest.TestCase):
         for modal_id in (
             "change-password-modal",
             "peripheral-modal",
-            "config-transfer-modal",
         ):
             self.assertIn("'" + modal_id + "'", PAGE_LOADER)
         self.assertIn("throw error;", PAGE_LOADER)
@@ -249,7 +251,7 @@ class WebDomLifecycleContractTests(unittest.TestCase):
             "web-src/modules/admin/rule-script.js",
             "web-src/modules/admin/users.js",
             "web-src/modules/runtime/network.js",
-            "web-src/modules/runtime/device-config.js",
+            "web-src/modules/runtime/device-config-transfer.js",
             "web-src/js/state-session.js",
         ):
             self.assertIn("_ensureModalForAction(", (ROOT / path).read_text(encoding="utf-8"))
@@ -346,7 +348,10 @@ class WebDomLifecycleContractTests(unittest.TestCase):
         self.assertIn("'periph-exec'", sequence)
         self.assertIn("'periph-exec-modbus'", sequence)
         self.assertIn("'periph-exec-form'", sequence)
-        self.assertEqual(3, sequence.count("'periph-exec"))
+        self.assertEqual(
+            ['periph-exec', 'periph-exec-modbus', 'periph-exec-form', 'periph-exec-templates'],
+            re.findall(r"'(periph-exec[^']*)'", sequence),
+        )
         self.assertIn("_MAX_CONCURRENT_LOADS: 1", MODULE_LOADER)
 
     def test_periph_exec_action_panels_are_mounted_on_demand(self):
@@ -356,17 +361,18 @@ class WebDomLifecycleContractTests(unittest.TestCase):
             "_buildPeriphExecEffectsDisplayPanel(actionType, actionValue)",
             PERIPH_EXEC_EFFECTS,
         )
-        self.assertIn("this._buildPeriphExecSensorPanel(data || {})", PERIPH_EXEC_FORM)
+        self.assertIn("this._buildPeriphExecSensorPanel(data || {})", PERIPH_EXEC_EDITOR_PANELS)
         self.assertIn(
             "this._buildPeriphExecEffectsDisplayPanel(actionType, actionValue)",
-            PERIPH_EXEC_FORM,
+            PERIPH_EXEC_EDITOR_PANELS,
         )
-        self.assertIn("_snapshotPeriphExecLazyPanel(host)", PERIPH_EXEC_FORM)
+        self.assertIn("_snapshotPeriphExecLazyPanel(host)", PERIPH_EXEC_EDITOR_PANELS)
         self.assertIn(
             "_restorePeriphExecLazyPanel(host, block._peLazyPanelDrafts[requestedType])",
-            PERIPH_EXEC_FORM,
+            PERIPH_EXEC_EDITOR_PANELS,
         )
-        self.assertIn("host.innerHTML = '';", PERIPH_EXEC_FORM)
+        self.assertIn("host.innerHTML = '';", PERIPH_EXEC_EDITOR_PANELS)
+        self.assertIn("this._renderPeriphExecLazyActionPanel(block, actionType, data, forceMount)", PERIPH_EXEC_FORM)
         self.assertIn("this._mountPeriphExecLazyActionPanel(block, actionType);", PERIPH_EXEC_FORM)
         self.assertIn("EXEC-126: 懒加载动作面板切走再切回保留未保存草稿", (
             ROOT / "test/browser/suites/06-periph-exec.spec.ts"

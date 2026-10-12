@@ -75,7 +75,14 @@ int main(int argc, char** argv) {
         motor["controlRef"] = "motor.test"; motor["requireConfirmation"] = false;
         motor["rect"]["x"] = 16; motor["rect"]["y"] = 16; motor["rect"]["w"] = 448; motor["rect"]["h"] = 400;
         assert(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), validated, validationError));
+        assert(validated["pages"][1]["cards"][0]["requireConfirmation"] == false);
+        assert(validated["pages"][1]["cards"][0]["motorSpeed"] == 10);
+        assert(validated["pages"][1]["cards"][0]["motorPulse"] == 100);
+        motor["requireConfirmation"] = true; motor["motorSpeed"] = 25; motor["motorPulse"] = 200;
+        assert(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), validated, validationError));
         assert(validated["pages"][1]["cards"][0]["requireConfirmation"] == true);
+        assert(validated["pages"][1]["cards"][0]["motorSpeed"] == 25);
+        assert(validated["pages"][1]["cards"][0]["motorPulse"] == 200);
         auto& manager = ScreenPanelManager::instance();
         assert(!manager.queueSetting("brightnessPercent", 0, validationError) && validationError == "Screen settings worker unavailable");
         assert(!manager.queueSetting("brightnessPercent", 101, validationError) && validationError == "Invalid screen setting");

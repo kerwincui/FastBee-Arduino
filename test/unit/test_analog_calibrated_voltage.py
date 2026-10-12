@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from test_checked_adc import mock_sdk
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,22 +18,6 @@ class CalibratedVoltageTests(unittest.TestCase):
         enums = config[config.index('enum class AnalogSignalMode'):config.index('// DI 输入模式')]
         start = config.index('inline float positiveAnalogConfigValue')
         conversion = config[start:config.index('// 外设运行时状态', start)]
-        sdk = r'''
-#pragma once
-#include <cstdint>
-using adc_unit_t = int; using adc_channel_t = int; using adc_atten_t = int;
-using adc_cali_handle_t = void*; using esp_err_t = int;
-constexpr int ADC_UNIT_1=0, ADC_CHANNEL_0=0, ADC_BITWIDTH_12=12;
-constexpr int ESP_OK=0, ESP_ERR_NOT_SUPPORTED=1;
-#define ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED 1
-#define ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED 0
-#define SOC_ADC_CALIB_CHAN_COMPENS_SUPPORTED 1
-struct adc_cali_curve_fitting_config_t {int unit_id,chan,atten,bitwidth;};
-int adc_oneshot_io_to_channel(uint8_t,int*,int*);
-int adc_cali_create_scheme_curve_fitting(const adc_cali_curve_fitting_config_t*,void**);
-int adc_cali_delete_scheme_curve_fitting(void*);
-int adc_cali_raw_to_voltage(void*,int,int*);
-'''
         harness = r'''
 #include <cmath>
 #include <cstdint>
@@ -53,16 +38,23 @@ struct PeripheralConfig {
 CONVERSION
 static int creates=0,deletes=0,lastRaw=-1,nextMv=1886;
 static bool failCreate=false,failConvert=false;
-int adc_oneshot_io_to_channel(uint8_t pin,int* unit,int* channel) {
- if(pin>19)return 1; *unit=0; *channel=pin; return 0;
+bool adcTestMutexFails=false;
+bool adcTestForeignPin=false;
+unsigned adcTestMutexCreates=0;
+int adc_oneshot_new_unit(const adc_oneshot_unit_init_cfg_t*, UnitHandle**) {return ESP_ERR_NOT_SUPPORTED;}
+int adc_oneshot_config_channel(UnitHandle*,int,const adc_oneshot_chan_cfg_t*) {return ESP_ERR_NOT_SUPPORTED;}
+int adc_oneshot_read(UnitHandle*,int,int*) {return ESP_ERR_NOT_SUPPORTED;}
+int adc_oneshot_del_unit(UnitHandle*) {return ESP_ERR_NOT_SUPPORTED;}
+int adc_oneshot_io_to_channel(int pin,int* unit,int* channel) {
+ if(pin>19)return 1; *unit=pin/10; *channel=pin%10; return 0;
 }
-int adc_cali_create_scheme_curve_fitting(const adc_cali_curve_fitting_config_t* c,void** h) {
+int adc_cali_create_scheme_curve_fitting(const adc_cali_curve_fitting_config_t* c,CalibrationHandle** h) {
  if(failCreate)return 1;
  if(c->bitwidth!=12)return 1;
- *h=reinterpret_cast<void*>(static_cast<uintptr_t>(++creates));return 0;
+ ++creates;*h=new CalibrationHandle{c->unit_id,c->chan,c->atten};return 0;
 }
-int adc_cali_delete_scheme_curve_fitting(void*) {++deletes;return 0;}
-int adc_cali_raw_to_voltage(void*,int raw,int* mv) {lastRaw=raw;if(failConvert)return 1;*mv=nextMv;return 0;}
+int adc_cali_delete_scheme_curve_fitting(CalibrationHandle* h) {++deletes;delete h;return 0;}
+int adc_cali_raw_to_voltage(CalibrationHandle*,int raw,int* mv) {lastRaw=raw;if(failConvert)return 1;*mv=nextMv;return 0;}
 #define CHECK(x) do {if(!(x)){std::printf("Failure line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 int main() {
  float v=0;
@@ -108,13 +100,13 @@ int main() {
 }
 '''.replace('ENUMS', enums).replace('CONVERSION', conversion)
         with tempfile.TemporaryDirectory(prefix='fastbee-adc-calibration-') as directory:
-            temp = Path(directory); (temp/'esp_adc').mkdir()
-            for name in ['adc_cali.h','adc_cali_scheme.h','adc_oneshot.h']:
-                (temp/'esp_adc'/name).write_text(sdk if name=='adc_cali.h' else '#include "adc_cali.h"\n', encoding='utf8')
+            temp = Path(directory)
+            mock_sdk(temp)
             (temp/'test.cpp').write_text(harness,encoding='utf8')
             binary=temp/('test.exe' if os.name=='nt' else 'test')
             result=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
-                '-I'+str(temp),'-I'+str(ROOT/'include'),str(temp/'test.cpp'),
+                '-DSOC_ADC_CALIB_CHAN_COMPENS_SUPPORTED=1', '-I'+str(temp), '-I'+str(ROOT/'test/unit/cpp'),
+                '-I'+str(ROOT/'include'),str(temp/'test.cpp'), str(ROOT/'src/core/CheckedAdc.cpp'),
                 str(ROOT/'src/core/AnalogInputCalibration.cpp'),'-o',str(binary)],capture_output=True,text=True,timeout=60)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
@@ -123,17 +115,17 @@ int main() {
     def test_opt_in_persists_and_uses_same_sample_everywhere(self):
         persistence=(ROOT/'src/core/PeripheralManagerPersistence.cpp').read_text(encoding='utf8')
         self.assertIn('params["calibratedVoltage"] | false',persistence)
-        self.assertIn('params["calibratedVoltage"] = config.params.adc.calibratedVoltage',persistence)
-        route=(ROOT/'src/network/handlers/PeripheralRouteHandler.cpp').read_text(encoding='utf8')
-        self.assertIn('pm.convertAnalogRawValue(id, rawValue, &quality, &pinVoltage)',route)
-        self.assertIn('data["pinVoltageMv"]',route)
-        self.assertIn('data["adcPin"] = config.getPrimaryPin()', route)
+        self.assertIn('FastBee::setFixedJsonField(params, "calibratedVoltage", config.params.adc.calibratedVoltage)',persistence)
+        route=(ROOT/'src/network/handlers/PeripheralReadRoutes.cpp').read_text(encoding='utf8')
+        self.assertIn('pm.readAnalogSample(id, sample)',route)
+        self.assertIn('FastBee::setFixedJsonField(data, "pinVoltageMv", pinVoltage * 1000.0f)',route)
+        self.assertIn('FastBee::setFixedJsonField(data, "adcPin", sample.pin)', route)
         self.assertIn('data["pinVoltageSource"]', route)
-        self.assertIn('calculateAnalogInputCurrentMa(config, pinVoltage)', route)
-        self.assertIn('data["calculatedCurrentMa"] = nullptr', route)
-        manager=(ROOT/'src/core/PeripheralManager.cpp').read_text(encoding='utf8')
-        self.assertEqual(manager.count('prepareAnalogInput(*config);'),4)
-        self.assertIn('if (!adc.calibratedVoltage) return;',manager)
+        self.assertIn('sample.calculatedCurrentMa', route)
+        self.assertIn('FastBee::setFixedJsonField(data, "calculatedCurrentMa", nullptr)', route)
+        manager=(ROOT/'src/core/PeripheralManagerAnalog.cpp').read_text(encoding='utf8')
+        self.assertIn('sample.value = convertAnalogRaw(*config, sample.raw',manager)
+        self.assertNotIn('analogRead(', manager)
 
 
 if __name__=='__main__':unittest.main()

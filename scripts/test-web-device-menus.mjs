@@ -6,13 +6,14 @@ import path from 'node:path';
 import { isIntentionalHealthCancellation } from './lib/menu-cancellation-evidence.mjs';
 import { isReadOnlyBatch, isReadOnlyMotorStatus } from './lib/read-only-device-requests.mjs';
 import { waitForMainShellStyles } from './lib/browser-main-style-check.mjs';
+import { safeObservationError, safeObservationEvents, safeObservationCaptureStats } from './lib/safe-observer-error.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require('../test/browser/node_modules/playwright');
 const base = process.argv[2];
 const output = path.resolve(process.argv[3] || 'artifacts/web-device-menus');
 if (!base || !/^https?:\/\//.test(base)) throw new Error('Provide device HTTP(S) origin');
 fs.mkdirSync(output, { recursive: true });
-const report = { base, at: new Date().toISOString(), passed: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], requestFailures: [], intentionalCancellations: [], apiIntegrity: [], viewports: [] };
+const report = { base, at: new Date().toISOString(), passed: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], requestFailures: [], intentionalCancellations: [], apiIntegrity: [], viewports: [], safeObservationEvents, safeObservationCaptureStats };
 const browser = await chromium.launch({ headless: true });
 const pendingEvidence = new Set();
 let closing = false, generation = 0, sessionLost = false;
@@ -33,7 +34,7 @@ try {
   });
   page.setDefaultTimeout(25000);
   const requestGeneration = new WeakMap();
-  page.on('pageerror', error => report.pageErrors.push(error.message));
+  page.on('pageerror', error => report.pageErrors.push(safeObservationError(error, 'pageerror')));
   page.on('request', request => {
     requestGeneration.set(request, generation);
     const route = new URL(request.url()).pathname;
@@ -61,7 +62,7 @@ try {
           row.featureCount = body.data?.features?.length || 0;
           row.passed &&= row.featureCount > 0;
         }
-      })().catch(error => { row.error = error.message.split('\n')[0]; });
+      })().catch(error => { row.error = safeObservationError(error, 'api'); });
       pendingEvidence.add(evidence);
       evidence.finally(() => pendingEvidence.delete(evidence));
       return;
@@ -78,9 +79,9 @@ try {
       row.retryAfter = response.headers()['retry-after'] || null;
       const contentType = response.headers()['content-type'] || '';
       if (/json|text\/plain/.test(contentType)) {
-        row.errorBody = (await response.text()).slice(0, 2048);
+        row.errorBody = safeObservationError(await response.text(), 'http-body');
       }
-    })().catch(error => { row.evidenceError = error.message.split('\n')[0]; });
+    })().catch(error => { row.evidenceError = safeObservationError(error, 'http-evidence'); });
     pendingEvidence.add(evidence);
     evidence.finally(() => pendingEvidence.delete(evidence));
   });
@@ -89,7 +90,8 @@ try {
     const reason = request.failure()?.errorText;
     const route = new URL(request.url()).pathname;
     if (route !== '/api/health' && reason === 'net::ERR_ABORTED' && requestGeneration.get(request) < generation) return;
-    report.requestFailures.push({ route, method: request.method(), reason, at: Date.now() });
+    report.requestFailures.push({ route, method: request.method(),
+      reason: reason === 'net::ERR_ABORTED' ? reason : safeObservationError(reason, 'request'), at: Date.now() });
   });
   const bootStart = Date.now();
   await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -145,7 +147,7 @@ try {
         result.errorNotices = await page.locator('.notification-error:visible,.toast-error:visible,.message-error:visible,.alert-error:visible').count();
         result.passed = result.content.textLength >= 30 && !result.content.moduleLoading && result.horizontalOverflow <= 1 && result.errorNotices === 0;
         await page.screenshot({ path: path.join(output, `${name}-${menu}.png`), fullPage: true });
-      } catch (error) { result.error = error.message.split('\n')[0]; }
+      } catch (error) { result.error = safeObservationError(error, 'menu'); }
       result.ms = Date.now() - started;
       viewport.pages.push(result);
       fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
@@ -163,7 +165,7 @@ try {
   });
   report.passed = report.viewports.every(v => v.pages.every(p => p.passed)) && report.apiIntegrity.every(row => row.passed)
     && !report.pageErrors.length && !report.httpErrors.length && !report.mutations.length && !report.requestFailures.length;
-} catch (error) { report.error = error.message; }
+} catch (error) { report.error = safeObservationError(error, 'fatal'); }
 finally {
   await Promise.allSettled([...pendingEvidence]);
   closing = true;

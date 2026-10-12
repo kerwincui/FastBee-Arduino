@@ -205,7 +205,7 @@ test.describe('Suite-22: 功能配置页', () => {
 
   test('FCFG-004A: 功能状态资源依赖和开关同一行直接显示 @quick', async ({ authPage }) => {
     const firstTable = authPage.locator('#features-list table').first();
-    await expect(firstTable.locator('thead th')).toHaveText(['功能', '状态', 'Flash', 'RAM', '依赖', '启用']);
+    await expect(firstTable.locator('thead th')).toHaveText(['功能', '状态', 'Flash 估算', 'RAM 估算', '依赖', '启用']);
 
     const rows = authPage.locator('#features-list tr[data-feature-key]');
     await expect(rows.locator('details.feature-details')).toHaveCount(0);

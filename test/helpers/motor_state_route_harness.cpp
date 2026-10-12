@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 #include <cassert>
 #include <map>
+#include "core/ModbusOrdinaryControl.h"
+#include "core/SensorConfigEpoch.h"
 #include <cstdio>
 constexpr int HTTP_GET=1, HTTP_POST=2;
 struct AsyncWebServerRequest {
@@ -19,6 +21,20 @@ struct WebHandlerContext {
     void sendError(AsyncWebServerRequest* r,int code,const String&) { r->status=code; }
     void sendBadRequest(AsyncWebServerRequest* r,const String&) { r->status=400; }
 };
+namespace FastBee {
+bool beginHttpMotorOutput(WebHandlerContext&,AsyncWebServerRequest*,const String& target,uint32_t epoch,
+    OrdinaryControlContext& context) {
+    assert(target=="mb:1:9");context.configEpoch=epoch;context.request.operation=1;
+    context.request.actor={OrdinaryControl::Source::Http,42};return true;
+}
+}
+struct PeripheralManager {
+    unsigned finishes=0;
+    static PeripheralManager& getInstance(){static PeripheralManager value;return value;}
+    void finishOrdinaryControl(const FastBee::OrdinaryControlContext& context,bool cancelled) {
+        assert(context.request.operation==1 && !cancelled);++finishes;
+    }
+};
 STATE_TYPE
 struct MotorControlService {
     static MotorControlService& instance() { static MotorControlService s;return s; }
@@ -31,12 +47,19 @@ struct MotorControlService {
         return true;
     }
     String referenceForSlave(uint8_t slave) { return slave==9?String("motor.9.configured"):String(); }
+    bool snapshotTarget(const String& ref,FastBee::ModbusControlTarget& target) {
+        target.instance=1;target.configuration=1;target.slave=9;return ref=="motor.9.configured";
+    }
     bool validReference(const String& ref) { return ref=="motor.9.configured"; }
     bool state(const String&,MotorControlState& out) {
         out.known=true;out.speed=70;out.pulse=300;
         strcpy(out.lastAcknowledgedAction,"reverse");return true;
     }
-    bool submit(const String&,const String&,int,const String&,uint32_t& id,String&) { ++submitted;id=42;return true; }
+    bool submit(const String&,const String& action,int,const String&,uint32_t& id,String&,
+        const FastBee::OrdinaryControlContext* context=nullptr) {
+        assert(action=="readStatus" ? !context : context && context->request.actor.identity==42);
+        ++submitted;id=42;return true;
+    }
     bool operation(uint32_t id,JsonObject out,bool* isBusy=nullptr) {
         ++lookedUp;if(isBusy)*isBusy=busy;if(busy || !exists)return false;
         out["operationId"]=id;out["pending"]=false;out["success"]=true;return true;
@@ -77,5 +100,9 @@ int main() {
     confirm.params["stationaryConfirmed"]="true";route.handleModbusMotorControl(&confirm);assert(confirm.status==200);
     confirm.params["travelToken"]="stale";route.handleModbusMotorControl(&confirm);assert(confirm.status==409);
     assert(service.submitted==1); // Reference confirmation never submits physical motion.
+    assert(PeripheralManager::getInstance().finishes==1);
+    AsyncWebServerRequest read;read.params={{"action","readStatus"},{"slaveAddress","9"}};
+    route.handleModbusMotorControl(&read);
+    assert(read.status==200 && service.submitted==2 && PeripheralManager::getInstance().finishes==1);
     std::puts("Motor route passed: cached GET, auth, finite input validation, stale confirmation, no motion on reference confirmation.");
 }

@@ -120,15 +120,9 @@ bool findNextBackupSequence(uint64_t& nextSequence) {
 
 }  // namespace
 
-// no-PSRAM 设备在 RuntimeFeatureManager 读取 features.json 之前就会初始化
-// Logger。统一镜像虽然把 fileLogging 编译进固件，但启动阶段默认写 LittleFS
-// 会先占用堆并放大碎片；配置加载完成后仍可通过 enableFileLogging(true)
-// 显式开启。PSRAM 目标保留原有编译默认行为。
-#if FASTBEE_USE_PSRAM
-static constexpr bool LOGGER_STARTUP_FILE_LOGGING = (FASTBEE_ENABLE_FILE_LOGGING != 0);
-#else
+// Logger starts before features.json is loaded. Optional file/recent buffers
+// are admitted only after the saved user choice and runtime budget are known.
 static constexpr bool LOGGER_STARTUP_FILE_LOGGING = false;
-#endif
 
 // 静态成员初始化
 vprintf_like_t LoggerSystem::originalEspLogFunc = nullptr;
@@ -204,6 +198,7 @@ bool LoggerSystem::initialize() {
     // Allocate only after storage and the mutex have been checked; OFF boot
     // keeps the diagnostic ring, but consumes no file ring heap.
     enableFileLogging(isFileLoggingRequested());
+    enableLogViewer(isLogViewerRequested());
 
     // 启用 ESP-IDF 日志捕获
     if (espLogCaptureEnabled) {
@@ -233,6 +228,50 @@ void LoggerSystem::cancelFileLoggingRequest() {
     uint32_t previous = fileLoggingState.load();
     while (!fileLoggingState.compare_exchange_weak(previous,
                (previous + FILE_LOGGING_STATE_MASK + 1U) & ~FILE_LOGGING_STATE_MASK)) {}
+}
+
+void LoggerSystem::enableLogViewer(bool enable) {
+    uint32_t request = _recentLogsState.load();
+    if (!enable) {
+        // Cancel before taking the lock. Readers already holding it retain
+        // their buffer until unlock; no new producer may retain ordinary lines.
+        while (!_recentLogsState.compare_exchange_weak(request,
+            (request + RECENT_LOG_STATE_MASK + 1U) & ~RECENT_LOG_STATE_MASK)) {}
+    } else {
+        for (;;) {
+            const auto state = static_cast<RecentLogState>(request & RECENT_LOG_STATE_MASK);
+            if (state == RecentLogState::Enabled) return;
+            if (state == RecentLogState::Pending) break;
+            const uint32_t pending = (request & ~RECENT_LOG_STATE_MASK) |
+                static_cast<uint32_t>(RecentLogState::Pending);
+            if (_recentLogsState.compare_exchange_weak(request, pending)) {
+                request = pending;
+                break;
+            }
+        }
+    }
+    if (!initialized || !_logMutex) return;
+    if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    bool allocationFailed = false;
+    if (enable && _recentLogsState.load() == request) {
+        if (!_recentLogBuffer) {
+            _recentLogBuffer.reset(new (std::nothrow) RecentLogBuffer());
+        }
+        if (_recentLogBuffer) {
+            // A disable/re-enable while a reader held the mutex may have left
+            // a retained allocation. New intent starts a fresh ordinary ring.
+            _recentLogBuffer->writeIndex = 0;
+            _recentLogBuffer->count = 0;
+        }
+        const uint32_t completed = (request & ~RECENT_LOG_STATE_MASK) |
+            static_cast<uint32_t>(_recentLogBuffer ? RecentLogState::Enabled : RecentLogState::AllocationFailed);
+        allocationFailed = !_recentLogBuffer;
+        _recentLogsState.compare_exchange_strong(request, completed);
+    }
+    unlockLogFiles();
+    if (allocationFailed && serialEnabled && outputStream) {
+        outputStream->println("[Logger] WARNING: recent log allocation failed; critical diagnostics retained");
+    }
 }
 
 void LoggerSystem::enableFileLogging(bool enable) {
@@ -363,8 +402,9 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
                  timeStr, levelStr, message);
     }
 
-    // 捕获到诊断最近日志环形（内存常驻，不随 flush 清空）
-    captureRecentLine(entry);
+    // Only warning/error lines consume the resident diagnostic ring. The
+    // optional recent ring retains all admitted levels while logViewer runs.
+    captureRecentLine(entry, level >= LOG_WARNING);
 
     // 输出到串口
     if (serialEnabled && outputStream) {
@@ -567,32 +607,57 @@ void LoggerSystem::flushTask(void* context) {
 
 // ── 诊断最近日志环形实现 ─────────────────────────────────────────
 
-void LoggerSystem::captureRecentLine(const char* entry) {
-    if (!entry || entry[0] == '\0') return;
-    // 短超时拿锁：拿不到则跳过，避免阻塞日志热路径
-    if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+void LoggerSystem::appendRecentLine(char (*lines)[128], size_t capacity,
+                                   uint8_t& writeIndex, uint8_t& count, const char* entry) {
     size_t len = strlen(entry);
     if (len >= RECENT_LOG_LINE_LEN) len = RECENT_LOG_LINE_LEN - 1;
-    char* slot = _recentLogs[_recentLogWriteIdx];
+    char* slot = lines[writeIndex];
     memcpy(slot, entry, len);
     slot[len] = '\0';
-    _recentLogWriteIdx = static_cast<uint8_t>((_recentLogWriteIdx + 1) % RECENT_LOG_LINES);
-    if (_recentLogCount < RECENT_LOG_LINES) _recentLogCount++;
+    writeIndex = static_cast<uint8_t>((writeIndex + 1) % capacity);
+    if (count < capacity) ++count;
+}
+
+void LoggerSystem::captureRecentLine(const char* entry, bool critical) {
+    if (!entry || entry[0] == '\0') return;
+    if (!critical && !isLogViewerEnabled()) return;
+    // 短超时拿锁：拿不到则跳过，避免阻塞日志热路径
+    if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+    if (critical) {
+        appendRecentLine(_criticalLogs, CRITICAL_LOG_LINES,
+                         _criticalLogWriteIdx, _criticalLogCount, entry);
+    }
+    if (isLogViewerEnabled() && _recentLogBuffer) {
+        appendRecentLine(_recentLogBuffer->lines, RECENT_LOG_LINES,
+                         _recentLogBuffer->writeIndex, _recentLogBuffer->count, entry);
+    }
     unlockLogFiles();
+}
+
+size_t LoggerSystem::recentLogLineCount() const {
+    if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(10)) != pdTRUE) return 0;
+    const size_t count = isLogViewerEnabled() && _recentLogBuffer
+        ? _recentLogBuffer->count : _criticalLogCount;
+    unlockLogFiles();
+    return count;
 }
 
 size_t LoggerSystem::snapshotRecentLogs(char* out, size_t outSize) const {
     if (!out || outSize == 0) return 0;
     out[0] = '\0';
     if (!_logMutex || xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) != pdTRUE) return 0;
-    const uint8_t count = _recentLogCount;
+    const bool optional = isLogViewerEnabled() && _recentLogBuffer;
+    const size_t capacity = optional ? RECENT_LOG_LINES : CRITICAL_LOG_LINES;
+    const uint8_t count = optional ? _recentLogBuffer->count : _criticalLogCount;
+    const uint8_t writeIndex = optional ? _recentLogBuffer->writeIndex : _criticalLogWriteIdx;
+    const auto* lines = optional ? _recentLogBuffer->lines : _criticalLogs;
     size_t written = 0;
     if (count > 0) {
         // 环形中最早的行位于 (writeIdx - count) mod LINES
         const uint8_t start = static_cast<uint8_t>(
-            (_recentLogWriteIdx + RECENT_LOG_LINES - count) % RECENT_LOG_LINES);
+            (writeIndex + capacity - count) % capacity);
         for (uint8_t i = 0; i < count; i++) {
-            const char* line = _recentLogs[(start + i) % RECENT_LOG_LINES];
+            const char* line = lines[(start + i) % capacity];
             size_t len = strlen(line);
             if (written + len + 1 >= outSize) break;  // 空间不足，截断
             memcpy(out + written, line, len);
@@ -655,6 +720,43 @@ void LoggerSystem::cleanupOldLogFiles() {
     }
 }
 
+FastBee::FeatureInstanceSnapshot LoggerSystem::observeFeatureInstance(const void* context) {
+    using namespace FastBee;
+    const auto* logger = static_cast<const LoggerSystem*>(context);
+    if (!logger) return FeatureInstanceSnapshot::unavailable(FeatureInstanceReason::InvalidSnapshot,
+        FeatureInstanceScope::ServiceLifecycle);
+    // This callback is registered only for the process-lifetime singleton. It
+    // cannot initialize a mutex, probe LittleFS or release the retained ring.
+    const auto mutex = logger->_logMutex.load(std::memory_order_acquire);
+    if (!mutex) return FeatureInstanceSnapshot::unavailable(FeatureInstanceReason::SynchronizationUnavailable,
+        FeatureInstanceScope::ServiceLifecycle);
+    if (xSemaphoreTake(mutex, 0) != pdTRUE)
+        return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    const auto intent = logger->fileLoggingState.load(std::memory_order_acquire);
+    const auto task = logger->_flushTaskState.load(std::memory_order_acquire);
+    const bool retained = bool(logger->_ringBuffer);
+    const auto state = intent & FILE_LOGGING_STATE_MASK;
+    auto result = FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Stopped);
+    if (state == static_cast<uint32_t>(FileLoggingState::Pending)) {
+        result = FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    } else if (state == static_cast<uint32_t>(FileLoggingState::Disabled)) {
+        if (retained || (task & LOG_FLUSH_TASK_ACTIVE))
+            result = FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Retiring);
+    } else if (state != static_cast<uint32_t>(FileLoggingState::Enabled) || !retained) {
+        result = FeatureInstanceSnapshot::unavailable(FeatureInstanceReason::InvalidSnapshot,
+            FeatureInstanceScope::ServiceLifecycle);
+    } else {
+        // A queued drain slot is not proof that the worker or disk is running.
+        result = FeatureInstanceSnapshot::lifecycle((task & LOG_FLUSH_TASK_STOPPING)
+            ? FeatureInstanceState::Retiring : FeatureInstanceState::Allocated);
+    }
+    if (intent != logger->fileLoggingState.load(std::memory_order_acquire) ||
+        task != logger->_flushTaskState.load(std::memory_order_acquire))
+        result = FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    xSemaphoreGive(mutex); // unlockLogFiles() performs cleanup; observation must not.
+    return result;
+}
+
 bool LoggerSystem::lockLogFiles(uint32_t timeoutMs) {
     return _logMutex &&
            xSemaphoreTake(_logMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
@@ -663,6 +765,7 @@ bool LoggerSystem::lockLogFiles(uint32_t timeoutMs) {
 void LoggerSystem::unlockLogFiles() const {
     if (_logMutex) {
         if (!isFileLoggingEnabled()) _ringBuffer.reset();
+        if (!isLogViewerEnabled()) _recentLogBuffer.reset();
         xSemaphoreGive(_logMutex);
     }
 }

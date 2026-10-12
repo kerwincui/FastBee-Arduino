@@ -1,0 +1,560 @@
+#include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"
+#include "core/NativeOutputDispatch.h"
+#include "core/MotionOutputDispatch.h"
+#include "core/MemoryBudget.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/ScreenOutputIdentity.h"
+#include <cassert>
+#include <cstring>
+
+bool PeripheralManager::writePin(const String& id, GPIOState value) {
+    RecursiveMutexGuard guard(_mutex); if (!guard.isLocked()) return false;
+    const auto config = peripherals.find(id);
+    return config != peripherals.end() && writeGpioStateLocked(config->second, &id, nullptr, value);
+}
+
+using Source = FastBee::OrdinaryControl::Source;
+using Phase = FastBee::OrdinaryControl::Phase;
+using Command = FastBee::DigitalOutputCommand;
+using Context = FastBee::OrdinaryControlContext;
+using Result = FastBee::OrdinaryControlResult;
+struct TestLogger {
+    template<class... T> void warningf(T...) {}
+    void warning(const char*) {}
+} LOGGER;
+enum class ExecActionType : uint8_t {
+    ACTION_HIGH, ACTION_LOW, ACTION_HIGH_INVERTED, ACTION_LOW_INVERTED,
+    ACTION_GPIO_TOGGLE, ACTION_BLINK, ACTION_BREATHE, ACTION_SET_PWM, ACTION_SET_DAC
+};
+struct ExecAction { String targetPeriphId = "led"; uint8_t actionType = 0; };
+struct PeriphExecExecutor {
+    bool executePeripheralAction(const ExecAction&, const String&, const String&,
+        const FastBee::UartEventOrigin&, const Context*, Result*);
+};
+bool isAllDigits(const String& text) {
+    if (text.isEmpty()) return false;
+    for (size_t i=0; i<text.length(); ++i) if (text.charAt(i)<'0' || text.charAt(i)>'9') return false;
+    return true;
+}
+bool tryParseBoolLike(const String& text, bool& high) {
+    if (text == "1" || text == "true") { high=true; return true; }
+    if (text == "0" || text == "false") { high=false; return true; }
+    return false; // MQTT parsing has its own parser contracts.
+}
+// @iox_support@
+// @read_gpio@
+// @write_gpio@
+// @scalar_mapping@
+// @typed_action@
+// @mqtt_direct@
+
+bool callNative(String cmd, String valueStr, const Context* control, Result* controlResult) {
+    auto& pm = PeripheralManager::getInstance();
+    const String targetId = "led", actionCmdStr = cmd;
+    const auto* targetCfg = &pm.peripherals.at(targetId);
+    // @call_native@
+    return false;
+}
+struct ScriptCommand { String strParam = "led", subAction; int intParam = 0; };
+bool scriptNative(const String& action, int value, const Context* control, Result* controlResult) {
+    auto& pm = PeripheralManager::getInstance();
+    ScriptCommand cmd; cmd.subAction=action; cmd.intParam=value;
+    switch (1) { case 1: {
+        // @script_native@
+        return false;
+    } }
+    return true;
+}
+Context begin(Source source=Source::Rule, uint64_t actor=1, bool overrideConfirmed=false,
+              uint64_t reviewedGeneration=0, const String& target="") {
+    Context context;
+    assert(PeripheralManager::getInstance().beginOrdinaryControl(source, actor,
+        FastBee::OrdinaryControl::isManual(source) ? 30000 : 0,
+        overrideConfirmed, reviewedGeneration, target, FastBee::SensorConfigEpoch::current(), {}, context));
+    return context;
+}
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const String mode=argv[1];
+    auto& pm=PeripheralManager::getInstance();
+    pm.peripherals["led"]={}; pm.runtimeStates["led"]={};
+    auto& runtime=pm.runtimeStates.at("led");
+    Result result;
+    if (mode.startsWith("wave_")) {
+        using Scalar = FastBee::ScalarOutputCommand;
+        auto& config = pm.peripherals.at("led");
+        const bool passive = mode.indexOf("passive") >= 0;
+        const bool analog = mode.startsWith("wave_ao_");
+        config.type = passive ? PeripheralType::GPIO_DIGITAL_OUTPUT :
+            analog ? PeripheralType::GPIO_ANALOG_OUTPUT : PeripheralType::GPIO_PWM_OUTPUT;
+        config.params.gpio.passive = passive;
+        if (analog) { config.params.gpio.aoMode = true; config.params.gpio.aoMinPct = 20; }
+        auto& ledc = pm._ledcResourceLeases[0];
+        ledc.pin = 5; ledc.channel = 0; ledc.requestedResolution = 8;
+        ledc.requestedFrequency = 1000; std::strcpy(ledc.id, "led");
+        if (mode == "wave_passive_default_ledger") {
+            config.params.gpio.pwmResolution = 0; config.params.gpio.pwmFrequency = 0;
+            ledc.requestedFrequency = 2700;
+        }
+        const uint32_t high = passive ? 127 : 255;
+        auto context = begin(Source::Http, 31);
+        if (mode == "wave_passive_legacy") {
+            assert(!pm.writePin("led", GPIOState::STATE_HIGH) && !scalarPwmWrites);
+            auto* legacy = new PeripheralManager::ActionTickerData();
+            legacy->id = "led"; legacy->mode = 1; legacy->token = 123;
+            pm.actionTickers.emplace("led", legacy);
+            assert(!pm.submitOrdinaryScalar("led", Scalar::Pwm, 127, context, result));
+            assert(pm.ordinaryDigitalClaimedLocked("led") && pm.actionTickers.at("led") == legacy);
+            assert(!scalarPwmWrites && !timerDeletes); return 0;
+        }
+        if (mode == "wave_passive_mqtt") {
+            String actual;
+            assert(executeDirectOutputCommand(pm, config, "true", actual,
+                FastBee::SensorConfigEpoch::current(), result));
+            assert(result.actor.source == Source::Mqtt && scalarLastDuty == 127 && actual == "1");
+            assert(!executeDirectOutputCommand(pm, config, "127", actual,
+                FastBee::SensorConfigEpoch::current(), result));
+            assert(scalarPwmWrites == 1); return 0;
+        }
+        if (mode == "wave_passive_script") {
+            assert(scriptNative("HIGH", 0, &context, &result) && scalarLastDuty == 127);
+            assert(scriptNative("PWM", 23, &context, &result) && scalarLastDuty == 23);
+            assert(scriptNative("TOGGLE", 0, &context, &result) && scalarLastDuty == 0);
+            assert(scriptNative("BLINK", 250, &context, &result));
+            pm.finishOrdinaryControl(context, true); assert(!timerHandles && scalarPwmWrites == 3); return 0;
+        }
+        if (mode == "wave_passive_high" || mode == "wave_passive_default_ledger" || mode == "wave_passive_inverted") {
+            PeriphExecExecutor executor; ExecAction action;
+            action.actionType = static_cast<uint8_t>(mode == "wave_passive_inverted"
+                ? ExecActionType::ACTION_LOW_INVERTED : ExecActionType::ACTION_HIGH);
+            assert(executor.executePeripheralAction(action, "", "", {}, &context, &result));
+            assert(scalarPwmWrites == 1 && scalarLastDuty == 127 && runtime.state.gpio.currentState == GPIOState::STATE_HIGH);
+            action.actionType = static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED);
+            assert(executor.executePeripheralAction(action, "", "", {}, &context, &result));
+            assert(scalarPwmWrites == 2 && scalarLastDuty == 0); return 0;
+        }
+        if (mode == "wave_passive_pwm") {
+            assert(callNative("pwm", "255", &context, &result) && scalarLastDuty == 255);
+            assert(callNative("high", "", &context, &result) && scalarLastDuty == 127);
+            assert(!callNative("pwm", "256", &context, &result) && scalarPwmWrites == 2); return 0;
+        }
+        if (mode == "wave_unknown_toggle") {
+            runtime.state.gpio.currentState = GPIOState::STATE_UNDEFINED;
+            assert(!pm.submitOrdinaryScalar("led", Scalar::Toggle, 0, context, result));
+            assert(!result.attempted && !scalarPwmWrites && !strcmp(result.reason, "CONTROL_READ_UNCONFIRMED")); return 0;
+        }
+        if (mode == "wave_passive_toggle" || mode == "wave_pwm_toggle" || mode == "wave_ao_toggle") {
+            PeriphExecExecutor executor; ExecAction action;
+            action.actionType = static_cast<uint8_t>(ExecActionType::ACTION_GPIO_TOGGLE);
+            assert(executor.executePeripheralAction(action, "", "", {}, &context, &result));
+            assert(scalarLastDuty == high && scalarPwmWrites == 1);
+            assert(callNative("toggle", "", &context, &result));
+            assert(scalarLastDuty == (analog ? 51U : 0U) && scalarPwmWrites == 2);
+            assert(runtime.state.gpio.currentState == GPIOState::STATE_LOW); return 0;
+        }
+        if (mode == "wave_passive_breathe_denied" || mode == "wave_ao_blink_denied") {
+            assert(callNative("high", "", &context, &result));
+            const auto generation = runtime.ordinaryControl.generation;
+            assert(!pm.submitOrdinaryScalar("led", passive ? Scalar::Breathe : Scalar::Blink, 1000, context, result));
+            assert(scalarPwmWrites == 1 && runtime.ordinaryControl.generation == generation && !timerHandles);
+            assert(!callNative(passive ? "breathe" : "blink", "1000", &context, &result)); return 0;
+        }
+        if (mode == "wave_blink_no_context") {
+            assert(!callNative("blink", "250", nullptr, &result));
+            assert(!strcmp(result.reason, "CONTROL_CONTEXT_REQUIRED") && !timerHandles && !scalarPwmWrites); return 0;
+        }
+        if (mode == "wave_passive_start_failed") timerStartOk = false;
+        if (mode == "wave_blink_stale_uart") context.uartOrigin = FastBee::UartEventOrigin::captured(7, 19);
+        const bool accepted = pm.submitOrdinaryScalar("led", Scalar::Blink, 250, context, result);
+        assert(accepted == (mode != "wave_passive_start_failed"));
+        if (!accepted) {
+            assert(runtime.ordinaryControl.phase == Phase::Fault && !scalarPwmWrites);
+            pm.finishOrdinaryControl(context); assert(!timerHandles); return 0;
+        }
+        const auto callback = lastTimerCallback; void* argument = lastTimerArgument;
+        pm.finishOrdinaryControl(context); assert(runtime.ordinaryControl.phase == Phase::Producing);
+        if (mode == "wave_blink_expired") ordinaryClockUs += 31000000;
+        if (mode == "wave_blink_stale_uart") pm.uartCurrent = false;
+        if (mode == "wave_blink_write_failed") scalarPwmOk = false;
+        callback(argument);
+        if (mode == "wave_blink_expired" || mode == "wave_blink_stale_uart") {
+            assert(!scalarPwmWrites && !timerHandles && runtime.ordinaryControl.phase == Phase::Idle); return 0;
+        }
+        if (mode == "wave_blink_write_failed") {
+            assert(scalarPwmWrites == 1 && !timerHandles && runtime.state.gpio.currentState == GPIOState::STATE_UNDEFINED);
+            assert(runtime.lastError == "CONTROL_TICK_UNCONFIRMED");
+            callback(argument); assert(scalarPwmWrites == 1); return 0;
+        }
+        assert(scalarPwmWrites == 1 && scalarLastDuty == high);
+        if (mode == "wave_blink_replace") {
+            const auto replacement = begin(Source::Http, 31);
+            assert(pm.submitOrdinaryScalar("led", Scalar::Pwm, 19, replacement, result));
+            assert(!timerHandles && scalarLastDuty == 19 && scalarPwmWrites == 2);
+            callback(argument); assert(scalarPwmWrites == 2); return 0;
+        }
+        callback(argument); assert(scalarPwmWrites == 2 && !scalarLastDuty);
+        const auto stop = begin(Source::Http, 31);
+        if (mode == "wave_passive_stop_failed") timerStopOk = false;
+        const bool stopped = pm.submitOrdinaryScalar("led", Scalar::Stop, 0, stop, result);
+        assert(stopped == (mode != "wave_passive_stop_failed"));
+        callback(argument); assert(scalarPwmWrites == 2);
+        if (!stopped) {
+            assert(timerHandles == 1 && runtime.ordinaryControl.phase == Phase::Fault);
+            timerStopOk = true; ordinaryClockUs += 1000000; pm.serviceOrdinaryControlExpiry();
+        }
+        assert(!timerHandles && scalarPwmWrites == 2); return 0;
+    }
+    if (mode.startsWith("scalar_")) {
+        using Scalar = FastBee::ScalarOutputCommand;
+        auto& config = pm.peripherals.at("led");
+        config.type = mode == "scalar_dac_sync" || mode == "scalar_dac_failed" ||
+            mode == "scalar_typed_dac" ? PeripheralType::DAC : PeripheralType::GPIO_PWM_OUTPUT;
+        auto& ledc = pm._ledcResourceLeases[0];
+        ledc.pin = 5; ledc.channel = 0; ledc.requestedResolution = 8;
+        ledc.requestedFrequency = 1000; std::strcpy(ledc.id, "led");
+        if (mode == "scalar_parameters") {
+            uint32_t value = 99;
+            for (const char* text : {"-1", "256", "1.5", "1x", "", "99999999999999999999999"})
+                assert(!FastBee::parseOrdinaryScalarValue(config, text, value));
+            assert(FastBee::parseOrdinaryScalarValue(config, "255", value) && value == 255);
+            config.params.gpio.aoMode = true;
+            assert(!FastBee::parseOrdinaryScalarValue(config, "101", value));
+            config.type = PeripheralType::DAC;
+            assert(FastBee::parseOrdinaryScalarValue(config, "255", value));
+            assert(!FastBee::parseOrdinaryScalarValue(config, "256", value));
+            assert(!scalarPwmWrites && !scalarDacWrites); return 0;
+        }
+        if (mode == "scalar_missing_context") {
+            assert(!FastBee::dispatchOrdinaryScalarAction(pm, "led", Scalar::Pwm, 12, nullptr, &result));
+            assert(!strcmp(result.reason, "CONTROL_CONTEXT_REQUIRED") && !scalarPwmWrites); return 0;
+        }
+        if (mode == "scalar_legacy_write") {
+            assert(!pm.writePin("led", GPIOState::STATE_HIGH) && !scalarPwmWrites); return 0;
+        }
+        auto context = begin(Source::Http, 31);
+        if (mode == "scalar_legacy_producer") {
+            auto* legacy = new PeripheralManager::ActionTickerData();
+            legacy->id = "led"; legacy->mode = 2; legacy->token = 123;
+            pm.actionTickers.emplace("led", legacy);
+            assert(!pm.submitOrdinaryScalar("led", Scalar::Pwm, 7, context, result));
+            assert(pm.actionTickers.at("led") == legacy && pm.ordinaryDigitalClaimedLocked("led"));
+            assert(!scalarPwmWrites && !timerDeletes); return 0;
+        }
+        if (mode.startsWith("scalar_typed_")) {
+            PeriphExecExecutor executor; ExecAction action;
+            action.actionType = static_cast<uint8_t>(mode == "scalar_typed_dac" ? ExecActionType::ACTION_SET_DAC :
+                mode == "scalar_typed_breathe" ? ExecActionType::ACTION_BREATHE : ExecActionType::ACTION_SET_PWM);
+            const bool accepted = executor.executePeripheralAction(action,
+                mode == "scalar_typed_invalid" ? "999999999999999999999" : "42", "", {}, &context, &result);
+            assert(accepted == (mode != "scalar_typed_invalid"));
+            assert(result.evaluated && result.accepted == accepted);
+            if (mode == "scalar_typed_pwm") assert(scalarPwmWrites == 1 && scalarLastDuty == 42);
+            if (mode == "scalar_typed_dac") assert(scalarDacWrites == 1 && scalarLastDac == 42);
+            pm.finishOrdinaryControl(context, true); assert(!timerHandles); return 0;
+        }
+        if (mode == "scalar_call" || mode == "scalar_script") {
+            assert(mode == "scalar_call" ? callNative("pwm", "23", &context, &result) :
+                scriptNative("PWM", 23, &context, &result));
+            assert(scalarPwmWrites == 1 && scalarLastDuty == 23);
+            assert(mode == "scalar_call" ? callNative("stop", "", &context, &result) :
+                scriptNative("STOP", 0, &context, &result));
+            assert(scalarPwmWrites == 1); pm.finishOrdinaryControl(context); return 0;
+        }
+        if (mode == "scalar_mqtt") {
+            String actual;
+            assert(executeDirectOutputCommand(pm, config, "true", actual,
+                FastBee::SensorConfigEpoch::current(), result));
+            assert(result.actor.source == Source::Mqtt && scalarLastDuty == 255 && actual == "255");
+            assert(runtime.ordinaryControl.phase == Phase::Idle); return 0;
+        }
+        if (mode.startsWith("scalar_breathe")) {
+            const bool fullCycle = mode == "scalar_breathe_16bit" || mode == "scalar_breathe_ao_cycle";
+            if (fullCycle) {
+                config.params.gpio.pwmResolution = ledc.requestedResolution = 16;
+                config.params.gpio.aoMode = mode == "scalar_breathe_ao_cycle";
+            }
+            if (mode == "scalar_breathe_start_failed") timerStartOk = false;
+            if (mode == "scalar_breathe_stale_screen") {
+                FastBee::ScreenOutputIdentity::publish(7);
+                context = begin(Source::Screen, (uint64_t{7} << 32) | 1);
+            }
+            if (mode == "scalar_breathe_stale_rule") {
+                context.ruleBound = true; context.ruleEpoch = FastBee::RuleOutputIdentity::currentEpoch();
+            }
+            if (mode == "scalar_breathe_stale_uart") context.uartOrigin = FastBee::UartEventOrigin::captured(7, 19);
+            const bool accepted = pm.submitOrdinaryScalar("led", Scalar::Breathe, 2000, context, result);
+            assert(accepted == (mode != "scalar_breathe_start_failed"));
+            const auto oldCallback = lastTimerCallback; void* oldArgument = lastTimerArgument;
+            if (!accepted) {
+                assert(runtime.ordinaryControl.phase == Phase::Fault && !scalarPwmWrites);
+                pm.finishOrdinaryControl(context); assert(!timerHandles); return 0;
+            }
+            pm.finishOrdinaryControl(context);
+            assert(runtime.ordinaryControl.phase == Phase::Producing && !scalarPwmWrites);
+            if (fullCycle) {
+                // Exercise the real checked producer across both ends, including
+                // unsigned 16-bit PWM and calibrated AO percent-to-duty mapping.
+                bool low = false, high = false;
+                for (unsigned tick = 0; tick < 205; ++tick) {
+                    oldCallback(oldArgument);
+                    assert(scalarLastDuty <= 65535U);
+                    low |= scalarLastDuty == 0; high |= scalarLastDuty == 65535U;
+                }
+                assert(low && high && scalarPwmWrites == 205 && timerHandles == 1);
+                const auto stop = begin(Source::Http, 31);
+                assert(pm.submitOrdinaryScalar("led", Scalar::Stop, 0, stop, result));
+                oldCallback(oldArgument);
+                assert(!timerHandles && scalarPwmWrites == 205);
+                return 0;
+            }
+            if (mode == "scalar_breathe_replace" || mode == "scalar_breathe_stop_failed") {
+                const auto replacement = begin(Source::Http, 31);
+                if (mode == "scalar_breathe_stop_failed") timerStopOk = false;
+                const bool replaced = pm.submitOrdinaryScalar("led", Scalar::Pwm, 91, replacement, result);
+                assert(replaced == (mode == "scalar_breathe_replace"));
+                oldCallback(oldArgument);
+                if (replaced) assert(!timerHandles && scalarPwmWrites == 1 && scalarLastDuty == 91);
+                else assert(timerHandles == 1 && !scalarPwmWrites && runtime.ordinaryControl.phase == Phase::Fault);
+                timerStopOk = true; ordinaryClockUs += 1000000;
+                pm.finishOrdinaryControl(replacement, true); pm.serviceOrdinaryControlExpiry();
+                assert(!timerHandles); return 0;
+            }
+            if (mode == "scalar_breathe_expired") ordinaryClockUs += 31000000;
+            if (mode == "scalar_breathe_stale_rule") FastBee::RuleOutputIdentity::invalidate();
+            if (mode == "scalar_breathe_stale_uart") pm.uartCurrent = false;
+            if (mode == "scalar_breathe_stale_screen") FastBee::ScreenOutputIdentity::publish(8);
+            oldCallback(oldArgument);
+            if (mode != "scalar_breathe") {
+                assert(!scalarPwmWrites && !timerHandles && runtime.ordinaryControl.phase == Phase::Idle); return 0;
+            }
+            assert(scalarPwmWrites == 1 && scalarLastDuty == 5);
+            const auto stop = begin(Source::Http, 31);
+            assert(pm.submitOrdinaryScalar("led", Scalar::Stop, 0, stop, result));
+            assert(result.cleanupConfirmed && !timerHandles && scalarPwmWrites == 1 && scalarLastDuty == 5);
+            oldCallback(oldArgument); assert(scalarPwmWrites == 1); return 0;
+        }
+        if (mode == "scalar_pwm_ao") {
+            config.params.gpio.aoMode = true; config.params.gpio.aoMinPct = 20;
+            assert(pm.submitOrdinaryScalar("led", Scalar::Pwm, 0, context, result));
+            assert(scalarLastDuty == 51);
+            assert(pm.submitOrdinaryScalar("led", Scalar::Pwm, 50, context, result));
+            assert(scalarLastDuty == 153 && scalarPwmWrites == 2);
+            pm.finishOrdinaryControl(context, true); assert(scalarPwmWrites == 2); return 0;
+        }
+        const bool dac = config.type == PeripheralType::DAC;
+        if (mode == "scalar_pwm_failed") scalarPwmOk = false;
+        if (mode == "scalar_ledger_failed") ledc.cleanupFailed = true;
+        if (mode == "scalar_dac_failed") scalarDacOk = false;
+        const bool accepted = pm.submitOrdinaryScalar("led", dac ? Scalar::Dac : Scalar::Pwm, 128, context, result);
+        const bool failure = mode == "scalar_pwm_failed" || mode == "scalar_ledger_failed" || mode == "scalar_dac_failed";
+        assert(accepted != failure && result.attempted);
+        if (failure) {
+            assert(runtime.ordinaryControl.phase == Phase::Fault);
+            if (mode == "scalar_ledger_failed") assert(!scalarPwmWrites);
+            pm.finishOrdinaryControl(context);
+            if (dac) {
+                assert(runtime.ordinaryControl.phase == Phase::Fault && scalarDacRetainedFault);
+                const auto other = begin(Source::Http, 32);
+                assert(!pm.submitOrdinaryScalar("led", Scalar::Dac, 3, other, result));
+                assert(scalarDacWrites == 1);
+                scalarDacRetainedFault = false; ordinaryClockUs += 1000000;
+                pm.serviceOrdinaryControlExpiry(); assert(runtime.ordinaryControl.phase == Phase::Idle);
+            }
+            return 0;
+        }
+        assert(dac ? scalarDacWrites == 1 && scalarLastDac == 128 : scalarPwmWrites == 1 && scalarLastDuty == 128);
+        pm.finishOrdinaryControl(context); assert(runtime.ordinaryControl.phase == Phase::Held);
+        const auto other = begin(Source::Http, 32);
+        assert(!pm.submitOrdinaryScalar("led", dac ? Scalar::Dac : Scalar::Pwm, 1, other, result));
+        assert(!strcmp(result.reason, "CONTROL_CONFLICT"));
+        ordinaryClockUs += 31000000; pm.serviceOrdinaryControlExpiry();
+        assert(runtime.ordinaryControl.phase == Phase::Idle);
+        assert(dac ? scalarDacWrites == 1 && scalarLastDac == 128 : scalarPwmWrites == 1 && scalarLastDuty == 128);
+        return 0;
+    }
+    if (mode.startsWith("iox_")) return testOrdinaryIo(mode);
+    if (mode=="invalid_finish_preserves_queue") {
+        const auto queued=begin();
+        pm.finishOrdinaryControl(Context{},true);
+        assert(runtime.ordinaryControl.retiredThrough==0);
+        assert(pm.submitOrdinaryDigital("led",Command::High,0,queued,result));
+        assert(nativeWrites==1); pm.finishOrdinaryControl(queued); return 0;
+    }
+    if (mode.startsWith("negative_clock_")) {
+        const auto active=begin();
+        assert(pm.submitOrdinaryDigital("led",Command::Blink,100,active,result));
+        if (mode!="negative_clock_finish") pm.finishOrdinaryControl(active);
+        ordinaryClockUs=-1;
+        if (mode=="negative_clock_callback") lastTimerCallback(lastTimerArgument);
+        else if (mode=="negative_clock_maintenance") pm.serviceOrdinaryControlExpiry();
+        else if (mode=="negative_clock_finish") pm.finishOrdinaryControl(active);
+        else if (mode=="negative_clock_submit")
+            assert(!pm.submitOrdinaryDigital("led",Command::High,0,active,result));
+        else assert(false);
+        assert(runtime.ordinaryControl.phase==Phase::Fault && nativeWrites==0 && timerHandles==1);
+        assert(!runtime.ordinaryControl.invocationActive);
+        ordinaryClockUs=2000000;
+        lastTimerCallback(lastTimerArgument); // Recovered clock must never replay the old output.
+        assert(nativeWrites==0 && !timerHandles && runtime.ordinaryControl.phase==Phase::Idle);
+        return 0;
+    }
+    if (mode=="legacy_write_denied") {
+        assert(!pm.writePin("led",GPIOState::STATE_HIGH) && nativeWrites==0); return 0;
+    }
+    if (mode=="begin_limits") {
+        Context rejected;
+        assert(!pm.beginOrdinaryControl(Source::None,1,0,false,0,"",1,{},rejected));
+        assert(!pm.beginOrdinaryControl(Source::Rule,0,0,false,0,"",1,{},rejected));
+        assert(!pm.beginOrdinaryControl(Source::Http,1,300001,false,0,"",1,{},rejected));
+        pm._nextOrdinaryControlOperation=UINT64_MAX;
+        assert(!pm.beginOrdinaryControl(Source::Rule,1,0,false,0,"",1,{},rejected)); return 0;
+    }
+    if (mode.startsWith("typed_")) {
+        PeriphExecExecutor executor; ExecAction action;
+        const auto context=begin();
+        action.actionType=static_cast<uint8_t>(mode=="typed_blink" || mode=="typed_interval_rejected"
+            ? ExecActionType::ACTION_BLINK : ExecActionType::ACTION_HIGH);
+        const bool accepted=executor.executePeripheralAction(action,
+            mode=="typed_interval_rejected" ? "65536" : "500", "", {},
+            mode=="typed_missing_context" ? nullptr : &context, &result);
+        assert(accepted==(mode!="typed_interval_rejected" && mode!="typed_missing_context"));
+        assert(result.evaluated && result.accepted==accepted);
+        pm.finishOrdinaryControl(context,true); assert(!timerHandles); return 0;
+    }
+    if (mode.startsWith("call_") || mode.startsWith("script_")) {
+        const auto context=begin();
+        if (mode=="call_blink_stop") {
+            assert(callNative("blink","500",&context,&result));
+            assert(timerHandles==1); assert(callNative("stop","",&context,&result));
+            assert(!timerHandles && runtime.ordinaryControl.invocationActive);
+        } else if (mode=="call_missing_context") {
+            assert(!callNative("high","",nullptr,&result) && nativeWrites==0);
+        } else if (mode=="script_blink_stop") {
+            assert(scriptNative("BLINK",500,&context,&result)); assert(timerHandles==1);
+            assert(scriptNative("STOP",0,&context,&result)); assert(!timerHandles);
+        } else if (mode=="script_missing_context") {
+            assert(!scriptNative("HIGH",0,nullptr,&result) && nativeWrites==0);
+        } else if (mode=="call_numeric") {
+            assert(callNative("99999999999999999999","",&context,&result)); assert(nativeLevel);
+        } else assert(false);
+        pm.finishOrdinaryControl(context,true); assert(!timerHandles); return 0;
+    }
+    if (mode=="mqtt_direct") {
+        String actual;
+        assert(executeDirectOutputCommand(pm,pm.peripherals.at("led"),"1",actual,
+            FastBee::SensorConfigEpoch::current(),result));
+        assert(nativeWrites==1 && nativeLevel && runtime.ordinaryControl.phase==Phase::Idle);
+        assert(result.actor.source==Source::Mqtt); return 0;
+    }
+    if (mode=="first_failure_preserved") {
+        auto manual=begin(Source::Http,8);
+        assert(pm.submitOrdinaryDigital("led",Command::High,0,manual,result)); pm.finishOrdinaryControl(manual);
+        const auto rule=begin(); Result first;
+        assert(!FastBee::dispatchOrdinaryDigitalAction(pm,"led",Command::Low,0,&rule,&first));
+        assert(std::strcmp(first.reason,"CONTROL_CONFLICT")==0);
+        Result success; success.evaluated=true; success.accepted=true;
+        FastBee::rememberOrdinaryControlResult(success,&first);
+        assert(!first.accepted && std::strcmp(first.reason,"CONTROL_CONFLICT")==0); return 0;
+    }
+    if (mode=="screen_stale") {
+        FastBee::ScreenOutputIdentity::publish(7);
+        auto context=begin(Source::Screen,(uint64_t{7}<<32)|1);
+        assert(pm.submitOrdinaryDigital("led",Command::Blink,100,context,result)); pm.finishOrdinaryControl(context);
+        FastBee::ScreenOutputIdentity::publish(8); lastTimerCallback(lastTimerArgument);
+        assert(nativeWrites==0 && !timerHandles && runtime.ordinaryControl.phase==Phase::Idle); return 0;
+    }
+    const bool manual=mode=="manual_expiry" || mode=="executing_expiry";
+    auto context=begin(manual ? Source::Http : Source::Rule);
+    if (mode=="rule_stale") {
+        context.ruleBound=true; context.ruleEpoch=FastBee::RuleOutputIdentity::currentEpoch();
+        FastBee::RuleOutputIdentity::invalidate();
+    }
+    if (mode=="config_stale") FastBee::SensorConfigEpoch::advance();
+    if (mode=="uart_stale") { context.uartOrigin=FastBee::UartEventOrigin::captured(7,19); pm.uartCurrent=false; }
+    if (mode=="dedicated_owner") pm.dedicated=true;
+    if (mode=="busy") ordinaryMutexBusy=true;
+    if (mode=="disabled") pm.peripherals.at("led").enabled=false;
+    if (mode=="suspended") runtime.memorySuspended=true;
+    if (mode=="cleanup_pending") runtime.memoryCleanupPending=true;
+    if (mode=="read_failed") nativeReadOk=false;
+    if (mode=="write_failed") nativeWriteOk=false;
+    if (mode=="generation_exhausted") pm._nextOrdinaryControlGeneration=UINT64_MAX;
+    if (mode=="low_memory") FastBee::MemoryBudget::ordinaryFreeMemory=0;
+    if (mode=="token_exhausted") pm._nextActionTickerToken=UINT32_MAX;
+    if (mode=="create_failed" || mode=="partial_create_failed") timerCreateOk=false;
+    if (mode=="partial_create_failed") timerPartialCreate=true;
+    if (mode=="start_failed") timerStartOk=false;
+    const bool blink=mode=="blink" || mode=="replace_blink" || mode=="same_operation_stop" ||
+        mode=="manual_expiry" || mode=="low_memory" || mode=="token_exhausted" ||
+        mode=="create_failed" || mode=="partial_create_failed" || mode=="start_failed" ||
+        mode=="stop_failed" || mode=="delete_failed" || mode=="clock_backwards" || mode=="stale_callback";
+    const bool rejected=mode=="rule_stale" || mode=="config_stale" || mode=="uart_stale" ||
+        mode=="dedicated_owner" || mode=="busy" || mode=="disabled" || mode=="suspended" ||
+        mode=="cleanup_pending" || mode=="read_failed" || mode=="write_failed" ||
+        mode=="generation_exhausted" || mode=="low_memory" || mode=="token_exhausted" ||
+        mode=="create_failed" || mode=="partial_create_failed" || mode=="start_failed";
+    assert(pm.submitOrdinaryDigital("led",blink?Command::Blink:mode=="read_failed"?Command::Toggle:Command::High,
+        blink?100:0,context,result)!=rejected);
+    if (rejected) {
+        ordinaryMutexBusy=false; pm.finishOrdinaryControl(context,true);
+        assert(!timerHandles && (nativeWrites==0 || mode=="write_failed"));
+        if (mode=="read_failed") assert(runtime.ordinaryControl.phase==Phase::Idle);
+        return 0;
+    }
+    if (mode=="high_low_same_operation") {
+        const auto generation=result.generation; ordinaryClockUs+=1000000;
+        assert(pm.submitOrdinaryDigital("led",Command::Low,0,context,result));
+        assert(result.generation==generation && nativeWrites==2 && !nativeLevel);
+    } else if (mode=="conflict") {
+        auto other=begin(Source::Mqtt,2);
+        assert(!pm.submitOrdinaryDigital("led",Command::Low,0,other,result) && nativeWrites==1);
+    } else if (mode=="executing_expiry") {
+        ordinaryClockUs+=31000000; pm.serviceOrdinaryControlExpiry();
+        assert(runtime.ordinaryControl.phase==Phase::Retiring && runtime.ordinaryControl.invocationActive);
+        assert(!pm.submitOrdinaryDigital("led",Command::Low,0,context,result) && nativeWrites==1);
+        auto other=begin(Source::Http,9);
+        assert(!pm.submitOrdinaryDigital("led",Command::Low,0,other,result));
+    } else if (mode=="same_operation_stop") {
+        assert(pm.submitOrdinaryDigital("led",Command::Stop,0,context,result));
+        assert(!timerHandles && runtime.ordinaryControl.invocationActive);
+    } else if (mode=="replace_blink") {
+        const auto oldCallback=lastTimerCallback; void* oldArg=lastTimerArgument;
+        assert(pm.submitOrdinaryDigital("led",Command::Blink,200,context,result));
+        assert(timerHandles==1 && timerDeletes==1); oldCallback(oldArg); assert(nativeWrites==0);
+        lastTimerCallback(lastTimerArgument); assert(nativeWrites==1);
+    }
+    pm.finishOrdinaryControl(context);
+    if (mode=="manual_expiry" || mode=="clock_backwards") {
+        ordinaryClockUs=mode=="manual_expiry"?ordinaryClockUs+31000000:ordinaryClockUs-1;
+        // Clock rollback is tested at millisecond resolution.
+        if (mode=="clock_backwards") ordinaryClockUs-=1000;
+        lastTimerCallback(lastTimerArgument); assert(nativeWrites==0 && !timerHandles);
+    } else if (mode=="stop_failed" || mode=="delete_failed") {
+        timerStopOk=mode!="stop_failed"; timerDeleteOk=mode!="delete_failed";
+        auto stop=begin(); assert(!pm.submitOrdinaryDigital("led",Command::Stop,0,stop,result));
+        assert(runtime.ordinaryControl.phase==Phase::Fault && timerHandles==1);
+        const auto attempts=timerStops; runtime.ordinaryStopFailures=UINT32_MAX;
+        for (int i=0;i<20;++i) pm.serviceOrdinaryControlExpiry();
+        assert(timerStops==attempts && runtime.ordinaryStopFailures==UINT32_MAX);
+        ordinaryClockUs+=1000000; pm.serviceOrdinaryControlExpiry();
+        assert(timerStops==attempts+1 && runtime.ordinaryStopFailures==UINT32_MAX);
+        timerStopOk=timerDeleteOk=true; ordinaryClockUs+=1000000; pm.serviceOrdinaryControlExpiry();
+        assert(!timerHandles && runtime.ordinaryControl.phase==Phase::Idle && nativeWrites==0);
+    } else if (mode=="override" || mode=="stale_review" || mode=="target_review") {
+        // Automatic steady writes release at terminal; install a producer to review.
+        context=begin(); assert(pm.submitOrdinaryDigital("led",Command::Blink,100,context,result));
+        pm.finishOrdinaryControl(context); const auto generation=result.generation;
+        auto review=begin(Source::Http,9,true,generation+(mode=="stale_review"?1:0),mode=="target_review"?"other":"led");
+        assert(pm.submitOrdinaryDigital("led",Command::Low,0,review,result)==(mode=="override"));
+        if(mode=="override") { assert(!timerHandles); pm.finishOrdinaryControl(review); }
+    } else if (mode=="stale_callback") {
+        const auto oldCallback=lastTimerCallback; void* oldArg=lastTimerArgument;
+        auto stop=begin(); assert(pm.submitOrdinaryDigital("led",Command::Stop,0,stop,result));
+        oldCallback(oldArg); assert(!nativeWrites && !timerHandles);
+    } else if (mode=="blink") {
+        lastTimerCallback(lastTimerArgument); assert(nativeWrites==1 && nativeLevel);
+    }
+    pm.finishOrdinaryControl(context,true);
+    assert(!timerHandles && ordinaryLockDepth==0);
+}

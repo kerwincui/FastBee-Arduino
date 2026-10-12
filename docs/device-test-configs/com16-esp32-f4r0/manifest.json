@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "preparedAt": "2026-10-05",
+  "timezone": "Asia/Shanghai",
+  "deviceId": "com16-esp32-f4r0",
+  "status": "DEVICE_FLASH_SNAPSHOT_SANITIZED_PENDING_RELEASE",
+  "deploymentAllowed": false,
+  "source": {
+    "path": "docs/puzhong-esp32-config.json",
+    "format": "fastbee-config-bundle/files[].content",
+    "configurationMeaning": "Observed parameters copied without enabling additional loads; credentials redacted; pending private merge and new release deployment",
+    "originalPublicPath": "docs/puzhong-esp32-config.json",
+    "observedSnapshot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/d4e9f4b16c34/serial-r1/extracted"
+  },
+  "target": {
+    "environment": "esp32-F4R0",
+    "ports": [
+      "COM16"
+    ],
+    "expectedChip": "ESP32",
+    "expectedFlashBytes": 4194304,
+    "expectedPsramBytes": 0,
+    "historicalMacHint": "D4:E9:F4:B1:6C:34",
+    "identityVerified": true,
+    "observedMac": "d4e9f4b16c34",
+    "observedPort": "COM16",
+    "usbSerial": null,
+    "observedFlashBytes": 4194304,
+    "observedPsramBytes": 0,
+    "boardRevision": null,
+    "partitionSha256": null,
+    "activeSlot": null,
+    "staAddress": null,
+    "identityEvidence": "artifacts/four-device-com16-snapshot-20261005-r1/report.json",
+    "identityMethod": "bootloader chip/MAC/Flash identity and verified full snapshot",
+    "observedChipModel": "ESP32",
+    "networkDiscoveryEvidence": "artifacts/four-device-com16-network-20261005-r1/report.json"
+  },
+  "release": {
+    "candidateId": null,
+    "sourceSha256": null,
+    "sourceStable": null,
+    "firmwareSha256": null,
+    "webSha256": null,
+    "precheckReport": null,
+    "nineEnvironmentReport": null,
+    "rgbBuildReport": null
+  },
+  "configuration": {
+    "files": [
+      {
+        "path": "config/device.json",
+        "bytes": 360,
+        "sha256": "23d43a74ba7ddc5eb7855a442a14e0d47db7475dace181051bf7e8bff96839a6"
+      },
+      {
+        "path": "config/features.json",
+        "bytes": 1414,
+        "sha256": "89b65dab3eeb031fe02ba53ed57d5dbd36bd4d400b23ce2c79d2212674554ace"
+      },
+      {
+        "path": "config/network.json",
+        "bytes": 908,
+        "sha256": "24628d40bbfd904b8ac84faab8eeaddc684f0b80b1b5d080b62a886fb20c24a3"
+      },
+      {
+        "path": "config/periph_exec.json",
+        "bytes": 6793,
+        "sha256": "9384393e941ecb30d177b9f6d6a935be5b94121ebea1ea5acad9c257e0e9d123"
+      },
+      {
+        "path": "config/peripherals.json",
+        "bytes": 3261,
+        "sha256": "25e2d8c66860097a80f0b14ab1e450574a54110c6f9e27a0fb792d6187dd5a83"
+      },
+      {
+        "path": "config/protocol.json",
+        "bytes": 2164,
+        "sha256": "75831265473500a30649bf74603e7e62ea76679d9c661e55197ea1427e70390f"
+      },
+      {
+        "path": "config/rule_scripts.json",
+        "bytes": 685,
+        "sha256": "4888db0b02a55e4a4cef609bb93ed5234ca22e7f02db35b8f8c2d048b5c9beae"
+      }
+    ],
+    "publicCounts": {
+      "peripherals": 11,
+      "enabledPeripherals": 11,
+      "rules": 6,
+      "enabledRules": 6
+    },
+    "effectiveFiles": [
+      {
+        "name": "device.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "15dc80749298a9a9393cb11bb702f30e350ca6de94b3687d04aaa83c241002c3"
+      },
+      {
+        "name": "features.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "1bf9f50e9c1f9e2832b5dfcfbda8286bc38e5be570d89b9688643289685d30fd"
+      },
+      {
+        "name": "network.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "75cab52bf56fc049a14e2fce06c60801d22411303600c098d5a5196c8bdaf94c"
+      },
+      {
+        "name": "peripherals.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "f4abb8cb698d45694b54e2ea48ebfaca9f947d1dc41c1bed095119e3662c64ac"
+      },
+      {
+        "name": "periph_exec.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "2f6f5f45b8a1d79213bb2d6a52245dff33381793c2f5512ce05880b07868f249"
+      },
+      {
+        "name": "protocol.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "0a4c7f928349877476a416f1b248f800c39ee8abe2d55fc6ae75f4414659a03a"
+      },
+      {
+        "name": "rule_scripts.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "f131f44efd18b871e68b022402eeb82653771bbb3b0b4e0b48696ed84c296c55"
+      }
+    ],
+    "effectiveConfigSha256": null,
+    "reconciled": false,
+    "featuresStatus": "SANITIZED_CURRENT_DEVICE_FILE",
+    "networkStatus": "SANITIZED_CURRENT_FLASH_FILE",
+    "memoryProfile": "PRESERVE_CURRENT_AND_REVIEW_EXPLICIT_DIFFS",
+    "expectedMergeDifferences": [
+      "Merge only public non-secret settings into this device private snapshot; never write redacted blank credentials"
+    ],
+    "privateMergeRequired": true,
+    "neverImportBlankCredentials": true,
+    "originalPublicCounts": {
+      "peripherals": 16,
+      "enabledPeripherals": 16,
+      "rules": 20,
+      "enabledRules": 20
+    },
+    "observedCounts": {
+      "peripherals": 11,
+      "enabledPeripherals": 11,
+      "rules": 6,
+      "enabledRules": 6
+    },
+    "protocolStatus": "SANITIZED_CURRENT_FLASH_FILE",
+    "remainingTemplateFiles": [],
+    "redactionDifferences": [
+      "Device identifiers and credentials blanked in public config; original private snapshot retained",
+      "Observed enablement flags retained, not restored from heavier public template",
+      "Network/protocol API views cannot provide hidden original secrets"
+    ]
+  },
+  "preservation": {
+    "privateRoot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/<verified-mac>/<unique-attempt>/",
+    "backupReport": "artifacts/four-device-com16-snapshot-20261005-r1/report.json",
+    "backupSha256": "26f328b482b4e890c99d6f80f9c13dd3e46d43bcd5aa85612ebb78bf8a367b20",
+    "backupVerified": true,
+    "preserveWholeFiles": [
+      "config/network.json",
+      "config/auth.json",
+      "config/users.json"
+    ],
+    "preserveOtherSettings": [
+      "device identity",
+      "MQTT settings and secrets",
+      "screen layout",
+      "weather settings and secrets",
+      "point history",
+      "all unrelated non-www files"
+    ],
+    "rollback": "Use the same device verified full-flash snapshot and per-region deployment report; verify identity, partition and active slot before restore.",
+    "currentSnapshot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/d4e9f4b16c34/serial-r1/extracted",
+    "backupScope": "full 4MiB flash; stream MD5 and independent flash MD5 verified"
+  },
+  "load": {
+    "healthIntervalSeconds": 30,
+    "resourceIntervalSeconds": 60,
+    "pageIntervalSeconds": 600,
+    "stagesHours": [
+      2,
+      24,
+      168
+    ],
+    "normalWindowsSeparateFromFaultInjection": true,
+    "restartWindowOnArtifactOrConfigChange": true,
+    "recordFailuresCumulatively": true,
+    "physicalPrerequisites": [
+      "公开16外设20规则不等于历史现场11外设6规则",
+      "先取得当前现场配置，保持并明确记录已批准的内存裁剪",
+      "核实每个启用IO接线与继电器负载；保留MQTT运行策略"
+    ]
+  },
+  "acceptance": {
+    "identity": "BOOTLOADER_IDENTITY_VERIFIED",
+    "backup": "FULL_FLASH_VERIFIED",
+    "schemaCapabilityPinsResources": "PENDING",
+    "firmwareWriteVerify": "NOT_RUN",
+    "filesystemWriteVerify": "NOT_RUN",
+    "configReadback": "NOT_RUN",
+    "rebootRecovery": "NOT_RUN",
+    "desktopWeb": "NOT_RUN",
+    "mobileWeb": "NOT_RUN",
+    "physical": "NOT_RUN",
+    "exploration2h": "NOT_RUN",
+    "mixed24h": "NOT_RUN",
+    "soak168h": "NOT_RUN",
+    "evidenceRoot": "artifacts/four-device-com16-snapshot-20261005-r1"
+  }
+}

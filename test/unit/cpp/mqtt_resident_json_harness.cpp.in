@@ -1,0 +1,388 @@
+// Complete production methods, real ArduinoJson/fixed-field/diagnostic writers.
+// MQTT transport, framework, WiFi/ESP and memory admission are explicit seams.
+#include "document_json_probe.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "network/FixedJsonField.h"
+#include "core/SystemConstants.h"
+#include "protocols/MqttDiagnosticJson.h"
+#include "protocols/MqttReportRetirement.h"
+#include "protocols/MqttReconnectLifetime.h"
+#include <algorithm>
+#include <atomic>
+#include <climits>
+#include <functional>
+#include <iostream>
+#include <type_traits>
+@TYPES@
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string value = "object{";
+        for (JsonPairConst field : object) {
+            value += std::string(field.key().c_str(), field.key().size());
+            value += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            value += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return value + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string value = "array[";
+        for (JsonVariantConst item : array) value += ArduinoJson::detail::accept(item, *this) + ";";
+        return value + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        assert(false); return "unsupported";
+    }
+};
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflow = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflow == other.overflow;
+    }
+};
+static Snapshot capture(const JsonDocument& document) {
+    Shape shape;
+    return {documentBytes(document), ArduinoJson::detail::accept(document.as<JsonVariantConst>(), shape),
+            document.overflowed()};
+}
+struct Result {
+    bool returned = false;
+    unsigned publications = 0, callbacks = 0;
+    std::string text;
+    std::vector<Snapshot> documents;
+    std::vector<std::string> effects;
+    std::vector<DocumentProbeAllocator::Event> events;
+    size_t allocations = 0, failures = 0;
+    bool operator==(const Result& other) const {
+        return returned == other.returned && publications == other.publications &&
+            callbacks == other.callbacks && text == other.text && documents == other.documents &&
+            effects == other.effects && events == other.events && allocations == other.allocations &&
+            failures == other.failures;
+    }
+};
+static Result* activeResult;
+static DocumentProbeAllocator* activeAllocator;
+static std::function<void()> overwriteInputs;
+static unsigned documentDepth = 0;
+static void record(const std::string& value) { activeResult->effects.push_back(value); }
+static void recordLog(const String& value) { record("log:" + std::string(value)); }
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { assert(activeAllocator); ++documentDepth; }
+    ~TrackedDocument() {
+        const auto snapshot = capture(*this);
+        // The parsed child summary dies before the publisher reads topic config.
+        // Poison source owners only at the outer document's end of lifetime.
+        if (documentDepth == 1) {
+            overwriteInputs();
+            assert(capture(*this) == snapshot);
+        }
+        activeResult->documents.push_back(snapshot);
+        assert(documentDepth); --documentDepth;
+    }
+};
+
+constexpr int WL_CONNECTED = 3;
+struct WiFiFixture {
+    int32_t rssi = -73;
+    int connection = WL_CONNECTED;
+    int32_t RSSI() const { record("wifi-rssi"); return rssi; }
+    int status() const { record("wifi-status"); return connection; }
+} WiFi;
+struct EspFixture {
+    String chip = "ESP32-C6";
+    const char* getChipModel() const { record("chip-model"); return chip.c_str(); }
+} mqttEsp;
+static bool dramAllowed = true;
+static bool mqttHasInternalDram(uint32_t minimum, uint32_t contiguous, const char* context) {
+    assert(minimum == 30000 && contiguous == 4096 && std::string(context) == "publishDeviceInfo");
+    record("dram:30000:4096:publishDeviceInfo"); return dramAllowed;
+}
+class FBNetworkManager {
+public:
+    bool connected = false;
+    bool isNetworkConnected() const { record("network-state"); return connected; }
+};
+static FBNetworkManager network;
+class FastBeeFramework {
+public:
+    bool hasManager = false;
+    static FastBeeFramework* getInstance();
+    void* getNetworkManager() const { record("network-manager"); return hasManager ? &network : nullptr; }
+};
+static FastBeeFramework framework;
+static bool hasFramework = false;
+FastBeeFramework* FastBeeFramework::getInstance() {
+    record("framework"); return hasFramework ? &framework : nullptr;
+}
+static FastBee::MqttReportRetirement retirement;
+
+class MQTTClient {
+public:
+    @QUEUE_TYPES@
+    @ATOMIC_FIELDS@
+    MQTTConfig config;
+    FastBee::MqttReconnectLifetime _reconnectLifetime;
+    bool connectionTestOnly = false, tlsAllocated = false, publishAccepted = true;
+    void* _externalClient = nullptr;
+    QueueSnapshot queue;
+    std::function<void(const String&)> _statusChangeCallback;
+    bool isConnectionTestOnly() const { record("connection-test"); return connectionTestOnly; }
+    bool isTlsTransportAllocated() const { record("tls-allocated"); return tlsAllocated; }
+    int findEnabledPublishTopicIndex(MqttTopicType type) const {
+        record("topic-find:" + std::to_string(static_cast<unsigned>(type)));
+        for (size_t i = 0; i < config.publishTopics.size(); ++i) {
+            const auto& topic = config.publishTopics[i];
+            if (topic.enabled && topic.topicType == type) return static_cast<int>(i);
+        }
+        return -1;
+    }
+    String buildFullTopicWithType(const String& topic, bool prefix, MqttTopicType type) const {
+        record("topic-build:" + std::string(topic) + ":" + std::to_string(prefix) + ":" +
+               std::to_string(static_cast<unsigned>(type)));
+        return prefix ? config.topicPrefix + topic : topic;
+    }
+    bool publishToTopic(size_t index, const String& payload) const {
+        assert(index == 2 && config.publishTopics.at(index).topicType == MqttTopicType::DEVICE_INFO);
+        record("publish:" + std::to_string(index));
+        ++activeResult->publications; activeResult->text = std::string(payload);
+        return publishAccepted;
+    }
+    QueueSnapshot getReportQueueSnapshot() const { record("queue-snapshot"); return queue; }
+    static FastBee::MqttReportRetirement::Snapshot getReportRetirementSnapshot() {
+        record("retirement-snapshot"); return retirement.snapshot();
+    }
+};
+@QUEUE_WRITER@
+@ERROR_FUNCTIONS@
+#define DECLARE_MQTT(Name) struct Name : MQTTClient { \
+    bool publishDeviceInfo(); void _notifyStatusChange(); \
+};
+DECLARE_MQTT(MqttOracle)
+DECLARE_MQTT(MqttCurrent)
+DECLARE_MQTT(MqttDraft)
+#undef DECLARE_MQTT
+#define JsonDocument TrackedDocument
+#define ESP mqttEsp
+#define LOG_INFO(value) recordLog(value)
+#define LOG_DEBUG(value) recordLog(value)
+@METHODS@
+#undef LOG_DEBUG
+#undef LOG_INFO
+#undef ESP
+#undef JsonDocument
+
+enum class Kind { Info, Status };
+struct Scenario {
+    unsigned info = 4, networkMode = 0, flags = 0;
+    int error = 0;
+    bool callback = true, accepted = true;
+};
+static bool networkExpected(unsigned mode) { return mode == 1 || mode == 2 || mode == 4; }
+template<class Writer> static void populate(Writer& writer, const Scenario& scenario, Kind kind) {
+    WiFi = WiFiFixture(); mqttEsp = EspFixture(); dramAllowed = true;
+    hasFramework = scenario.networkMode >= 3;
+    framework.hasManager = scenario.networkMode >= 4;
+    network.connected = scenario.networkMode == 4;
+    // Modes: absent+offline, absent+WiFi, absent+external, null manager+offline,
+    // authoritative manager online, authoritative manager offline despite WiFi.
+    WiFi.connection = scenario.networkMode == 1 || scenario.networkMode == 5 ? WL_CONNECTED : 0;
+    writer._externalClient = scenario.networkMode == 2 ? &network : nullptr;
+    writer.isConnected = (scenario.flags & 1) != 0;
+    writer.stopped = (scenario.flags & 2) != 0;
+    writer.config.autoReconnect = (scenario.flags & 4) == 0;
+    writer._lastMqttsTlsMemoryFailure = (scenario.flags & 8) != 0;
+    writer._disabledByMemory = (scenario.flags & 16) != 0;
+    writer._stoppedByMemory = (scenario.flags & 32) != 0;
+    writer.connectionTestOnly = (scenario.flags & 64) != 0;
+    writer._webServerPaused = (scenario.flags & 128) != 0;
+    writer.lastErrorCode = scenario.error;
+    writer.reconnectCount = scenario.flags & 1 ? UINT32_MAX : 0;
+    writer.tlsAllocated = scenario.flags & 8;
+    writer.publishAccepted = scenario.accepted;
+    if (scenario.flags & 1) assert(writer._reconnectLifetime.reserve());
+    if (scenario.flags & 2) writer._reconnectLifetime.requestStop();
+    auto& config = writer.config;
+    const String text(scenario.flags & 1 ? std::string(240, 'x') : "节点 \"quote\" \\ line\n\t旧");
+    config.server = text; config.clientId = text + "client";
+    config.scheme = scenario.flags & 8 ? "mqtts" : "mqtt";
+    config.port = scenario.flags & 1 ? UINT16_MAX : 0;
+    config.topicPrefix = "prefix/";
+    config.publishTopics.resize(3);
+    config.publishTopics[0].topicType = MqttTopicType::DATA_REPORT;
+    config.publishTopics[1].topicType = MqttTopicType::DEVICE_INFO;
+    config.publishTopics[1].enabled = false;
+    config.publishTopics[2].topicType = MqttTopicType::DEVICE_INFO;
+    config.publishTopics[2].topic = "device/\"info\"";
+    config.publishTopics[2].autoPrefix = scenario.info % 2;
+    if (scenario.callback) writer._statusChangeCallback = [](const String& value) {
+        record("status-callback"); ++activeResult->callbacks; activeResult->text = std::string(value);
+    };
+    auto& queue = writer.queue;
+    if (scenario.flags & 1) {
+        queue.depth = 9; queue.ringDepth = 8; queue.pendingReport = true;
+        queue.consumerActive = true; queue.pendingAttempts = UINT32_MAX; queue.retryDelayMs = UINT32_MAX;
+        queue.stats = {UINT32_MAX, UINT32_MAX - 1, UINT32_MAX - 2, UINT32_MAX - 3,
+            UINT32_MAX - 4, UINT32_MAX - 5, UINT32_MAX - 6, UINT32_MAX - 7,
+            UINT32_MAX - 8, UINT32_MAX - 9};
+    }
+    retirement = FastBee::MqttReportRetirement();
+    if (scenario.flags & 1) {
+        for (unsigned reason = 0; reason < FastBee::MqttReportRetirement::ReasonCount; ++reason)
+            retirement.record(static_cast<FastBee::MqttRetirementReason>(reason), reason, true, false);
+        retirement.record(FastBee::MqttRetirementReason::Shutdown, 8, true, true);
+    }
+    if (kind == Kind::Info) {
+        writer.isConnected = scenario.info != 1;
+        writer.connectionTestOnly = scenario.info == 0;
+        dramAllowed = scenario.info != 2;
+        config.publishTopics[2].enabled = scenario.info != 3;
+        config.longitude = scenario.info == 13 ? std::numeric_limits<double>::max() : -73.98765;
+        config.latitude = scenario.info == 13 ? std::numeric_limits<double>::lowest() : 40.76543;
+        if (scenario.info >= 10) config.iccid = scenario.info == 13 ? String(std::string(400, 'i')) : text;
+        config.cardPlatformId = scenario.info == 13 ? INT_MIN : scenario.info >= 10 ? INT_MAX : 0;
+        WiFi.rssi = scenario.info == 13 ? INT32_MIN : scenario.info == 14 ? INT32_MAX : -73;
+        switch (scenario.info) {
+            case 5: config.summary = "{\"name\":\"节点\\n\\\"X\\\"\",\"items\":[null,true,-123,1.25],\"nested\":{\"k\":\"v\"}}"; break;
+            case 6: config.summary = "{bad-json"; break;
+            case 7: config.summary = "[1,\"two\",null]"; break;
+            case 8: config.summary = "null"; break;
+            case 9: config.summary = "42"; break;
+            case 10: config.userId = "2147483647"; break;
+            case 11: config.userId = "-42"; break;
+            case 12: config.userId = "not-a-number"; break;
+            case 13:
+                config.userId = "2147483647";
+                config.summary = String("{\"long\":\"") + String(std::string(800, 's')) + "\"}";
+                break;
+            case 14: config.userId = "0"; mqttEsp.chip = text; break;
+            default: break;
+        }
+    }
+}
+static size_t countEffect(const Result& result, const char* effect) {
+    return static_cast<size_t>(std::count(result.effects.begin(), result.effects.end(), effect));
+}
+static void assertBaseline(const Result& result, Kind kind, const Scenario& scenario) {
+    if (kind == Kind::Info && scenario.info < 4) {
+        assert(!result.returned && result.publications == 0 && result.documents.empty());
+        assert(result.allocations == 0 && result.text.empty());
+        assert(countEffect(result, "connection-test") == 1);
+        assert(countEffect(result, "dram:30000:4096:publishDeviceInfo") == (scenario.info >= 2 ? 1u : 0u));
+        assert(countEffect(result, "topic-find:2") == (scenario.info == 3 ? 1u : 0u));
+        return;
+    }
+    if (kind == Kind::Status && !scenario.callback) {
+        assert(result.callbacks == 0 && result.documents.empty() && result.effects.empty());
+        assert(result.allocations == 0 && result.text.empty()); return;
+    }
+    assert(!result.documents.empty() && !result.documents.back().overflow);
+    assert(result.documents.back().bytes == result.text);
+    JsonDocument document;
+    assert(!deserializeJson(document, result.text));
+    if (kind == Kind::Info) {
+        assert(result.publications == 1 && result.callbacks == 0 && result.returned == scenario.accepted);
+        assert(document["status"].as<int>() == 3);
+        assert(document["firmwareVersion"].as<String>() == SystemInfo::VERSION);
+        assert(document["userId"].as<long>() == (scenario.info == 10 || scenario.info == 13 ? 2147483647L : 1L));
+        assert(document["iccid"].isNull() == (scenario.info < 10));
+        assert(document["cardPlatformId"].isNull() == (scenario.info < 10));
+        if (scenario.info == 5) assert(document["summary"]["items"].size() == 4);
+        if (scenario.info == 6) assert(document["summary"].isNull());
+        if (scenario.info >= 7 && scenario.info <= 9) assert(document["summary"].isNull());
+        if (scenario.info == 4 || (scenario.info >= 10 && scenario.info != 13))
+            assert(document["summary"]["name"].as<String>() == "FastBee");
+    } else {
+        assert(result.callbacks == 1 && result.publications == 0);
+        assert(document["initialized"].as<bool>());
+        const bool disabled = (scenario.flags & 16) != 0, temporary = (scenario.flags & 32) != 0;
+        const int expectedError = disabled ? -13 : temporary ? -14 : scenario.error;
+        assert(document["lastErrorCode"].as<int>() == expectedError);
+        assert(document["lastError"].as<int>() == expectedError);
+        assert(document["lastErrorMessage"].as<String>() == document["errorMessage"].as<String>());
+        assert(document["errorMessage"].as<String>() == document["statusReason"].as<String>());
+        assert(document["networkConnected"].as<bool>() == networkExpected(scenario.networkMode));
+        assert(document["connected"].as<bool>() == ((scenario.flags & 1) != 0 && (disabled || !temporary)));
+        assert(document["reconnectWorkerActive"].as<bool>() == ((scenario.flags & 1) != 0));
+        assert(document["reconnectStopPending"].as<bool>() == ((scenario.flags & 3) == 3));
+        assert(document["reconnectCancellationRequested"].as<bool>() == ((scenario.flags & 2) != 0));
+        assert(document["queueDepth"].as<unsigned>() == (scenario.flags & 1 ? 9u : 0u));
+        assert(document["reportQueue"]["capacity"].as<unsigned>() == 9);
+        assert(!document["reportQueue"]["deliveryVerified"].as<bool>());
+        assert(countEffect(result, "queue-snapshot") == 1 && countEffect(result, "retirement-snapshot") == 1);
+        assert(countEffect(result, "network-state") == (scenario.networkMode >= 4 ? 1u : 0u));
+        assert(countEffect(result, "wifi-status") == (scenario.networkMode < 4 && scenario.networkMode != 2 ? 1u : 0u));
+    }
+}
+template<class Writer> static Result run(Kind kind, const Scenario& scenario,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    Result result;
+    DocumentProbeAllocator allocator(failAt, persistent);
+    activeResult = &result; activeAllocator = &allocator;
+    assert(documentDepth == 0);
+    {
+        Writer writer; populate(writer, scenario, kind);
+        overwriteInputs = [&] { writer.config = MQTTConfig(); mqttEsp.chip = "source overwritten"; };
+        if (kind == Kind::Info) result.returned = writer.publishDeviceInfo();
+        else writer._notifyStatusChange();
+    }
+    assert(documentDepth == 0 && allocator.blocks.empty());
+    result.events = allocator.events; result.allocations = allocator.eligible; result.failures = allocator.failures;
+    overwriteInputs = {}; activeResult = nullptr; activeAllocator = nullptr;
+    if (failAt == std::numeric_limits<size_t>::max()) assertBaseline(result, kind, scenario);
+    return result;
+}
+static Result compare(Kind kind, const Scenario& scenario,
+        size_t failAt = std::numeric_limits<size_t>::max(), bool persistent = false) {
+    const auto before = run<MqttOracle>(kind, scenario, failAt, persistent);
+    const auto current = run<MqttCurrent>(kind, scenario, failAt, persistent);
+    const auto draft = run<MqttDraft>(kind, scenario, failAt, persistent);
+    if (!(current == before) || !(draft == before)) {
+        std::cerr << "difference kind=" << static_cast<unsigned>(kind) << " info=" << scenario.info
+            << " network=" << scenario.networkMode << " flags=" << scenario.flags << " error=" << scenario.error
+            << " failAt=" << failAt << " persistent=" << persistent << '\n';
+        assert(false);
+    }
+    return before;
+}
+static void faultAll(Kind kind, const Scenario& scenario) {
+    const auto baseline = compare(kind, scenario);
+    assert(baseline.allocations > 0);
+    for (bool persistent : {false, true}) for (size_t fault = 0; fault < baseline.allocations; ++fault) {
+        const auto failed = compare(kind, scenario, fault, persistent);
+        assert(failed.failures > 0);
+    }
+}
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode(argv[1]);
+    if (mode == "info-values") {
+        for (unsigned info = 0; info < 15; ++info) for (bool accepted : {false, true}) {
+            Scenario scenario; scenario.info = info; scenario.accepted = accepted;
+            compare(Kind::Info, scenario);
+        }
+    } else if (mode == "info-oom") {
+        for (unsigned info = 4; info < 15; ++info) {
+            Scenario scenario; scenario.info = info; faultAll(Kind::Info, scenario);
+        }
+    } else if (mode == "status-values") {
+        Scenario noCallback; noCallback.callback = false; compare(Kind::Status, noCallback);
+        for (int error : {0, -1, -2, -3, -4, -5, -11, -13, -14, 1, 2, 3, 4, 5, INT_MIN, INT_MAX})
+            for (unsigned networkMode = 0; networkMode < 6; ++networkMode)
+                for (unsigned flags : {0u, 1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 3u, 5u, 6u, 24u, 40u, 48u, 255u}) {
+                    Scenario scenario; scenario.error = error; scenario.networkMode = networkMode; scenario.flags = flags;
+                    compare(Kind::Status, scenario);
+                }
+    } else if (mode == "status-oom") {
+        for (unsigned flags : {0u, 1u, 24u, 40u, 255u}) {
+            Scenario scenario; scenario.error = -4; scenario.networkMode = 4; scenario.flags = flags;
+            faultAll(Kind::Status, scenario);
+        }
+    } else { assert(false); }
+    std::cout << "PASS " << mode << '\n';
+}

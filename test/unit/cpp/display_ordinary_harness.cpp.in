@@ -1,0 +1,419 @@
+#define millis mockOriginalMillis
+#define delay mockOriginalDelay
+#include <Arduino.h>
+#undef millis
+#undef delay
+#include "core/NativeOutputControl.h"
+#include "core/DisplayOutputTypes.h"
+#include "core/ActionValueContract.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/ScreenOutputIdentity.h"
+#include "core/FeatureInstanceRegistry.h"
+#include <atomic>
+#include <cassert>
+#include <cstring>
+#include <map>
+#include <new>
+#include <vector>
+#define FASTBEE_ENABLE_SEVEN_SEGMENT 1
+#define FASTBEE_ENABLE_LCD 1
+#define FASTBEE_ENABLE_PERIPH_EXEC 1
+#define LOG_INFOF(...) ((void)0)
+#define LOG_INFO(...) ((void)0)
+constexpr int OUTPUT=1, INPUT=0, INPUT_PULLUP=2;
+using SemaphoreHandle_t = int*;
+static int driverMutex=1;
+static bool pmBusy=false, driverBusy=false, driverHeld=false, featureEnabled=true, uartCurrent=true;
+static unsigned pmDepth=0, ioCalls=0, ackReads=0, nackAt=0;
+static int64_t clockUs=1000000;
+static int modes[64]{}, levels[64]{};
+static std::vector<int> highBits;
+static std::vector<uint8_t> bytesSent;
+SemaphoreHandle_t xSemaphoreCreateMutex() { return &driverMutex; }
+void vSemaphoreDelete(SemaphoreHandle_t) {}
+struct RecursiveMutexGuard {
+    bool held;
+    explicit RecursiveMutexGuard(int, int=-1) : held(!pmBusy) { if(held) ++pmDepth; }
+    ~RecursiveMutexGuard() { if(held) --pmDepth; }
+    bool isLocked() const { return held; }
+};
+struct MutexGuard {
+    bool held;
+    explicit MutexGuard(SemaphoreHandle_t mutex, int=0) : held(mutex && !driverBusy && !driverHeld) {
+        if(held) driverHeld=true;
+    }
+    ~MutexGuard() { if(held) driverHeld=false; }
+    bool isLocked() const { return held; }
+};
+unsigned long millis() { return static_cast<unsigned long>(clockUs/1000); }
+int64_t esp_timer_get_time() { return clockUs; }
+void delay(unsigned long ms) { assert(pmDepth && driverHeld); clockUs += ms*1000; }
+void delayMicroseconds(unsigned int us) { assert(pmDepth && driverHeld); clockUs += us; }
+void pinMode(uint8_t pin,int mode) { assert(pmDepth && driverHeld); ++ioCalls; modes[pin]=mode; }
+void digitalWrite(uint8_t pin,int level) {
+    assert(pmDepth && driverHeld); ++ioCalls; levels[pin]=level;
+    if(pin==4 && level==HIGH && modes[5]==OUTPUT) highBits.push_back(levels[5]);
+}
+int digitalRead(uint8_t pin) {
+    assert(pmDepth && driverHeld && pin==5); ++ioCalls; ++ackReads;
+    assert(highBits.size()>=8); uint8_t byte=0;
+    for(unsigned i=0;i<8;++i) byte |= static_cast<uint8_t>(highBits[highBits.size()-8+i] << i);
+    bytesSent.push_back(byte);
+    return nackAt==ackReads ? HIGH : LOW;
+}
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager f; return f; }
+    bool shouldEnable(const char*) const { return featureEnabled; }
+};
+}
+// @driver_type@
+// @driver_production@
+namespace OC=FastBee::OrdinaryControl;
+using Context=FastBee::OrdinaryControlContext;
+using Result=FastBee::OrdinaryControlResult;
+using Display=FastBee::DisplayOutputCommand;
+enum class PeripheralType { SEVEN_SEGMENT_TM1637, LCD };
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED, PERIPHERAL_RUNNING, PERIPHERAL_ERROR };
+struct PeripheralConfig {
+    String id="display";
+    struct { struct { uint8_t interface=2; } lcd; } params;
+    PeripheralType type=PeripheralType::SEVEN_SEGMENT_TM1637;
+    uint8_t pinCount=2, pins[2]={4,5}; bool enabled=true, modbus=false, expander=false;
+    bool isModbusPeripheral() const { return modbus; }
+    bool isExpanderChannel() const { return expander; }
+};
+static unsigned lcdWrites=0,lcdMaintenance=0;
+static bool lcdAck=true,lcdBusy=false;
+struct LCDManager {
+    static LCDManager& getInstance() { static LCDManager instance; return instance; }
+    FastBee::DisplayWriteResult write(const PeripheralConfig& config,const FastBee::LcdOutputRequest& output) {
+        assert(pmDepth);
+        if(lcdBusy || config.pins[1]!=5) return {false,false,"DISPLAY_IDENTITY_UNCONFIRMED"};
+        ++lcdWrites;
+        return {output.command!=FastBee::LcdOutputCommand::Font,lcdAck,"DISPLAY_TRANSFER_UNCONFIRMED"};
+    }
+    bool quiescent(const PeripheralConfig& config) const { assert(pmDepth); return !lcdBusy && config.pins[1]==5; }
+    void performMaintenance(const PeripheralConfig&) { assert(pmDepth); ++lcdMaintenance; }
+};
+struct Runtime {
+    OC::Lease ordinaryControl;
+    uint32_t ordinaryStopFailures=0;
+    uint64_t ordinaryRetryAfterMs=0;
+    bool memorySuspended=false,memoryCleanupPending=false;
+    PeripheralStatus status=PeripheralStatus::PERIPHERAL_RUNNING;
+    String lastError;
+};
+class PeripheralManager {
+public:
+    int _mutex=1; bool dedicated=false;
+    uint64_t _nextOrdinaryControlOperation=0, _nextOrdinaryControlGeneration=0;
+    std::map<String,PeripheralConfig> peripherals;
+    std::map<String,Runtime> runtimeStates;
+    struct ActionTickerData {
+        OC::Permit ordinaryPermit;
+        struct Timer { bool stopAndDelete() { assert(false); return false; } } ordinaryTimer;
+    };
+    std::map<String,ActionTickerData*> actionTickers;
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const { return origin.unbound() || uartCurrent; }
+    bool controlOutputIsClaimed(const String&) const { return dedicated; }
+    bool ordinaryBackendSupportedLocked(const PeripheralConfig& config) const {
+// @display_support@
+    return false;
+    }
+    bool ordinaryBackendQuiescentLocked(const String& id) const {
+        const auto config=peripherals.find(id);
+        // @display_quiescence@
+        return false;
+    }
+    bool ordinaryDisplayQuiescentLocked(const String&) const;
+    bool submitOrdinaryLcd(const String&,const FastBee::LcdOutputRequest&,const Context*,Result* = nullptr);
+    bool getActiveLcdTarget(String&,uint32_t&) const;
+    void performLcdMaintenance();
+    bool ordinaryProducerPresentLocked(const String&) const { return false; }
+    bool retireOrdinaryIoProducerLocked(const String&,bool) { return true; }
+    bool retireOrdinaryMotionLocked(const String&,bool,bool*) { return true; }
+    bool retireOrdinaryRfLocked(const String&,bool*) { return true; }
+    void finishOrdinaryModbusLocked(const Context&,bool) { assert(pmDepth); }
+    void serviceOrdinaryModbusLocked() { assert(pmDepth); }
+    void serviceOrdinaryControlExpiry();
+    bool beginOrdinaryControl(OC::Source,uint64_t,uint32_t,bool,uint64_t,const String&,uint32_t,
+        const FastBee::UartEventOrigin&,Context&);
+    bool ordinaryPermitCurrentLocked(const String&,const OC::Permit&) const;
+    bool retireOrdinaryDigitalLocked(const String&,uint64_t,bool=false,bool=false,bool* = nullptr);
+    void updateOrdinaryControlResultLocked(const String&,uint64_t,Result&) const;
+    bool completeOrdinaryControlLocked(const String&,uint64_t,Result&,bool,const char*);
+    bool inspectOrdinaryControlLocked(const String&,const Context&,OC::Intent,Result&,uint64_t&);
+    bool commitOrdinaryControlLocked(const String&,const Context&,OC::Intent,Result&,uint64_t&,bool,OC::Permit&);
+    void finishOrdinaryControl(const Context&,bool=false);
+    bool submitOrdinaryDisplay(const String&,Display,const String&,int32_t,const Context*,Result* = nullptr);
+    bool getPeripheralSnapshot(const String& id,PeripheralConfig& out) const {
+        const auto found=peripherals.find(id); if(found==peripherals.end()) return false;
+        out=found->second; return true;
+    }
+};
+struct Logger {
+    template<class...T> void infof(T...) {}
+    template<class...T> void warningf(T...) {}
+} LOGGER;
+struct PeriphExecExecutor {
+    static String resolveSensorTemplate(const String& value) { return value; }
+};
+// @helpers@
+// @common_production@
+// @display_production@
+enum class ExecActionType { ACTION_DISPLAY_NUMBER,ACTION_DISPLAY_TEXT,ACTION_DISPLAY_CLEAR,ACTION_OLED_DISPLAY };
+struct Action { String targetPeriphId="display"; };
+static String resolveSensorTemplate(const String& value) { return value; }
+static bool typed(PeripheralManager& pm,ExecActionType kind,const String& effectiveValue,
+    const Context* control,Result* controlResult) {
+    Action action;
+    const String receivedValue="received";
+    switch(kind) {
+        // @typed@
+        default: return false;
+    }
+}
+struct ScriptCommand { String strParam="display",subAction="TEXT",extraParam="1234"; int32_t intParam=0; };
+static bool script(PeripheralManager& pm,const ScriptCommand& cmd,const Context* control,Result* controlResult) {
+    PeripheralConfig nativeTarget;
+    if (!pm.getPeripheralSnapshot(cmd.strParam,nativeTarget) ||
+        nativeTarget.type != PeripheralType::SEVEN_SEGMENT_TM1637) return false;
+    auto sourceCurrent=[] { return uartCurrent; };
+    do {
+        // @script@
+    } while(false);
+    return true;
+}
+static bool scriptLcd(PeripheralManager& pm,const ScriptCommand& cmd,const Context* control,Result* controlResult) {
+    auto sourceCurrent=[] { return uartCurrent; };
+    auto isLcdPeripheral=[&](const String& id) {
+        PeripheralConfig config;
+        return pm.getPeripheralSnapshot(id,config) && config.type==PeripheralType::LCD;
+    };
+    do {
+        if(false) {}
+        // @lcd_text@
+        // @lcd_actions@
+    } while(false);
+    return true;
+}
+static Context request(PeripheralManager& pm,OC::Source source=OC::Source::Http,uint64_t actor=1,
+    uint32_t hold=30000,bool overrideConfirmed=false,uint64_t generation=0,const String& target="") {
+    Context context;
+    assert(pm.beginOrdinaryControl(source,actor,hold,overrideConfirmed,generation,target,
+        FastBee::SensorConfigEpoch::current(),{},context));
+    return context;
+}
+static bool write(PeripheralManager& pm,const Context& context,Result& result,Display command=Display::Text,
+    const String& text="1234",int32_t value=0) {
+    result=Result{};
+    return pm.submitOrdinaryDisplay("display",command,text,value,&context,&result);
+}
+int main(int argc,char** argv) {
+    assert(argc==2); const String mode=argv[1];
+    PeripheralManager pm; pm.peripherals["display"]={}; pm.runtimeStates["display"]={};
+    auto& config=pm.peripherals.at("display"); auto& state=pm.runtimeStates.at("display");
+    if(mode.startsWith("lcd_")) {
+        using Command=FastBee::LcdOutputCommand;
+        config.type=PeripheralType::LCD;
+        auto context=request(pm); Result result;
+        FastBee::LcdOutputRequest output;
+        output.command=Command::CustomText; output.text="text";
+        auto submit=[&]() { result={}; return pm.submitOrdinaryLcd("display",output,&context,&result); };
+        if(mode=="lcd_target") {
+            String id; uint32_t epoch=0;
+            assert(pm.getActiveLcdTarget(id,epoch) && id=="display" && epoch);
+            pm.peripherals["other"]=config;
+            assert(!pm.getActiveLcdTarget(id,epoch));
+            pm.peripherals["other"].enabled=false;
+            assert(pm.getActiveLcdTarget(id,epoch)); return 0;
+        }
+        if(mode=="lcd_identity") {
+            config.pins[1]=6; assert(!submit() && !result.attempted && !lcdWrites); return 0;
+        }
+        if(mode=="lcd_parameters") {
+            output.text=String(std::string(1025,'x')); assert(!submit());
+            output.text=String("x\0y",3); assert(!submit());
+            output.text=""; output.command=Command::Font; output.value=3; assert(!submit());
+            output.command=Command::SensorPage; output.value=-2; assert(!submit());
+            assert(!lcdWrites); return 0;
+        }
+        if(mode=="lcd_typed" || mode=="lcd_script") {
+            if(mode=="lcd_typed") assert(typed(pm,ExecActionType::ACTION_OLED_DISPLAY,"# $value",&context,&result));
+            else {
+                for(const char* action:{"TEXT","DISPLAY","SHOW","CLEAR"}) {
+                    ScriptCommand cmd; cmd.subAction=action; cmd.extraParam=String(action)=="SHOW"?"0":"text";
+                    assert(scriptLcd(pm,cmd,&context,&result));
+                }
+            }
+            lcdAck=false;
+            if(mode=="lcd_typed") assert(!typed(pm,ExecActionType::ACTION_OLED_DISPLAY,"text",&context,&result));
+            else { ScriptCommand cmd; assert(!scriptLcd(pm,cmd,&context,&result)); }
+            assert(result.attempted && !result.accepted); return 0;
+        }
+        if(mode=="lcd_driver_failure") {
+            lcdAck=false; assert(!submit() && result.attempted && lcdWrites==1);
+            assert(state.ordinaryControl.phase==OC::Phase::Fault);
+            pm.finishOrdinaryControl(context); assert(state.ordinaryControl.phase==OC::Phase::Idle);
+            assert(!submit() && lcdWrites==1); return 0;
+        }
+        if(mode=="lcd_font") { output.command=Command::Font; output.text=""; output.value=1; }
+        assert(submit() && result.accepted && lcdWrites==1);
+        assert(result.attempted==(mode!="lcd_font"));
+        if(mode=="lcd_conflict") {
+            auto other=request(pm,OC::Source::Rule,2,0);
+            assert(!pm.submitOrdinaryLcd("display",output,&other,&result) && lcdWrites==1); return 0;
+        }
+        pm.finishOrdinaryControl(context);
+        if(mode.startsWith("lcd_expiry")) {
+            assert(state.ordinaryControl.phase==OC::Phase::Held);
+            const int64_t acquiredUs=static_cast<int64_t>(state.ordinaryControl.acquiredMs)*1000;
+            clockUs=acquiredUs+29999000;
+            pm.serviceOrdinaryControlExpiry();
+            assert(state.ordinaryControl.phase==OC::Phase::Held);
+            pm.performLcdMaintenance(); assert(!lcdMaintenance && lcdWrites==1);
+            clockUs=acquiredUs+30000000;
+            if(mode=="lcd_expiry_busy") {
+                pmBusy=true; pm.serviceOrdinaryControlExpiry(); pm.performLcdMaintenance();
+                assert(state.ordinaryControl.phase==OC::Phase::Held && !lcdMaintenance);
+                pmBusy=false;
+            }
+            if(mode=="lcd_expiry_driver_busy") {
+                lcdBusy=true; pm.serviceOrdinaryControlExpiry(); pm.performLcdMaintenance();
+                assert(state.ordinaryControl.phase==OC::Phase::Fault && !lcdMaintenance);
+                lcdBusy=false; clockUs+=1000000;
+            }
+            pm.serviceOrdinaryControlExpiry();
+            assert(state.ordinaryControl.phase==OC::Phase::Idle && lcdWrites==1);
+            // Expiry retires the old invocation without executing it again.
+            assert(!submit() && lcdWrites==1);
+            pm.performLcdMaintenance(); assert(lcdMaintenance==1 && lcdWrites==1);
+            context=request(pm); assert(submit() && lcdWrites==2);
+            return 0;
+        }
+        if(mode=="lcd_maintenance") {
+            pm.performLcdMaintenance(); assert(!lcdMaintenance);
+            pm.finishOrdinaryControl(context,true);
+            assert(state.ordinaryControl.phase==OC::Phase::Idle);
+            pm.performLcdMaintenance(); assert(lcdMaintenance==1);
+        }
+        return 0;
+    }
+    auto& driver=SevenSegmentDriver::instance();
+    {
+        RecursiveMutexGuard lock(pm._mutex);
+        if(mode=="init_nack") {
+            nackAt=1; assert(!driver.begin("display",4,5)); assert(driver.exists("display"));
+            nackAt=0; assert(!driver.begin("display",4,6)); assert(driver.release("display")); return 0;
+        }
+        assert(driver.begin("display",4,5));
+    }
+    auto context=request(pm); Result result;
+    const auto initialAcks=ackReads, initialIo=ioCalls;
+    if(mode=="no_context") {
+        assert(!pm.submitOrdinaryDisplay("display",Display::Text,"1234",0,nullptr,&result));
+        assert(!result.attempted && ackReads==initialAcks); return 0;
+    }
+    if(mode=="parameters") {
+        for(const auto command:{Display::Brightness,Display::Clear,Display::SensorPage})
+            assert(!pm.submitOrdinaryDisplay("display",command,"",-1,&context,&result));
+        assert(!write(pm,context,result,Display::Text,String(std::string(1025,'x'))));
+        assert(!write(pm,context,result,Display::Text,String("x\0y",3)));
+        assert(ackReads==initialAcks && state.ordinaryControl.phase==OC::Phase::Idle); return 0;
+    }
+    if(mode=="disabled" || mode=="identity" || mode=="dedicated" || mode=="pm_busy") {
+        if(mode=="disabled") config.enabled=false;
+        if(mode=="identity") config.pins[1]=6;
+        if(mode=="dedicated") pm.dedicated=true;
+        if(mode=="pm_busy") pmBusy=true;
+        assert(!write(pm,context,result) && ackReads==initialAcks && !result.attempted); return 0;
+    }
+    if(mode=="stale_config" || mode=="stale_rule" || mode=="stale_uart" || mode=="stale_screen") {
+        if(mode=="stale_config") FastBee::SensorConfigEpoch::advance();
+        if(mode=="stale_rule") { context.ruleBound=true; context.ruleEpoch=FastBee::RuleOutputIdentity::currentEpoch(); FastBee::RuleOutputIdentity::invalidate(); }
+        if(mode=="stale_uart") { context.uartOrigin=FastBee::UartEventOrigin::captured(7,19); uartCurrent=false; }
+        if(mode=="stale_screen") { context.request.actor.source=OC::Source::Screen; context.request.actor.identity=1; FastBee::ScreenOutputIdentity::publish(2); }
+        assert(!write(pm,context,result) && ackReads==initialAcks && !result.attempted); return 0;
+    }
+    if(mode=="driver_busy") {
+        driverBusy=true; assert(!write(pm,context,result)); assert(!result.attempted && ioCalls==initialIo);
+        pm.finishOrdinaryControl(context);
+        assert(state.ordinaryControl.phase==OC::Phase::Fault && state.ordinaryStopFailures==1);
+        driverBusy=false; clockUs+=1001000; pm.finishOrdinaryControl(context);
+        assert(state.ordinaryControl.phase==OC::Phase::Idle && ioCalls==initialIo); return 0;
+    }
+    if(mode.startsWith("nack_")) {
+        const unsigned position=static_cast<unsigned>(mode.charAt(mode.length()-1)-'0');
+        nackAt=ackReads+position;
+        assert(!write(pm,context,result));
+        const char* reason=position==1 ? "DISPLAY_DATA_COMMAND_NACK" :
+            position==2 ? "DISPLAY_ADDRESS_NACK" : position==7 ? "DISPLAY_CONTROL_NACK" : "DISPLAY_DATA_NACK";
+        assert(result.attempted && !result.accepted && String(result.reason)==reason);
+        assert(ackReads==initialAcks+position && state.lastError==reason && state.ordinaryControl.phase==OC::Phase::Fault);
+        const auto stoppedIo=ioCalls; pm.finishOrdinaryControl(context);
+        assert(state.ordinaryControl.phase==OC::Phase::Idle && state.lastError==reason && ioCalls==stoppedIo);
+        assert(!write(pm,context,result) && ioCalls==stoppedIo); return 0;
+    }
+    if(mode=="brightness") {
+        nackAt=ackReads+1; assert(!write(pm,context,result,Display::Brightness,"",6));
+        pm.finishOrdinaryControl(context); nackAt=0;
+        context=request(pm); assert(write(pm,context,result)); assert(bytesSent.back()==0x8A);
+        assert(write(pm,context,result,Display::Brightness,"",6));
+        assert(write(pm,context,result)); assert(bytesSent.back()==0x8E); return 0;
+    }
+    if(mode=="release_nack") {
+        RecursiveMutexGuard lock(pm._mutex); nackAt=ackReads+3;
+        assert(!driver.release("display") && driver.exists("display"));
+        const auto after=ioCalls; assert(!driver.begin("display",4,6) && ioCalls==after);
+        nackAt=0; assert(driver.release("display") && !driver.exists("display")); return 0;
+    }
+    if(mode=="typed" || mode=="script") {
+        for(const auto kind:{ExecActionType::ACTION_DISPLAY_NUMBER,ExecActionType::ACTION_DISPLAY_TEXT,ExecActionType::ACTION_DISPLAY_CLEAR}) {
+            if(mode=="typed") assert(typed(pm,kind,"12.3",&context,&result));
+            else {
+                ScriptCommand cmd; cmd.subAction=kind==ExecActionType::ACTION_DISPLAY_NUMBER ? "DISPLAY" :
+                    kind==ExecActionType::ACTION_DISPLAY_TEXT ? "TEXT" : "CLEAR";
+                assert(script(pm,cmd,&context,&result));
+            }
+        }
+        nackAt=ackReads+1;
+        if(mode=="typed") assert(!typed(pm,ExecActionType::ACTION_DISPLAY_TEXT,"x",&context,&result));
+        else { ScriptCommand cmd; assert(!script(pm,cmd,&context,&result)); }
+        assert(result.attempted && !result.accepted); return 0;
+    }
+    assert(write(pm,context,result));
+    assert(result.attempted && result.accepted && ackReads==initialAcks+7);
+    if(mode=="conflict") {
+        const auto before=ioCalls;
+        for(const auto source:{OC::Source::Rule,OC::Source::Mqtt,OC::Source::Http}) {
+            auto other=request(pm,source,2); assert(!write(pm,other,result) && String(result.reason)=="CONTROL_CONFLICT");
+        }
+        assert(ioCalls==before); return 0;
+    }
+    pm.finishOrdinaryControl(context);
+    const auto heldIo=ioCalls;
+    assert(state.ordinaryControl.phase==OC::Phase::Held && ioCalls==heldIo);
+    if(mode=="replacement") {
+        auto next=request(pm);
+        assert(write(pm,next,result)); assert(!write(pm,context,result));
+        assert(state.ordinaryControl.operation==next.request.operation && ackReads==initialAcks+14); return 0;
+    }
+    if(mode=="override_denied") {
+        const auto generation=state.ordinaryControl.generation;
+        auto next=request(pm,OC::Source::Http,2,30000,true,generation,"display");
+        assert(!write(pm,next,result) && ioCalls==heldIo);
+        assert(state.ordinaryControl.operation==context.request.operation); return 0;
+    }
+    if(mode=="expiry") {
+        clockUs+=30001000;
+        auto other=request(pm,OC::Source::Rule,2);
+        assert(!write(pm,other,result) && String(result.reason)=="CONTROL_EXPIRED_RETRY_NEW_OPERATION");
+        assert(state.ordinaryControl.phase==OC::Phase::Idle && ioCalls==heldIo);
+        auto fresh=request(pm,OC::Source::Rule,2); assert(write(pm,fresh,result));
+        const auto beforeFinish=ioCalls; pm.finishOrdinaryControl(fresh);
+        assert(state.ordinaryControl.phase==OC::Phase::Idle && ioCalls==beforeFinish); return 0;
+    }
+    assert(mode=="success"); return 0;
+}

@@ -1,0 +1,396 @@
+#define millis unused_motion_millis
+#define pinMode unused_motion_pin_mode
+#include <Arduino.h>
+#undef millis
+#undef pinMode
+#include <esp_timer.h>
+#include "core/CheckedActionTimer.h"
+#include "core/NativeOutputControl.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/ScreenOutputIdentity.h"
+#undef malloc
+#undef free
+#include "core/UartEventOrigin.h"
+#include "core/ManagedPinIo.h"
+#include "core/StepperResourceSnapshot.h"
+#include <driver/gpio.h>
+#include <esp32-hal-periman.h>
+#include <cassert>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <new>
+#include <vector>
+
+#define FASTBEE_ENABLE_NEOPIXEL 1
+static bool busy = false, adcOwned = false, neoPixelOwned = false;
+bool fastbeeNeoPixelProjectPinRetained(uint8_t) { return neoPixelOwned; }
+static unsigned held = 0, sdkCalls = 0, levelCalls = 0, configCalls = 0;
+static unsigned failLevelAt = 0, failConfigAt = 0;
+static uint32_t freeMemory = 100000;
+static int levels[49]{};
+static gpio_mode_t modes[49]{};
+static peripheral_bus_type_t buses[49]{};
+static std::vector<std::pair<uint8_t, uint32_t>> writes;
+peripheral_bus_type_t perimanGetPinBusType(uint8_t pin) { ++sdkCalls; return buses[pin]; }
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t high) {
+    assert(held && pin >= 0 && pin < 49); ++sdkCalls; ++levelCalls;
+    levels[pin] = static_cast<int>(high); writes.emplace_back(pin, high);
+    return levelCalls == failLevelAt ? ESP_FAIL : ESP_OK;
+}
+esp_err_t gpio_config(const gpio_config_t* config) {
+    assert(held); ++sdkCalls; ++configCalls;
+    for (unsigned i = 0; i < 49; ++i) if (config->pin_bit_mask & (uint64_t(1) << i)) modes[i] = config->mode;
+    return configCalls == failConfigAt ? ESP_FAIL : ESP_OK;
+}
+int gpio_get_level(gpio_num_t pin) { ++sdkCalls; return levels[pin]; }
+esp_err_t gpio_install_isr_service(int) { ++sdkCalls; return ESP_OK; }
+esp_err_t gpio_set_intr_type(gpio_num_t, gpio_int_type_t) { ++sdkCalls; return ESP_OK; }
+esp_err_t gpio_isr_handler_add(gpio_num_t, void(*)(void*), void*) { ++sdkCalls; return ESP_OK; }
+esp_err_t gpio_isr_handler_remove(gpio_num_t) { ++sdkCalls; return ESP_OK; }
+esp_err_t gpio_intr_disable(gpio_num_t) { ++sdkCalls; return ESP_OK; }
+constexpr uint16_t STEPPER_DEFAULT_STEPS_PER_REV = 2048, STEPPER_DEFAULT_RPM = 8;
+constexpr uint16_t STEPPER_MIN_RPM = 1, STEPPER_MAX_RPM = 30;
+namespace FastBee {
+namespace MemoryBudget { uint32_t dramFree() { return freeMemory; } }
+bool adcPinUnavailable(uint8_t) { return adcOwned; }
+}
+struct RecursiveMutexGuard {
+    bool acquired;
+    explicit RecursiveMutexGuard(int, int = 0): acquired(!busy) { if (acquired) ++held; }
+    ~RecursiveMutexGuard() { if (acquired) --held; }
+    bool isLocked() const { return acquired; }
+};
+struct Ticker {};
+namespace OC = FastBee::OrdinaryControl;
+using Context = FastBee::OrdinaryControlContext;
+using Result = FastBee::OrdinaryControlResult;
+constexpr int INPUT = 0;
+constexpr uint32_t SERVO_DEFAULT_FREQUENCY_HZ = 50;
+constexpr uint8_t SERVO_DEFAULT_PWM_RESOLUTION = 16;
+constexpr uint32_t SERVO_RELEASE_DELAY_MS = 500;
+constexpr uint8_t CHIP_MAX_PWM_CH = 8;
+unsigned long millis() { return static_cast<unsigned long>(ordinaryClockUs / 1000); }
+static unsigned pwmWrites = 0, pwmAttaches = 0, pwmDetaches = 0;
+static uint32_t lastDuty = 0;
+static bool pwmWriteOk = true, pwmAttachOk = true, pwmDetachOk = true, signalAttached = false;
+bool ledcAttachChannel(uint8_t, uint32_t, uint8_t, uint8_t) {
+    assert(held); ++pwmAttaches;
+    if (pwmAttachOk) signalAttached = true;
+    return pwmAttachOk;
+}
+bool ledcAttach(uint8_t pin, uint32_t hz, uint8_t bits) { return ledcAttachChannel(pin, hz, bits, 255); }
+bool ledcWrite(uint8_t, uint32_t duty) {
+    assert(held); ++pwmWrites;
+    if (pwmWriteOk && signalAttached) { lastDuty = duty; return true; }
+    return false;
+}
+bool ledcDetach(uint8_t) { assert(held); ++pwmDetaches; if (!pwmDetachOk) return false; signalAttached = false; return true; }
+void pinMode(uint8_t, int) { assert(held); }
+#define LOG_ERRORF(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+enum class PeripheralType { STEPPER_MOTOR, PWM_SERVO, GPIO_DIGITAL_OUTPUT, GPIO_PWM_OUTPUT, GPIO_ANALOG_OUTPUT, DAC, NEO_PIXEL, PCA9685_PWM, RF_MODULE, SEVEN_SEGMENT_TM1637, LCD };
+constexpr uint8_t RF_MODE_TX = 0;
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED, PERIPHERAL_RUNNING, PERIPHERAL_ERROR };
+struct PeripheralConfig {
+    String id = "motor";
+    bool enabled = true;
+    uint8_t pins[4] = {16, 17, 18, 19}, pinCount = 4;
+    PeripheralType type = PeripheralType::STEPPER_MOTOR;
+    struct {
+        struct { uint16_t speed = 8, stepsPerRevolution = 2048; } stepper;
+        struct { uint8_t pwmResolution = 16, pwmChannel = 1; uint32_t frequency = 50;
+            uint16_t minPulse = 500, maxPulse = 2500; int minAngle = 0, maxAngle = 180, initialAngle = 90;
+            bool inverted = false, releaseAfterMove = false; } servo;
+        struct { bool passive = false, aoMode = false; uint8_t pwmResolution = 8, aoMinPct = 0, aoMaxPct = 100; } gpio;
+        struct { uint8_t mode = RF_MODE_TX; } rf;
+        struct { uint8_t interface = 2; } lcd;
+    } params;
+    uint8_t getPrimaryPin() const { return pins[0]; }
+    bool isModbusPeripheral() const { return false; }
+    bool isExpanderChannel() const { return false; }
+};
+struct Runtime {
+    OC::Lease ordinaryControl;
+    uint32_t ordinaryStopFailures = 0;
+    uint64_t ordinaryRetryAfterMs = 0;
+    bool memorySuspended = false, memoryCleanupPending = false;
+    struct { struct { bool signalAttached = false; int16_t currentAngle = 0; uint16_t currentPulseUs = 0; } servo; } state;
+    PeripheralStatus status = PeripheralStatus::PERIPHERAL_INITIALIZED;
+    String lastError;
+    uint32_t lastActivity = 0;
+};
+struct PeripheralManager {
+    // @context@
+    // @servo_context@
+    // @action_context@
+    uint64_t _nextOrdinaryControlOperation = 0, _nextOrdinaryControlGeneration = 0;
+    std::map<String, ActionTickerData*> actionTickers;
+    std::map<String, ServoReleaseTickerData*> servoReleaseTickers;
+    int _mutex = 1;
+    bool originCurrent = true, controlOwned = false, otherConfig = false;
+    uint32_t _nextActionTickerToken = 0;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, Runtime> runtimeStates;
+    std::map<String, StepperTickerData*> stepperTickers;
+    FastBee::ManagedPinIo _managedPinIo;
+    FastBee::LedcResourceSnapshot::Lease _ledcResourceLeases[FastBee::LedcResourceSnapshot::CAPACITY]{};
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) const {
+        assert(held); return origin.unbound() || (originCurrent && origin.matches(7, 19));
+    }
+    bool isValidPin(uint8_t pin) const { return pin < 49; }
+    bool isReservedPin(uint8_t pin) const { return pin == 6; }
+    bool isInputOnlyPin(uint8_t pin) const { return pin == 34; }
+    bool controlOutputPinIsClaimed(uint8_t) const { return controlOwned; }
+    bool checkPinConflict(uint8_t, const String&) const { return otherConfig; }
+    PeripheralConfig* getPeripheral(const String& id) {
+        const auto found = peripherals.find(id); return found == peripherals.end() ? nullptr : &found->second;
+    }
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& out) const {
+        const auto item = peripherals.find(id);
+        if (item == peripherals.end()) return false;
+        out = item->second; return true;
+    }
+    bool setupStepperHardware(const PeripheralConfig&);
+    bool teardownStepperHardware(const String&);
+    bool writeStepperPhase(StepperTickerData&, uint8_t);
+    bool controlStepper(const String&, const String&, int, const FastBee::UartEventOrigin&,
+        const Context*, Result*);
+    // Legacy lifecycle scenarios use a trusted test caller, with real admission/finish.
+    // No production caller receives an invented context.
+    bool controlStepper(const String&, const String&, int = 0, const FastBee::UartEventOrigin& = {});
+    bool beginOrdinaryControl(OC::Source, uint64_t, uint32_t, bool, uint64_t, const String&,
+        uint32_t, const FastBee::UartEventOrigin&, Context&);
+    bool ordinaryDigitalClaimedLocked(const String&) const;
+    bool ordinaryPermitCurrentLocked(const String&, const OC::Permit&) const;
+    bool ordinaryBackendSupportedLocked(const PeripheralConfig&) const;
+    bool ordinaryBackendQuiescentLocked(const String&) const;
+    bool ordinaryDisplayQuiescentLocked(const String&) const { return false; } // No display in motion fixture.
+    bool ordinaryProducerPresentLocked(const String&) const;
+    bool ordinaryIoProducerPresentLocked(const String&) const { return false; } // No IOX in this fixture.
+    bool retireOrdinaryIoProducerLocked(const String&, bool) { return true; }
+    bool retireOrdinaryRfLocked(const String&, bool*) { return true; } // Actual RF SDK fixture is separate.
+    bool ordinaryRfQuiescentLocked(const String&) const { return false; }
+    bool ordinaryNeoPixelQuiescentLocked(const String&) const { return false; }
+    bool ordinaryPca9685QuiescentLocked(const String&) const { return false; }
+    bool ordinaryMotionProducerPresentLocked(const String&) const;
+    bool ordinaryMotionQuiescentLocked(const String&) const;
+    bool retireOrdinaryMotionLocked(const String&, bool, bool*);
+    bool retireOrdinaryDigitalLocked(const String&, uint64_t, bool = false, bool = false, bool* = nullptr);
+    bool inspectOrdinaryControlLocked(const String&, const Context&, OC::Intent, Result&, uint64_t&);
+    bool commitOrdinaryControlLocked(const String&, const Context&, OC::Intent, Result&, uint64_t&, bool, OC::Permit&);
+    void updateOrdinaryControlResultLocked(const String&, uint64_t, Result&) const;
+    bool completeOrdinaryControlLocked(const String&, uint64_t, Result&, bool, const char*);
+    void finishOrdinaryControl(const Context&, bool = false);
+    void serviceOrdinaryControlExpiry();
+    // No Modbus slots in this fixture; the M1 fixture covers their real retirement.
+    void finishOrdinaryModbusLocked(const Context&, bool) { assert(held); }
+    void serviceOrdinaryModbusLocked() { assert(held); }
+    bool controlOutputIsClaimed(const String&) const { return controlOwned; }
+    bool writeServoAngle(const String&, int, const Context* = nullptr, Result* = nullptr);
+    bool submitOrdinaryServo(const String&, int64_t, bool, const Context*, Result* = nullptr);
+    ServoReleaseTickerData* prepareServoReleaseLocked(const String&, bool&);
+    bool startServoReleaseLocked(ServoReleaseTickerData&);
+    bool scheduleServoRelease(const String&);
+    bool cancelServoRelease(const String&, bool = false);
+    bool releaseServoSignal(const String&, uint8_t = 255, bool* = nullptr);
+    static void servoReleaseTickerCallback(void*);
+    void serviceServoRelease(uint32_t);
+    bool attachServoSignal(const PeripheralConfig&);
+    bool setupServoPin(const PeripheralConfig&);
+    bool attachManagedLedc(const String&, uint8_t, uint32_t, uint8_t, uint8_t, bool = false);
+    bool detachManagedLedc(const String&, uint8_t, bool = false);
+    bool stopStepper(const String&, bool* = nullptr);
+    void serviceStepperTicker(uint32_t);
+    void snapshotStepperResources(FastBee::StepperResourceSnapshot&) const;
+};
+// @helpers@
+// @production@
+bool PeripheralManager::controlStepper(const String& id, const String& command, int value,
+                                      const FastBee::UartEventOrigin& origin) {
+    Context context;
+    if (!beginOrdinaryControl(OC::Source::Rule, 1, 0, false, 0, "",
+                             FastBee::SensorConfigEpoch::current(), origin, context)) return false;
+    Result result;
+    const bool accepted = controlStepper(id, command, value, origin, &context, &result);
+    finishOrdinaryControl(context);
+    return accepted;
+}
+// @motion_cases@
+
+static FastBee::StepperResourceSnapshot snapshot(PeripheralManager& pm) {
+    const unsigned before = sdkCalls;
+    FastBee::StepperResourceSnapshot out;
+    pm.snapshotStepperResources(out);
+    assert(sdkCalls == before);
+    return out;
+}
+static void stopClean(PeripheralManager& pm) {
+    failLevelAt = failConfigAt = 0;
+    assert(pm.stopStepper("motor"));
+    pm.serviceOrdinaryControlExpiry();
+    assert(snapshot(pm).count == 0);
+    for (uint8_t pin = 16; pin < 20; ++pin) {
+        assert(!pm._managedPinIo.hasGpio(pin));
+        assert(levels[pin] == 0);
+    }
+    assert(pm.teardownStepperHardware("motor") && pm.stepperTickers.empty());
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const String scenario = argv[1];
+    auto& pm = PeripheralManager::getInstance();
+    if (scenario.startsWith("motion_")) return motionCase(scenario, pm);
+    pm.peripherals["motor"] = {}; pm.runtimeStates["motor"] = {};
+    auto& config = pm.peripherals.at("motor"); auto& state = pm.runtimeStates.at("motor");
+    if (scenario == "duplicate_pin") config.pins[3] = config.pins[0];
+    if (scenario == "invalid_pin") config.pins[3] = 255;
+    if (scenario == "reserved_pin") config.pins[3] = 6;
+    if (scenario == "input_only") config.pins[3] = 34;
+    if (scenario == "adc_owned") adcOwned = true;
+    if (scenario == "ledc_owned") pm._ledcResourceLeases[0].pin = config.pins[3];
+    if (scenario == "control_owned") pm.controlOwned = true;
+    if (scenario == "other_config") pm.otherConfig = true;
+    if (scenario == "low_memory") freeMemory = 0;
+    if (scenario == "neopixel_owned") neoPixelOwned = true;
+    if (scenario == "id_too_long") config.id = String(std::string(41, 'x').c_str());
+    if (scenario == "gpio_owned") {
+        RecursiveMutexGuard guard(pm._mutex);
+        assert(pm._managedPinIo.configure("other", false, 19, FastBee::ManagedGpioMode::Output, true));
+    }
+    const auto admittedCalls = sdkCalls;
+    if (scenario == "duplicate_pin" || scenario == "invalid_pin" || scenario == "reserved_pin" ||
+        scenario == "input_only" || scenario == "adc_owned" || scenario == "ledc_owned" ||
+        scenario == "control_owned" || scenario == "other_config" || scenario == "low_memory" ||
+        scenario == "gpio_owned" || scenario == "id_too_long" || scenario == "neopixel_owned") {
+        assert(!pm.setupStepperHardware(config));
+        assert(sdkCalls == admittedCalls && pm.stepperTickers.empty()); return 0;
+    }
+    if (scenario == "speed_idle") {
+        assert(pm.controlStepper("motor", "speed", 12));
+        assert(config.params.stepper.speed == 12 && pm.stepperTickers.empty() && sdkCalls == 0); return 0;
+    }
+    if (scenario == "setup_level_1" || scenario == "setup_level_2" || scenario == "setup_level_3" || scenario == "setup_level_4")
+        failLevelAt = static_cast<unsigned>(scenario[scenario.length() - 1] - '0');
+    if (scenario == "setup_config_1" || scenario == "setup_config_2" || scenario == "setup_config_3" || scenario == "setup_config_4")
+        failConfigAt = static_cast<unsigned>(scenario[scenario.length() - 1] - '0');
+    if (scenario == "foreign_bus") buses[18] = ESP32_BUS_TYPE_LEDC;
+    if (scenario.startsWith("setup_") || scenario == "foreign_bus") {
+        assert(!pm.setupStepperHardware(config));
+        const String owner = config.id;
+        auto* data = pm.stepperTickers.at(owner);
+        assert(data->cleanupPending && !data->pinsReady && !data->running);
+        auto out = snapshot(pm); assert(out.count == 1 && out.leases[0].fault && !out.leases[0].ready);
+        const unsigned before = sdkCalls;
+        assert(!pm.controlStepper("motor", "forward") && sdkCalls == before);
+        failLevelAt = failConfigAt = 0;
+        assert(pm.stopStepper(owner) && snapshot(pm).count == 0);
+        assert(pm.teardownStepperHardware(owner)); return 0;
+    }
+    assert(pm.setupStepperHardware(config));
+    auto* data = pm.stepperTickers.at("motor");
+    auto out = snapshot(pm);
+    assert(out.count == 1 && !out.truncated && out.leases[0].ready && !out.leases[0].fault);
+    assert(out.leases[0].retainedMask == 15 && out.leases[0].gpioOwnedMask == 15 && out.leases[0].gpioReadyMask == 15);
+    assert(std::strcmp(out.leases[0].consumer.id, "motor") == 0 && levelCalls == 4 && configCalls == 4);
+    if (scenario == "passive_snapshot") {
+        for (int i = 0; i < 1000; ++i) assert(snapshot(pm).count == 1);
+        stopClean(pm); return 0;
+    }
+    if (scenario == "busy_snapshot") {
+        busy = true; out = snapshot(pm);
+        assert(out.status == FastBee::ResourceObservation::Busy && out.count == 0 && !out.truncated);
+        busy = false; stopClean(pm); return 0;
+    }
+    if (scenario == "snapshot_truncated") {
+        for (unsigned i = 0; i < FastBee::StepperResourceSnapshot::CAPACITY; ++i) {
+            auto* extra = new PeripheralManager::StepperTickerData;
+            extra->id = String("retained-") + String(i); extra->cleanupPending = true;
+            pm.stepperTickers.emplace(extra->id, extra);
+        }
+        out = snapshot(pm); assert(out.count == out.CAPACITY && out.truncated); return 0;
+    }
+    const auto origin = FastBee::UartEventOrigin::captured(7, 19);
+    assert(pm.controlStepper("motor", "forward", 0, origin));
+    const uint32_t token = data->token;
+    const auto callback = [&](uint32_t value) { pm.serviceStepperTicker(value); };
+    if (scenario.startsWith("phase_")) failLevelAt = levelCalls + static_cast<unsigned>(scenario[scenario.length() - 1] - '0');
+    callback(token);
+    if (scenario.startsWith("phase_")) {
+        assert(data->phase == 0 && !data->running && data->cleanupPending && data->retainedMask == 15);
+        assert(state.status == PeripheralStatus::PERIPHERAL_ERROR && state.lastError == "STEPPER_PHASE_UNCONFIRMED");
+        out = snapshot(pm); assert(out.leases[0].fault && !out.leases[0].ready && out.leases[0].gpioFaultMask);
+        const auto before = sdkCalls; callback(token);
+        assert(!pm.controlStepper("motor", "forward") && sdkCalls == before);
+        stopClean(pm); return 0;
+    }
+    assert(data->phase == 1 && levels[16] == 1 && levels[17] == 1 && levels[18] == 0 && levels[19] == 0);
+    if (scenario == "repeated_setup") {
+        const auto before = sdkCalls;
+        assert(pm.setupStepperHardware(config) && sdkCalls == before && data->running);
+    } else if (scenario == "changed_config" || scenario == "retired_origin") {
+        if (scenario == "changed_config") config.pins[0] = 20;
+        else pm.originCurrent = false;
+        const auto before = sdkCalls; callback(token);
+        assert(sdkCalls > before && !data->running && !data->retainedMask);
+        assert(levels[16] == 0 && !pm._managedPinIo.hasGpio(16));
+        const auto cleaned = sdkCalls; callback(token);
+        assert(sdkCalls == cleaned); // Old phase cannot replay after checked cleanup.
+    } else if (scenario == "timer_failed") {
+        // Replace the old producer successfully before faulting the NEW timer start.
+        // A failed old stop would reject replacement before startPeriodic is reached.
+        auto context = motionRequest(pm, OC::Source::Rule, 1, origin);
+        Result result;
+        const auto startsBefore = timerStarts, deletesBefore = timerDeletes;
+        timerStartOk = false;
+        assert(!pm.controlStepper("motor", "speed", 20, origin, &context, &result));
+        assert(timerStarts == startsBefore + 1 && timerDeletes == deletesBefore + 1);
+        assert(result.attempted && !result.accepted && String(result.reason) == "STEPPER_TIMER_FAILED");
+        assert(state.lastError == "STEPPER_TIMER_FAILED" && data->cleanupPending && !data->running);
+        assert(config.params.stepper.speed == 8 && data->token == 0 && data->retainedMask == 15);
+        assert(timerHandles == 1 && data->timer.fault() && !data->timer.releaseConfirmed());
+        const auto before = sdkCalls; callback(token); assert(sdkCalls == before);
+        // Terminal cleanup is a separate failure: retain the faulted timer, owner and pads.
+        timerStopOk = false;
+        pm.finishOrdinaryControl(context);
+        assert(state.lastError == "CONTROL_MOTION_STOP_UNCONFIRMED");
+        assert(state.ordinaryControl.phase == OC::Phase::Fault && state.ordinaryStopFailures == 1);
+        assert(state.ordinaryControl.operation == context.request.operation && !state.ordinaryControl.invocationActive);
+        assert(data->cleanupPending && data->retainedMask == 15 && timerHandles == 1);
+        out = snapshot(pm); assert(out.count == 1 && out.leases[0].fault && !out.leases[0].ready);
+        callback(token); assert(sdkCalls == before);
+        assert(!pm.controlStepper("motor", "forward", 0, origin) && sdkCalls == before);
+        timerStopOk = true;
+    } else if (scenario == "disabled_stop") {
+        config.enabled = false; state.status = PeripheralStatus::PERIPHERAL_ERROR;
+        assert(pm.stopStepper("motor") && snapshot(pm).count == 0);
+    } else if (scenario == "lost_periman") {
+        buses[18] = ESP32_BUS_TYPE_LEDC;
+        callback(token); assert(!data->running && data->cleanupPending);
+        assert(!pm.stopStepper("motor") && data->retainedMask == 4);
+        out = snapshot(pm);
+        assert(out.leases[0].gpioOwnedMask == 4 && out.leases[0].gpioCleanupPendingMask == 4);
+        buses[18] = ESP32_BUS_TYPE_INIT;
+    } else if (scenario.startsWith("release_")) {
+        const unsigned position = static_cast<unsigned>(scenario[scenario.length() - 1] - '0');
+        if (scenario.startsWith("release_level")) failLevelAt = levelCalls + position;
+        else failConfigAt = configCalls + position;
+        assert(!pm.teardownStepperHardware("motor") && pm.stepperTickers.at("motor") == data);
+        assert(data->retainedMask == (1U << (position - 1)) && data->cleanupPending);
+        out = snapshot(pm);
+        assert(out.leases[0].gpioFaultMask == data->retainedMask && out.leases[0].gpioCleanupPendingMask == data->retainedMask);
+        const auto before = sdkCalls; callback(token);
+        assert(!pm.controlStepper("motor", "forward") && sdkCalls == before);
+        config.pins[0] = 20; // Retry cleans the captured owner, not newly configured pads.
+    }
+    stopClean(pm);
+    if (scenario == "lifecycle") {
+        assert(pm.controlStepper("motor", "reverse"));
+        data = pm.stepperTickers.at("motor"); assert(data->pinsReady && data->retainedMask == 15);
+        pm.serviceStepperTicker(data->token); assert(data->phase == 7);
+        for (uint8_t pin = 16; pin < 20; ++pin) assert(modes[pin] == GPIO_MODE_OUTPUT);
+        stopClean(pm);
+    }
+    assert(!held);
+}

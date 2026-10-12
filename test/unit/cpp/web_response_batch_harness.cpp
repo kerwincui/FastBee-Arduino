@@ -13,46 +13,80 @@
 using String=std::string;
 #define ESP32 1
 #define ASYNCWEBSERVER_USE_CHUNK_INFLIGHT 1
+#ifndef CONFIG_LWIP_TCP_MSS
 #define CONFIG_LWIP_TCP_MSS 1460
+#endif
 #define CONFIG_LWIP_TCP_WND_DEFAULT 5760
+#ifndef TCP_SND_BUF
 #define TCP_SND_BUF 65536
+#endif
 #define ASYNC_RESPONCE_BUFF_SIZE 2872
 constexpr int MALLOC_CAP_INTERNAL=1,MALLOC_CAP_8BIT=2;
 constexpr size_t RESPONSE_TRY_AGAIN=static_cast<size_t>(-1);
 size_t freeInternal=28000,largestInternal=24000;
 size_t heap_caps_get_free_size(int) {return freeInternal;}
 size_t heap_caps_get_largest_free_block(int) {return largestInternal;}
-size_t allocationLimit=static_cast<size_t>(-1),allocationFailures=0;
+size_t allocationLimit=static_cast<size_t>(-1),allocationFailures=0,liveArrays=0;
 void* operator new[](size_t size,const std::nothrow_t&) noexcept {
     if(size>allocationLimit) {++allocationFailures;return nullptr;}
-    return std::malloc(size);
+    void* result=std::malloc(size);if(result)++liveArrays;return result;
 }
-void operator delete[](void* pointer) noexcept {std::free(pointer);}
-void operator delete[](void* pointer,size_t) noexcept {std::free(pointer);}
+void operator delete[](void* pointer) noexcept {if(pointer)--liveArrays;std::free(pointer);}
+void operator delete[](void* pointer,size_t) noexcept {if(pointer)--liveArrays;std::free(pointer);}
 [[maybe_unused]] struct {void printf(const char*,...) {}} Serial;
-enum {RESPONSE_HEADERS,RESPONSE_CONTENT,RESPONSE_WAIT_ACK,RESPONSE_END,RESPONSE_FAILED};
+uint32_t fakeMillis=0;
+uint32_t millis() {return fakeMillis;}
+constexpr const char* T_Connection="Connection";
+constexpr const char* T_close="close";
+enum {RESPONSE_SETUP,RESPONSE_HEADERS,RESPONSE_CONTENT,RESPONSE_WAIT_ACK,RESPONSE_END,RESPONSE_FAILED};
 struct Client {
     std::string accepted;
-    size_t window=65536, perAddLimit=65536, batchBytes=0, maxBatch=0;
+    size_t window=TCP_SND_BUF, perAddLimit=TCP_SND_BUF, batchBytes=0, maxBatch=0;
     bool closed=false,failOutput=false;
     std::function<void()> onClose;
-    size_t sends=0;
-    size_t space() {return window;}
+    std::function<bool()> outputAdapter;
+    std::function<size_t()> spaceAdapter;
+    std::function<void()> closeAdapter;
+    size_t* destructionCount=nullptr;
+    ~Client() {if(destructionCount)++*destructionCount;}
+    void onDisconnect(std::nullptr_t) {onClose=nullptr;}
+    size_t sends=0,closes=0;
+    uint32_t lastSuccessfulSend=0;
+    size_t space() {return spaceAdapter?spaceAdapter():window;}
+    std::function<size_t(const char*,size_t)> addAdapter;
     size_t add(const char* data,size_t length) {
+        if(addAdapter)return addAdapter(data,length);
         const size_t written=std::min({length,window,perAddLimit});
         accepted.append(data,written);window-=written;batchBytes+=written;
         return written;
     }
-    bool send() {++sends;maxBatch=std::max(maxBatch,batchBytes);batchBytes=0;return !failOutput;}
+    bool send() {++sends;maxBatch=std::max(maxBatch,batchBytes);batchBytes=0;const bool ok=outputAdapter?outputAdapter():!failOutput;if(ok)lastSuccessfulSend=millis();return ok;}
     size_t write(const char* data,size_t length) {const size_t count=add(data,length);return send()?count:0;}
     bool canSend() {return !closed && window>0;}
-    void close() {closed=true;if(onClose)onClose();}
+    void close() {++closes;closed=true;if(closeAdapter){closeAdapter();return;}if(onClose)onClose();}
 };
-class AsyncAbstractResponse;
+class AsyncWebServerResponse;
+using ArDisconnectHandler=std::function<void()>;
+struct CountedFile {
+    bool opened=false;
+    size_t* closeCount=nullptr;
+    explicit operator bool() const {return opened;}
+    void close() {if(opened&&closeCount)++*closeCount;opened=false;}
+};
 struct AsyncWebServerRequest {
-    Client tcp; Client* client() {return &tcp;}
+#ifdef FASTBEE_REAL_REQUEST_OWNERSHIP
+    Client* _client=new Client;
+    Client& tcp=*_client;
+    void* _tempObject=nullptr;
+    void* _itemBuffer=nullptr;
+    CountedFile _tempFile;
+    ~AsyncWebServerRequest();
+#else
+    Client tcp;
     Client* _client=&tcp;
-    AsyncAbstractResponse* _response=nullptr;
+#endif
+    Client* client() {return _client;}
+    AsyncWebServerResponse* _response=nullptr;
     std::shared_ptr<AsyncWebServerRequest> _this;
     std::function<void()> _onDisconnectfn;
     bool _ackTimeoutRecoveryAttempted=false;
@@ -61,9 +95,12 @@ struct AsyncWebServerRequest {
     void _onPoll();
     void _onTimeout(uint32_t);
     void _onDisconnect();
+    void onDisconnect(ArDisconnectHandler);
+    int version() {return 1;}
 };
-class AsyncAbstractResponse {
+class AsyncWebServerResponse {
 public:
+    virtual ~AsyncWebServerResponse()=default;
     int _state=RESPONSE_HEADERS;
     bool _chunked=false,_sendContentLength=true;
     size_t _in_flight_credit=2,_in_flight=0,_ackedLength=0,_writtenLength=0,_writtenHeadersLength=0;
@@ -73,27 +110,37 @@ public:
     String _assembled_headers="HTTP/1.1 200 OK\r\n\r\n";
     std::string body;
     size_t sourcePosition=0,maxAllocation=0;
-    bool transientRead=false;
+    bool transientRead=false,persistentTryAgain=false;
+    void addHeader(const char*,const char*,bool) {}
+    void _assembleHead(String&,int) {}
     bool _sourceValid() {return true;}
     size_t _fillBufferAndProcessTemplates(uint8_t* dest,size_t length) {
         maxAllocation=std::max(maxAllocation,_send_buffer_cap);
+        if(persistentTryAgain)return RESPONSE_TRY_AGAIN;
         if(transientRead){transientRead=false;return RESPONSE_TRY_AGAIN;}
         const size_t copied=std::min(length,body.size()-sourcePosition);
         std::memcpy(dest,body.data()+sourcePosition,copied);sourcePosition+=copied;return copied;
     }
-    size_t write_send_buffs(AsyncWebServerRequest*,size_t,uint32_t);
     bool _finished() const {return _state>RESPONSE_WAIT_ACK;}
-    virtual size_t _ack(AsyncWebServerRequest* request,size_t len,uint32_t time) {
-        return write_send_buffs(request,len,time);
-    }
+    virtual size_t _ack(AsyncWebServerRequest*,size_t,uint32_t)=0;
+#include "production_progress_base.inc"
 };
-class AsyncBasicResponse : public AsyncAbstractResponse {
+class AsyncAbstractResponse : public AsyncWebServerResponse {
+public:
+#include "production_progress_fields.inc"
+    void _respond(AsyncWebServerRequest*);
+    size_t write_send_buffs(AsyncWebServerRequest*,size_t,uint32_t);
+#include "production_abstract_ack.inc"
+};
+class AsyncBasicResponse : public AsyncWebServerResponse {
 public:
     String _content;
+#ifdef FASTBEE_TEST_BASIC_RESPOND
+    void _respond(AsyncWebServerRequest*);
+#endif
+#include "production_basic_progress_fields.inc"
     size_t write_send_buffs(AsyncWebServerRequest*,size_t,uint32_t);
-    size_t _ack(AsyncWebServerRequest* request,size_t len,uint32_t time) override {
-        return write_send_buffs(request,len,time);
-    }
+#include "production_basic_ack.inc"
 };
 #include "production_response_batch.inc"
 void verifyBasic(bool lowMemory,bool partial) {

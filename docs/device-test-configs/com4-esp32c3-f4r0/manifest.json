@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "preparedAt": "2026-10-06",
+  "timezone": "Asia/Shanghai",
+  "deviceId": "com4-esp32c3-f4r0",
+  "status": "R7_WRITTEN_VERIFIED_MDNS_DISABLED_WEB_BUSINESS_FAILED",
+  "deploymentAllowed": false,
+  "source": {
+    "path": "docs/esp32c3-deployment-config.json",
+    "format": "fastbee-config-bundle/files[].content",
+    "configurationMeaning": "Original verified full-flash snapshot plus verified r7 deployment and mDNS-only filesystem maintenance; credentials redacted; Web/business acceptance failed",
+    "originalPublicPath": "docs/esp32c3-deployment-config.json",
+    "observedSnapshot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/serial-r2/extracted"
+  },
+  "target": {
+    "environment": "esp32c3-F4R0",
+    "ports": [
+      "COM4"
+    ],
+    "expectedChip": "ESP32-C3",
+    "expectedFlashBytes": 4194304,
+    "expectedPsramBytes": 0,
+    "historicalMacHint": "14:63:93:90:2F:64",
+    "identityVerified": true,
+    "observedMac": "146393902f64",
+    "observedPort": "COM4",
+    "usbSerial": null,
+    "observedFlashBytes": 4194304,
+    "observedPsramBytes": 0,
+    "boardRevision": null,
+    "partitionSha256": null,
+    "activeSlot": null,
+    "staAddress": "192.168.5.19",
+    "identityEvidence": "artifacts/four-device-com4-snapshot-20261005-r2/report.json",
+    "identityMethod": "bootloader chip/MAC/Flash identity and verified full snapshot",
+    "observedChipModel": "ESP32-C3",
+    "apiReportedPsramHeapBytes": 0,
+    "psramCapacityNote": "API heap/allocator total is not physical chip capacity, especially RGB XIP",
+    "observedAt": "2026-10-04T19:39:17.260212+00:00",
+    "staAddressObservedAt": "2026-10-05T15:53:44.448186+00:00",
+    "staAddressCurrent": false
+  },
+  "release": {
+    "candidateId": "ordinary-three-device-20261005-r7-r1",
+    "sourceSha256": "228f7380b56fea540342c67f9d3ec5658ade219cec516c098b381340b82b5d6a",
+    "sourceStable": true,
+    "firmwareSha256": "aae9244dbe57f67d6f65547add87c3e0a6541b580ba0a2daca8df705446a8048",
+    "webSha256": "b8a08e33c22103f5fc90ac34eb939b7832b99a1ee6167c7dc6f38f28e08d39e5",
+    "precheckReport": null,
+    "nineEnvironmentReport": null,
+    "rgbBuildReport": null
+  },
+  "configuration": {
+    "files": [
+      {
+        "path": "config/device.json",
+        "bytes": 371,
+        "sha256": "03453b23bc9eaf67e9b94d950fabb5a5c99ae4916060d64744f38af4737589b8"
+      },
+      {
+        "path": "config/features.json",
+        "bytes": 1414,
+        "sha256": "b2dc6cfb766eaafda2d6baae29c2ab1432c735647484839b23d9e538be1cc537"
+      },
+      {
+        "path": "config/network.json",
+        "bytes": 720,
+        "sha256": "0d1192fa6c9f91d938ebbd2aaae8cf689f0242d2dc2b50bc8154218c8510e393"
+      },
+      {
+        "path": "config/periph_exec.json",
+        "bytes": 3280,
+        "sha256": "98bfc297ee318433beeca4a78b13cb0719eddad8309c4f3ca15c051f7f525b73"
+      },
+      {
+        "path": "config/peripherals.json",
+        "bytes": 736,
+        "sha256": "bb352474c332fdb116f2f37fbb433aab4ea6ebc65a536503c246edee2d4e7f9c"
+      },
+      {
+        "path": "config/protocol.json",
+        "bytes": 2674,
+        "sha256": "b6147f83cee05a32f182a47f20f1f0953511bb11190c22f615e0daaefcc63639"
+      }
+    ],
+    "publicCounts": {
+      "peripherals": 3,
+      "enabledPeripherals": 3,
+      "rules": 3,
+      "enabledRules": 3
+    },
+    "effectiveFiles": [
+      {
+        "name": "device.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "fe1d0613f0e94f3ee5e09cb33e4f5d2c793c7f4e4290f822896b35ed09135238"
+      },
+      {
+        "name": "features.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "b2dc6cfb766eaafda2d6baae29c2ab1432c735647484839b23d9e538be1cc537"
+      },
+      {
+        "name": "network.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "e600f2707013f5f376694cea60ee6357fa485ee4a702ed4541112c5861318eeb"
+      },
+      {
+        "name": "peripherals.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "ae9bf3dd607a5c790151f9948a9c98f57ed64b67eed7de723e1551285daa0e74"
+      },
+      {
+        "name": "periph_exec.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "269022a256d4f6618058ced20408b2ac6b09632611c1fb79950aee1dd175934f"
+      },
+      {
+        "name": "protocol.json",
+        "sourceKind": "raw-device-config",
+        "sourceSha256": "0070ba8679deacd9e51bae9a8e3169135f155516070bcb86750266b5a232f90b"
+      }
+    ],
+    "effectiveConfigSha256": null,
+    "reconciled": false,
+    "featuresStatus": "SANITIZED_CURRENT_DEVICE_FILE",
+    "networkStatus": "SANITIZED_CURRENT_FLASH_FILE",
+    "memoryProfile": "PRESERVE_CURRENT_AND_REVIEW_EXPLICIT_DIFFS",
+    "expectedMergeDifferences": [
+      "Merge only public non-secret settings into this device private snapshot; never write redacted blank credentials"
+    ],
+    "privateMergeRequired": true,
+    "neverImportBlankCredentials": true,
+    "originalPublicCounts": {
+      "peripherals": 3,
+      "enabledPeripherals": 3,
+      "rules": 3,
+      "enabledRules": 3
+    },
+    "observedCounts": {
+      "peripherals": 3,
+      "enabledPeripherals": 3,
+      "rules": 3,
+      "enabledRules": 3
+    },
+    "protocolStatus": "SANITIZED_CURRENT_FLASH_FILE",
+    "remainingTemplateFiles": [],
+    "redactionDifferences": [
+      "Device identifiers and credentials blanked in public config; original private full-flash snapshot retained",
+      "Observed enablement flags retained, not restored from heavier public template",
+      "Protocol MQTT topic flags now match the raw Flash file, not the earlier redacted API view"
+    ],
+    "localSnapshotReconciliation": true
+  },
+  "preservation": {
+    "privateRoot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/<verified-mac>/<unique-attempt>/",
+    "backupReport": "artifacts/four-device-com4-snapshot-20261005-r2/report.json",
+    "backupSha256": "60d8f23ddf7b51917fcf1aee6405539bf5e94ed10e61bc09b0f2182c0fc19721",
+    "backupVerified": true,
+    "preserveWholeFiles": [
+      "config/network.json",
+      "config/auth.json",
+      "config/users.json"
+    ],
+    "preserveOtherSettings": [
+      "device identity",
+      "MQTT settings and secrets",
+      "screen layout",
+      "weather settings and secrets",
+      "point history",
+      "all unrelated non-www files"
+    ],
+    "rollback": "Use the same device verified full-flash snapshot and per-region deployment report; verify identity, partition and active slot before restore.",
+    "currentSnapshot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/serial-r2/extracted",
+    "backupScope": "full 4MiB flash; stream MD5 and independent flash MD5 verified; 60 extracted files",
+    "previousAttemptReports": [
+      "artifacts/four-device-com4-snapshot-20261005-r1/report.json"
+    ]
+  },
+  "load": {
+    "healthIntervalSeconds": 30,
+    "resourceIntervalSeconds": 60,
+    "pageIntervalSeconds": 600,
+    "stagesHours": [
+      2,
+      24,
+      168
+    ],
+    "normalWindowsSeparateFromFaultInjection": true,
+    "restartWindowOnArtifactOrConfigChange": true,
+    "recordFailuresCumulatively": true,
+    "physicalPrerequisites": [
+      "DHT11 GPIO10、LED GPIO8、OLED GPIO5/6",
+      "本轮不是智能开关面板案例，不混用GPIO18/5/1继电器配置",
+      "历史DHT11失败与弱WiFi仍需新候选实测"
+    ]
+  },
+  "acceptance": {
+    "identity": "BOOTLOADER_IDENTITY_VERIFIED",
+    "backup": "FULL_FLASH_VERIFIED",
+    "schemaCapabilityPinsResources": "PENDING",
+    "firmwareWriteVerify": "R7_WRITTEN_VERIFIED",
+    "filesystemWriteVerify": "R7_AND_MDNS_CONFIG_ONLY_WRITTEN_VERIFIED",
+    "configReadback": "RAW_EXPORTS_MATCH_MDNS_FILESYSTEM_COMPACT_LIMITED",
+    "rebootRecovery": "NOT_RUN",
+    "desktopWeb": "MENU_SCOPE_FAIL",
+    "mobileWeb": "MENU_SCOPE_FAIL",
+    "physical": "NOT_RUN",
+    "exploration2h": "NOT_RUN",
+    "mixed24h": "NOT_RUN",
+    "soak168h": "NOT_RUN",
+    "evidenceRoot": "artifacts/com4-r7-independent-review-20261005-r1"
+  },
+  "latestMaintenance": {
+    "mode": "MDNS_CONFIG_ONLY",
+    "report": "artifacts/com4-mdns-config-only-results-20261005-r1/report.json",
+    "reportSha256": "4efa8a49e507315f1e27a6f3f461e29da195b19d34d5116449b04716b52178b2",
+    "originalDeploymentReport": "artifacts/ordinary-three-deployment-20261005-r7-r1-r1/com4-esp32c3-f4r0/deployment.json",
+    "originalDeploymentReportSha256": "5feb2f05742a6cf74bf55fba4928d6bdd433c45c046b307e40d0b10f2cd7028f",
+    "written": true,
+    "verified": true,
+    "applicationWritten": false,
+    "filesystemSha256": "2bc0469d43fade4b604108e16206a7ff90eba1cd726bc5cff6a689e5cd4c2e47",
+    "sourceDirectory": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/mdns-r7-r1",
+    "sourceManifest": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/mdns-r7-r1/configuration-change-manifest.json",
+    "changedPaths": ["network.json:/enableMDNS", "features.json:/features/mdns/enabled"],
+    "freshBackupScope": "FILESYSTEM_AND_OTADATA_NOT_FULL_FLASH_OR_OLD_APPLICATION",
+    "historicalFullFlashBackupOnly": "artifacts/four-device-com4-snapshot-20261005-r2/report.json",
+    "configurationProofComplete": false,
+    "networkProtocolFullRawEquivalenceProved": false,
+    "businessAcceptance": false,
+    "ruleObservationReport": "artifacts/com4-mdns-rule-results-ordinary-r7-mdns-r2/COM4/report.json",
+    "menuReport": "artifacts/four-device-menu-results-20261005-ordinary-r7-mdns-off-r1/COM4/report.json",
+    "menuDiagnosticReport": "artifacts/four-device-menu-mqtt-diagnostic-results-20261005-ordinary-r7-mdns-off-r1/COM4/report.json",
+    "s11Complete": false
+  }
+}

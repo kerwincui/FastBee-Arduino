@@ -1,0 +1,150 @@
+// Real PCF state machine + actual PM IOX branches and arbitration.
+// The wide/session provider below is explicitly a transport seam; the real MCP
+// RESET/register contract remains exercised by its independent provider suite.
+#include "peripherals/DigitalIoProvider.h"
+#include <functional>
+static const char* ioUnavailable = nullptr;
+static const char* ioExpanderUnavailableReason() { return ioUnavailable; }
+static bool digitalInputLogicalLevel(bool high, bool invert) { return high != invert; }
+template <size_t N> bool fixedIdEquals(const char (&value)[N], const String& id) {
+    return id.length() < N && std::strncmp(value, id.c_str(), N) == 0;
+}
+// @iox_globals@
+// @iox_methods@
+struct OrdinaryPcfTransport : FastBee::IoExpanderTransport {
+    uint8_t latch = 0xff;
+    bool busy = false, fail = false;
+    unsigned writes = 0;
+    FastBee::IoExpanderResult writeByte(uint8_t value) override {
+        assert(ordinaryLockDepth); // PM remains held throughout synchronous I2C.
+        if (busy) return FastBee::IoExpanderResult::Busy;
+        ++writes;
+        if (fail) return FastBee::IoExpanderResult::Error;
+        latch = value; return FastBee::IoExpanderResult::Ok;
+    }
+    FastBee::IoExpanderResult readByte(uint8_t& value) override {
+        assert(ordinaryLockDepth);
+        value = latch; return FastBee::IoExpanderResult::Ok;
+    }
+};
+struct OrdinaryPcfProvider : FastBee::Pcf8574ProviderSession {
+    OrdinaryPcfTransport transport;
+    uint32_t sampleGeneration = 1;
+    OrdinaryPcfProvider() : Pcf8574ProviderSession(transport) {}
+    bool closing() const override { return false; }
+    // Mirrors MCP's input-sample generation changing after normal writes.
+    uint32_t generation() const override { return sampleGeneration; }
+    FastBee::IoExpanderResult shutdown(uint16_t) override {
+        assert(false && "Ordinary Stop must not reset/shutdown a provider");
+        return FastBee::IoExpanderResult::Error;
+    }
+};
+static Context ioBegin(Source source = Source::Rule, uint64_t actor = 1) {
+    Context context;
+    assert(PeripheralManager::getInstance().beginOrdinaryControl(source, actor,
+        FastBee::OrdinaryControl::isManual(source) ? 30000 : 0, false, 0, "",
+        FastBee::SensorConfigEpoch::current(), {}, context));
+    return context;
+}
+static int testOrdinaryIo(const String& mode) {
+    auto& pm = PeripheralManager::getInstance();
+    auto& config = pm.peripherals.at("led");
+    config.expander = true; config.pinCount = 0;
+    std::strcpy(config.params.gpio.providerId, "provider");
+    PeripheralConfig parent; parent.id = "provider"; parent.type = PeripheralType::IO_EXPANDER;
+    pm.peripherals[parent.id] = parent; pm.runtimeStates[parent.id] = {};
+    auto provider = std::make_unique<OrdinaryPcfProvider>();
+    auto* observed = provider.get();
+    {
+        RecursiveMutexGuard lock(pm._mutex);
+        assert(provider->begin(1, 0xfe, 1000, millis()));
+    }
+    ioProviders()["provider"] = std::move(provider);
+    const unsigned startupWrites = observed->transport.writes;
+    auto context = ioBegin(mode == "iox_manual_expiry" ? Source::Http : Source::Rule);
+    Result result;
+    if (mode == "iox_legacy_write") {
+        assert(!pm.writePin("led", GPIOState::STATE_HIGH));
+        assert(observed->transport.writes == startupWrites); return 0;
+    }
+    if (mode == "iox_interval") {
+        assert(!pm.submitOrdinaryDigital("led", Command::Blink, 199, context, result));
+        assert(!pm.ordinaryDigitalClaimedLocked("led") && ioBlinks().empty()); return 0;
+    }
+    if (mode == "iox_high" || mode == "iox_toggle" || mode == "iox_dispatch") {
+        const auto command = mode == "iox_toggle" ? Command::Toggle : Command::High;
+        if (mode == "iox_dispatch")
+            assert(FastBee::dispatchOrdinaryDigitalAction(pm, "led", command, 0, &context, &result));
+        else assert(pm.submitOrdinaryDigital("led", command, 0, context, result));
+        assert((observed->transport.latch & 1) && observed->transport.writes == startupWrites + 1);
+        pm.finishOrdinaryControl(context); assert(!pm.ordinaryDigitalClaimedLocked("led")); return 0;
+    }
+    if (mode == "iox_legacy") {
+        ioBlinks()["led"] = IoBlink{static_cast<uint32_t>(millis()), 200};
+        RecursiveMutexGuard lock(pm._mutex);
+        pm.serviceOrdinaryIoProducerLocked("led");
+        assert(ioBlinks().empty() && observed->transport.writes == startupWrites); return 0;
+    }
+    assert(pm.submitOrdinaryDigital("led", Command::Blink, 200, context, result));
+    assert(timerCreates == 0 && timerStarts == 0 && nativeWrites == 0);
+    if (mode != "iox_group_retirement") pm.finishOrdinaryControl(context);
+    if (mode == "iox_stop") {
+        auto stop = ioBegin(); assert(pm.submitOrdinaryDigital("led", Command::Stop, 0, stop, result));
+        assert(result.cleanupConfirmed && ioBlinks().empty());
+        assert(observed->transport.writes == startupWrites); return 0;
+    }
+    if (mode == "iox_conflict") {
+        auto other = ioBegin(Source::Mqtt, 2);
+        assert(!pm.submitOrdinaryDigital("led", Command::High, 0, other, result));
+        assert(ioBlinks().size() == 1 && observed->transport.writes == startupWrites); return 0;
+    }
+    if (mode == "iox_group_retirement") {
+        RecursiveMutexGuard lock(pm._mutex);
+        assert(!pm.retireOrdinaryIoGroupLocked("provider"));
+        assert(pm.runtimeStates.at("led").ordinaryControl.phase == Phase::Retiring);
+        assert(ioBlinks().empty() && ioProviders().size() == 1);
+        pm.finishOrdinaryControl(context);
+        assert(pm.retireOrdinaryIoGroupLocked("provider"));
+        assert(observed->transport.writes == startupWrites); return 0;
+    }
+    ordinaryClockUs += 200000;
+    if (mode == "iox_busy") observed->transport.busy = true;
+    if (mode == "iox_write_failure") observed->transport.fail = true;
+    if (mode == "iox_source_stale") FastBee::SensorConfigEpoch::advance();
+    if (mode == "iox_uart_stale") {
+        ioBlinks().at("led").context.uartOrigin = FastBee::UartEventOrigin::captured(7, 19);
+        pm.uartCurrent = false;
+    }
+    if (mode == "iox_pending") ioPendingSyncs()["provider"] = 1;
+    if (mode == "iox_channel_drift") config.params.gpio.channel = 1;
+    if (mode == "iox_provider_pointer") ioBlinks().at("led").provider = nullptr;
+    if (mode == "iox_stale_sample") ordinaryClockUs += 3001000;
+    if (mode == "iox_generation_is_not_session") ++observed->sampleGeneration;
+    if (mode == "iox_manual_expiry") ordinaryClockUs += 30000000;
+    if (mode == "iox_negative_clock") ordinaryClockUs = -1;
+    {
+        RecursiveMutexGuard lock(pm._mutex);
+        pm.serviceOrdinaryIoProducerLocked("led");
+    }
+    if (mode == "iox_blink" || mode == "iox_generation_is_not_session") {
+        assert(observed->transport.writes == startupWrites + 1 && ioBlinks().size() == 1);
+        assert(observed->transport.latch & 1);
+    } else if (mode == "iox_busy" || mode == "iox_stale_sample") {
+        assert(observed->transport.writes == startupWrites && ioBlinks().size() == 1);
+        assert(pm.runtimeStates.at("led").ordinaryControl.phase == Phase::Producing);
+        if (mode == "iox_busy") {
+            observed->transport.busy = false;
+            RecursiveMutexGuard lock(pm._mutex); pm.serviceOrdinaryIoProducerLocked("led");
+            assert(observed->transport.writes == startupWrites + 1);
+        }
+    } else if (mode == "iox_write_failure") {
+        assert(observed->transport.writes == startupWrites + 1 && ioBlinks().empty());
+        assert(observed->driver.failures() != 0);
+    } else {
+        assert(ioBlinks().empty() && observed->transport.writes == startupWrites);
+        if (mode == "iox_pending") assert(ioPendingSyncs().at("provider") == 1);
+        if (mode == "iox_negative_clock")
+            assert(pm.runtimeStates.at("led").ordinaryControl.phase == Phase::Fault);
+    }
+    return 0;
+}

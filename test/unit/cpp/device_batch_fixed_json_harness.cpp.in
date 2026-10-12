@@ -1,0 +1,338 @@
+#include "document_json_probe.h"
+#include "network/FixedJsonField.h"
+#include "network/DeviceConfigValidation.h"
+#include "network/SystemTimeStatus.h"
+#include "core/SystemConstants.h"
+#include <algorithm>
+#include <climits>
+#include <iostream>
+
+@NETWORK_TYPES@
+
+static DocumentProbeAllocator* routeAllocator = nullptr;
+static std::vector<std::string> calls;
+static const char* DEVICE_CONFIG_FILE = "/config/device.json";
+static unsigned long fixtureMillis() { calls.push_back("millis"); return 123456UL; }
+static std::string shape(JsonVariantConst value) {
+    std::string result;
+    result += value.isNull() ? 'N' : '-';
+    result += value.is<bool>() ? 'B' : '-';
+    result += value.is<int64_t>() ? 'I' : '-';
+    result += value.is<uint64_t>() ? 'U' : '-';
+    result += value.is<double>() ? 'D' : '-';
+    if (value.is<const char*>()) result += value.as<JsonString>().isStatic() ? 'S' : 's';
+    if (value.is<JsonObjectConst>()) for (JsonPairConst pair : value.as<JsonObjectConst>()) {
+        result += pair.key().isStatic() ? 'K' : 'k';
+        result += pair.key().c_str(); result += shape(pair.value());
+    }
+    if (value.is<JsonArrayConst>()) for (JsonVariantConst child : value.as<JsonArrayConst>()) result += shape(child);
+    return result;
+}
+struct Capture {
+    std::string bytes, types;
+    bool overflow = false;
+    bool operator==(const Capture& rhs) const { return bytes == rhs.bytes && types == rhs.types && overflow == rhs.overflow; }
+};
+static Capture capture(const JsonDocument& doc) {
+    return {documentBytes(doc), shape(doc.as<JsonVariantConst>()), doc.overflowed()};
+}
+struct File {
+    std::string* target = nullptr;
+    size_t offset = 0;
+    explicit operator bool() const { return target != nullptr; }
+    int read() { return target && offset < target->size() ? static_cast<unsigned char>((*target)[offset++]) : -1; }
+    size_t readBytes(char* dest, size_t count) {
+        if (!target) return 0;
+        count = std::min(count, target->size() - offset);
+        std::memcpy(dest, target->data() + offset, count); offset += count; return count;
+    }
+    size_t write(uint8_t c) { assert(target); target->push_back(static_cast<char>(c)); return 1; }
+    size_t write(const uint8_t* bytes, size_t count) {
+        assert(target); target->append(reinterpret_cast<const char*>(bytes), count); return count;
+    }
+    void close() { calls.push_back("close"); target = nullptr; }
+};
+struct FakeFS {
+    std::map<std::string, std::string> files;
+    bool readFail = false, writeFail = false;
+    bool exists(const char* path) { calls.push_back(std::string("exists:") + path); return files.count(path); }
+    File open(const char* path, const char* mode) {
+        calls.push_back(std::string("open:") + path + ":" + mode);
+        if (*mode == 'r') return {readFail || !files.count(path) ? nullptr : &files[path], 0};
+        assert(*mode == 'w');
+        if (writeFail) return {};
+        files[path].clear(); return {&files[path], 0};
+    }
+} LittleFS;
+struct ConfigStorage {
+    bool fail = false;
+    std::vector<Capture> attempted;
+    static ConfigStorage& getInstance() { static ConfigStorage value; return value; }
+    bool loadJSONConfig(const char* path, JsonDocument& doc) {
+        calls.push_back(std::string("load:") + path);
+        return !LittleFS.readFail && !deserializeJson(doc, LittleFS.files[path]);
+    }
+    bool saveJSONConfig(const char* path, const JsonDocument& doc) {
+        calls.push_back(std::string("save:") + path); attempted.push_back(capture(doc));
+        if (fail) return false;
+        LittleFS.files[path] = documentBytes(doc); return true;
+    }
+};
+enum LogLevel { LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR };
+struct FakeLogger {
+    LogLevel level = LOG_INFO;
+    void setLogLevel(LogLevel value) { level = value; calls.push_back("set-log"); }
+    void info(const char* text) { calls.push_back(std::string("log:") + text); }
+    void infof(const char*, const char* value) { calls.push_back(std::string("log-id:") + value); }
+} LOGGER;
+struct UserManager {
+    bool fail = false;
+    bool updatePasswordPolicy(uint8_t attempts, uint32_t lockout, uint8_t length, bool strong) {
+        calls.push_back("policy:" + std::to_string(attempts) + ":" + std::to_string(lockout) +
+                        ":" + std::to_string(length) + ":" + std::to_string(strong));
+        return !fail;
+    }
+};
+struct IP { String toString() const { return "192.0.2.1"; } };
+constexpr int WL_CONNECTED = 3;
+struct FakeWiFi {
+    bool connected = false, emptyMac = false;
+    String macAddress() { calls.push_back("mac"); return emptyMac ? "" : "14:C1:9F:C1:52:D8"; }
+    int status() { calls.push_back("wifi-status"); return connected ? WL_CONNECTED : 0; }
+    IP localIP() { calls.push_back("local-ip"); return {}; }
+    IP dnsIP(int) { calls.push_back("dns-ip"); return {}; }
+    String SSID() { calls.push_back("wifi-ssid"); return "fallback"; }
+    int RSSI() { calls.push_back("wifi-rssi"); return -73; }
+} WiFi;
+struct FakeEsp {
+    uint64_t getEfuseMac() { calls.push_back("efuse"); return UINT64_C(0x123456789abc); }
+    const char* getChipModel() { calls.push_back("chip-model"); return "ESP32-C6"; }
+    uint8_t getChipRevision() { calls.push_back("chip-rev"); return UINT8_MAX; }
+    uint32_t getCpuFreqMHz() { calls.push_back("cpu"); return UINT32_MAX; }
+    const char* getSdkVersion() { calls.push_back("sdk"); return "fixture-sdk"; }
+    uint32_t getFreeHeap() { calls.push_back("heap"); return 160000; }
+    uint32_t getMaxAllocHeap() { calls.push_back("max-heap"); return 150000; }
+} fixtureEsp;
+struct DNSManager {
+    String getActualHostname() { calls.push_back("hostname"); return "名称-escaped\"\\\n"; }
+};
+struct FBNetworkManager {
+    WiFiConfig config;
+    NetworkStatusInfo status;
+    DNSManager dns;
+    bool hasDns = true;
+    WiFiConfig getConfig() { calls.push_back("network-config"); return config; }
+    NetworkStatusInfo getStatusInfo() { calls.push_back("network-status"); return status; }
+    void updateStatusInfo() { calls.push_back("network-update"); }
+    DNSManager* getDNSManager() { calls.push_back("get-dns"); return hasDns ? &dns : nullptr; }
+};
+namespace NetworkUtils {
+uint8_t rssiToPercentage(int value) { calls.push_back("rssi-percent"); return value < -100 ? 0 : value >= -50 ? 100 : 2 * (value + 100); }
+}
+static FastBee::SystemTimeQuality::Snapshot fixtureTime;
+static FastBee::SystemTimeZone::LocalSnapshot fixtureLocal;
+FastBee::SystemTimeQuality::Snapshot FastBee::SystemTimeQuality::snapshot() {
+    calls.push_back("time-snapshot"); return fixtureTime;
+}
+FastBee::SystemTimeZone::LocalSnapshot FastBee::SystemTimeZone::localSnapshot(int64_t epoch) {
+    calls.push_back("local-time:" + std::to_string(epoch)); return fixtureLocal;
+}
+struct AsyncWebServerRequest {
+    std::map<std::string, std::string> params;
+    int status = 0;
+    std::string response;
+    Capture document;
+    bool hasParam(const char* key, bool = false) { return params.count(key); }
+};
+struct Context {
+    bool authorized = true, passwordValid = true, enabled = true, devModeCacheValid = true;
+    uint32_t cacheDuration = 86400;
+    UserManager* userManager = nullptr;
+    void* networkManager = nullptr;
+    bool requireAuth(AsyncWebServerRequest* request) {
+        calls.push_back("auth"); if (!authorized) request->status = 401; return authorized;
+    }
+    bool requiresAuth(AsyncWebServerRequest*) { calls.push_back("batch-auth"); return authorized; }
+    void sendError(AsyncWebServerRequest* request, int code, const char* text) {
+        calls.push_back("error"); request->status = code; request->response = text;
+    }
+    void sendSuccess(AsyncWebServerRequest* request, const char* text) {
+        calls.push_back("success"); request->status = 200; request->response = text;
+    }
+    String getParamValue(AsyncWebServerRequest* request, const char* key, const char* fallback) {
+        calls.push_back(std::string("param:") + key);
+        return request->params.count(key) ? request->params[key].c_str() : fallback;
+    }
+    bool getParamBool(AsyncWebServerRequest*, const char*, bool) { calls.push_back("param-bool"); return enabled; }
+    bool verifyCurrentUserPassword(AsyncWebServerRequest*, const String&) { calls.push_back("password-check"); return passwordValid; }
+};
+namespace HandlerUtils {
+void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
+    calls.push_back("send"); request->status = 200; request->document = capture(doc);
+    request->response = request->document.bytes;
+}
+void sendJsonError(AsyncWebServerRequest* request, int code, const char* text, int = 0) {
+    calls.push_back("batch-error"); request->status = code; request->response = text;
+}
+}
+namespace FastBee {
+JsonDocument makeJsonDocument() { return JsonDocument(routeAllocator); }
+}
+static bool lowMemory = false;
+static bool isBatchMemoryCriticallyLow() { calls.push_back("batch-memory"); return lowMemory; }
+#define ESP fixtureEsp
+#define millis fixtureMillis
+@ROUTE_DEFINITIONS@
+#undef millis
+#undef ESP
+
+struct Result {
+    int status = 0;
+    std::string response;
+    Capture document;
+    std::vector<Capture> attempted;
+    std::map<std::string, std::string> files;
+    std::vector<std::string> calls;
+    std::vector<DocumentProbeAllocator::Event> allocations;
+    size_t count = 0, failures = 0;
+    uint32_t cache = 0;
+    bool developerCache = false;
+    int level = 0;
+};
+static void equal(const Result& a, const Result& b) {
+    assert(a.status == b.status && a.response == b.response && a.document == b.document);
+    assert(a.attempted == b.attempted && a.files == b.files && a.calls == b.calls);
+    assert(a.allocations == b.allocations && a.count == b.count && a.failures == b.failures);
+    assert(a.cache == b.cache && a.developerCache == b.developerCache && a.level == b.level);
+}
+template<class Device, class Batch>
+static Result run(unsigned mode, unsigned scenario, size_t fault = SIZE_MAX, bool persistent = false) {
+    DocumentProbeAllocator allocator(fault, persistent);
+    routeAllocator = &allocator;
+    Result result;
+    {
+        LittleFS = {}; LOGGER = {}; WiFi = {};
+        auto& storage = ConfigStorage::getInstance(); storage = {};
+        calls.clear();
+        UserManager user;
+        Context context; context.userManager = &user;
+        FBNetworkManager network; context.networkManager = &network;
+        const String text(scenario & 1 ? std::string(155, 'x') : "配置\"\\\n");
+        network.config.staSSID = text; network.config.apSSID = text; network.config.customDomain = text;
+        network.config.staPassword = scenario & 1 ? "secret" : "";
+        network.config.apPassword = scenario & 2 ? "secret-ap" : "";
+        network.config.staticIP = text; network.config.gateway = "192.0.2.1";
+        network.config.subnet = "255.255.255.0"; network.config.dns1 = "192.0.2.2";
+        network.config.dns2 = ""; network.config.connectTimeout = UINT32_MAX;
+        network.config.reconnectInterval = UINT32_MAX; network.config.apChannel = UINT8_MAX;
+        network.config.apMaxConnections = UINT8_MAX; network.config.apHidden = scenario & 2;
+        network.config.networkType = static_cast<NetworkType>(scenario % 3);
+        network.config.mode = static_cast<NetworkMode>(scenario % 3);
+        network.config.ipConfigType = static_cast<IPConfigType>(scenario % 3);
+        network.config.enableMDNS = scenario & 1;
+        network.status.ssid = scenario & 1 ? text : String("");
+        network.status.status = static_cast<NetworkStatus>(scenario % 8);
+        network.status.ipAddress = scenario & 2 ? "192.0.2.20" : "0.0.0.0";
+        network.status.rssi = scenario & 1 ? INT_MIN : INT_MAX;
+        network.status.internetAvailable = scenario & 2;
+        network.status.lastConnectionTime = 1000; network.status.uptime = ULONG_MAX;
+        network.status.txCount = UINT32_MAX; network.status.rxCount = UINT32_MAX;
+        network.status.currentGateway = text; network.status.currentSubnet = text;
+        network.status.dnsServer = text; network.hasDns = scenario % 3 != 1;
+        WiFi.connected = scenario & 1; WiFi.emptyMac = scenario == 15;
+        fixtureTime = {}; fixtureLocal = {};
+        if (scenario & 1) {
+            fixtureTime.timeValid = true; fixtureTime.source = "rtc"; fixtureTime.quality = "rtc_unverified";
+            fixtureTime.rtcBootStatus = "applied"; fixtureTime.epochMs = 1791100000123LL;
+            fixtureTime.sequence = 1; fixtureTime.ageMs = 30000;
+            fixtureLocal.timezoneAvailable = fixtureLocal.calendarAvailable = true;
+            std::strcpy(fixtureLocal.timezone, "CST-8"); std::strcpy(fixtureLocal.calendar, "2026-10-04 12:00:00");
+        }
+        if (scenario % 6 != 0) LittleFS.files[DEVICE_CONFIG_FILE] =
+            R"({"deviceName":"preserved","deviceId":"FBE-SAVED","description":"existing","location":"room","productNumber":42,"userId":"owner","timezone":"UTC0","ntpServer1":"saved.example","developerModeEnabled":true,"extra":{"retained":7}})";
+        if (scenario % 6 == 2) LittleFS.files[DEVICE_CONFIG_FILE] = "{";
+        if (scenario % 6 == 3) LittleFS.files[DEVICE_CONFIG_FILE] = "[]";
+        if (scenario % 6 == 4) LittleFS.files[DEVICE_CONFIG_FILE] = R"({"deviceId":17,"timezone":false,"developerModeEnabled":null})";
+        LittleFS.files["/config/users.json"] = scenario & 1 ?
+            R"({"security":{"maxLoginAttempts":3,"loginLockoutTime":60000,"minPasswordLength":8,"requireStrongPasswords":true}})" : "{}";
+        LittleFS.readFail = scenario == 8; LittleFS.writeFail = scenario == 9;
+        storage.fail = scenario == 10; user.fail = scenario == 11;
+        context.authorized = scenario != 12; context.passwordValid = scenario != 13;
+        context.enabled = scenario & 1;
+        if (scenario == 14) context.networkManager = nullptr;
+        lowMemory = scenario == 16;
+        Device device{&context}; Batch batch{&context};
+        AsyncWebServerRequest request;
+        request.params["password"] = "fixture-only";
+        JsonDocument input;
+        const char* saveText = R"({"deviceName":"new","deviceId":"  ","productNumber":"2147483647","userId":"changed","description":"new-description","ntpServer1":"https://clock.example.test","ntpServer2":"other.example","timezone":"CST-8","enableNTP":"false","syncInterval":"3600","logLevel":"ERROR","cacheDuration":"0"})";
+        if (scenario == 17) saveText = R"({"maxLoginAttempts":"3","loginLockoutTime":"60000","minPasswordLength":"8","requireStrongPasswords":"false"})";
+        if (scenario == 18) saveText = R"({"deviceId":"  exact-supplied  ","enableNTP":true,"cacheDuration":31536000})";
+        if (scenario == 19) saveText = R"({"deviceName":"mixed","minPasswordLength":8})";
+        assert(!deserializeJson(input, saveText));
+        if (mode == 0) { JsonVariant body = input.as<JsonVariant>(); device.handleSaveDeviceConfigJson(&request, body); }
+        else if (mode == 1) device.handleGetDeviceConfig(&request);
+        else if (mode == 2) device.handleGetDeviceInfo(&request);
+        else if (mode == 3) device.handleSetDeveloperMode(&request);
+        else if (mode == 4) { request.params["deviceName"] = "form-value"; device.handleSaveDeviceConfig(&request); }
+        else if (mode < 9) {
+            static const char* urls[] = {"/api/network/config", "/api/network/status", "/api/device/config", "/api/device/time"};
+            JsonDocument output(&allocator);
+            auto out = output.to<JsonObject>();
+            if (scenario == 18) { out["data"] = "old-scalar"; out["success"] = false; }
+            if (scenario == 19) out["data"].to<JsonArray>().add("old-array");
+            assert(batch.buildSubResponse(&request, urls[mode - 5], out));
+            result.document = capture(output);
+            // Sources disappear or change before the output document does.
+            network.config = {}; network.status = {}; LittleFS.files.clear();
+            assert(capture(output) == result.document);
+        } else {
+            input.clear(); auto requests = input["requests"].to<JsonArray>();
+            for (const char* url : {"/api/network/config", "/api/network/status", "/api/device/config", "/api/device/time", "/unknown"})
+                requests.add<JsonObject>()["url"] = url;
+            if (scenario == 17) requests.add<JsonObject>()["url"] = "/overflow-count";
+            if (scenario == 18) requests.clear();
+            if (scenario == 19) requests[0]["url"] = "";
+            JsonVariant body = input.as<JsonVariant>(); batch.handleBatchRequest(&request, body);
+        }
+        result.status = request.status; result.response = request.response;
+        if (mode < 5 || mode == 9) result.document = request.document;
+        result.attempted = storage.attempted; result.files = LittleFS.files;
+        result.calls = calls; result.cache = context.cacheDuration;
+        result.developerCache = context.devModeCacheValid; result.level = LOGGER.level;
+    }
+    assert(allocator.blocks.empty());
+    result.allocations = allocator.events; result.count = allocator.eligible; result.failures = allocator.failures;
+    routeAllocator = nullptr; return result;
+}
+static size_t check(unsigned mode, unsigned scenario, bool faults) {
+    const auto before = run<DeviceOracle, BatchOracle>(mode, scenario);
+    const auto after = run<DeviceCurrent, BatchCurrent>(mode, scenario);
+    equal(before, after);
+    size_t cases = 1;
+    if (faults) for (bool persistent : {false, true}) for (size_t index = 0; index <= before.count; ++index) {
+        const auto a = run<DeviceOracle, BatchOracle>(mode, scenario, index, persistent);
+        const auto b = run<DeviceCurrent, BatchCurrent>(mode, scenario, index, persistent);
+        equal(a, b); ++cases;
+    }
+    return cases;
+}
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    size_t cases = 0;
+    const std::vector<std::string> modes = {"device-save", "device-get", "device-info", "developer-mode",
+        "device-form", "batch-network", "batch-status", "batch-device", "batch-time", "batch-request"};
+    const auto found = std::find(modes.begin(), modes.end(), mode);
+    if (found != modes.end()) {
+        for (unsigned scenario = 0; scenario < 20; ++scenario) cases += check(found - modes.begin(), scenario, false);
+        if (mode == "device-save") for (unsigned scenario = 0; scenario < 20; ++scenario) cases += check(4, scenario, false);
+    } else if (mode == "device-oom" || mode == "batch-oom") {
+        for (unsigned route = mode == "device-oom" ? 0 : 5; route < (mode == "device-oom" ? 5U : 10U); ++route)
+            for (unsigned scenario : {0U, 1U, 3U, 4U, 15U, 17U, 18U, 19U}) cases += check(route, scenario, true);
+    } else if (mode == "ownership-and-identity") {
+        for (unsigned route = 0; route < 10; ++route) for (unsigned scenario : {1U, 15U, 17U, 18U}) cases += check(route, scenario, false);
+    } else assert(false && "unknown mode");
+    assert(cases); std::cout << "PASS " << mode << " cases=" << cases << '\n';
+}
+

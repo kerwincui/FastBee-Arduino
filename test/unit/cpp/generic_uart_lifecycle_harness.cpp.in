@@ -1,0 +1,217 @@
+#include <cassert>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <functional>
+#include <vector>
+#include "core/UartReceiveFault.h"
+#include "core/UartPortLease.h"
+#include "core/UartReceiveGeneration.h"
+#include "core/UartEventOrigin.h"
+#include "core/SensorConfigEpoch.h"
+bool generationLockBusy = false;
+struct RecursiveMutexGuard {
+    RecursiveMutexGuard(int, int) {}
+    bool isLocked() const { return !generationLockBusy; }
+};
+class String:public std::string {
+public:
+    using std::string::string;
+    String()=default; String(const std::string& text):std::string(text){}
+    explicit String(size_t number):std::string(std::to_string(number)){}
+    bool isEmpty() const {return empty();}
+};
+template<class... T> void logMessage(T&&...) {}
+#define LOG_INFOF(...) logMessage(__VA_ARGS__)
+#define LOG_WARNINGF(...) logMessage(__VA_ARGS__)
+constexpr uint8_t UART_PORT_UNASSIGNED=255;
+constexpr uint32_t UART_DEFAULT_BAUD_RATE=115200;
+enum class PeripheralType { UART };
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED };
+struct PeripheralConfig {
+    String id; PeripheralType type=PeripheralType::UART; bool enabled=true;
+    uint8_t pinCount=2,pins[2]={7,8};
+    struct { struct { uint32_t baudRate=9600; } uart; } params;
+};
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+enum hardwareSerial_error_t {UART_NO_ERROR,UART_BREAK_ERROR,UART_BUFFER_FULL_ERROR,
+    UART_FIFO_OVF_ERROR,UART_FRAME_ERROR,UART_PARITY_ERROR};
+#endif
+struct HardwareSerial {
+    int begins=0,ends=0; bool active=false,fail=false;
+    std::vector<int> buffered;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    std::function<void(hardwareSerial_error_t)> callback;
+    void onReceiveError(std::function<void(hardwareSerial_error_t)> fn) {callback=fn;}
+#endif
+    void begin(uint32_t,int,uint8_t,uint8_t) { ++begins; active=!fail; }
+    void end() { ++ends; active=false; buffered.clear();
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+        callback=nullptr;
+#endif
+    }
+    void setTimeout(int) {}
+    explicit operator bool() const { return active; }
+};
+HardwareSerial serials[3];
+HardwareSerial* serialForPort(uint8_t port) { return port<CHIP_UART_COUNT ? &serials[port] : nullptr; }
+uint32_t uartSerialConfig(const PeripheralConfig&) { return 0; }
+String uartFramingName(const PeripheralConfig&) { return "8N1"; }
+uint16_t boundedUartAvailable(HardwareSerial*) { return 0; }
+uint32_t millis() { return 1; }
+bool isProtocolOwnedUartId(const String& id) { return FastBee::isProtocolUartId(id.c_str()); }
+struct State {
+    PeripheralStatus status=PeripheralStatus::PERIPHERAL_INITIALIZED; uint32_t lastActivity=0;
+    struct { struct { bool isConnected=false; uint8_t port=255; uint16_t rxAvailable=0;
+             uint32_t bytesSent=0,bytesReceived=0; } comm; } state;
+};
+class PeripheralManager {
+public:
+    std::map<String,uint8_t> uartPortById;
+    std::map<String,PeripheralConfig> peripherals;
+    FastBee::UartPortLease uartPortLeases[3];
+    FastBee::UartReceiveGeneration uartReceiveGenerations;
+    int _mutex=1;
+    std::map<String,State> runtimeStates;
+    String lastEnableError;
+    bool validateUartCapacity(const PeripheralConfig&,const String&,String&) const;
+    bool setupUartHardware(const PeripheralConfig&);
+    bool teardownHardware(const PeripheralConfig&);
+    HardwareSerial* getUartSerial(const String&);
+    uint32_t getUartReceiveGeneration(const String&) const;
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin&) const;
+};
+// @production@
+int main() {
+    PeripheralManager manager; PeripheralConfig a; a.id="a"; manager.runtimeStates[a.id]={};
+    const uint8_t service=CHIP_UART_COUNT>=3?2:1;
+#if ESP_ARDUINO_VERSION_MAJOR < 3
+    assert(!manager.setupUartHardware(a));
+    assert(manager.lastEnableError=="UART_RX_ERROR_OBSERVER_UNSUPPORTED");
+    assert(manager.uartPortById.empty() && FastBee::UartPortLease::available(1));
+    assert(manager.getUartReceiveGeneration(a.id)==0 && serials[1].begins==0);
+    return 0;
+#endif
+    FastBee::UartPortLease modem; assert(modem.acquire(service));
+    const bool started=manager.setupUartHardware(a);
+    assert(started==(CHIP_UART_COUNT==3));
+    assert(serials[service].begins==0 && serials[service].ends==0 && modem.owned());
+    if(started) {
+        assert(manager.uartPortById[a.id]==1 && manager.getUartSerial(a.id)==&serials[1]);
+        assert(manager.runtimeStates[a.id].state.comm.isConnected);
+        const auto first = manager.getUartReceiveGeneration(a.id);
+        assert(first != 0);
+        assert(manager.setupUartHardware(a));
+        assert(manager.getUartReceiveGeneration(a.id) != first);
+    }
+    auto b=a; b.id="b";
+    assert(!manager.setupUartHardware(b) && manager.getUartSerial(b.id)==nullptr);
+    assert(modem.owned() && serials[service].begins==0);
+    assert(modem.releaseAfterStop());
+    assert(manager.setupUartHardware(b) && manager.uartPortById[b.id]==service);
+    assert(manager.getUartReceiveGeneration(b.id) != 0);
+    auto origin = FastBee::UartEventOrigin::captured(FastBee::SensorConfigEpoch::current(),
+        manager.getUartReceiveGeneration(b.id));
+    assert(manager.isUartEventOriginCurrent(origin));
+    assert(manager.isUartEventOriginCurrent({}));
+    assert(!manager.isUartEventOriginCurrent(FastBee::UartEventOrigin::captured(0, origin.receiveGeneration)));
+    assert(!manager.isUartEventOriginCurrent(FastBee::UartEventOrigin::captured(origin.configEpoch, 0)));
+    auto malformed = origin; malformed.required = false;
+    assert(!manager.isUartEventOriginCurrent(malformed));
+    generationLockBusy=true; assert(!manager.isUartEventOriginCurrent(origin)); generationLockBusy=false;
+    FastBee::SensorConfigEpoch::advance();
+    assert(!manager.isUartEventOriginCurrent(origin));
+    origin.configEpoch = FastBee::SensorConfigEpoch::current();
+    assert(manager.isUartEventOriginCurrent(origin));
+    assert(manager.setupUartHardware(b)); // Same config and controller; old event stays stale.
+    assert(!manager.isUartEventOriginCurrent(origin));
+    origin.receiveGeneration = manager.getUartReceiveGeneration(b.id);
+    assert(manager.isUartEventOriginCurrent(origin));
+    generationLockBusy=true; assert(manager.getUartReceiveGeneration(b.id)==0); generationLockBusy=false;
+    assert(manager.teardownHardware(b));
+    assert(!manager.isUartEventOriginCurrent(origin));
+    assert(manager.getUartReceiveGeneration(b.id)==0 && manager.uartReceiveGenerations.current(service)==0);
+    assert(FastBee::UartPortLease::available(service));
+    if(started) assert(manager.teardownHardware(a));
+    assert(manager.getUartSerial(a.id)==nullptr && manager.getUartSerial(b.id)==nullptr);
+    serials[1].fail=true;
+    assert(!manager.setupUartHardware(a));
+    assert(manager.uartPortById.empty() && FastBee::UartPortLease::available(1));
+    assert(manager.lastEnableError=="UART_DRIVER_INIT_FAILED");
+    assert(manager.getUartReceiveGeneration(a.id)==0 && manager.uartReceiveGenerations.current(1)==0);
+    serials[1].fail=false;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    for (auto error : {UART_FIFO_OVF_ERROR,UART_BUFFER_FULL_ERROR,UART_FRAME_ERROR,
+                       UART_PARITY_ERROR,UART_BREAK_ERROR}) {
+        assert(manager.setupUartHardware(a));
+        const auto token=manager.getUartReceiveGeneration(a.id);
+        assert(token && serials[1].callback);
+        auto oldCallback=serials[1].callback;
+        serials[1].buffered={1,2,3}; oldCallback(UART_NO_ERROR);
+        assert(manager.getUartReceiveGeneration(a.id)==token);
+        const auto queued=FastBee::UartEventOrigin::captured(FastBee::SensorConfigEpoch::current(),token);
+        oldCallback(error);
+        assert(manager.getUartReceiveGeneration(a.id)==0 && !manager.isUartEventOriginCurrent(queued));
+        oldCallback(error); // First error locks the stream; no duplicate count.
+        assert(manager.setupUartHardware(a));
+        const auto replacement=manager.getUartReceiveGeneration(a.id);
+        assert(replacement && replacement!=token && serials[1].buffered.empty());
+        oldCallback(error); // Detached callback must not corrupt replacement.
+        assert(manager.getUartReceiveGeneration(a.id)==replacement);
+        assert(!manager.isUartEventOriginCurrent(queued));
+        auto replacementCallback=serials[1].callback;
+        assert(manager.teardownHardware(a));
+        replacementCallback(error);
+        assert(manager.getUartReceiveGeneration(a.id)==0);
+    }
+    const auto faults=FastBee::UartTextDiagnostics::snapshot();
+    for (size_t n=FastBee::UartTextDiagnostics::HardwareFifoFault;
+         n<FastBee::UartTextDiagnostics::Count;++n) assert(faults.values[n]==1);
+    assert(manager.setupUartHardware(a));
+    auto failedCallback=serials[1].callback;
+    failedCallback(UART_FRAME_ERROR); serials[1].fail=true;
+    assert(!manager.setupUartHardware(a)); // Explicit restart fails: stays invalid.
+    assert(manager.getUartReceiveGeneration(a.id)==0);
+    assert(FastBee::UartPortLease::available(1) && manager.uartPortById.empty());
+    serials[1].fail=false; assert(manager.setupUartHardware(a));
+    const auto recovered=manager.getUartReceiveGeneration(a.id);
+    assert(recovered); failedCallback(UART_FRAME_ERROR);
+    assert(manager.getUartReceiveGeneration(a.id)==recovered);
+    assert(manager.teardownHardware(a));
+#endif
+    uint32_t previousGeneration=0;
+    for(int i=0;i<1000;++i) {
+        assert(manager.setupUartHardware(a));
+        const auto current=manager.getUartReceiveGeneration(a.id);
+        assert(current && current!=previousGeneration); previousGeneration=current;
+        assert(manager.teardownHardware(a)); assert(manager.getUartReceiveGeneration(a.id)==0);
+    }
+    assert(manager.uartPortById.empty() && FastBee::UartPortLease::available(1));
+    auto protocol=a; protocol.id="modbus-test";
+    assert(manager.setupUartHardware(protocol) && manager.uartPortById.empty());
+    manager.peripherals[protocol.id]=protocol;
+    assert(manager.setupUartHardware(a)==(CHIP_UART_COUNT==3));
+    if(CHIP_UART_COUNT==3) assert(manager.teardownHardware(a));
+    manager.peripherals.clear();
+    assert(modem.acquire(service));
+    manager.uartPortById[a.id]=service; // A stale/lost map must not steal or stop the peer.
+    const int begins=serials[service].begins,ends=serials[service].ends;
+    assert(!manager.setupUartHardware(a) && !manager.teardownHardware(a));
+    assert(manager.getUartSerial(a.id)==nullptr && modem.owned());
+    assert(manager.getUartReceiveGeneration(a.id)==0);
+    assert(manager.uartReceiveGenerations.begin(service)); // Stale generation without lease is not a source.
+    auto lost = FastBee::UartEventOrigin::captured(FastBee::SensorConfigEpoch::current(),
+        manager.uartReceiveGenerations.current(service));
+    assert(!manager.isUartEventOriginCurrent(lost));
+    manager.uartReceiveGenerations.end(service);
+    assert(serials[service].begins==begins && serials[service].ends==ends);
+    assert(modem.releaseAfterStop());
+    manager.uartPortById.clear();
+    manager.peripherals[a.id]=a; manager.peripherals[b.id]=b;
+    String error;
+    assert(manager.validateUartCapacity(a,a.id,error)==(CHIP_UART_COUNT==3));
+    auto candidate=a;candidate.id="new";
+    assert(!manager.validateUartCapacity(candidate,"",error));
+    candidate.enabled=false;assert(manager.validateUartCapacity(candidate,"",error));
+    manager.peripherals.clear();
+}

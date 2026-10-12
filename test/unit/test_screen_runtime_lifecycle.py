@@ -49,6 +49,54 @@ def braced_block(source: str, marker: str) -> str:
 
 
 class ScreenRuntimeLifecycleTests(unittest.TestCase):
+    def test_task_handle_survives_cleanup_and_state_lock_contention(self):
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("A C++17 compiler is required")
+        runtime = RUNTIME_SOURCE.read_text(encoding="utf-8")
+        definitions = '\n'.join(signature + ' {' + braced_block(runtime, signature) + '}'
+                                for signature in ("void finishTask()", "void screenTask(void*)"))
+        source = r'''
+#include <cassert>
+#include <string>
+using String=std::string;
+enum class ScreenSystemAction { NONE, SLEEP };
+struct RuntimeState {
+ bool running=true,sleeping=true; int pendingSystemValue=1,systemActionCapabilities=1,allocated=1024;
+ ScreenSystemAction pendingSystemAction=ScreenSystemAction::SLEEP;
+ void* task=reinterpret_cast<void*>(1); String lastError;
+} state;
+RuntimeState& runtimeState(){return state;}
+int lockFailures=0,attempts=0,waits=0,deletes=0; bool workerReturned=false;
+struct StateLock { bool acquired; StateLock():acquired(lockFailures==0){if(lockFailures)--lockFailures;}
+ bool locked() const{return acquired;} };
+#define pdMS_TO_TICKS(x) (x)
+void vTaskDelay(int){assert(state.task && deletes==0);++waits;}
+void vTaskDelete(void*){assert(state.task==nullptr && attempts==3);++deletes;}
+void runScreenTask(){workerReturned=true;}
+struct ScreenDevice {
+ static ScreenDevice& instance(){static ScreenDevice device;return device;}
+ bool deactivate(String* error){
+  assert(workerReturned && state.task && deletes==0 && !state.running);
+  if(++attempts<3){*error="SPI_BUSY";return false;}
+  lockFailures=2;return true;
+ }
+};
+bool deactivateScreenDeviceResources(String* error){return ScreenDevice::instance().deactivate(error);}
+DEFINITIONS
+int main(){screenTask(nullptr);assert(attempts==3 && waits==4 && deletes==1);
+ assert(!state.running && !state.sleeping && state.allocated==0 && state.pendingSystemValue==0);}
+'''.replace('DEFINITIONS', definitions)
+        with tempfile.TemporaryDirectory(prefix="fastbee-screen-stop-") as tmp:
+            cpp = pathlib.Path(tmp) / 'stop.cpp'
+            binary = pathlib.Path(tmp) / ('stop.exe' if os.name == 'nt' else 'stop')
+            cpp.write_text(source, encoding='utf-8')
+            built = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                                    str(cpp), '-o', str(binary)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+
     def test_rgb_memory_admission_requires_full_contiguous_psram_frame(self):
         compiler = shutil.which("g++") or shutil.which("clang++")
         if compiler is None:
@@ -194,7 +242,7 @@ int main(){
         unconfigure = braced_block(
             device, "bool ScreenDevice::unconfigure(const String& peripheralId)"
         )
-        self.assertIn("if (_active) return false;", unconfigure)
+        self.assertIn("if (_active || _display || _touch) return false;", unconfigure)
         self.assertNotIn("deactivate();", unconfigure)
         self.assertIn("bool stop(String* error = nullptr);", runtime_header)
 
@@ -246,11 +294,11 @@ int main(){
         )
         self.assertIn("config.params.display.controlBuzzerMask = 0", defaults)
         self.assertIn(
-            'params["controlBuzzerMask"] = display.controlBuzzerMask', persistence
+            'FastBee::setFixedJsonField(params, "controlBuzzerMask", display.controlBuzzerMask)', persistence
         )
         self.assertIn("LOAD_DISPLAY_EXTRA(controlBuzzerMask, 0, 255)", persistence)
         self.assertIn(
-            'params["controlBuzzerMask"] = display.controlBuzzerMask', route
+            'FastBee::setFixedJsonField(params, "controlBuzzerMask", display.controlBuzzerMask)', route
         )
         self.assertIn("READ_DISPLAY_EXTRA(controlBuzzerMask, 0, 255)", route)
         self.assertIn(
@@ -293,7 +341,7 @@ int main(){
         self.assertIn('"确认重启设备?"', runtime)
 
     def test_spi_controller_dimensions_are_rejected_at_both_layers(self):
-        peripheral = PERIPHERAL_SOURCE.read_text(encoding="utf-8")
+        peripheral = (ROOT / "src/core/PeripheralManagerValidation.cpp").read_text(encoding="utf-8")
         spi = SPI_SOURCE.read_text(encoding="utf-8")
         self.assertIn("shortSide > 240 || longSide > 320", peripheral)
         self.assertIn("DISPLAY_DIMENSIONS_UNSUPPORTED", peripheral)
@@ -309,7 +357,9 @@ int main(){
         self.assertIn("endTransaction();", spi)
         self.assertIn("GT911_ADDRESS_PRIMARY = 0x5D", touch)
         self.assertIn("GT911_ADDRESS_SECONDARY = 0x14", touch)
-        self.assertIn("I2CBusManager::instance().acquire", touch)
+        self.assertIn("auto& bus = I2CBusManager::instance()", touch)
+        self.assertIn("_leased = bus.acquire(this, config.touchSda, config.touchScl,", touch)
+        self.assertIn("_alternateLeased = bus.acquire(&_alternateOwner, config.touchSda,", touch)
         self.assertIn("I2CBusManager::instance().deferRelease", touch)
         self.assertIn("if (!clearStatus())", touch)
         for rotation in ("case 1:", "case 2:", "case 3:"):

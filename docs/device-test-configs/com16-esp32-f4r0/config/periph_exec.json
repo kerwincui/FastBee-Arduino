@@ -1,0 +1,288 @@
+{
+  "rules": [
+    {
+      "id": "exec_005",
+      "name": "KEY1控制继电器",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 0,
+          "timePoint": "",
+          "eventId": "button_click",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_006",
+      "name": "KEY2控制蜂鸣器",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key2",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 0,
+          "timePoint": "",
+          "eventId": "button_click",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "buzzer",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_009",
+      "name": "KEY4控制LED-D1到D4",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key4",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 0,
+          "timePoint": "",
+          "eventId": "button_click",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "led_d1",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d2",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d3",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d4",
+          "actionType": 10,
+          "actionValue": "toggle",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_012",
+      "name": "平台控制继电器",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "relay",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_013",
+      "name": "平台控制蜂鸣器",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "buzzer",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 0,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "buzzer",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_015",
+      "name": "平台控制LED-D1到D4",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "led_d1",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "led_d1",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d2",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d3",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "led_d4",
+          "actionType": 10,
+          "actionValue": "$value",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    }
+  ],
+  "irKeys": [
+    {
+      "name": "0",
+      "code": "0x00FF6897",
+      "protocol": "NEC"
+    },
+    {
+      "name": "1",
+      "code": "0x00FF30CF",
+      "protocol": "NEC"
+    },
+    {
+      "name": "2",
+      "code": "0x00FF18E7",
+      "protocol": "NEC"
+    },
+    {
+      "name": "3",
+      "code": "0x00FF7A85",
+      "protocol": "NEC"
+    },
+    {
+      "name": "4",
+      "code": "0x00FF10EF",
+      "protocol": "NEC"
+    },
+    {
+      "name": "5",
+      "code": "0x00FF38C7",
+      "protocol": "NEC"
+    }
+  ]
+}

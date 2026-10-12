@@ -68,6 +68,7 @@ const ASSET_CAPABILITY_REQUIREMENTS = Object.freeze({
     'pages/fullscreen.html': ['deviceControl'],
 
     'js/modules/device-ota.js': ['ota'],
+    'js/modules/device-config-transfer.js': ['configTransfer'],
     'pages/fragments/device-ota.html': ['ota'],
 
     'js/modules/protocol-modbus-rtu.js': ['modbus'],
@@ -86,6 +87,7 @@ const ASSET_CAPABILITY_REQUIREMENTS = Object.freeze({
 
     'js/modules/periph-exec.js': ['periphExec'],
     'js/modules/periph-exec-form.js': ['periphExec'],
+    'js/modules/periph-exec-templates.js': ['periphExec'],
     'js/modules/periph-exec-sensor.js': ['periphExec'],
     'js/modules/periph-exec-effects.js': ['periphExec'],
     'js/modules/periph-exec-modbus.js': { allOf: ['periphExec', 'modbus'] },
@@ -129,10 +131,7 @@ const PAGE_ROOT_CAPABILITY_REQUIREMENTS = Object.freeze({
 });
 
 const MODAL_CAPABILITY_REQUIREMENTS = Object.freeze({
-    'periph-exec-modal': ['periphExec'],
-    'rule-script-modal': ['ruleScript'],
-    'add-user-modal': ['userAdmin'],
-    'config-transfer-modal': ['configTransfer']
+    'periph-exec-modal': ['periphExec']
 });
 
 const PROTOCOL_TAB_CAPABILITY_REQUIREMENTS = Object.freeze({
@@ -250,7 +249,9 @@ function capabilitiesFromBuildFlags(buildFlags) {
     const definitions = parseDefines(buildFlags);
     return Object.fromEntries(Object.entries(CAPABILITY_MACROS).map(([capability, macro]) => [
         capability,
-        defineEnabled(definitions[macro])
+        // The legacy OTA_FS flag describes partition/release compatibility.
+        // There is no U_FS/U_SPIFFS writer; an asserted macro is not support.
+        capability !== 'otaFs' && defineEnabled(definitions[macro])
     ]));
 }
 
@@ -400,7 +401,9 @@ function writeWebResourceManifest(wwwDir, context = resolveWebBuildContext()) {
         requestGovernor: resolveRequestGovernorLimits(context),
         resources
     };
-    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    // This JSON ships uncompressed on every device. Omit formatting bytes;
+    // fields, values and resource order remain identical for release checks.
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, 'utf8');
     return { path: manifestPath, manifest };
 }
 

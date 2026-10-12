@@ -60,6 +60,48 @@ int WebHandlerContext::getParamInt(AsyncWebServerRequest* request, const String&
     return value.toInt();
 }
 
+// Keep the original String construction, POST precedence, conversion and
+// fallback paths. These bridges deliberately do not use the SDK char* lookup.
+#if defined(__GNUC__) && !defined(__clang__)
+#define FASTBEE_PARAM_LITERAL_BRIDGE __attribute__((noinline, noclone))
+#elif defined(__clang__)
+#define FASTBEE_PARAM_LITERAL_BRIDGE __attribute__((noinline))
+#else
+#define FASTBEE_PARAM_LITERAL_BRIDGE
+#endif
+
+FASTBEE_PARAM_LITERAL_BRIDGE
+String WebHandlerContext::getParamValue(AsyncWebServerRequest* request, const char* paramName,
+                                        const char* defaultValue) {
+    return getParamValue(request, String(paramName), String(defaultValue));
+}
+
+FASTBEE_PARAM_LITERAL_BRIDGE
+String WebHandlerContext::getParamValue(AsyncWebServerRequest* request, const char* paramName,
+                                        const String& defaultValue) {
+    return getParamValue(request, String(paramName), defaultValue);
+}
+
+FASTBEE_PARAM_LITERAL_BRIDGE
+String WebHandlerContext::getParamValue(AsyncWebServerRequest* request, const String& paramName,
+                                        const char* defaultValue) {
+    return getParamValue(request, paramName, String(defaultValue));
+}
+
+FASTBEE_PARAM_LITERAL_BRIDGE
+bool WebHandlerContext::getParamBool(AsyncWebServerRequest* request, const char* paramName,
+                                     bool defaultValue) {
+    return getParamBool(request, String(paramName), defaultValue);
+}
+
+FASTBEE_PARAM_LITERAL_BRIDGE
+int WebHandlerContext::getParamInt(AsyncWebServerRequest* request, const char* paramName,
+                                   int defaultValue) {
+    return getParamInt(request, String(paramName), defaultValue);
+}
+
+#undef FASTBEE_PARAM_LITERAL_BRIDGE
+
 // ============ 认证辅助方法 ============
 
 bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
@@ -673,6 +715,33 @@ void WebHandlerContext::sendBadRequest(AsyncWebServerRequest* request, const Str
     sendError(request, 400, message);
 }
 
+// Keep literal message construction in a shared bridge; the existing
+// String response methods retain escaping, timestamp and header behavior.
+#if defined(__GNUC__) && !defined(__clang__)
+#define FASTBEE_ERROR_LITERAL_BRIDGE __attribute__((noinline, noclone))
+#elif defined(__clang__)
+#define FASTBEE_ERROR_LITERAL_BRIDGE __attribute__((noinline))
+#else
+#define FASTBEE_ERROR_LITERAL_BRIDGE
+#endif
+
+FASTBEE_ERROR_LITERAL_BRIDGE
+void WebHandlerContext::sendError(AsyncWebServerRequest* request, int code, const char* message) {
+    sendError(request, code, String(message));
+}
+
+FASTBEE_ERROR_LITERAL_BRIDGE
+void WebHandlerContext::sendBadRequest(AsyncWebServerRequest* request, const char* message) {
+    sendBadRequest(request, String(message));
+}
+
+FASTBEE_ERROR_LITERAL_BRIDGE
+void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const char* message) {
+    sendSuccess(request, String(message));
+}
+
+#undef FASTBEE_ERROR_LITERAL_BRIDGE
+
 // ============ 内置页面 ============
 
 void WebHandlerContext::sendBuiltinSetupPage(AsyncWebServerRequest* request) {
@@ -690,6 +759,10 @@ void WebHandlerContext::sendBuiltinSetupPage(AsyncWebServerRequest* request) {
 // ============ 文件服务方法 ============
 
 bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const String& path) {
+    // Private migration generations include network/protocol dependencies.
+    // No static fallback may disclose them, even with a custom web root.
+    if (path.indexOf("..") >= 0 || path.indexOf('\\') >= 0 ||
+        path.indexOf("/.config-migration") >= 0) return false;
     // Routes normally pass the logical URL (for example /js/app.js), but the
     // not-found handler can also receive an explicit .gz URL.  Always derive
     // MIME/cache policy from the logical asset so a .js.gz response is still
@@ -780,6 +853,17 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     }
     if (!openFile) {
         return false;  // 404 fallback; no slot was taken
+    }
+
+    // Prefer a small stdio buffer before the first seek/read (including CRC).
+    // LittleFS reports 4096-byte blocks to newlib, whose default file buffer
+    // otherwise consumes another 4KB per response before stream admission.
+    // setvbuf may fall back to its default allocation and still return success;
+    // this is not a hard cap, so retain the live memory check below.
+    if (!openFile.setBufferSize(512)) {
+        openFile.close();
+        sendStaticBusyResponse(request, contentType);
+        return true;  // No in-flight slot has been acquired.
     }
 
     // The File-based AsyncFileResponse constructor used below does not add an
@@ -989,7 +1073,7 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
     // 届时响应已入队卡在拥塞的 TX 通道（soak 首请求 1/40 挂起根因）。
     {
         ProtocolManager* pm = framework ? framework->getProtocolManager() : nullptr;
-        MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+        auto mqtt = pm ? pm->acquireMQTTClient() : FastBee::MqttClientLease{};
         if (mqtt) {
             mqtt->yieldToWeb();
         }

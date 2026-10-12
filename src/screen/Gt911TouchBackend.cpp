@@ -20,6 +20,7 @@ namespace {
 
 constexpr uint8_t GT911_ADDRESS_PRIMARY = 0x5D;
 constexpr uint8_t GT911_ADDRESS_SECONDARY = 0x14;
+constexpr uint16_t GT911_REG_COMMAND = 0x8040;
 constexpr uint16_t GT911_REG_CONFIG_SIZE = 0x8048;
 constexpr uint16_t GT911_REG_CONFIG_START = 0x8047;
 constexpr uint16_t GT911_REG_TOUCH_NUMBER = 0x804C;
@@ -36,7 +37,10 @@ constexpr uint8_t GT911_MAX_POINTS = 5;
 
 class Gt911TouchBackend final : public ITouchBackend {
 public:
+    ~Gt911TouchBackend() override { end(); }
+
     bool begin(const DisplayConfigParams& config, String& error) override {
+        end();
         if (strcasecmp(config.touchBackend, "gt911") != 0) {
             error = "SCREEN_TOUCH_BACKEND_UNSUPPORTED";
             return false;
@@ -49,13 +53,31 @@ public:
         }
 
         _config = config;
-        if (!I2CBusManager::instance().acquire(
-                this, config.touchSda, config.touchScl,
-                config.i2cFrequency, error)) {
-            if (error.isEmpty()) error = "SCREEN_TOUCH_I2C_ACQUIRE_FAILED";
-            return false;
+        {
+            // Reset can select either address. Reserve both before touching
+            // RESET/INT or probing, with no admission gap between the claims.
+            I2CBusLock lock(100);
+            if (!lock.locked()) {
+                error = "SCREEN_TOUCH_I2C_LOCK_FAILED";
+                return false;
+            }
+            auto& bus = I2CBusManager::instance();
+            _leased = bus.acquire(this, config.touchSda, config.touchScl,
+                                  config.i2cFrequency, error, ResourceConsumerRole::Touch);
+            if (_leased && bus.claimAddress(this, GT911_ADDRESS_PRIMARY, error)) {
+                _alternateLeased = bus.acquire(&_alternateOwner, config.touchSda,
+                    config.touchScl, config.i2cFrequency, error, ResourceConsumerRole::Touch);
+                if (!_alternateLeased ||
+                    !bus.claimAddress(&_alternateOwner, GT911_ADDRESS_SECONDARY, error)) {
+                    end();
+                    return false;
+                }
+            } else {
+                if (error.isEmpty()) error = "SCREEN_TOUCH_I2C_ACQUIRE_FAILED";
+                end();
+                return false;
+            }
         }
-        _leased = true;
 
         resetController(false);
         if (!probeAddress(GT911_ADDRESS_PRIMARY) &&
@@ -98,12 +120,39 @@ public:
             _controllerHeight = config.height;
         }
 
-        if (!configureSingleTouch(error)) {
+        for (uint8_t attempt = 0; !configureSingleTouch(error); ++attempt) {
+            // An address/product ACK may precede a usable power-on config.
+            // Retry only reads/validation: never repeat a partially staged write.
+            const bool retryable = error == "SCREEN_TOUCH_GT911_CONFIG_READ_FAILED" ||
+                error == "SCREEN_TOUCH_GT911_CONFIG_CHECKSUM_INVALID" ||
+                error == "SCREEN_TOUCH_GT911_CONFIG_INVALID";
+            if (!retryable || attempt == 2) {
+                end();
+                return false;
+            }
+            delay(50);
+        }
+
+        // Register/config reads also work outside coordinate-reporting mode.
+        // Explicitly select coordinates and discard any startup packet before
+        // publishing readiness. Do not use command 2: newer GT911 firmware
+        // defines it as raw/differential data, not a software reset.
+        const uint8_t coordinateMode = 0;
+        if (!writeRegister(GT911_REG_COMMAND, &coordinateMode, 1)) {
+            error = "SCREEN_TOUCH_GT911_MODE_WRITE_FAILED";
             end();
             return false;
         }
-
+        if (!clearStatus()) {
+            error = "SCREEN_TOUCH_GT911_STATUS_CLEAR_FAILED";
+            end();
+            return false;
+        }
+        _wasPressed = false;
+        _pollFailing = false;
+        _lastPoint = TouchPoint{};
         if (config.touchInt >= 0) {
+            _pinsConfigured = true;
             pinMode(static_cast<uint8_t>(config.touchInt), INPUT);
         }
         _ready = true;
@@ -119,17 +168,26 @@ public:
         _ready = false;
         _wasPressed = false;
         _pollFailing = false;
+        if (_pinsConfigured) {
+            if (_config.touchInt >= 0) {
+                pinMode(static_cast<uint8_t>(_config.touchInt), INPUT);
+            }
+            if (_config.touchRst >= 0) {
+                pinMode(static_cast<uint8_t>(_config.touchRst), INPUT);
+            }
+            _pinsConfigured = false;
+        }
         if (_leased) {
             if (!I2CBusManager::instance().release(this, 100)) {
                 I2CBusManager::instance().deferRelease(this);
             }
             _leased = false;
         }
-        if (_config.touchInt >= 0) {
-            pinMode(static_cast<uint8_t>(_config.touchInt), INPUT);
-        }
-        if (_config.touchRst >= 0) {
-            pinMode(static_cast<uint8_t>(_config.touchRst), INPUT);
+        if (_alternateLeased) {
+            if (!I2CBusManager::instance().release(&_alternateOwner, 100)) {
+                I2CBusManager::instance().deferRelease(&_alternateOwner);
+            }
+            _alternateLeased = false;
         }
         _address = 0;
     }
@@ -249,9 +307,13 @@ private:
         // controller configuration, not an invented generic fallback table.
         if (!width || width == 0xFFFFU || !height || height == 0xFFFFU ||
             !maxPoints || maxPoints > GT911_MAX_POINTS) {
+            LOGGER.infof("GT911: config not ready width=%u height=%u maxPoints=%u",
+                         width, height, maxPoints);
             error = "SCREEN_TOUCH_GT911_CONFIG_INVALID";
             return false;
         }
+        _controllerWidth = width;
+        _controllerHeight = height;
         const uint8_t points = (config[5] & 0xF0U) | 1U;
         const uint8_t checksum = config[GT911_CONFIG_DATA_LENGTH] + config[5] - points;
         const uint8_t fresh = 1;
@@ -327,6 +389,7 @@ private:
 
     void resetController(bool selectAlternateAddress) {
         if (_config.touchRst < 0) return;
+        _pinsConfigured = true;
         const uint8_t resetPin = static_cast<uint8_t>(_config.touchRst);
         pinMode(resetPin, OUTPUT);
         digitalWrite(resetPin, LOW);
@@ -369,28 +432,47 @@ private:
         return writeRegister(GT911_REG_STATUS, &clear, 1);
     }
 
+    TwoWire* touchWireLocked() {
+        const void* owner = nullptr;
+        if (_address == GT911_ADDRESS_PRIMARY && _leased) owner = this;
+        if (_address == GT911_ADDRESS_SECONDARY && _alternateLeased) owner = &_alternateOwner;
+        auto& bus = I2CBusManager::instance();
+        return owner && bus.ownsAddress(owner, _address) ? bus.wire(owner) : nullptr;
+    }
+
     bool readRegister(uint16_t reg, uint8_t* data, size_t length) {
         if (!_leased || _address == 0 || !data || length == 0 || length > 32) {
             return false;
         }
         I2CBusLock lock(50);
-        TwoWire* wire = lock.locked()
-            ? I2CBusManager::instance().wire(this) : nullptr;
+        TwoWire* wire = lock.locked() ? touchWireLocked() : nullptr;
         if (!wire) return false;
         wire->beginTransmission(_address);
-        wire->write(static_cast<uint8_t>(reg >> 8U));
-        wire->write(static_cast<uint8_t>(reg));
-        if (wire->endTransmission(false) != 0) return false;
+        const bool highWritten = wire->write(static_cast<uint8_t>(reg >> 8U)) == 1;
+        const bool lowWritten = highWritten && wire->write(static_cast<uint8_t>(reg)) == 1;
+        // End every attempted transaction, but never issue a read with a
+        // truncated register pointer. Only a complete pointer keeps the bus.
+        const uint8_t status = wire->endTransmission(!lowWritten);
+        if (!lowWritten || status != 0) return false;
         const size_t received = wire->requestFrom(
             _address, static_cast<uint8_t>(length));
         if (received != length) {
-            while (wire->available()) wire->read();
+            // A broken adapter must not hold the shared lock indefinitely.
+            for (size_t i = 0; i < 32 && wire->available() > 0; ++i) {
+                if (wire->read() < 0) break;
+            }
             return false;
         }
+        // Do not expose a partial touch/config record as a successful read.
+        uint8_t complete[32];
         for (size_t i = 0; i < length; ++i) {
-            if (!wire->available()) return false;
-            data[i] = static_cast<uint8_t>(wire->read());
+            if (wire->available() <= 0) return false;
+            const int value = wire->read();
+            if (value < 0 || value > 255) return false;
+            complete[i] = static_cast<uint8_t>(value);
         }
+        if (wire->available() != 0) return false;
+        std::memcpy(data, complete, length);
         return true;
     }
 
@@ -399,14 +481,14 @@ private:
             return false;
         }
         I2CBusLock lock(50);
-        TwoWire* wire = lock.locked()
-            ? I2CBusManager::instance().wire(this) : nullptr;
+        TwoWire* wire = lock.locked() ? touchWireLocked() : nullptr;
         if (!wire) return false;
         wire->beginTransmission(_address);
-        wire->write(static_cast<uint8_t>(reg >> 8U));
-        wire->write(static_cast<uint8_t>(reg));
-        wire->write(data, length);
-        return wire->endTransmission() == 0;
+        const bool highWritten = wire->write(static_cast<uint8_t>(reg >> 8U)) == 1;
+        const bool lowWritten = highWritten && wire->write(static_cast<uint8_t>(reg)) == 1;
+        const bool payloadWritten = lowWritten && wire->write(data, length) == length;
+        const uint8_t status = wire->endTransmission();
+        return payloadWritten && status == 0;
     }
 
     DisplayConfigParams _config{};
@@ -419,6 +501,9 @@ private:
     uint32_t _polls = 0, _readyReports = 0, _downReports = 0, _upReports = 0;
     uint32_t _readFailures = 0, _ackFailures = 0, _invalidReports = 0;
     bool _leased = false;
+    bool _alternateLeased = false;
+    bool _pinsConfigured = false;
+    uint8_t _alternateOwner = 0;
     bool _ready = false;
     bool _wasPressed = false;
     bool _pollFailing = false;

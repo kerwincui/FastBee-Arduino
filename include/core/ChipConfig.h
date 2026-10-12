@@ -20,6 +20,16 @@
 
 // ========== 芯片能力定义 ==========
 
+// The installed SDK's bool/32-bit atomics were reviewed for these targets:
+// Xtensa internal DRAM, C3 single-core interrupt masking, and C6 hardware CAS.
+// Unlike other legacy defaults, unknown targets must fail closed here.
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S3 || \
+    CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+  #define CHIP_HAS_REVIEWED_INTERNAL_ATOMIC_STORAGE 1
+#else
+  #define CHIP_HAS_REVIEWED_INTERNAL_ATOMIC_STORAGE 0
+#endif
+
 #if defined(CONFIG_IDF_TARGET_ESP32)
   #define CHIP_IS_CLASSIC_ESP32 1
   #define CHIP_IS_ESP32C3      0
@@ -89,6 +99,10 @@
   #define CHIP_HAS_CLASSIC_BT 1
   #define CHIP_NAME           "ESP32"
 #endif
+
+// UART/GPIO diagnostic snapshots decode S3-specific register layouts.
+// Consumers additionally gate the gpio_get_io_config API by SDK version.
+#define CHIP_HAS_UART_GPIO_SNAPSHOT_REGISTERS CHIP_IS_ESP32S3
 
 // Keep non-functional defaults that vary by chip in this central hardware
 // abstraction so application modules do not scatter target preprocessor
@@ -281,6 +295,15 @@ static inline uint32_t chipGetDramTotalKb() {
 #else
   #define CHIP_FRAGMENTATION_SUSPEND_RATIO   0.38f  // 38%
   #define CHIP_FRAGMENTATION_CRITICAL_RATIO  0.28f  // 28%
+#endif
+
+// Arduino global SPI uses VSPI on classic ESP32, FSPI on C3/C6/S3.
+// Keep W5500 on a distinct HSPI only on classic; otherwise share the actual
+// global SPIClass, never create two Arduino objects for the same controller.
+#if defined(CONFIG_IDF_TARGET_ESP32)
+  #define CHIP_ETHERNET_DEDICATED_SPI 1
+#else
+  #define CHIP_ETHERNET_DEDICATED_SPI 0
 #endif
 
 // === TLS 专用预留池 (确保 WiFi/MQTT-TLS 握手成功) ===

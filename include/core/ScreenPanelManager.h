@@ -101,7 +101,7 @@ struct ScreenPanelCardSnapshot {
     char systemActionId[17]{};
     uint16_t motorSpeed = 0, motorPulse = 0;
     uint8_t motorPrecision = 0;
-    uint16_t motorSpeedInput = 50, motorPulseInput = 1600;
+    uint16_t motorSpeedInput = 10, motorPulseInput = 100;
     uint16_t motorSpeedStep = 1, motorPulseStep = 100;
     uint8_t motorConfirmAction = 0;
     uint16_t motorConfirmValue = 0;
@@ -112,6 +112,9 @@ struct ScreenPanelCardSnapshot {
     bool motorForwardReady = false, motorReverseReady = false;
     uint32_t motorCommandUpdatedMs = 0;
     char motorReadError[128]{};
+    // Screen-worker feedback survives backend refresh; never authoritative state.
+    char motorUiFeedback[97]{};
+    uint32_t motorUiFeedbackAt = 0;
     char error[97]{};
     char historyError[97]{};
     char weatherCondition[25]{};
@@ -208,7 +211,8 @@ public:
                         uint32_t& operationId, String& error);
     bool dispatchAction(const char* cardId, ScreenActionKind kind,
                         const String& value, uint32_t& operationId,
-                        String& error, const char* expectedControlRef = nullptr);
+                        String& error, const char* expectedControlRef = nullptr,
+                        uint32_t expectedRevision = 0);
     bool queueSetting(const String& key, uint32_t value, String& error);
     void notifyRestartSaveFailure();
     bool consumeRestartWithoutHistorySave();
@@ -216,6 +220,9 @@ public:
 
     uint32_t revision() const { return _revision; }
     bool hasPersistedConfig() const { return _persisted; }
+
+    static bool validateMigrationControl(const struct PeriphExecRule& rule,
+                                         JsonObjectConst card, String& error);
 
 private:
     ScreenPanelManager() = default;
@@ -261,6 +268,7 @@ private:
         uint32_t id = 0;
         uint8_t error = 0;
         bool failed = false;
+        const char* controlReason = nullptr; // PM result reasons are static literals.
     };
     // On ESP32 PSRAM builds this document has a strict PSRAM allocator; a
     // failed allocation never silently retains the layout in internal DRAM.

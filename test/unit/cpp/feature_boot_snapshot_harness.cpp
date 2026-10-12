@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <cassert>
+#include "core/FeatureInstanceRegistry.h"
 #define private public
 #include "core/RuntimeFeatureManager.h"
 #undef private
@@ -73,6 +75,10 @@ static void status(Manager& manager, bool intent, bool boot) {
         assert(doc["bootEnabled"].as<bool>() == boot);
         assert(doc["pendingRestart"].as<bool>() == (intent != boot));
         assert(doc["active"].as<bool>() == boot);
+        assert(doc["activeMeaning"].as<std::string>() == "admission_only");
+        assert(doc["instanceState"].as<std::string>() == "unobserved");
+        assert(doc["admissionState"].as<std::string>() ==
+               (boot ? "admitted" : intent ? "restart_required" : "user_disabled"));
     }
 }
 static Manager::ConfigUpdateResult toggle(Manager& manager, bool enabled) {
@@ -134,8 +140,158 @@ static void missingAndInvalidInitialConfigLatchSafeDefaults() {
         assert(manager.loadConfig()); status(manager, true, false);
     }
 }
+static void dependencyAdmissionIsBoundedAndPreservesIntent() {
+    saved(true); Manager manager;
+    assert(manager.loadConfig());
+    manager.setNetworkReady(true);
+    manager.registerFeature({"parent", "Parent", "system", 1, 64,
+                             true, true, nullptr, nullptr, 0, true});
+    manager.registerFeature({"child", "Child", "system", 1, 64,
+                             true, true, nullptr, "parent", 0, false});
+    manager.registerFeature({"grandchild", "Grandchild", "system", 1, 64,
+                             true, true, nullptr, "child", 0, false});
+    const auto before = manager.captureUserConfig();
+    auto* parent = manager.findFeature("parent");
+    auto* child = manager.findFeature("child");
+    const auto* grandchild = manager.findFeature("grandchild");
+    assert(manager.shouldEnable("grandchild"));
+    manager.setRuntimeDisabled("parent", "memory pressure");
+    assert(!manager.shouldEnable("child") && !manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*grandchild)) == "dependency_blocked");
+    assert(std::string(manager.admissionState(*parent)) == "runtime_disabled");
+    manager.clearRuntimeDisabled("parent");
+    assert(manager.shouldEnable("grandchild"));
+    manager.setNetworkReady(false);
+    assert(!manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*parent)) == "waiting_for_network");
+    manager.setNetworkReady(true);
+    parent->budgetPassed = false;
+    assert(!manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*parent)) == "budget_denied");
+    parent->budgetPassed = true;
+    parent->meta.compiled = false;
+    assert(!manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*parent)) == "not_compiled");
+    parent->meta.compiled = true;
+    child->meta.dependsOn = "missing";
+    assert(!manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*grandchild)) == "dependency_missing");
+    child->meta.dependsOn = "grandchild";
+    assert(!manager.shouldEnable("grandchild"));
+    assert(std::string(manager.admissionState(*grandchild)) == "dependency_cycle");
+    child->meta.dependsOn = "child";
+    assert(!manager.shouldEnable("child"));
+    child->meta.dependsOn = "parent";
+    assert(manager.shouldEnable("grandchild"));
+    assert(manager.captureUserConfig().enabledMask == before.enabledMask);
+    assert(manager.captureUserConfig().explicitMask == before.explicitMask);
+    assert(!manager.shouldEnable("unknown"));
+    // Restart-only dependency uses the running boot snapshot, not newly saved intent.
+    child->meta.dependsOn = "ioExpander";
+    assert(manager.setUserEnabled("ioExpander", false));
+    assert(manager.shouldEnable("child"));
+    manager.ioExpanderBootEnabled_ = false;
+    assert(manager.setUserEnabled("ioExpander", true));
+    assert(!manager.shouldEnable("child"));
+    JsonDocument summary;
+    manager.getStatusSummaryJson(summary.to<JsonObject>());
+    assert(summary["resourceAccounting"].as<std::string>() == "static_estimate");
+    assert(summary["instanceMemoryMeasured"].is<bool>());
+    assert(!summary["instanceMemoryMeasured"].as<bool>());
+}
+
+static void instanceStatusDoesNotChangeAdmissionOrRetainOldCounts() {
+    saved(true); Manager manager; manager.setNetworkReady(true); assert(manager.loadConfig());
+    static FastBee::FeatureInstanceSnapshot observation{FastBee::FeatureInstanceState::Initialized, 3};
+    static const FastBee::FeatureInstanceObserver observer{"i2cSensors", [](const void*) { return observation; }, nullptr};
+    assert(FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer));
+    JsonDocument doc; auto object = doc.to<JsonObject>();
+    const auto before = manager.captureUserConfig();
+    assert(manager.getFeatureStatusJson(1, object));
+    assert(doc["instanceObserved"].as<bool>());
+    assert(doc["instanceScope"].as<std::string>() == "driver_initialization");
+    assert(doc["initializedInstances"].as<unsigned>() == 3);
+    assert(doc["instanceReason"].as<std::string>().empty());
+    manager.setRuntimeDisabled("i2cSensors", "pressure");
+    assert(manager.getFeatureStatusJson(1, object));
+    assert(!doc["active"].as<bool>() && doc["userEnabled"].as<bool>());
+    assert(doc["initializedInstances"].as<unsigned>() == 3);
+    assert(doc["instanceState"].as<std::string>() == "initialized");
+    for (auto state : {FastBee::FeatureInstanceState::Busy, FastBee::FeatureInstanceState::CleanupPending}) {
+        observation = {state, 25};
+        assert(manager.getFeatureStatusJson(1, object));
+        assert(doc["initializedInstances"].isNull());
+        assert(doc["instanceObserved"].as<bool>() == (state == FastBee::FeatureInstanceState::CleanupPending));
+    }
+    observation = {FastBee::FeatureInstanceState::NotInitialized, 0};
+    assert(manager.getFeatureStatusJson(1, object));
+    assert(doc["initializedInstances"].is<unsigned>() && doc["initializedInstances"].as<unsigned>() == 0);
+    // Reuse the same JSON object across driver, service, busy, and unknown.
+    // This deliberately tests transport semantics, not a particular owner's
+    // lifecycle: admission remains independent even for retained resources.
+    for (auto state : {FastBee::FeatureInstanceState::Allocated, FastBee::FeatureInstanceState::Running,
+                       FastBee::FeatureInstanceState::Stopped, FastBee::FeatureInstanceState::Retiring}) {
+        observation = FastBee::FeatureInstanceSnapshot::lifecycle(state);
+        assert(manager.getFeatureStatusJson(1, object));
+        assert(doc["instanceObserved"].as<bool>() && doc["initializedInstances"].isNull());
+        assert(doc["instanceScope"].as<std::string>() == "service_lifecycle");
+        assert(doc["instanceState"].as<std::string>() == observation.name());
+        assert(doc["instanceReason"].as<std::string>().empty());
+        assert(!doc["active"].as<bool>() && doc["userEnabled"].as<bool>());
+    }
+    observation = FastBee::FeatureInstanceSnapshot::lifecycle(FastBee::FeatureInstanceState::Busy);
+    assert(manager.getFeatureStatusJson(1, object));
+    assert(!doc["instanceObserved"].as<bool>() && doc["initializedInstances"].isNull());
+    assert(doc["instanceReason"].as<std::string>() == "observation_busy");
+    observation = FastBee::FeatureInstanceSnapshot::unavailable(
+        FastBee::FeatureInstanceReason::SynchronizationUnavailable, FastBee::FeatureInstanceScope::ServiceLifecycle);
+    assert(manager.getFeatureStatusJson(1, object));
+    assert(doc["instanceReason"].as<std::string>() == "synchronization_unavailable");
+    assert(doc["instanceScope"].as<std::string>() == "service_lifecycle");
+    assert(manager.getFeatureStatusJson(0, object));
+    assert(!doc["instanceObserved"].as<bool>() && doc["initializedInstances"].isNull());
+    assert(doc["instanceState"].as<std::string>() == "unobserved");
+    assert(doc["instanceReason"].as<std::string>() == "observer_not_registered");
+    assert(doc["instanceScope"].as<std::string>() == "driver_initialization");
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceReason"].as<std::string>() == "observer_not_registered");
+    manager.features_[2].meta.compiled = false;
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceReason"].as<std::string>() == "not_compiled");
+    assert(manager.captureUserConfig().enabledMask == before.enabledMask);
+    assert(manager.captureUserConfig().explicitMask == before.explicitMask);
+    manager.features_[2].meta.key = "deviceControl";
+    manager.features_[2].meta.compiled = true;
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceScope"].as<std::string>() == "static_resource");
+    assert(doc["instanceReason"].as<std::string>() == "no_dedicated_instance");
+    assert(!doc["instanceObserved"].as<bool>() && doc["initializedInstances"].isNull());
+    manager.features_[2].meta.key = "commandScript";
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceScope"].as<std::string>() == "execution_activity");
+    assert(doc["bundleRequired"].as<bool>());
+    for (const auto* key : {"webServer", "modbus", "ota", "logViewer", "ble", "cellular"}) {
+        manager.features_[2].meta.key = key;
+        assert(manager.getFeatureStatusJson(2, object));
+        assert(doc["instanceScope"].as<std::string>() == "owner_lifetime");
+        assert(doc["instanceReason"].as<std::string>() == "observer_not_registered");
+        assert(!doc["instanceObserved"].as<bool>() && doc["initializedInstances"].isNull());
+    }
+    manager.features_[2].meta.key = "mqtts";
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceScope"].as<std::string>() == "transport_allocation");
+    assert(doc["instanceReason"].as<std::string>() == "observer_not_registered");
+    manager.features_[2].meta.key = "otaFs";
+    manager.features_[2].meta.compiled = false;
+    assert(manager.getFeatureStatusJson(2, object));
+    assert(doc["instanceReason"].as<std::string>() == "implementation_missing");
+    assert(!doc["bundleRequired"].as<bool>());
+}
+
 int main() {
     enabledBootSurvivesDisableAndReload();
     disabledBootStagesEnableAndRollsBackSaveFailure();
     missingAndInvalidInitialConfigLatchSafeDefaults();
+    dependencyAdmissionIsBoundedAndPreservesIntent();
+    instanceStatusDoesNotChangeAdmissionOrRetainOldCounts();
 }

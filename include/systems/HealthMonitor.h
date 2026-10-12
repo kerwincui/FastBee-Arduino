@@ -32,7 +32,9 @@ static constexpr uint32_t FRAG_REBOOT_COUNT      = 12;    // 12 * 5s health chec
 // 任务栈水位信息
 struct TaskStackInfo {
     char name[16];
-    uint32_t highWaterMark;  // 剩余栈空间（字节）
+    uint32_t highWaterMark = UINT32_MAX; // bytes; valid only when observed
+    bool observed = false;
+    uint64_t sampledAtUptimeMs = 0;
 };
 
 // WiFi 连接内存保护阈值（DRAM，排除 PSRAM）
@@ -75,7 +77,7 @@ public:
 
     bool isSystemHealthy() const;
 
-    // 获取关键任务栈水位信息
+    // Only the calling task; name is the scope label "current-task", not an RTOS name.
     size_t getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const;
 
     // ── 内存保护等级 ──
@@ -92,7 +94,8 @@ public:
     bool isFragmentationHigh() const;  // 碎片率>75%
 
     // ── 内存恢复状态查询（供 API 和外部模块使用）──
-    bool isMqttsDowngraded() const { return _mqttsMemoryDowngrade; }
+    bool isMqttsDowngraded() const { return false; } // Legacy API: no automatic plaintext downgrade.
+    bool isMqttsPausedForMemory() const { return _mqttsMemoryDowngrade; }
     bool isMqttStoppedForMemory() const { return _mqttStoppedForMemory; }
     bool isMqttDisabledForMemory() const { return _mqttDisabledForMemory; }
     bool isMqttRestorePendingForMemory() const { return _mqttRestorePendingForMemory; }
@@ -198,27 +201,28 @@ private:
     bool     _degradationActive = false;  // 是否正处于降级状态
 
     // ── 内存恢复状态跟踪（防砖机制）──
-    bool _mqttsMemoryDowngrade = false;      // MQTTS 已降级为 MQTT（scheme 已写入配置文件）
+    bool _mqttsMemoryDowngrade = false;      // Compatibility name: TLS paused, never plaintext downgrade.
     bool _mqttStoppedForMemory = false;      // MQTT 因内存不足被完全停止
-    bool _mqttDisabledForMemory = false;     // MQTT 因内存不足被永久禁用（写入配置 enabled=false）
+    bool _mqttDisabledForMemory = false;     // Only a legacy persisted enabled=false marker; never newly written.
     bool _modbusStoppedForMemory = false;    // Modbus 因内存不足被停止
     bool _periphExecPausedForMemory = false; // PeriphExec 因内存不足被暂停
     bool _optionalPeripheralsSuspendedForMemory = false;
     uint16_t _memorySuspendedPeripheralCount = 0;
-    bool _mqttRestorePendingForMemory = false; // MQTT 恢复请求尚未成功排队
+    bool _mqttRestorePendingForMemory = false; // MQTT 恢复待重试或尚未确认实例就绪
+    bool _mqttRecoveryBlockedForStorage = false; // 准入存储不可用，不能用内存恢复重试替代重启
     unsigned long _mqttRestoreRetryAtMs = 0;   // MQTT 恢复失败后的退避时间
     unsigned long _criticalStartTime = 0;    // CRITICAL 级别开始时间（0=未进入）
-    unsigned long _mqttsDowngradeTimeMs = 0;     // MQTTS 降级时间戳（诊断用）
+    unsigned long _mqttsDowngradeTimeMs = 0;     // MQTTS 暂停时间戳（兼容名称）
     unsigned long _mqttsRestoreCooldownMs = 0;    // MQTTS 恢复冷却到期时间戳（24h 防风暴）
-    unsigned long _mqttsDowngradeRetryAtMs = 0;   // 降级配置写入失败后的重试时间
-    unsigned long _mqttsRestoreRetryAtMs = 0;     // 恢复配置写入失败后的重试时间
-    unsigned long _mqttDisableRetryAtMs = 0;      // 完全禁用 MQTT 写入失败后的重试时间
+    unsigned long _mqttsDowngradeRetryAtMs = 0;   // TLS 暂停重试时间（兼容名称，不写配置）
+    unsigned long _mqttsRestoreRetryAtMs = 0;     // TLS 读取配置/安全重建失败后的重试时间
+    unsigned long _mqttDisableRetryAtMs = 0;      // MQTT 暂停重试时间（兼容名称，不写配置）
     bool _modbusRestorePendingForMemory = false;  // 已请求恢复，等待 loopTask 实际启动
     unsigned long _modbusRestoreRetryAtMs = 0;    // Modbus 恢复失败后的退避时间
-    // MQTTS 降级前保存原始 scheme/port，恢复时严格回写原值而不是假定 8883。
+    // 仅记录旧版降密元数据供诊断；未知端口为 0，不猜测、不自动回写磁盘。
     char _mqttsOriginalScheme[8] = "mqtts";
-    uint16_t _mqttsOriginalPort = 8883;
-    static constexpr unsigned long CRITICAL_MQTT_STOP_DELAY_MS = 30000;   // 30s 后禁用 MQTT
+    uint16_t _mqttsOriginalPort = 0;
+    static constexpr unsigned long CRITICAL_MQTT_STOP_DELAY_MS = 30000;   // 30s 后暂停 MQTT
     static constexpr unsigned long CRITICAL_REBOOT_DELAY_MS    = 90000;   // 90s 后重启
     unsigned long _guardCriticalSince = 0;   // MemGuard CRITICAL 开始时间（0=未进入）
     static constexpr unsigned long GUARD_CRITICAL_STUCK_MS = 600000;  // CRITICAL 降载持续 10 分钟无自愈则重启
@@ -227,15 +231,17 @@ private:
     static constexpr unsigned long GUARD_REBOOT_LOOP_WINDOW_MS = 1800000;
     unsigned long _emergencySince = 0;       // DRAM<4KB EMERGENCY 开始时间（0=未进入）
     static constexpr unsigned long EMERGENCY_REBOOT_DELAY_MS = 5000;  // EMERGENCY 恢复无效持续 5s 则抢先优雅重启（防 OOM abort）
-    static constexpr unsigned long MQTT_MEMORY_CONFIG_RETRY_MS = 30000;  // 配置写入失败时避免每个健康周期反复写 flash
+    static constexpr unsigned long MQTT_MEMORY_CONFIG_RETRY_MS = 30000;  // 配置读取或运行实例恢复失败后的退避
     static constexpr unsigned long MODBUS_MEMORY_RETRY_MS = 30000;       // 延迟重启失败后的退避
 
     void performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);
     void ensureTLSContiguousMemory();  // 确保 TLS 握手所需连续 DRAM（P0 优化）
-    void downgradeMqttsToMqtt();      // 将 scheme 从 mqtts 切换为 mqtt 并重启 MQTT
-    void disableMqttForMemory();      // 写入 mqtt.enabled=false 到 protocol.json + stopMQTT
+    void downgradeMqttsToMqtt();      // Compatibility name: pause TLS without modifying user configuration.
+    void restoreMqttsAfterMemory();  // Resume confirmed secure intent; no persistent scheme/port writes.
+    void disableMqttForMemory();      // 本次启动暂停 MQTT，保留用户 enabled/传输配置
     void restoreMemoryRecovery();     // NORMAL 恢复时重启已停止的服务（MQTT 被禁用除外）
     void reconcilePendingMemoryRecovery(); // 确认延迟恢复成功后再清除状态
+    bool refreshMqttRecoveryAdmission(); // 永久准入失败不触配置、不排队重建
     void loadPersistedMqttsDowngrade();  // 从 protocol.json 恢复跨重启的 MQTT 内存降级状态
 
     // 外部上报指标（预留接口）

@@ -952,7 +952,7 @@ void test_mr1_metrics_json_recovery_fields() {
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
 
     const char* fields[] = {
-        "mqtts_downgraded", "mqtt_stopped", "mqtt_disabled",
+        "mqtts_downgraded", "mqtts_paused", "mqtts_protection", "mqtt_stopped", "mqtt_disabled",
         "modbus_stopped", "periph_exec_paused", "critical_duration_s"
     };
     for (const char* f : fields) {
@@ -960,7 +960,7 @@ void test_mr1_metrics_json_recovery_fields() {
             content.find(f) != std::string::npos,
             (std::string("getMetricsJson must contain field: ") + f).c_str());
     }
-    TestLog::step("All 6 recovery state fields present in getMetricsJson");
+    TestLog::step("Recovery fields include truthful TLS suspension and compatibility status");
     TestLog::testEnd(true);
 }
 
@@ -973,7 +973,7 @@ void test_mr2_query_interfaces_in_header() {
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.h must be readable");
 
     const char* methods[] = {
-        "isMqttsDowngraded", "isMqttStoppedForMemory", "isMqttDisabledForMemory",
+        "isMqttsDowngraded", "isMqttsPausedForMemory", "isMqttStoppedForMemory", "isMqttDisabledForMemory",
         "isModbusStoppedForMemory", "isPeriphExecPausedForMemory", "getCriticalDurationMs"
     };
     for (const char* m : methods) {
@@ -981,7 +981,7 @@ void test_mr2_query_interfaces_in_header() {
             content.find(m) != std::string::npos,
             (std::string("HealthMonitor.h must have method: ") + m).c_str());
     }
-    TestLog::step("All 6 query interfaces present in header");
+    TestLog::step("Recovery query interfaces include TLS suspension");
     TestLog::testEnd(true);
 }
 
@@ -1034,10 +1034,10 @@ void test_mr5_critical_has_severe_fallback() {
 }
 
 /**
- * @brief MR-6: checkCriticalMemory 30s 调用 disableMqttForMemory（而非仅 stopMQTT）
+ * @brief MR-6: checkCriticalMemory 30s 通过兼容入口暂停 MQTT
  */
 void test_mr6_30s_disables_mqtt() {
-    TestLog::testStart("MR-6: checkCriticalMemory 30s disables MQTT permanently");
+    TestLog::testStart("MR-6: checkCriticalMemory 30s pauses MQTT for this boot");
     std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
 
@@ -1049,8 +1049,8 @@ void test_mr6_30s_disables_mqtt() {
         "Must use CRITICAL_MQTT_STOP_DELAY_MS constant");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("_mqttDisabledForMemory") != std::string::npos,
-        "Must set _mqttDisabledForMemory flag");
-    TestLog::step("30s permanent MQTT disable verified");
+        "Must retain legacy disabled marker handling");
+    TestLog::step("30s MQTT memory pause entry verified");
     TestLog::testEnd(true);
 }
 
@@ -1076,26 +1076,27 @@ void test_mr7_90s_schedules_reboot() {
 }
 
 /**
- * @brief MR-8: downgradeMqttsToMqtt 配置写入失败时安全退出
+ * @brief MR-8: TLS 恢复失败保留配置，拒绝明文回退
  */
 void test_mr8_downgrade_failure_safe_exit() {
-    TestLog::testStart("MR-8: downgradeMqttsToMqtt safe exit on config failure");
+    TestLog::testStart("MR-8: TLS recovery preserves configuration and rejects plaintext fallback");
     std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
 
-    // 检查配置写入失败后有 return 语句
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("skip MQTT restart") != std::string::npos,
-        "Config write failure must skip MQTT restart");
-    TestLog::step("Config failure safe exit verified");
+        content.find("configuration preserved, no plaintext fallback") != std::string::npos,
+        "Failed TLS recovery must retain secure intent");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("doc[\"mqtt\"][\"scheme\"] = \"mqtt\"") == std::string::npos,
+        "Memory recovery must not persist a plaintext scheme");
+    TestLog::step("TLS fail-closed recovery contract verified");
     TestLog::testEnd(true);
 }
 
 /**
- * @brief MR-9: disableMqttForMemory 写入 mqtt.enabled=false 并调用 stopMQTT
+ * @brief MR-9: disableMqttForMemory 暂停本次启动，不覆盖用户 enabled
  */
 void test_mr9_disable_mqtt_implementation() {
-    TestLog::testStart("MR-9: disableMqttForMemory writes enabled=false and stops MQTT");
+    TestLog::testStart("MR-9: critical memory pauses MQTT without changing enabled");
     std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
 
@@ -1103,14 +1104,14 @@ void test_mr9_disable_mqtt_implementation() {
         content.find("disableMqttForMemory") != std::string::npos,
         "disableMqttForMemory method must exist");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("mqtt.enabled") != std::string::npos,
-        "Must write mqtt.enabled to config");
+        content.find("enabled and credentials preserved") != std::string::npos,
+        "Must preserve user enabled and credentials");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("doc[\"mqtt\"][\"enabled\"] = false") != std::string::npos,
-        "Must set mqtt.enabled to false");
+        content.find("doc[\"mqtt\"][\"enabled\"] = false") == std::string::npos,
+        "Must not persist enabled=false during memory pressure");
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("stopMQTT") != std::string::npos,
-        "Must call stopMQTT after disabling config");
+        "Must stop runtime MQTT without disabling configuration");
     TestLog::step("disableMqttForMemory implementation verified");
     TestLog::testEnd(true);
 }
@@ -1211,11 +1212,14 @@ void test_mr14_severe_step_logging() {
         content.find("Step 3/3") != std::string::npos,
         "SEVERE recovery must log Step 3/3");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("DRAM after downgrade") != std::string::npos,
-        "Must log DRAM after downgrade");
+        content.find("pausing MQTTS without changing transport security") != std::string::npos,
+        "Must log TLS pause without changing transport security");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("SEVERE recovery complete") != std::string::npos,
-        "Must log SEVERE recovery complete with DRAM gain");
+        content.find("uint32_t dramBefore = FastBee::MemoryBudget::dram8Free();") != std::string::npos &&
+        content.find("uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();") != std::string::npos &&
+        content.find("SEVERE recovery complete === dram=%lu (gained %ld bytes)") != std::string::npos &&
+        content.find("(long)(dramAfter - dramBefore)") != std::string::npos,
+        "Must measure DRAM before/after recovery and log the measured gain");
     TestLog::step("Step X/Y and DRAM comparison logging verified");
     TestLog::testEnd(true);
 }

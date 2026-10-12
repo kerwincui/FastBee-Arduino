@@ -1,0 +1,141 @@
+#include <Arduino.h>
+#include <cassert>
+
+#define LOG_INFOF(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+enum class PeripheralType { GPIO_DIGITAL_INPUT, GPIO_DIGITAL_OUTPUT, GPIO_ANALOG_INPUT,
+    GPIO_DAC, ENCODER, STEPPER_MOTOR, NEO_PIXEL, IO_EXPANDER, PCA9685_PWM, SCREEN_DISPLAY };
+enum class PeripheralStatus { PERIPHERAL_ENABLED, PERIPHERAL_DISABLED, PERIPHERAL_ERROR };
+struct PeripheralConfig {
+    String id = "owner", name = "fixture";
+    PeripheralType type = PeripheralType::GPIO_DIGITAL_INPUT;
+    bool enabled = true;
+    unsigned pin = 4;
+    struct { struct { char providerId[16]{}; } gpio; struct { char oePeripheralId[16]{}; } pca9685; } params;
+    bool isExpanderChannel() const { return false; }
+};
+struct PeripheralRuntimeState {
+    String id, lastError;
+    bool memorySuspended = false, memoryCleanupPending = false;
+    PeripheralStatus status = PeripheralStatus::PERIPHERAL_ENABLED;
+};
+struct RecursiveMutexGuard { explicit RecursiveMutexGuard(int&) {} };
+bool fixedIdEquals(const char* lhs, const String& rhs) { return rhs == lhs; }
+bool managedI2cReferenceEquals(const PeripheralConfig&, const String&) { return false; }
+bool ioResetReferenceEquals(const PeripheralConfig&, const String&) { return false; }
+bool isMcp23017(const PeripheralConfig&) { return false; }
+
+struct PeripheralManager {
+    int _mutex = 0;
+    bool cleanupSucceeds = false;
+    String driverError, _memoryRestoringDisplayId, lastEnableError;
+    unsigned _memorySuspendedCount = 0, initCalls = 0, nextMutation = 0;
+    std::map<String, PeripheralConfig> peripherals;
+    std::map<String, PeripheralRuntimeState> runtimeStates;
+    std::map<String, unsigned> pinOwners, providers;
+    auto& ioProviders() { return providers; }
+    bool controlOutputIsClaimed(const String&) { return false; }
+    bool hasPeripheral(const String& id) { return peripherals.count(id); }
+    void invalidateSensorConfigurationLocked() {}
+    void updatePinMapping(const String& id, const PeripheralConfig& c) { pinOwners[id] = c.pin; }
+    void rebuildPinMapping() {
+        pinOwners.clear();
+        for (const auto& item : peripherals) if (item.second.enabled) pinOwners[item.first] = item.second.pin;
+    }
+    bool initHardware(const String&) { ++initCalls; return false; }
+    bool teardownHardware(const PeripheralConfig& c) {
+        if (!cleanupSucceeds) runtimeStates[c.id].lastError = driverError;
+        return cleanupSucceeds;
+    }
+    bool deinitHardware(const String& id) {
+        bool ok = teardownHardware(peripherals.at(id));
+        runtimeStates[id].status = ok ? PeripheralStatus::PERIPHERAL_DISABLED : PeripheralStatus::PERIPHERAL_ERROR;
+        return ok;
+    }
+    bool add(const PeripheralConfig& config, String& errorMsg) { // @add@ }
+    bool updateOld(const String& id, String& errorMsg) {
+        const PeripheralConfig oldConfig = peripherals.at(id);
+        PeripheralRuntimeState oldState = runtimeStates.at(id); bool hadOldState = true;
+        // @update-stop@
+        ++nextMutation; return true;
+    }
+    bool updateNew(PeripheralConfig config, String& errorMsg) {
+        const size_t previousMemorySuspendedCount = _memorySuspendedCount;
+        const String id = "old", targetId = config.id;
+        PeripheralConfig oldConfig; oldConfig.id = id; oldConfig.pin = 9;
+        PeripheralRuntimeState oldState; bool hadOldState = true;
+        // @update-failure@
+        ++nextMutation; return true;
+    }
+    bool enable(const String& id) {
+        auto* config = &peripherals.at(id);
+        PeripheralConfig previousConfig = *config; previousConfig.enabled = false;
+        PeripheralRuntimeState previousState; previousState.status = PeripheralStatus::PERIPHERAL_DISABLED;
+        bool hadPreviousState = true; unsigned previousMemorySuspendedCount = 4;
+        // @enable-failure@
+        ++nextMutation; return true;
+    }
+    bool removePeripheral(const String& id) { // @remove@ }
+    bool rollback(const String& resultId, String& errorMsg) {
+        struct { String id = "owner"; } snapshot;
+        // @rollback@
+        ++nextMutation; return true;
+    }
+    void seed(PeripheralConfig config) {
+        peripherals[config.id] = config; runtimeStates[config.id].id = config.id;
+        updatePinMapping(config.id, config);
+    }
+    void retained(const String& id) {
+        assert(peripherals.count(id) == 1 && runtimeStates.count(id) == 1);
+        assert(peripherals.at(id).enabled && peripherals.at(id).pin == 4);
+        assert(pinOwners.count(id) == 1 && pinOwners.at(id) == 4 && nextMutation == 0);
+        assert(runtimeStates.at(id).status == PeripheralStatus::PERIPHERAL_ERROR);
+    }
+};
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const String mode(argv[1]);
+    for (int type = 0; type <= int(PeripheralType::SCREEN_DISPLAY); ++type) {
+        PeripheralManager manager; PeripheralConfig config; String error;
+        config.type = static_cast<PeripheralType>(type);
+        if (mode == "add" || mode == "errors") {
+            if (mode == "errors") manager.driverError = "SPECIFIC_DRIVER_RELEASE_FAILED";
+            assert(!manager.add(config, error)); manager.retained(config.id);
+            assert(error == (mode == "errors" ? "SPECIFIC_DRIVER_RELEASE_FAILED" : "HARDWARE_CLEANUP_PENDING"));
+            // A fresh unsuccessful init whose teardown succeeds is safe to erase.
+            PeripheralManager clean; clean.cleanupSucceeds = true;
+            assert(!clean.add(config, error));
+            assert(clean.peripherals.empty() && clean.runtimeStates.empty() && clean.pinOwners.empty());
+        } else if (mode == "remove-suspended") {
+            config.enabled = false; manager.seed(config);
+            manager.runtimeStates[config.id].memorySuspended = true;
+            manager._memorySuspendedCount = 1;
+            assert(!manager.removePeripheral(config.id) && manager._memorySuspendedCount == 1);
+            assert(manager.peripherals.count(config.id) && manager.runtimeStates.at(config.id).memorySuspended);
+            manager.cleanupSucceeds = true;
+            assert(manager.removePeripheral(config.id) && manager._memorySuspendedCount == 0);
+            assert(!manager.removePeripheral(config.id) && manager._memorySuspendedCount == 0);
+        } else {
+            manager.seed(config);
+            if (mode == "update-stop") {
+                assert(!manager.updateOld(config.id, error)); manager.retained(config.id);
+                assert(manager.initCalls == 0);
+            } else if (mode == "update-new") {
+                assert(!manager.updateNew(config, error)); manager.retained(config.id);
+                assert(!manager.peripherals.count("old") && manager.initCalls == 1);
+            } else if (mode == "enable") {
+                assert(!manager.enable(config.id)); manager.retained(config.id);
+                assert(manager._memorySuspendedCount == 0 && !manager.lastEnableError.isEmpty());
+            } else if (mode == "remove") {
+                assert(!manager.removePeripheral(config.id)); manager.retained(config.id);
+                manager.cleanupSucceeds = true;
+                assert(manager.removePeripheral(config.id));
+                assert(manager.peripherals.empty() && manager.runtimeStates.empty() && manager.pinOwners.empty());
+            } else if (mode == "rollback") {
+                assert(!manager.rollback(config.id, error)); manager.retained(config.id);
+                assert(!error.isEmpty() && manager.initCalls == 0);
+            } else assert(false);
+        }
+    }
+}

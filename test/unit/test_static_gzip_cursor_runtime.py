@@ -1,7 +1,8 @@
 """Execute the production gzip validator/response path with injected file faults.
 
 The file and HTTP transport are stubs; CRC, rewind decisions, 304 selection,
-and cache/encoding headers are extracted from WebHandlerContext.cpp.
+small-buffer admission, lease acquisition, and cache/encoding headers are
+extracted from WebHandlerContext.cpp. This does not emulate newlib allocation.
 """
 import os
 from pathlib import Path
@@ -23,10 +24,11 @@ class StaticGzipCursorRuntimeTests(unittest.TestCase):
         source = (ROOT / "src/network/WebHandlerContext.cpp").read_text(encoding="utf-8")
         etag_start = source.index("static bool getStaticGzipEtag(")
         etag = source[etag_start:source.index("\n}\n", etag_start) + 3]
-        preparation_start = source.index("    char staticEtag[11] = {};")
-        preparation = source[preparation_start:source.index(
-            "    StaticInFlightLease staticLease", preparation_start)]
         response_start = source.index("    AsyncWebServerResponse *response = new AsyncFileResponse(")
+        preparation_start = source.index("    if (!openFile.setBufferSize(512))")
+        # Include the complete new branch and real lease-acquisition block.
+        # FASTBEE_WEB_MEM_GUARD remains covered by its separate live-memory test.
+        preparation = source[preparation_start:response_start]
         response = source[response_start:source.index("\n}\n", response_start)]
         cls.temporary = tempfile.TemporaryDirectory(prefix="fastbee-gzip-cursor-")
         cls.addClassCleanup(cls.temporary.cleanup)
@@ -49,6 +51,18 @@ class StaticGzipCursorRuntimeTests(unittest.TestCase):
 
     def test_normal_gzip_keeps_complete_body_etag_and_cache_headers(self):
         self.run_case("normal")
+
+    def test_raw_response_sets_buffer_before_first_io(self):
+        self.run_case("raw")
+
+    def test_gzip_buffer_failure_closes_without_io_response_or_lease(self):
+        self.run_case("buffer_failure")
+
+    def test_raw_buffer_failure_closes_without_io_response_or_lease(self):
+        self.run_case("raw_buffer_failure")
+
+    def test_buffer_failure_cannot_return_a_matching_304(self):
+        self.run_case("buffer_failure_match")
 
     def test_crc_short_read_rewinds_and_sends_complete_body_without_etag(self):
         self.run_case("crc_short")
@@ -88,16 +102,27 @@ struct String : std::string {
     String(unsigned long n) : std::string(std::to_string(n)) {}
 };
 
-enum class Fault { None, CrcShort, TrailerSeek, RewindFailure, RewindWrongPosition };
+enum class Fault { None, BufferFailure, CrcShort, TrailerSeek, RewindFailure, RewindWrongPosition };
 struct File {
     std::string bytes = std::string("asset-gzip-body") + std::string("\x78\x56\x34\x12\x10\0\0\0", 8);
     size_t cursor = 0;
     bool opened = true;
     Fault fault = Fault::None;
+    bool bufferConfigured = false;
+    unsigned bufferCalls = 0;
+    mutable unsigned ioCalls = 0;
     explicit operator bool() const { return opened; }
-    size_t size() const { return bytes.size(); }
-    size_t position() const { return cursor; }
+    bool setBufferSize(size_t size) {
+        assert(size == 512 && ioCalls == 0 && bufferCalls == 0);
+        ++bufferCalls;
+        bufferConfigured = fault != Fault::BufferFailure;
+        return bufferConfigured;
+    }
+    void noteIo() const { assert(bufferConfigured); ++ioCalls; }
+    size_t size() const { noteIo(); return bytes.size(); }
+    size_t position() const { noteIo(); return cursor; }
     bool seek(size_t to) {
+        noteIo();
         if (to == size() - 8 && fault == Fault::TrailerSeek) return false;
         if (to == 0 && fault == Fault::RewindFailure) return false;
         if (to == 0 && fault == Fault::RewindWrongPosition) return true;
@@ -105,6 +130,7 @@ struct File {
         return true;
     }
     size_t read(uint8_t* out, size_t count) {
+        noteIo();
         if (fault == Fault::CrcShort && cursor == size() - 8) count = 2;
         count = std::min(count, size() - cursor);
         std::memcpy(out, bytes.data() + cursor, count);
@@ -130,6 +156,18 @@ struct AsyncFileResponse : AsyncWebServerResponse {
         body = file.bytes.substr(file.position());
     }
 };
+unsigned leaseAcquisitions = 0;
+unsigned leaseRegistrations = 0;
+constexpr unsigned STATIC_MAX_INFLIGHT = 3;
+struct StaticInFlightLease {
+    unsigned generation;
+    unsigned slot;
+    bool valid() const { return slot < STATIC_MAX_INFLIGHT; }
+};
+StaticInFlightLease acquireStaticInFlightLease() {
+    ++leaseAcquisitions;
+    return {1, 0};
+}
 struct Request {
     std::map<std::string, std::string> headers;
     AsyncWebServerResponse result;
@@ -141,18 +179,18 @@ struct Request {
 void sendStaticBusyResponse(Request* request, const String&) {
     request->send(new AsyncWebServerResponse(503));
 }
-void registerStaticInFlightRelease(Request*, int) {}
+void sendStaticBusyRetryPage(Request* request) { request->send(new AsyncWebServerResponse(503)); }
+void registerStaticInFlightRelease(Request*, StaticInFlightLease) { ++leaseRegistrations; }
 
 // PRODUCTION_ETAG
 
-bool serve(File& openFile, Request* request, bool isServiceWorker) {
-    const bool sentGzippedContent = true;
+bool serve(File& openFile, Request* request, bool isServiceWorker, bool sentGzippedContent) {
     const bool isCacheableStatic = !isServiceWorker;
     const unsigned long cacheDuration = 86400;
     const String path = "/www/js/chunk-3-state.js";
     const String contentType = "application/javascript";
-    const bool limitInFlight = false;
-    const int staticLease = 0;
+    const bool limitInFlight = true;
+    const bool isCoreEntry = false;
     // PRODUCTION_PREPARATION
     // PRODUCTION_RESPONSE
 }
@@ -162,19 +200,30 @@ int main(int argc, char** argv) {
     const std::string name = argv[1];
     File file;
     Request request;
+    const bool gzipped = name != "raw" && name != "raw_buffer_failure";
+    if (name == "buffer_failure" || name == "raw_buffer_failure" || name == "buffer_failure_match")
+        file.fault = Fault::BufferFailure;
     if (name == "crc_short" || name == "crc_short_match") file.fault = Fault::CrcShort;
     if (name == "trailer_seek") file.fault = Fault::TrailerSeek;
     if (name == "rewind_failure" || name == "rewind_failure_match") file.fault = Fault::RewindFailure;
     if (name == "rewind_wrong_position") file.fault = Fault::RewindWrongPosition;
-    if (name == "match" || name == "crc_short_match" || name == "rewind_failure_match")
+    if (name == "match" || name == "crc_short_match" || name == "rewind_failure_match" || name == "buffer_failure_match")
         request.headers["If-None-Match"] = "\"78563412\"";
-    assert(serve(file, &request, name == "service_worker"));
+    assert(serve(file, &request, name == "service_worker", gzipped));
     const auto& result = request.result;
+    assert(file.bufferCalls == 1);
+    if (file.fault == Fault::BufferFailure) {
+        assert(result.status == 503 && !file.opened && result.body.empty());
+        assert(file.ioCalls == 0 && leaseAcquisitions == 0 && leaseRegistrations == 0);
+        assert(result.headers.count("ETag") == 0);
+        return 0;
+    }
     if (file.fault == Fault::RewindFailure || file.fault == Fault::RewindWrongPosition) {
         assert(result.status == 503);
         assert(!file.opened);
         assert(result.body.empty());
         assert(result.headers.count("ETag") == 0);
+        assert(leaseAcquisitions == 0 && leaseRegistrations == 0);
         return 0;
     }
     assert(result.headers.at("Connection") == "close");
@@ -185,11 +234,18 @@ int main(int argc, char** argv) {
         assert(result.body.empty());
         assert(!file.opened);
         assert(result.headers.at("ETag") == "\"78563412\"");
+        assert(leaseAcquisitions == 0 && leaseRegistrations == 0);
         return 0;
     }
     assert(result.status == 200);
     assert(result.contentLength == file.bytes.size());
     assert(result.body == file.bytes);
+    assert(leaseAcquisitions == 1 && leaseRegistrations == 1);
+    if (!gzipped) {
+        assert(result.headers.count("Content-Encoding") == 0);
+        assert(result.headers.count("ETag") == 0);
+        return 0;
+    }
     assert(result.headers.at("Content-Encoding") == "gzip");
     if (file.fault == Fault::CrcShort || file.fault == Fault::TrailerSeek)
         assert(result.headers.count("ETag") == 0);

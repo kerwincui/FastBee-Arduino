@@ -40,6 +40,36 @@
         window.__fastbeeStaticAssetChain = run.then(settle, settle);
         return run;
     };
+    var fastbeeBootNonce = document.currentScript ? document.currentScript.nonce : '';
+    window.__fastbeeFetchAssetBody = async function(url, type) {
+        var c = new AbortController(), r, body;
+        var t = setTimeout(function() { c.abort(); }, 8000);
+        try {
+            r = await fetch(url, { signal: c.signal, credentials: 'same-origin', mode: 'same-origin' });
+            if (!r.ok) throw new Error('Asset HTTP ' + r.status);
+            if (type === 'text' && !/^(application|text)\/(x-)?(java|ecma)script$/.test((r.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase())) throw new Error('Invalid script MIME');
+            body = await r[type]();
+            if (c.signal.aborted) throw new Error('Asset download expired');
+            return body;
+        } catch (e) {
+            c.abort();
+            if (r && r.body && !r.body.locked) { try { await r.body.cancel(); } catch (_) {} }
+            throw e;
+        } finally { clearTimeout(t); }
+    };
+    window.__fastbeeFetchBootScript = async function(url) {
+        var source = await window.__fastbeeFetchAssetBody(url, 'text');
+        var s = document.createElement('script'), error;
+        function capture(e) { error = e.error instanceof Error ? e.error : new Error(e.message); }
+        if (fastbeeBootNonce) s.nonce = fastbeeBootNonce;
+        s.textContent = source;
+        window.addEventListener('error', capture);
+        try {
+            document.head.appendChild(s);
+            if (error) throw error;
+        } catch (e) { e.bootExecutionStarted = true; throw e; }
+        finally { window.removeEventListener('error', capture); s.remove(); }
+    };
     // Images share the text/API transport queue too. Cache the completed blob
     // so showing the same logo in the sidebar cannot open another connection.
     window.__fastbeeImageAssets = Object.create(null);
@@ -48,15 +78,7 @@
         var assets = window.__fastbeeImageAssets;
         if (!assets[path]) {
             assets[path] = window.__fastbeeQueueStaticAsset(async function() {
-                var controller = new AbortController();
-                var timer = setTimeout(function() { controller.abort(); }, 8000);
-                try {
-                    var response = await fetch(window.__fastbeeResolveAssetUrl(path), { signal: controller.signal });
-                    if (!response.ok) throw new Error('Image asset HTTP ' + response.status);
-                    return URL.createObjectURL(await response.blob());
-                } finally {
-                    clearTimeout(timer);
-                }
+                return URL.createObjectURL(await window.__fastbeeFetchAssetBody(window.__fastbeeResolveAssetUrl(path), 'blob'));
             }).catch(function(error) {
                 delete assets[path];
                 throw error;
@@ -217,9 +239,7 @@
         </div>
     </div>
 
-    <!-- 串行加载 5 个 boot chunk：ESP32 站 lwIP socket pool 有限，并发请求易被拒。
-         依靠 async=false + 顺序 appendChild 保证按顺序执行，与 defer 语义等价但严格单连接。
-         服务端限流返回 503 时由 onerror 触发快速退避重试（300/1200/2700ms）。 -->
+    <!-- Fetch boot chunks serially; execute only complete, valid downloads. -->
     <script>
     (function() {
         var bootChunks = [
@@ -240,31 +260,19 @@
                 var attempt = 0;
                 function tryLoad() {
                     window.__fastbeeQueueStaticAsset(function() {
-                        return new Promise(function(resolve, reject) {
-                            var s = document.createElement('script');
-                            // 重试追加 &r=N 绕过浏览器对失败响应的缓存
-                            s.src = baseUrl + (attempt > 0 ? '&r=' + attempt : '');
-                            s.async = false;
-                            s.onload = resolve;
-                            s.onerror = function() {
-                                s.remove();
-                                reject(new Error('boot chunk load failed'));
-                            };
-                            document.head.appendChild(s);
-                        });
+                        return window.__fastbeeFetchBootScript(baseUrl + (attempt > 0 ? '&r=' + attempt : ''));
                     }).then(function() {
                         i++;
                         setTimeout(loadNext, delayMs || 30);
-                    }, function() {
+                    }, function(error) {
                         attempt++;
-                        if (attempt < CHUNK_MAX_RETRY) {
+                        if (attempt < CHUNK_MAX_RETRY && !error.bootExecutionStarted) {
                             // 递增退避：300/1200/2700ms，更快恢复且不压床设备
                             setTimeout(tryLoad, 300 * attempt * attempt);
                         } else {
                             console.error('[FastBee] chunk giving up:', files[i]);
                             window.__fastbeeChunkGaveUp = true; // E2E 测试断言：正常网络下不应出现
-                            i++;
-                            setTimeout(loadNext, 300);
+                            if (typeof onDone === 'function') onDone(false);
                         }
                     });
                 }
@@ -313,30 +321,38 @@
             }
 
             setSubmitState(submitBtn, true, '登录中...');
-            fetch('/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                credentials: 'include',
-                cache: 'no-store',
-                body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password)
-            }).then(function(resp) {
-                return resp.json().catch(function() { return {}; }).then(function(data) {
-                    if (!resp.ok || !data || !data.success) {
-                        throw new Error((data && data.error) || 'login failed');
-                    }
-                    localStorage.removeItem('auth_token');
-                    localStorage.removeItem('sessionId');
-                    if (remember) {
-                        localStorage.setItem('remember', 'true');
-                        localStorage.setItem('username', username);
-                        // WP-13: 不再保存密码到 localStorage
-                    } else {
-                        ['remember', 'username', 'password'].forEach(function(key) {
-                            localStorage.removeItem(key);
-                        });
-                    }
-                    location.replace(window.__fastbeeResolveAssetUrl('/'));
-                });
+            // Keep fallback login within the shared transport budget.
+            window.__fastbeeQueueStaticAsset(function() {
+                var controller = new AbortController();
+                var timer = setTimeout(function() { controller.abort(); }, 15000);
+                return fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    credentials: 'include',
+                    cache: 'no-store',
+                    signal: controller.signal,
+                    body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password)
+                }).then(function(resp) {
+                    return resp.json().then(function(data) {
+                        if (!resp.ok || !data || !data.success) {
+                            throw new Error((data && data.error) || 'login failed');
+                        }
+                        return data;
+                    });
+                }).finally(function() { clearTimeout(timer); });
+            }).then(function(data) {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('sessionId');
+                if (remember) {
+                    localStorage.setItem('remember', 'true');
+                    localStorage.setItem('username', username);
+                    // WP-13: 不再保存密码到 localStorage
+                } else {
+                    ['remember', 'username', 'password'].forEach(function(key) {
+                        localStorage.removeItem(key);
+                    });
+                }
+                location.replace(window.__fastbeeResolveAssetUrl('/'));
             }).catch(function(err) {
                 console.error('[FastBee] inline login fallback failed:', err);
                 setSubmitState(submitBtn, false, originalText);
@@ -349,7 +365,7 @@
                 window.AppState.handleLogin();
                 return;
             }
-            if (Date.now() >= deadline) {
+            if (window.__fastbeeChunkGaveUp || Date.now() >= deadline) {
                 console.warn('[FastBee] boot not ready before login submit timeout');
                 inlineLoginFallback(originalText, submitBtn);
                 return;
@@ -359,11 +375,7 @@
             }, 150);
         }
 
-        // 2026-08-13: 2500→15000ms。串行 boot chunk 加载需 3~6s（ESP32 单连接
-        // 逐文件传输），旧 2.5s 截止使登录几乎必走 inline fallback → 整页
-        // location.replace 重载 → boot 从头再来，形成重复加载放大设备压力。
-        // 等待 boot 完成后走 AppState.handleLogin（无刷新登录）体验最佳；
-        // chunk 彻底失败（4 次重试耗尽约 17s）时仍会进入 fallback 兜底。
+        // Exhausted boot downloads enter the queued login fallback immediately.
         var bootLoginWaitMs = 15000;
 
         function installLoginBootGuard() {

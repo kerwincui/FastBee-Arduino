@@ -10,6 +10,7 @@
 
 // Native tests do not build src/. Compile the implementation in this one test
 // translation unit so the public validator is exercised rather than mirrored.
+#include "../src/network/FixedJsonField.cpp"
 #include "../src/core/ScreenPanelManager.cpp"
 
 namespace {
@@ -109,7 +110,13 @@ void test_screen_panel_touch_preferences_and_widgets_are_bounded() {
     JsonObject motor = addCard(config, "motor", "control", "motor", 16, 16, 448, 400);
     motor["controlRef"] = "motor.test"; motor["requireConfirmation"] = false;
     TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
+    TEST_ASSERT_FALSE(normalized["pages"][0]["cards"][0]["requireConfirmation"].as<bool>());
+    motor["requireConfirmation"] = true;
+    TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
     TEST_ASSERT_TRUE(normalized["pages"][0]["cards"][0]["requireConfirmation"].as<bool>());
+    motor["requireConfirmation"] = "false";
+    TEST_ASSERT_FALSE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
+    TEST_ASSERT_TRUE(error.indexOf("requireConfirmation must be boolean") >= 0);
 }
 
 void test_screen_panel_rejects_unknown_fields_and_page_overflow() {

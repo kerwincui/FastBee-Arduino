@@ -1,7 +1,21 @@
 #pragma once
+#include "core/RuntimeResourceSnapshot.h"
 // ESP32 hardware capture for DHT frames. Caller holds the SensorDriver bus mutex.
 // RX buffers have static lifetime: Arduino's async RMT callback can outlive a
 // timeout. A failed channel teardown quarantines this buffer until teardown works.
+struct DhtRmtCaptureStorage {
+    rmt_data_t symbols[48];
+    size_t count = 0;
+    int retainedPin = -1;
+};
+static DhtRmtCaptureStorage dhtRmtCapture;
+
+// Caller must already hold the sensor bus mutex; this never attempts cleanup.
+static inline void snapshotDhtRmtCaptureLocked(FastBee::DhtRmtResourceSnapshot& result) {
+    result = FastBee::DhtRmtResourceSnapshot{};
+    result.supported = true;
+    result.retainedPin = dhtRmtCapture.retainedPin;
+}
 static bool decodeDhtRmtSymbols(const rmt_data_t* symbols, size_t count,
                                 uint8_t (&data)[5], DhtReadDiagnostic* diagnostic) {
     auto level = [&](size_t n) -> unsigned { return (n & 1) ? symbols[n / 2].level1 : symbols[n / 2].level0; };
@@ -33,9 +47,9 @@ static bool decodeDhtRmtSymbols(const rmt_data_t* symbols, size_t count,
 
 static bool readDhtRmtFrame(uint8_t pin, bool dht11, uint8_t (&data)[5],
                             DhtReadDiagnostic* diagnostic) {
-    static rmt_data_t symbols[48];
-    static size_t count=0;
-    static int retainedPin=-1;
+    auto& symbols = dhtRmtCapture.symbols;
+    auto& count = dhtRmtCapture.count;
+    auto& retainedPin = dhtRmtCapture.retainedPin;
     const uint32_t started=micros();
     auto fail = [&](const char* phase) {
         if (diagnostic) {

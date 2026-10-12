@@ -1,6 +1,7 @@
 #include "protocols/ModbusReadDiagnostics.h"
 #include "protocols/ModbusUartRxMode.h"
 #include "core/MotorTravelInterlock.h"
+#include "core/ModbusOrdinaryControl.h"
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -12,11 +13,12 @@
 #define LOG_ERROR(...) ((void)0)
 namespace Protocols { constexpr size_t MODBUS_BUFFER_SIZE = 256, MODBUS_MAX_SUB_DEVICES = 4; }
 namespace FastBee { namespace MemoryBudget { unsigned dramFree() { return 0; } } }
-enum OneShotError { ONESHOT_SUCCESS, ONESHOT_TIMEOUT, ONESHOT_CRC_ERROR, ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED, ONESHOT_BUSY, ONESHOT_TRAVEL_BLOCKED };
+enum OneShotError { ONESHOT_SUCCESS, ONESHOT_TIMEOUT, ONESHOT_CRC_ERROR, ONESHOT_EXCEPTION, ONESHOT_NOT_INITIALIZED, ONESHOT_BUSY, ONESHOT_TRAVEL_BLOCKED, ONESHOT_CONTROL_REJECTED };
 constexpr unsigned SERIAL_8N1 = 0;
 constexpr uint8_t MODBUS_EX_ILLEGAL_DATA_VALUE = 3;
 static unsigned long now;
 unsigned long millis() { return now; }
+int64_t esp_timer_get_time() { return static_cast<int64_t>(now) * 1000; }
 void delay(unsigned ms) { now += ms; }
 void yield() {}
 void vTaskDelay(unsigned ticks) { now += ticks; }
@@ -57,6 +59,8 @@ struct Serial {
 };
 
 struct ModbusHandler {
+    const FastBee::ModbusWriteTicket* _ordinaryWriteTicket = nullptr;
+    bool _ordinaryWriteAttempted = false;
     FastBee::MotorTravelInterlock<Protocols::MODBUS_MAX_SUB_DEVICES> _motorTravel;
     bool _oneShotSemaphore = true;
     const char* _lastTravelError = nullptr;
@@ -79,6 +83,8 @@ struct ModbusHandler {
                 int32_t motorMinPosition = 0, motorMaxPosition = 1000;
                 struct Profile {
                     bool valid = true, finitePulseMove = true;
+                    bool commandPosition = false, startupReference = false;
+                    int32_t startupPosition = 0;
                     uint8_t readFunction = 3, writeFunction = 6;
                     uint16_t forwardValue = 1, reverseValue = 1, stopValue = 1;
                     uint16_t readRegister(const uint16_t* regs, bool pulse) const { return regs[pulse ? 4 : 3]; }
@@ -88,6 +94,11 @@ struct ModbusHandler {
     } config;
     bool _shouldDeferSlaveRequest(uint8_t, uint32_t) { return defer; }
     void _recordSlaveOutcome(uint8_t, OneShotError, uint32_t) {}
+    void trackCoilDelayWriteLocked(const uint8_t* request, size_t length) {
+        assert(request && length >= 4);
+        // The real delay policy/receipts run in test_modbus_delayed_command_receipts.
+        // This fixture owns the transport diagnostic boundary only.
+    }
     void setTransmitMode(bool) {}
     bool initializeSerial();
     uint16_t calculateCRC(const uint8_t*, size_t);

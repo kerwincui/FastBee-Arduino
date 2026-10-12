@@ -1,0 +1,211 @@
+// Production method bodies are injected by test_spi_initializer.py.
+#include "core/SpiBusInitializer.h"
+#include <SPI.h>
+#include <cassert>
+#include <cstring>
+#include <strings.h>
+#include <new>
+#include <map>
+using FastBee::SpiBusInitializer;
+using FastBee::SpiBusOperation;
+using FastBee::ResourceConsumerRole;
+constexpr int OUTPUT = 1;
+int pinModes = 0, pinWrites = 0, displayStarts = 0, backlightStarts = 0;
+void pinMode(uint8_t, int) { ++pinModes; }
+void digitalWrite(uint8_t, int) { ++pinWrites; }
+bool ledcAttachChannel(uint8_t, int, int, int) { ++backlightStarts; return true; }
+struct Logger { template<class... T> void info(T...) {}
+    template<class... T> void warning(T...) {}
+    template<class... T> void errorf(T...) {}
+    template<class... T> void infof(T...) {} } LOGGER;
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define LOG_ERRORF(...) ((void)0)
+#define CHIP_NAME "mock"
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager x; return x; }
+    bool shouldEnable(const char*) const { return true; }
+};
+struct FeatureBudgetRegistry {
+    static FeatureBudgetRegistry& instance() { static FeatureBudgetRegistry x; return x; }
+    bool isDenied(const char*) const { return false; }
+};
+}
+struct MFRC522 {
+    static inline bool failAllocation = false;
+    static inline int live = 0, initCalls = 0;
+    static inline byte version = 0x92;
+    enum {VersionReg = 1, RxGain_max = 7};
+    static void* operator new(size_t size, const std::nothrow_t&) noexcept {
+        return failAllocation ? nullptr : ::operator new(size, std::nothrow);
+    }
+    static void operator delete(void* ptr) noexcept { ::operator delete(ptr); }
+    static void operator delete(void* ptr, const std::nothrow_t&) noexcept { ::operator delete(ptr); }
+    MFRC522(uint8_t, uint8_t) { ++live; }
+    ~MFRC522() { --live; }
+    void PCD_Init() { ++initCalls; }
+    byte PCD_ReadRegister(int) { return version; }
+    void PCD_SetAntennaGain(int) {}
+    void PCD_AntennaOff() {}
+};
+struct RFIDDriver {
+    bool begin(uint8_t ssPin, uint8_t rstPin, uint8_t sckPin, uint8_t mosiPin, uint8_t misoPin);
+    ~RFIDDriver() {
+        String error;
+        assert(SpiBusInitializer::instance().release(this, error));
+        delete static_cast<MFRC522*>(_mfrc522);
+    }
+    bool _initialized = false, _cardPresent = false;
+    void* _mfrc522 = nullptr;
+    String _lastError, _lastUID, _lastCardType;
+    uint8_t _sckPin = 255, _mosiPin = 255, _misoPin = 255;
+    uint8_t _ssPin = 255, _rstPin = 255;
+    unsigned long _lastCheckTime = 0, _cardDetectedTime = 0;
+};
+// @RFID_BEGIN@
+constexpr const char* SD_SANDBOX_ROOT = "/fastbee";
+constexpr int CARD_NONE = 0;
+struct MockSD {
+    int beginCalls = 0, endCalls = 0, card = 1;
+    bool mountOk = true, directoryExists = true, mkdirOk = true;
+    bool begin(uint8_t, SPIClass&, uint32_t, const char*, int, bool) { ++beginCalls; return mountOk; }
+    int cardType() const { return card; }
+    void end() { ++endCalls; }
+    bool exists(const char*) const { return directoryExists; }
+    bool mkdir(const char*) const { return mkdirOk; }
+} SD;
+struct SDCardManager {
+    struct Status {
+        bool mounted = false, configured = true, recoverySuggested = false, capacityValid = false;
+        uint8_t csPin = 10, sckPin = SCK, misoPin = MISO, mosiPin = MOSI;
+        uint32_t frequency = 1000000;
+        uint32_t ioFailures = 0;
+        String lastError, lastFailureCode, ownerId = "sd";
+    } _status;
+    bool ensureMountedLocked(String& errorMsg);
+    void setErrorLocked(const String& error) { _status.lastError = error; }
+    void recordIoFailureLocked(const String& errorMsg);
+    void updateCapacityLocked() {}
+};
+// @SD_BEGIN@
+// @SD_FAILURE_BEGIN@
+struct DisplayConfigParams {
+    char backend[16] = "spi_tft", driver[16] = "st7789";
+    uint16_t width = 240, height = 320;
+    uint8_t rotation = 0, brightness = 80, backlightChannel = 3;
+    int sclk = SCK, mosi = MOSI, cs = 11, dc = 12, rst = 13, backlight = 14;
+    bool backlightActiveHigh = true;
+};
+struct SpiTftDisplayBackend {
+    DisplayConfigParams _config;
+    bool _leaseAcquired = false;
+    bool _sleeping = false, _st7789 = false, _ready = false, _backlightAttached = false;
+    uint16_t _nativeWidth = 0, _nativeHeight = 0, _width = 0, _height = 0;
+    SPIClass* _spi = nullptr;
+    void releaseExclusivePins() {}
+    void hardwareReset() { ++displayStarts; }
+    bool initializeSt7789() { return true; }
+    bool initializeIli9341() { return true; }
+    bool stop(String& error) {
+        if (!SpiBusInitializer::instance().release(this,error)) return false;
+        _leaseAcquired = _ready = false; return true;
+    }
+    void end() { String error; assert(stop(error)); }
+    bool setBrightness(uint8_t) { return true; }
+    // @TFT_BEGIN@
+};
+enum class PeripheralType { SPI };
+struct GenericConfig {
+    PeripheralType type = PeripheralType::SPI;
+    uint8_t pinCount = 4, pins[4] = {MISO, MOSI, SCK, 5};
+    String id = "spi";
+    struct { struct { uint32_t frequency = 0; int mode = 0; } spi; } params;
+};
+bool isReservedPin(uint8_t) { return false; }
+bool isValidPin(uint8_t pin) { return pin < 64; }
+bool isInputOnlyPin(uint8_t) { return false; }
+struct GenericState { String lastError; };
+std::map<String, GenericState> runtimeStates;
+// @GENERIC_BEGIN@
+int main() {
+    String error;
+    GenericConfig generic;
+    auto& initializer = SpiBusInitializer::instance();
+    SPI.failAfterAllocation = true;
+    assert(!beginGeneric(generic) && !SPI.active && pinModes == 0 && pinWrites == 0);
+    SDCardManager storage;
+    assert(!storage.ensureMountedLocked(error));
+    assert(!storage._status.mounted && SD.beginCalls == 0 && !SPI.active);
+    assert(error.startsWith("SPI_INIT_FAILED") && error == storage._status.lastError);
+    {
+        RFIDDriver reader;
+        assert(!reader.begin(5, 27, 18, 23, 19));
+        assert(!reader._initialized && reader._mfrc522 == nullptr);
+        assert(reader._lastError.startsWith("SPI_INIT_FAILED"));
+        assert(MFRC522::initCalls == 0 && MFRC522::live == 0 && !SPI.active);
+    }
+    DisplayConfigParams config;
+    SpiTftDisplayBackend display;
+    assert(!display.begin(config, error));
+    assert(!display._ready && display._spi == nullptr && !SPI.active);
+    assert(pinModes == 0 && pinWrites == 0 && displayStarts == 0 && backlightStarts == 0);
+    SPI.failAfterAllocation = false;
+    const int beforeAllocation = SPI.begins;
+    {
+        RFIDDriver reader;
+        MFRC522::failAllocation = true;
+        assert(!reader.begin(5, 27, 18, 23, 19));
+        assert(reader._lastError.startsWith("RFID_ALLOCATION_FAILED"));
+        MFRC522::failAllocation = false;
+        assert(!reader.begin(5, 27, 18, 255, 19));
+        assert(reader._lastError.startsWith("RFID_SPI_PINS_INVALID"));
+        assert(MFRC522::live == 0 && SPI.begins == beforeAllocation);
+    }
+    assert(beginGeneric(generic));
+    assert(storage.ensureMountedLocked(error) && storage._status.mounted && SD.beginCalls == 1);
+    assert(display.begin(config, error) && display._ready && displayStarts == 1);
+    {
+        RFIDDriver reader;
+        assert(reader.begin(6, 27, 255, 255, 255));
+        assert(reader._initialized && MFRC522::live == 1);
+    }
+    assert(MFRC522::live == 0);
+    const int sharedBegins = SPI.begins, sharedEnds = SPI.ends;
+    const int sharedPins = pinModes + pinWrites, sharedSd = SD.beginCalls;
+    generic.pins[2] = 21;
+    assert(!beginGeneric(generic));
+    SDCardManager conflictingSd;
+    conflictingSd._status.sckPin = 21;
+    assert(!conflictingSd.ensureMountedLocked(error));
+    SpiTftDisplayBackend conflictingDisplay;
+    config.sclk = 21;
+    assert(!conflictingDisplay.begin(config, error));
+    {
+        RFIDDriver conflictingReader;
+        assert(!conflictingReader.begin(6, 27, 21, 23, 19));
+        assert(conflictingReader._lastError.startsWith("SPI_PINS_CONFLICT"));
+    }
+    assert(MFRC522::live == 0 && SD.beginCalls == sharedSd);
+    assert(SPI.begins == sharedBegins && SPI.ends == sharedEnds && SPI.active);
+    assert(pinModes + pinWrites == sharedPins);
+    {
+        RFIDDriver absentReader;
+        MFRC522::version = 0xff;
+        assert(!absentReader.begin(6, 27, 18, 23, 19));
+        assert(absentReader._lastError.startsWith("RFID_NOT_DETECTED"));
+        assert(MFRC522::live == 0 && SPI.ends == sharedEnds);
+    }
+    SDCardManager absentCard;
+    absentCard._status.csPin = 15;
+    SD.mountOk = false;
+    assert(!absentCard.ensureMountedLocked(error) && !absentCard._status.mounted);
+    assert(error.startsWith("SD_MOUNT_FAILED") && SPI.ends == sharedEnds);
+    assert(absentCard._status.recoverySuggested && !absentCard._status.capacityValid);
+    assert(absentCard._status.ioFailures == 1 && absentCard._status.lastFailureCode == "SD_MOUNT_FAILED");
+    assert(!initializer.end(error) && initializer.isAcquired(&storage));
+    assert(initializer.release(&storage, error));
+    assert(initializer.releaseNamed("spi", error));
+    assert(display.stop(error));
+    assert(initializer.end(error));
+}

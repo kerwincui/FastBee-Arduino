@@ -50,7 +50,7 @@ class AuthCookieLifecycleTests(unittest.TestCase):
         cpp.write_text(harness, encoding='utf8')
         cls.exe = temp / ('auth.exe' if os.name == 'nt' else 'auth')
         built = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                                f'-I{ROOT / "test/mocks"}', str(cpp), '-o', str(cls.exe)],
+                                f'-I{ROOT / "test/mocks"}', f'-I{ROOT / "include"}', str(cpp), str(ROOT / 'src/network/LiteralStringMatch.cpp'), '-o', str(cls.exe)],
                                capture_output=True, text=True, timeout=60)
         if built.returncode:
             raise AssertionError(built.stdout + built.stderr)
@@ -67,6 +67,9 @@ class AuthCookieLifecycleTests(unittest.TestCase):
 
     def test_idle_expiry_cannot_be_resurrected(self):
         self.run_case('idle')
+
+    def test_output_actor_is_session_scoped_and_never_reused(self):
+        self.run_case('output-actor')
 
     def test_revocation_errors_and_bearer_only_do_not_issue_cookies(self):
         self.run_case('policy')

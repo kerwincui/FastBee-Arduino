@@ -26,9 +26,12 @@
 #endif
 #include "systems/SystemRebooter.h"
 #include "utils/StringUtils.h"
+#include "utils/CheckedText.h"
+#include "core/ActionReportPayload.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <memory>
 #include <new>
 
@@ -56,14 +59,14 @@ private:
 #endif
 
 #if FASTBEE_ENABLE_MQTT
+#include "protocols/MqttSecureIntent.h"
 static bool configureMqttTransport(MQTTClient* mqttClient) {
     if (!mqttClient) return false;
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     FBNetworkManager* netMgr = fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
     if (!netMgr || netMgr->getNetworkType() == NetworkType::NET_WIFI) {
-        mqttClient->setTransportClient(nullptr);
-        return true;
+        return mqttClient->setTransportClient(nullptr);
     }
 
     if (!netMgr->isNetworkConnected()) {
@@ -74,11 +77,12 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
     bool wantsMqtts = false;
     {
         JsonDocument doc;
-        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
-            JsonVariant mqttSection = doc["mqtt"];
-            JsonVariant cfg = mqttSection.is<JsonObject>() ? mqttSection : doc.as<JsonVariant>();
-            wantsMqtts = (cfg["scheme"].as<String>() == "mqtts");
-        }
+        if (!ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) return false;
+        JsonVariant mqttSection = doc["mqtt"];
+        JsonVariant cfg = mqttSection.is<JsonObject>() ? mqttSection : doc.as<JsonVariant>();
+        wantsMqtts = FastBee::mqttRequiresTls(cfg);
+        if ((cfg["downgraded_by_memory"] | false) && !FastBee::mqttLegacySecurePort(cfg))
+            return false;
     }
 
     Client* transport = nullptr;
@@ -86,46 +90,53 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
         // WiFiClientSecure is backed by Arduino-ESP32 NetworkClientSecure and
         // can use the active Ethernet route. Injecting the plain W5500 client
         // here would send cleartext MQTT to port 8883 and timeout.
-        mqttClient->setTransportClient(nullptr);
         LOG_INFO("Protocol Manager: Using internal secure transport for Ethernet MQTTS");
-        return true;
+        return mqttClient->setTransportClient(nullptr);
     }
 #if FASTBEE_ENABLE_CELLULAR
     if (wantsMqtts && netMgr->getNetworkType() == NetworkType::NET_4G) {
         CellularAdapter* cell = netMgr->getCellularAdapter();
         transport = cell ? cell->getSecureClient() : nullptr;
+        if (!transport) {
+            LOG_WARNING("Protocol Manager: MQTTS rejected, cellular TLS transport unavailable");
+            return false;
+        }
         LOG_INFO("Protocol Manager: Using cellular secure transport for MQTTS");
-    } else
-#endif
-    {
-        transport = netMgr->getActiveClient();
+        return mqttClient->setTransportClient(transport, true);
     }
+#endif
+    if (wantsMqtts) {
+        LOG_WARNING("Protocol Manager: MQTTS rejected, active network has no TLS provider");
+        return false;
+    }
+    transport = netMgr->getActiveClient();
     if (!transport) {
         LOG_WARNING("Protocol Manager: MQTT transport unavailable, active Client is null");
         return false;
     }
 
-    mqttClient->setTransportClient(transport);
-    return true;
+    return mqttClient->setTransportClient(transport);
 }
 #endif
 
 static String formatAnalogReportValue(const PeripheralConfig& config,
                                       PeripheralManager& pm,
                                       AnalogInputQuality* quality = nullptr) {
-    if (config.params.adc.conversionEnabled &&
-        config.params.adc.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
-        const uint16_t rawValue = pm.readAnalog(config.id);
-        const float value = pm.convertAnalogRawValue(config.id, rawValue, quality);
+    AnalogReadSample sample;
+    if (!pm.readAnalogSample(config.id, sample)) {
+        if (quality) *quality = AnalogInputQuality::READ_FAILED;
+        return String();
+    }
+    if (quality) *quality = sample.quality;
+    if (sample.conversionEnabled && sample.signalMode != static_cast<uint8_t>(AnalogSignalMode::RAW)) {
+        const float value = sample.value;
         if (isnan(value) || isinf(value)) return String();
-        uint8_t decimals = config.params.adc.decimalPlaces;
-        if (decimals > 6) decimals = 6;
+        const uint8_t decimals = sample.decimalPlaces;
         char buf[32];
         snprintf(buf, sizeof(buf), "%.*f", decimals, value);
         return String(buf);
     }
-    if (quality) *quality = AnalogInputQuality::VALID;
-    return String(pm.readAnalog(config.id));
+    return String(sample.raw);
 }
 
 ProtocolManager::ProtocolManager()
@@ -141,17 +152,8 @@ ProtocolManager::ProtocolManager()
     }
 #endif
 #if FASTBEE_ENABLE_MQTT
-    fastBeeOtaActiveTerminalQueue = xQueueCreate(1, sizeof(FastBeeOtaReplyEvent));
-    if (!fastBeeOtaActiveTerminalQueue) {
-        LOG_WARNING("Protocol Manager: Failed to allocate active FastBee OTA terminal queue");
-    }
-    fastBeeOtaReplyQueue = xQueueCreate(8, sizeof(FastBeeOtaReplyEvent));
-    if (!fastBeeOtaReplyQueue) {
-        LOG_WARNING("Protocol Manager: Failed to allocate FastBee OTA reply queue");
-    }
-    fastBeeOtaProgressQueue = xQueueCreate(1, sizeof(FastBeeOtaReplyEvent));
-    if (!fastBeeOtaProgressQueue) {
-        LOG_WARNING("Protocol Manager: Failed to allocate FastBee OTA progress queue");
+    if (!mqttLifetime.available()) {
+        LOG_ERROR("MQTT admission storage unavailable; manager recreation/restart required");
     }
 #endif
 }
@@ -159,18 +161,6 @@ ProtocolManager::ProtocolManager()
 ProtocolManager::~ProtocolManager() {
     shutdown();
 #if FASTBEE_ENABLE_MQTT
-    if (fastBeeOtaActiveTerminalQueue) {
-        vQueueDelete(fastBeeOtaActiveTerminalQueue);
-        fastBeeOtaActiveTerminalQueue = nullptr;
-    }
-    if (fastBeeOtaReplyQueue) {
-        vQueueDelete(fastBeeOtaReplyQueue);
-        fastBeeOtaReplyQueue = nullptr;
-    }
-    if (fastBeeOtaProgressQueue) {
-        vQueueDelete(fastBeeOtaProgressQueue);
-        fastBeeOtaProgressQueue = nullptr;
-    }
 #endif
 #if FASTBEE_ENABLE_MODBUS
     if (modbusLifecycleMutex) {
@@ -222,6 +212,18 @@ uint16_t ProtocolManager::getActiveModbusLeaseCount() const {
 }
 #endif
 
+#if FASTBEE_ENABLE_MQTT
+FastBee::MqttClientLease ProtocolManager::acquireMQTTClient(bool* absent) const {
+    if (absent) *absent = false; // Contention/pending mutation is not a missing client.
+    if (!mqttLifetime.available()) return {};
+    if (mqttShutdownPending.load() || mqttStopPending.load() || mqttRestartPending.load()) return {};
+    FastBee::MqttClientLifetime::Read read(mqttLifetime);
+    if (!read || mqttShutdownPending.load() || mqttStopPending.load() || mqttRestartPending.load()) return {};
+    if (!mqttClient) { if (absent) *absent = true; return {}; }
+    return FastBee::MqttClientLease(std::move(read), mqttClient.get());
+}
+#endif
+
 bool ProtocolManager::initialize() {
     if (isInitialized) {
         return true;
@@ -229,6 +231,9 @@ bool ProtocolManager::initialize() {
 
     LOG_INFO("Protocol Manager: Initializing...");
     shutdownComplete = false;
+#if FASTBEE_ENABLE_MQTT
+    mqttShutdownPending = false;
+#endif
 #if FASTBEE_ENABLE_MODBUS
     modbusShutdownPending = false;
 #endif
@@ -284,10 +289,22 @@ bool ProtocolManager::startAll() {
         bool started = false;
         switch (protocol.type) {
 #if FASTBEE_ENABLE_MQTT
-            case ProtocolType::MQTT:
-                started = mqttClient && mqttClient->begin();
+            case ProtocolType::MQTT: {
+                {
+                    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+                    if (lifecycle && !mqttShutdownPending && !mqttStopPending &&
+                        !mqttRestartPending && mqttClient) {
+                        // initMQTT may already have completed one-shot begin.
+                        started = !mqttClient->isStopped() || mqttClient->begin();
+                        if (!started && mqttClient->isStopped()) {
+                            mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
+                            mqttClient.reset();
+                        }
+                    }
+                }
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_ENABLED, "");
                 break;
+            }
 #endif
 #if FASTBEE_ENABLE_MODBUS
             case ProtocolType::MODBUS:
@@ -314,7 +331,7 @@ bool ProtocolManager::startAll() {
 void ProtocolManager::stopAll() {
     LOG_INFO("Protocol Manager: Stopping all protocols...");
 #if FASTBEE_ENABLE_MQTT
-    if (mqttClient)       mqttClient->disconnect();
+    stopMQTT();
 #endif
 #if FASTBEE_ENABLE_MODBUS
     stopModbus();
@@ -324,6 +341,16 @@ void ProtocolManager::stopAll() {
 void ProtocolManager::shutdown() {
     if (shutdownComplete) return;
     LOG_INFO("Protocol Manager: Shutting down...");
+#if FASTBEE_ENABLE_MQTT
+    // Shutdown is a terminal drain, invoked after producers are asked to stop.
+    // Never call it while holding an MQTT lease on the same task.
+    mqttShutdownPending = true;
+    mqttRestartPending = false;
+    FastBee::MqttClientLifetime::Write mqttShutdown(mqttLifetime);
+    // Construction failure admitted no client/read/write lease. It cannot
+    // recover while waiting, and must not turn shutdown into an infinite wait.
+    while (mqttLifetime.available() && !mqttShutdown.tryAcquire()) vTaskDelay(pdMS_TO_TICKS(5));
+#endif
 
 #if FASTBEE_ENABLE_MODBUS
     // Prevent new public operations, then let already admitted leases drain.
@@ -345,11 +372,11 @@ void ProtocolManager::shutdown() {
 #endif
 
 #if FASTBEE_ENABLE_MQTT
-    if (mqttClient) mqttClient->disconnect();
-#endif
-
-#if FASTBEE_ENABLE_MQTT
+    // MQTTClient's destructor owns worker shutdown before transport disconnect.
+    // Disconnecting here first would race an internal reconnect operation.
+    if (mqttClient) mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::Shutdown);
     mqttClient.reset();
+    mqttStopPending = false;
 #endif
 #if FASTBEE_ENABLE_MODBUS
     {
@@ -378,7 +405,10 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
     switch (type) {
         case ProtocolType::MQTT:
 #if FASTBEE_ENABLE_MQTT
-            return mqttClient && mqttClient->publish(topic, data);
+        {
+            auto lease = acquireMQTTClient();
+            return lease && lease->publish(topic, data);
+        }
 #else
             return false;
 #endif
@@ -388,14 +418,9 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
             auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
             if (!lease) return false;
             if (lease->getMode() == MODBUS_MASTER) {
-                // Master模式: topic格式 "slaveAddr:regAddr", data为写入值
-                int sepIdx = topic.indexOf(':');
-                if (sepIdx > 0) {
-                    uint8_t slaveAddr = (uint8_t)topic.substring(0, sepIdx).toInt();
-                    uint16_t regAddr = (uint16_t)topic.substring(sepIdx + 1).toInt();
-                    uint16_t value = (uint16_t)data.toInt();
-                    return lease->masterWriteSingleRegister(slaveAddr, regAddr, value);
-                }
+                // This generic API has no authenticated output context. Do not
+                // create a second master-write path or narrow numeric strings
+                // into a different slave/register/value. Use a bound entry.
                 return false;
             }
             // Slave模式: topic为寄存器地址
@@ -421,7 +446,10 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
     switch (type) {
         case ProtocolType::MQTT:
 #if FASTBEE_ENABLE_MQTT
-            return mqttClient ? mqttClient->getStatus() : "Not initialized";
+        {
+            auto lease = acquireMQTTClient();
+            return lease ? lease->getStatus() : "Not initialized or busy";
+        }
 #else
             return "Disabled";
 #endif
@@ -448,11 +476,12 @@ void ProtocolManager::handle() {
         if (millis() - _pmAliveMs > 10000) {
             _pmAliveMs = millis();
 #if FASTBEE_ENABLE_MQTT
-            if (mqttClient) {
+            auto mqttDebug = acquireMQTTClient();
+            if (mqttDebug) {
                 ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%p conn=%u\n",
                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                    (void*)mqttClient.get(),
-                    mqttClient->getIsConnected() ? 1U : 0U);
+                    (void*)mqttDebug.get(),
+                    mqttDebug->getIsConnected() ? 1U : 0U);
             } else {
                 // 区分“配置禁用”（预期行为）与“启动失败”（需排查），避免裸空指针被一律误读为故障
                 ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%s\n",
@@ -487,41 +516,50 @@ void ProtocolManager::handle() {
 
     // MQTT handle() 始终运行：内部有堆保护，不会在内存不足时 OOM
 #if FASTBEE_ENABLE_MQTT
-    if (mqttClient) {
-        if (networkReady || mqttClient->getIsConnected()) {
-            mqttClient->handle();
-        } else {
-            static unsigned long lastMqttNetworkSkipMs = 0;
-            unsigned long now = millis();
-            if (now - lastMqttNetworkSkipMs > 10000) {
-                lastMqttNetworkSkipMs = now;
-                LOG_INFO("Protocol Manager: Network not connected, MQTT handle skipped");
+    {
+        auto mqttRead = acquireMQTTClient();
+        if (mqttRead) {
+            mqttClient->setMinReportInterval(mqttMinReportInterval.load());
+            if (networkReady || mqttClient->getIsConnected()) {
+                mqttClient->handle();
+            } else {
+                static unsigned long lastMqttNetworkSkipMs = 0;
+                unsigned long now = millis();
+                if (now - lastMqttNetworkSkipMs > 10000) {
+                    lastMqttNetworkSkipMs = now;
+                    LOG_INFO("Protocol Manager: Network not connected, MQTT handle skipped");
+                }
+            }
+#if FASTBEE_ENABLE_REMOTE_RESOURCES
+            FastBee::RemoteResourceManager::instance().handleMqtt(mqttClient.get());
+#endif
+            // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
+            static unsigned long _pmDbgMs = 0;
+            if (mqttClient->getIsConnected() && millis() - _pmDbgMs > 10000) {
+                _pmDbgMs = millis();
+                ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
             }
         }
-#if FASTBEE_ENABLE_REMOTE_RESOURCES
-        FastBee::RemoteResourceManager::instance().handleMqtt(mqttClient.get());
-#endif
-        // 测试连接自动恢复检查：不依赖前端轮询，主循环自动检测并恢复原配置
-        MqttRouteHandler::checkPendingTestRestore();
-        // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
-        static unsigned long _pmDbgMs = 0;
-        if (mqttClient->getIsConnected() && millis() - _pmDbgMs > 10000) {
-            _pmDbgMs = millis();
-            ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
-        }
-    }
 
-    // OTA 下载在独立任务中运行，回调只写入定长队列。所有 MQTT 发布都在
-    // loopTask 中完成，避免跨任务并发访问 PubSubClient。
-    processFastBeeOtaReplies();
+        // OTA 下载在独立任务中运行，回调只写入定长队列。所有 MQTT 发布都在
+        // loopTask 中完成，避免跨任务并发访问 PubSubClient。
+        processFastBeeOtaReplies();
+    } // Release the loop's reference before consuming lifecycle requests.
+    // Restore can request stop/rebuild; never retain the loop lease across it.
+    MqttRouteHandler::checkPendingTestRestore();
 
     // MQTT 热重建：保存协议配置后由 HTTP handler 置标志，在 loopTask 大栈中执行。
     // 故意放在 heapSufficient 早退之前：低内存时也要消费标志，
     // 由 restartMQTTDeferred 内部门槛判定，失败则回退调度重启保证新配置生效
-    if (mqttRestartPending) {
+    if (!mqttLifetime.available()) {
+        mqttStopPending = false;
         mqttRestartPending = false;
+    }
+    if (mqttStopPending) finishMqttStop();
+    if (!mqttStopPending && mqttRestartPending.exchange(false)) {
         LOG_INFO("[MQTT] Executing deferred hot-restart in loopTask...");
-        if (!restartMQTTDeferred(true)) {
+        if (!restartMQTTDeferred(true) && !mqttRestartPending && !mqttStopPending && !mqttShutdownPending &&
+            mqttLifetime.available()) {
             // restartMQTTDeferred 在配置已禁用时也返回 false（属正常停止，
             // 如连续两次保存先启后禁的竞态），此时不应回退重启
             bool stillEnabled = false;
@@ -626,6 +664,8 @@ void ProtocolManager::handleMqttMessage(const String& topic,
 
 void ProtocolManager::handleFastBeeOtaCommand(const String& message,
                                               MqttTopicType topicType) {
+    auto mqttRead = acquireMQTTClient();
+    if (!mqttRead) return;
     if (topicType == MqttTopicType::OTA_BINARY) {
         LOG_WARNING("FastBee OTA: Binary package protocol is not supported; command ignored");
         return;
@@ -649,16 +689,24 @@ void ProtocolManager::handleFastBeeOtaCommand(const String& message,
         LOG_WARNING("FastBee OTA: MQTT disconnected; command ignored before Flash write");
         return;
     }
+    if (!mqttClient->hasUsableFastBeeOtaReplyTopic()) {
+        LOG_WARNING("FastBee OTA: Canonical reply topic disabled or missing; command ignored before Flash write");
+        return;
+    }
+    auto replyStorage = fastBeeOtaReplyQueues.ensureAndAcquire();
+    if (!replyStorage) {
+        LOG_WARNING("FastBee OTA: Reply storage unavailable or busy; command ignored before Flash write");
+        return;
+    }
+    const auto fastBeeOtaActiveTerminalQueue = replyStorage.terminal();
+    const auto fastBeeOtaReplyQueue = replyStorage.replies();
+    const auto fastBeeOtaProgressQueue = replyStorage.progress();
     if (!fastBeeOtaReplyQueue || !fastBeeOtaProgressQueue) {
         LOG_WARNING("FastBee OTA: Reply queues unavailable; command ignored before Flash write");
         return;
     }
     if (!fastBeeOtaActiveTerminalQueue) {
         LOG_WARNING("FastBee OTA: Active terminal queue unavailable; command ignored before Flash write");
-        return;
-    }
-    if (!mqttClient->hasUsableFastBeeOtaReplyTopic()) {
-        LOG_WARNING("FastBee OTA: Canonical reply topic disabled or missing; command ignored before Flash write");
         return;
     }
     uint8_t cachedTerminalStatus = 0;
@@ -793,6 +841,16 @@ void ProtocolManager::queueFastBeeOtaReply(int32_t taskId,
                                            uint8_t status,
                                            uint8_t progress,
                                            const String& error) {
+    // A claimed OTA task retains the owner until its terminal reply is sent.
+    // This lease also keeps storage safe across idle retirement/destruction.
+    auto replyStorage = fastBeeOtaReplyQueues.acquire();
+    if (!replyStorage) {
+        LOG_ERROR("FastBee OTA: Reply storage unavailable");
+        return;
+    }
+    const auto fastBeeOtaActiveTerminalQueue = replyStorage.terminal();
+    const auto fastBeeOtaReplyQueue = replyStorage.replies();
+    const auto fastBeeOtaProgressQueue = replyStorage.progress();
     const bool terminal = status == FastBeeOtaProtocol::STATUS_SUCCESS ||
                           status == FastBeeOtaProtocol::STATUS_FAILED;
     bool staleProgress = false;
@@ -868,6 +926,21 @@ void ProtocolManager::queueFastBeeOtaReply(int32_t taskId,
 }
 
 void ProtocolManager::processFastBeeOtaReplies() {
+    // Empty, unclaimed storage is reclaimable even while MQTT is disabled.
+    // Queued/pending replies and admitted producers prevent retirement.
+    fastBeeOtaReplyQueues.releaseIfIdle([this] {
+        portENTER_CRITICAL(&fastBeeOtaStateMux);
+        const bool idle = fastBeeOtaActiveTaskId == 0;
+        portEXIT_CRITICAL(&fastBeeOtaStateMux);
+        return idle && !fastBeeOtaHasPendingReply;
+    });
+    auto mqttRead = acquireMQTTClient();
+    if (!mqttRead) return;
+    auto replyStorage = fastBeeOtaReplyQueues.acquire();
+    if (!replyStorage) return;
+    const auto fastBeeOtaActiveTerminalQueue = replyStorage.terminal();
+    const auto fastBeeOtaReplyQueue = replyStorage.replies();
+    const auto fastBeeOtaProgressQueue = replyStorage.progress();
     if (!fastBeeOtaActiveTerminalQueue || !fastBeeOtaReplyQueue || !mqttClient ||
         !mqttClient->getIsConnected()) {
         return;
@@ -1019,7 +1092,8 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
 
     // 1. MQTT 上报（所有来源都上报）
 #if FASTBEE_ENABLE_MQTT
-    if (mqttClient && mqttClient->getIsConnected()) {
+    auto mqttRead = acquireMQTTClient();
+    if (mqttRead && mqttRead->getIsConnected()) {
         // 统一上报日志：无论 transferType=0(JSON) 或 1(HEX) 都打印上报主题、格式、内容
         // 使用 Serial.printf 避免 LoggerSystem 文件 I/O 加剧异步任务栈压力
         const char* fmt = "JSON";
@@ -1066,6 +1140,16 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
 
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::restartMQTT() {
+    if (!mqttLifetime.available()) {
+        mqttRestartPending = false;
+        return false;
+    }
+    if (mqttShutdownPending) return false;
+    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+    if (!lifecycle) { mqttRestartPending = true; return false; }
+    if (mqttShutdownPending) return false;
+    if (mqttStopPending) { mqttRestartPending = true; return false; }
+    mqttRestartPending.exchange(false); // Consume requests predating this rebuild only.
     // MQTT 启用检查：fail-closed —— 禁用或配置不可用时一律不创建客户端
     {
         JsonDocument enabledDoc;
@@ -1083,7 +1167,8 @@ bool ProtocolManager::restartMQTT() {
         if (!mqttEnabled) {
             mqttDisabledByConfig = true;
             if (mqttClient) {
-                mqttClient->stop();
+                if (!mqttClient->stop()) { mqttRestartPending = true; return false; }
+                mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::ConfigurationDisabled);
                 mqttClient.reset();
             }
             return false;
@@ -1095,7 +1180,8 @@ bool ProtocolManager::restartMQTT() {
 
     // 断开现有连接
     if (mqttClient) {
-        mqttClient->stop();
+        if (!mqttClient->stop()) { mqttRestartPending = true; return false; }
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::Rebuild);
         mqttClient.reset();
     }
 
@@ -1113,6 +1199,7 @@ bool ProtocolManager::restartMQTT() {
     });
     if (!configureMqttTransport(mqttClient.get())) {
         LOG_WARNING("Protocol Manager: MQTT restart aborted, no usable transport");
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
         mqttClient.reset();
         return false;
     }
@@ -1150,8 +1237,11 @@ bool ProtocolManager::restartMQTT() {
         return result;
     });
 
+    mqttClient->setMinReportInterval(mqttMinReportInterval.load());
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT restart begin() failed");
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
+        mqttClient.reset();
         return false;
     }
 
@@ -1165,7 +1255,27 @@ bool ProtocolManager::restartMQTT() {
     return ok;
 }
 
-bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
+bool ProtocolManager::restartMQTTDeferred(bool forceRebuild, FastBee::MqttRestartResult* result) {
+    if (result) *result = FastBee::MqttRestartResult::NotStarted;
+    if (!mqttLifetime.available()) {
+        mqttRestartPending = false;
+        if (result) *result = FastBee::MqttRestartResult::StorageUnavailable;
+        return false;
+    }
+    if (mqttShutdownPending) return false;
+    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+    if (!lifecycle) {
+        mqttRestartPending = true;
+        if (result) *result = FastBee::MqttRestartResult::Deferred;
+        return false;
+    }
+    if (mqttShutdownPending) return false;
+    if (mqttStopPending) {
+        mqttRestartPending = true;
+        if (result) *result = FastBee::MqttRestartResult::Deferred;
+        return false;
+    }
+    mqttRestartPending.exchange(false); // Requests arriving during rebuild stay pending.
     // 统一入口守卫：禁用配置时停止并清理客户端，不创建或连接 MQTT。
     {
         JsonDocument enabledDoc;
@@ -1182,7 +1292,12 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
             mqttDisabledByConfig = true;
             // 如果已有运行中的客户端，停止它
             if (mqttClient) {
-                mqttClient->stop();
+                if (!mqttClient->stop()) {
+                    mqttRestartPending = true;
+                    if (result) *result = FastBee::MqttRestartResult::Deferred;
+                    return false;
+                }
+                mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::ConfigurationDisabled);
                 mqttClient.reset();
             }
             return false;
@@ -1199,6 +1314,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
             ets_printf("[MQTT] Deferred restart skipped: client already active (connected=%u)\n",
                        mqttClient->getIsConnected() ? 1U : 0U);
             LOG_INFO("Protocol Manager: MQTT deferred restart skipped, active client preserved");
+            if (result) *result = FastBee::MqttRestartResult::Ready;
             return true;
         }
     }
@@ -1206,7 +1322,12 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     // 先释放旧客户端，然后再检查堆内存
     // 之前在释放前检查导致误判（旧客户端占用 ~12KB，释放后堆足够）
     if (mqttClient) {
-        mqttClient->stop();
+        if (!mqttClient->stop()) {
+            mqttRestartPending = true;
+            if (result) *result = FastBee::MqttRestartResult::Deferred;
+            return false;
+        }
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::Rebuild);
         mqttClient.reset();
     }
 
@@ -1225,8 +1346,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     {
         JsonDocument doc;
         if (ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
-            String scheme = doc["mqtt"]["scheme"].as<String>();
-            isMqtts = (scheme == "mqtts");
+            isMqtts = FastBee::mqttRequiresTls(doc["mqtt"]);
         }
     }
     
@@ -1278,6 +1398,7 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     });
     if (!configureMqttTransport(mqttClient.get())) {
         LOG_WARNING("Protocol Manager: MQTT deferred restart aborted, no usable transport");
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
         mqttClient.reset();
         return false;
     }
@@ -1315,24 +1436,74 @@ bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
         return result;
     });
 
+    mqttClient->setMinReportInterval(mqttMinReportInterval.load());
     if (!mqttClient->begin(500)) {  // deferred 重启：Web 已在运行，仅留 500ms 让任务初始化
         LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
+        mqttClient.reset();
         return false;
     }
 
     // 不调用 connect()，由 MQTTClient::handle() 的 auto-reconnect 在 loop 中异步连接
     LOG_INFO("Protocol Manager: MQTT config reloaded, will auto-connect in loop (500ms startup)");
+    if (result) *result = FastBee::MqttRestartResult::Ready;
     return true;
 }
 
-void ProtocolManager::stopMQTT() {
+FastBee::MqttClientLifetime::Write ProtocolManager::prepareMqttNetworkSwitch() {
+    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+    // Preserve permanent failure for the network caller; an empty default
+    // lease still means an ordinary temporary rejection elsewhere.
+    if (lifecycle.storageUnavailable()) return lifecycle;
+    if (!lifecycle || mqttShutdownPending) return {};
+    if (mqttClient) {
+        const bool resume = !mqttClient->isStopped() && !mqttStopPending;
+        // Publish before the potentially slow stop so a later manual stop can
+        // cancel this intent, rather than having it overwritten after draining.
+        if (resume) mqttRestartPending = true;
+        // Destroy while the old transport still exists. A stopped MQTTClient
+        // retains _externalClient, and its destructor disconnects it again.
+        // Merely calling stop() would leave that pointer dangling on rebuild.
+        if (!mqttClient->stop()) return {}; // Keep old network transport alive while worker drains.
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::NetworkSwitch);
+        mqttClient.reset();
+    }
+    // Writers/readers remain excluded until the network caller leaves scope.
+    // The loop may service the queued rebuild only after this lease releases.
+    return lifecycle;
+}
+
+bool ProtocolManager::stopMQTT() {
+    if (!mqttLifetime.available()) {
+        mqttStopPending = false;
+        mqttRestartPending = false;
+        return false;
+    }
+    mqttStopPending = true;
+    mqttRestartPending = false;
+    return finishMqttStop();
+}
+
+bool ProtocolManager::finishMqttStop() {
+    if (!mqttLifetime.available()) {
+        mqttStopPending = false;
+        return false;
+    }
+    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+    if (!lifecycle) return false;
     LOG_INFO("Protocol Manager: Stopping MQTT...");
     if (mqttClient) {
-        mqttClient->stop();
+        if (!mqttClient->stop()) return false;
     }
+    mqttStopPending = false;
+    return true;
 }
 
 void ProtocolManager::requestMqttRestartAsync() {
+    if (!mqttLifetime.available()) {
+        mqttRestartPending = false;
+        return;
+    }
     // 仅置标志：实际重建由 handle() 在 loopTask（16KB 栈）中执行，
     // 避免在 async_tcp 小栈任务里做 TLS 销毁/重建
     LOG_INFO("Protocol Manager: MQTT restart requested (deferred to loopTask)");
@@ -1498,11 +1669,12 @@ ModbusRestartResult ProtocolManager::restartModbus() {
                 task.quantity     = t["quantity"] | (uint16_t)10;
                 task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
-                if (task.enabled) hasEnabledPollTask = true;
                 // 向后兼容：优先读取 name，回退到 label
                 const char* taskName = t["name"] | (t["label"] | "");
                 strlcpy(task.name, taskName, sizeof(task.name));
 
+                // Invalid saved mappings disable this task; never silently reinterpret them.
+                if (!FastBee::validModbusTaskMappings(t)) task.enabled = false;
                 // 解析寄存器映射
                 task.mappingCount = 0;
                 if (t.containsKey("mappings")) {
@@ -1511,19 +1683,15 @@ ModbusRestartResult ProtocolManager::restartModbus() {
                         if (task.mappingCount >= Protocols::MODBUS_MAX_MAPPINGS_PER_TASK) break;
                         JsonObject m = mv.as<JsonObject>();
                         RegisterMapping& mapping = task.mappings[task.mappingCount];
-                        mapping.regOffset = m["regOffset"] | (uint8_t)0;
-                        mapping.dataType = m["dataType"] | (uint8_t)0;
-                        mapping.scaleFactor = m["scaleFactor"] | 1.0f;
-                        mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
-                        const char* sid = m["sensorId"] | "";
-                        StringUtils::copyUtf8(mapping.sensorId, sizeof(mapping.sensorId), sid);
-                        const char* u = m["unit"] | "";
-                        strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
-                        mapping.unit[sizeof(mapping.unit) - 1] = '\0';
+                        if (!FastBee::readModbusRegisterMapping(m, task.quantity, mapping)) {
+                            task.enabled = false;
+                            continue;
+                        }
                         task.mappingCount++;
                     }
                 }
 
+                if (task.enabled) hasEnabledPollTask = true;
                 modbusConfig.master.taskCount++;
             }
         }
@@ -1576,6 +1744,8 @@ ModbusRestartResult ProtocolManager::restartModbus() {
                 }
                 if (const char* error = loadMotorProtocol(d, dev.motorProtocol))
                     LOG_WARNINGF("Modbus motor %u: %s; control blocked", dev.slaveAddress, error);
+                if (const char* error = loadMotorTravelDraft(d, dev.motorTravelDraft))
+                    LOG_WARNINGF("Modbus motor %u: %s; travel draft invalid", dev.slaveAddress, error);
                 modbusConfig.master.deviceCount++;
             }
         }
@@ -1727,7 +1897,7 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
 
     // 解析参数 JSON
     JsonDocument paramsDoc;
-    DeserializationError parseErr = deserializeJson(paramsDoc, paramsJson);
+    DeserializationError parseErr = deserializeJson(paramsDoc, paramsJson.c_str(), paramsJson.length());
     if (parseErr) {
         LOG_WARNINGF("[Modbus] OneShot: JSON parse error: %s", parseErr.c_str());
         JsonObject err = resultArr.add<JsonObject>();
@@ -1824,49 +1994,11 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
             JsonArray mappings = t["mappings"].as<JsonArray>();
             for (JsonVariant mv : mappings) {
                 JsonObject m = mv.as<JsonObject>();
-                uint8_t regOffset    = m["regOffset"] | (uint8_t)0;
-                uint8_t dataType     = m["dataType"] | (uint8_t)0;
-                float   scaleFactor  = m["scaleFactor"] | 1.0f;
-                uint8_t decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
-                const char* sensorId = m["sensorId"] | "unknown";
-
-                if (regOffset >= readResult.count) continue;
-
-                // 数据类型转换（与 reportPollData 逻辑一致）
-                float rawValue = 0;
-                switch (dataType) {
-                    case 0: // uint16
-                        rawValue = (float)readResult.data[regOffset];
-                        break;
-                    case 1: // int16
-                        rawValue = (float)(int16_t)readResult.data[regOffset];
-                        break;
-                    case 2: // uint32 (高字在前)
-                        if (regOffset + 1 < readResult.count) {
-                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
-                            rawValue = (float)u32;
-                        }
-                        break;
-                    case 3: // int32 (高字在前)
-                        if (regOffset + 1 < readResult.count) {
-                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
-                            rawValue = (float)(int32_t)u32;
-                        }
-                        break;
-                    case 4: // float32 (IEEE 754)
-                        if (regOffset + 1 < readResult.count) {
-                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
-                            memcpy(&rawValue, &u32, sizeof(float));
-                        }
-                        break;
-                    default:
-                        rawValue = (float)readResult.data[regOffset];
-                        break;
-                }
-
-                float scaledValue = rawValue * scaleFactor;
-                char valBuf[16];
-                dtostrf(scaledValue, 1, decimalPlaces, valBuf);
+                RegisterMapping mapping;
+                if (!FastBee::readModbusRegisterMapping(m, readResult.count, mapping) || !mapping.sensorId[0]) continue;
+                char valBuf[96];
+                if (!FastBee::formatModbusMapping(readResult.data, readResult.count, mapping, valBuf, sizeof(valBuf))) continue;
+                const char* sensorId = mapping.sensorId;
 
                 JsonObject item = resultArr.add<JsonObject>();
                 item["id"] = sensorId;
@@ -1894,18 +2026,58 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
 
 // ========== MQTT触发的Modbus原始HEX帧透传 ==========
 
+static OneShotResult protocolModbusDenied(
+    FastBee::OrdinaryControlResult& control, const char* reason) {
+    control = {}; control.evaluated = true; control.reason = reason;
+    OneShotResult result;
+    result.error = ONESHOT_CONTROL_REJECTED; result.controlReason = reason;
+    return result;
+}
+
+static OneShotResult submitProtocolModbusFrame(ModbusHandler& handler,
+    const FastBee::ModbusOutputFrame& frame,
+    const FastBee::OrdinaryControlContext& context, FastBee::OrdinaryControlResult& control,
+    uint8_t* raw = nullptr, size_t capacity = 0, size_t* length = nullptr) {
+    if (length) *length = 0;
+    if (!context.request.operation)
+        return protocolModbusDenied(control, "CONTROL_CONTEXT_UNAVAILABLE");
+    FastBee::ModbusControlTarget target;
+    if (!frame.valid() || !handler.snapshotOrdinaryFrame(frame, target))
+        return protocolModbusDenied(control, "CONTROL_FRAME_MAPPING_UNCONFIRMED");
+    return PeripheralManager::getInstance().submitOrdinaryModbusFrame(
+        handler, target, frame, context, control, 0, raw, capacity, length);
+}
+
 String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
+    FastBee::OrdinaryControlResult control;
+    // A rejected reserved command remains handled; it never becomes a second
+    // rule/direct-output attempt or a fabricated HEX response.
+    auto failed = [&](const char* reason) -> String {
+        JsonDocument doc;
+        JsonObject item = doc.to<JsonArray>().add<JsonObject>();
+        item["id"] = "modbus_raw_send"; item["value"] = "";
+        item["remark"] = reason; item["success"] = false;
+        item["outputAttempted"] = control.attempted;
+        item["commandAcknowledged"] = false; item["physicalOutputVerified"] = false;
+        if (doc.overflowed()) return "[]";
+        String report;
+        const size_t bytes = measureJson(doc);
+        if (!report.reserve(bytes) || serializeJson(doc, report) != bytes || report.length() != bytes)
+            return "[]";
+        return report;
+    };
+    const uint32_t sourceEpoch = FastBee::SensorConfigEpoch::current();
     auto modbusLease = acquireModbusHandler(pdMS_TO_TICKS(2000));
     ModbusHandler* activeModbus = modbusLease.get();
     // 检查 Modbus 是否可用
     if (!activeModbus) {
         LOG_WARNING("[Modbus] RawSend: not initialized");
-        return "";
+        return failed("MODBUS_UNAVAILABLE");
     }
 
     if (activeModbus->getMode() != MODBUS_MASTER) {
         LOG_WARNING("[Modbus] RawSend: not master mode");
-        return "";
+        return failed("MODBUS_MASTER_REQUIRED");
     }
 
     // 校验 HEX 字符串格式
@@ -1914,7 +2086,7 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
     if (hex.length() < 8U || (hex.length() % 2U) != 0U ||
         hex.length() > Protocols::MODBUS_BUFFER_SIZE * 2U) {
         LOG_WARNINGF("[Modbus] RawSend: invalid hex length=%d", hex.length());
-        return "";
+        return failed("MODBUS_HEX_INVALID");
     }
 
     // HEX 字符串解码为字节数组
@@ -1932,7 +2104,7 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
         int8_t hv = hexVal(hi), lv = hexVal(lo);
         if (hv < 0 || lv < 0) {
             LOG_WARNING("[Modbus] RawSend: invalid hex char");
-            return "";
+            return failed("MODBUS_HEX_INVALID");
         }
         byteArray[i] = (uint8_t)((hv << 4) | lv);
     }
@@ -1949,7 +2121,7 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
         byteArray[byteLen - 1U] != crcHi) {
         LOG_WARNINGF("[Modbus] RawSend: invalid RTU CRC (len=%u), frame rejected",
                      static_cast<unsigned>(byteLen));
-        return "";
+        return failed("MODBUS_CRC_INVALID");
     }
     const size_t effectiveLen = byteLen - 2U;
     LOG_INFOF("[Modbus] RawSend: slave=%d, %u bytes (without CRC)", slaveAddr,
@@ -1960,9 +2132,45 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
     uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
     size_t responseLength = 0;
     uint8_t exceptionCode = 0;
-    const OneShotError rawError = activeModbus->sendRawFrameBytesOnce(
-        slaveAddr, byteArray, effectiveLen,
-        response, sizeof(response), responseLength, exceptionCode, false);
+    OneShotError rawError = ONESHOT_CONTROL_REJECTED;
+    const uint8_t function = byteArray[1];
+    if (function >= 1 && function <= 4) {
+        // Read-only traffic keeps its original raw response path and needs no
+        // output permission, even if PM admission is currently unavailable.
+        rawError = activeModbus->sendRawFrameBytesOnce(slaveAddr, byteArray, effectiveLen,
+            response, sizeof(response), responseLength, exceptionCode, false);
+    } else {
+        FastBee::ModbusOutputFrame frame;
+        FastBee::ModbusControlTarget target;
+        bool valid = frame.assign(byteArray, effectiveLen, FastBee::ModbusFrameAccess::Standard);
+        bool mapped = valid && activeModbus->snapshotOrdinaryFrame(frame, target);
+        // FF00 can mean either a standard ON or a saved vendor timer (255
+        // units). Resolve against actual saved mappings, never address guesses.
+        // Snapshot fallback performs no write; there is no direct-UART fallback.
+        if (!mapped && function == 5 && effectiveLen == 6 && byteArray[4] && !byteArray[5]) {
+            valid = frame.assign(byteArray, effectiveLen, FastBee::ModbusFrameAccess::RelayVendor);
+            mapped = valid && activeModbus->snapshotOrdinaryFrame(frame, target);
+        }
+        // MQTT cannot infer a developer-maintenance authorization. Unknown
+        // vendor writes, broadcast writes and malformed requests fail closed.
+        if (!valid) return failed("CONTROL_FRAME_INVALID");
+        if (!mapped) return failed("CONTROL_FRAME_MAPPING_UNCONFIRMED");
+        static const uint64_t mqttRawActor = FastBee::RuleOutputIdentity::allocateActor();
+        FastBee::OrdinaryControlContext context;
+        auto& pm = PeripheralManager::getInstance();
+        if (!pm.beginOrdinaryControl(FastBee::OrdinaryControl::Source::Mqtt,
+            mqttRawActor, 0, false, 0, String(), sourceEpoch, {}, context))
+            return failed("CONTROL_CONTEXT_UNAVAILABLE");
+        struct Terminal {
+            PeripheralManager& pm; const FastBee::OrdinaryControlContext& context;
+            ~Terminal() { pm.finishOrdinaryControl(context); }
+        } terminal{pm, context};
+        // The saved target includes any hardware timer window; PM retains it
+        // even after an unknown ACK or this MQTT invocation's terminal return.
+        const auto result = pm.submitOrdinaryModbusFrame(*activeModbus, target, frame,
+            context, control, 0, response, sizeof(response), &responseLength);
+        rawError = result.error; exceptionCode = result.exceptionCode;
+    }
 
     // A slave exception is an error to structured/legacy callers, but it is
     // also a valid RTU response frame that raw passthrough must preserve.
@@ -1973,18 +2181,21 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
     if (rawError != ONESHOT_SUCCESS && !forwardableException) {
         LOG_WARNINGF("[Modbus] RawSend: failed, error=%d exception=%u",
                      rawError, static_cast<unsigned>(exceptionCode));
-        return "";
+        return failed(control.evaluated ? control.reason : "MODBUS_RESPONSE_UNCONFIRMED");
     }
+    if (responseLength < 4 || responseLength > sizeof(response))
+        return failed("MODBUS_RESPONSE_UNCONFIRMED");
 
     // 成功：将原始响应字节格式化为 HEX 字符串
     String respHex;
-    respHex.reserve(responseLength * 2U);
+    if (!respHex.reserve(responseLength * 2U)) return failed("MODBUS_RESPONSE_ALLOCATION_FAILED");
     for (size_t i = 0; i < responseLength; i++) {
         char buf[3];
         snprintf(buf, sizeof(buf), "%02X", response[i]);
         respHex += buf;
     }
 
+    if (respHex.length() != responseLength * 2U) return failed("MODBUS_RESPONSE_ALLOCATION_FAILED");
     LOG_INFOF("[Modbus] RawSend: result hex=%s", respHex.c_str());
     // Route the response through the typed asynchronous outlet. Returning the
     // HEX string to processQueuedCommands would lose RAW metadata and could be
@@ -1998,8 +2209,15 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
+    FastBee::MqttClientLifetime::Write lifecycle(mqttLifetime);
+    if (!lifecycle || mqttShutdownPending || mqttStopPending) return false;
 
     MQTTConfig* mqttConfig = static_cast<MQTTConfig*>(config);
+    if (mqttClient) {
+        if (!mqttClient->stop()) return false; // Initialization also retains an in-flight worker.
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::Rebuild);
+        mqttClient.reset();
+    }
 
     // 使用非抛出分配：启动期或内存降级期都应返回可读失败状态，
     // 而不是因 MQTT 客户端构造失败触发异常重启。
@@ -2017,6 +2235,7 @@ bool ProtocolManager::initMQTT(void* config) {
 
     if (!configureMqttTransport(mqttClient.get())) {
         LOG_WARNING("Protocol Manager: MQTT init aborted, no usable transport");
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
         mqttClient.reset();
         return false;
     }
@@ -2054,7 +2273,13 @@ bool ProtocolManager::initMQTT(void* config) {
         return result;
     });
 
-    return mqttClient->begin();
+    mqttClient->setMinReportInterval(mqttMinReportInterval.load());
+    if (!mqttClient->begin()) {
+        mqttClient->setReportRetirementReason(FastBee::MqttRetirementReason::InitializationFailed);
+        mqttClient.reset();
+        return false;
+    }
+    return true;
 }
 #endif
 
@@ -2126,20 +2351,32 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
     if (modbusHandler) {
         pm.setModbusCallbacks(
             // 线圈写入回调 (FC05) — 使用控制优先级通道，避免与轮询竞争
-            [this](uint8_t slaveAddr, uint16_t coilAddr, bool value) -> bool {
+            [this](uint8_t slaveAddr, uint16_t coilAddr, bool value,
+                   const FastBee::OrdinaryControlContext& context,
+                   FastBee::OrdinaryControlResult& control) -> bool {
                 auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
-                if (!lease) return false;
-                OneShotResult result = lease->writeCoilOnce(
-                    slaveAddr, coilAddr, value, true);
-                return result.error == ONESHOT_SUCCESS;
+                if (!lease) {
+                    protocolModbusDenied(control, "MODBUS_UNAVAILABLE"); return false;
+                }
+                FastBee::ModbusOutputFrame frame;
+                if (!frame.single(slaveAddr, 5, coilAddr, value ? 0xff00 : 0)) {
+                    protocolModbusDenied(control, "CONTROL_FRAME_INVALID"); return false;
+                }
+                return submitProtocolModbusFrame(*lease.get(), frame, context, control).error == ONESHOT_SUCCESS;
             },
             // 寄存器写入回调 (FC06) — 使用控制优先级通道
-            [this](uint8_t slaveAddr, uint16_t regAddr, uint16_t value) -> bool {
+            [this](uint8_t slaveAddr, uint16_t regAddr, uint16_t value,
+                   const FastBee::OrdinaryControlContext& context,
+                   FastBee::OrdinaryControlResult& control) -> bool {
                 auto lease = acquireModbusHandler(pdMS_TO_TICKS(2000));
-                if (!lease) return false;
-                OneShotResult result = lease->writeRegisterOnce(
-                    slaveAddr, regAddr, value, true);
-                return result.error == ONESHOT_SUCCESS;
+                if (!lease) {
+                    protocolModbusDenied(control, "MODBUS_UNAVAILABLE"); return false;
+                }
+                FastBee::ModbusOutputFrame frame;
+                if (!frame.single(slaveAddr, 6, regAddr, value)) {
+                    protocolModbusDenied(control, "CONTROL_FRAME_INVALID"); return false;
+                }
+                return submitProtocolModbusFrame(*lease.get(), frame, context, control).error == ONESHOT_SUCCESS;
             }
         );
     }
@@ -2285,23 +2522,35 @@ String ProtocolManager::collectLocalSensorData() const {
     // 否则回退外设配置 id（与平台物模型标识符对应），最后才用完整缓存键兜底。
     {
         const auto sensorCache = PeriphExecManager::getInstance().getSensorReadCacheCopy();
-        unsigned long now = millis();
+        const int64_t nowUs = esp_timer_get_time();
+        if (nowUs < 0) return "[]";
+        const uint64_t now = static_cast<uint64_t>(nowUs) / 1000;
         for (const auto& entry : sensorCache) {
             const auto& cache = entry.second;
             if (cache.value.isEmpty()) continue;
             // 防御性 TTL 检查：周期性淘汰之外再拦截一次过期数据
-            if (now - cache.timestamp > PeriphExecManager::SENSOR_CACHE_TTL_MS) continue;
+            const uint32_t maxAge = cache.maxAgeMs ? cache.maxAgeMs : PeriphExecManager::SENSOR_CACHE_TTL_MS;
+            if (now < cache.sampledAtMs || now - cache.sampledAtMs > maxAge) continue;
             // 旧缓存条目无 periphId 时回退用完整 key（periphId_dataField）
             String reportId = cache.dataField;
             if (reportId.isEmpty()) {
                 reportId = cache.periphId.isEmpty() ? entry.first : cache.periphId;
             }
-            if (!first) json += ",";
-            json += "{\"id\":\"";
-            json += reportId;
-            json += "\",\"value\":\"";
-            json += cache.value;
-            json += "\",\"remark\":\"sensor\"}";
+            ActionExecResult sample;
+            if (!FastBee::captureLiteralReportIdentity(sample, reportId.c_str())) return "[]";
+            FastBee::completeCapturedReport(sample, cache.value, true, String("sensor"));
+            sample.hasSensorSample = true; sample.sampleUnit = cache.unit;
+            if (sample.sampleUnit != cache.unit || cache.unit.length() > 32) return "[]";
+            sample.sampleUnitBytes = static_cast<uint8_t>(cache.unit.length());
+            sample.sensorSample = {cache.sampledAtMs, now, maxAge, FastBee::SensorSampleQuality::Good};
+            JsonDocument row;
+            JsonArray rows = row.to<JsonArray>();
+            if (FastBee::appendCapturedReportRow(rows, sample) != FastBee::CapturedReportRow::Added || row.overflowed()) return "[]";
+            String encoded;
+            const size_t bytes = measureJson(rows[0]);
+            if (!encoded.reserve(bytes) || serializeJson(rows[0], encoded) != bytes || encoded.length() != bytes ||
+                (!first && !FastBee::appendCheckedText(json, ",", 1, UINT16_MAX)) ||
+                !FastBee::appendCheckedText(json, encoded.c_str(), encoded.length(), UINT16_MAX)) return "[]";
             first = false;
         }
     }

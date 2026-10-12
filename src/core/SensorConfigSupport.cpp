@@ -1,5 +1,7 @@
 #include "core/SensorConfigSupport.h"
 #include "core/DriverRegistry.h"
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "peripherals/drivers/ADS1115Contract.h"
 #if FASTBEE_ENABLE_I2C_SENSORS
 #include "peripherals/drivers/INA226Driver.h"
 #endif
@@ -10,8 +12,22 @@
 
 namespace FastBee {
 namespace {
+// Public is<float>() also accepts double/integer variants. The actual stored
+// kind is needed here: ArduinoJson 7.4 parses short decimal tokens (1e-6) into
+// float, while explicit higher-precision out-of-range values must stay invalid.
+// This one adapter is tied to the installed library; behavior tests exercise
+// the real deserializer so a library upgrade cannot silently change admission.
+struct StoredFloatVisitor : ArduinoJson::detail::JsonVariantVisitor<bool> {
+    using ArduinoJson::detail::JsonVariantVisitor<bool>::visit;
+    bool visit(float) { return true; }
+};
+bool jsonStoresFloat(JsonVariantConst input) {
+    StoredFloatVisitor visitor;
+    return ArduinoJson::detail::accept(input, visitor);
+}
 bool configNumber(JsonVariantConst input, double fallback, double minimum,
-                  double maximum, bool integer, double& output) {
+                  double maximum, bool integer, double& output,
+                  const SensorParameterMetadata* floatEndpoint = nullptr) {
     if (input.isNull()) output = fallback;
     else if (input.is<bool>()) return false;
     else if (input.is<const char*>()) {
@@ -22,7 +38,11 @@ bool configNumber(JsonVariantConst input, double fallback, double minimum,
         if (end == text) return false;
         while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
         if (*end) return false;
-    } else if (input.is<double>()) output = input.as<double>();
+    } else if (input.is<double>()) {
+        output = input.as<double>();
+        if (floatEndpoint && jsonStoresFloat(input))
+            output = floatEndpoint->canonicalFloatValue(input.as<float>());
+    }
     else return false;
     return std::isfinite(output) && output >= minimum && output <= maximum &&
         (!integer || std::floor(output) == output);
@@ -36,6 +56,17 @@ bool configText(JsonVariantConst input, const char* fallback, char* output,
     return true;
 }
 } // namespace
+
+bool parseSensorMode(JsonVariantConst input, uint8_t fallback, uint8_t& output) {
+    if (input.is<const char*>() && sensorNameEquals(input.as<const char*>(), "gyro")) output = 1;
+    else if (input.is<const char*>() && sensorNameEquals(input.as<const char*>(), "accel")) output = 0;
+    else {
+        double number = 0;
+        if (!configNumber(input, fallback, 0, 1, true, number)) return false;
+        output = static_cast<uint8_t>(number);
+    }
+    return true;
+}
 
 bool parseSensorConfig(JsonObjectConst params, PeripheralConfig& config, String& error) {
     auto sensor = config.params.sensor;
@@ -83,14 +114,8 @@ bool parseSensorConfig(JsonObjectConst params, PeripheralConfig& config, String&
         error = "SENSOR_ADDRESS_INVALID"; return false;
     }
     sensor.address = static_cast<uint8_t>(number);
-    JsonVariantConst mode = params["mode"];
-    if (mode.is<const char*>() && sensorNameEquals(mode.as<const char*>(), "gyro")) sensor.mode = 1;
-    else if (mode.is<const char*>() && sensorNameEquals(mode.as<const char*>(), "accel")) sensor.mode = 0;
-    else {
-        if (!configNumber(mode, changedDriver ? 0 : sensor.mode, 0, 1, true, number)) {
-            error = "SENSOR_MODE_INVALID"; return false;
-        }
-        sensor.mode = static_cast<uint8_t>(number);
+    if (!parseSensorMode(params["mode"], changedDriver ? 0 : sensor.mode, sensor.mode)) {
+        error = "SENSOR_MODE_INVALID"; return false;
     }
     if (!configNumber(params["frequency"], sensor.frequency ? sensor.frequency : 100000,
                       100000, 400000, true, number) || (number != 100000 && number != 400000)) {
@@ -115,6 +140,44 @@ bool parseSensorConfig(JsonObjectConst params, PeripheralConfig& config, String&
         error = "INA226_CONVERSION_CONFIG_INVALID"; return false;
     }
     sensor.averaging = static_cast<uint16_t>(number);
+    if (sensorNameEquals(sensor.driver, "ADS1115")) {
+        const auto parameter = [&](const char* key, double previous, bool reset,
+                                   const char* reason, bool storedFloat = false) {
+            const auto* field = meta ? meta->getParameter(key) : nullptr;
+            if (!field || !configNumber(params[key], reset ? field->defaultValue :
+                    storedFloat ? field->canonicalFloatValue(static_cast<float>(previous)) : previous,
+                    field->minValue, field->maxValue, !std::strcmp(field->type, "integer"), number,
+                    storedFloat ? field : nullptr) ||
+                !field->acceptsNumber(number)) {
+                error = reason; return false;
+            }
+            return true;
+        };
+        if (!parameter("mux", sensor.mux, changedDriver, "ADS1115_CONFIG_INVALID")) return false;
+        sensor.mux = static_cast<uint8_t>(number);
+        if (!parameter("scanMask", sensor.scanMask, changedDriver, "ADS1115_SCAN_MASK_INVALID") ||
+            !ads1115ScanMaskValid(static_cast<uint32_t>(number))) {
+            error = "ADS1115_SCAN_MASK_INVALID"; return false;
+        }
+        sensor.scanMask = static_cast<uint8_t>(number);
+        if (!parameter("fullScaleMv", sensor.fullScaleMv, changedDriver || !sensor.fullScaleMv,
+                       "ADS1115_CONFIG_INVALID")) return false;
+        sensor.fullScaleMv = static_cast<uint16_t>(number);
+        if (!parameter("dataRate", sensor.dataRate, changedDriver || !sensor.dataRate,
+                       "ADS1115_CONFIG_INVALID")) return false;
+        sensor.dataRate = static_cast<uint16_t>(number);
+        ADS1115ConversionConfig adsConfig;
+        if (!makeADS1115ConversionConfig(sensor.mux, sensor.fullScaleMv, sensor.dataRate, adsConfig) ||
+            !ads1115ScanMaskValid(sensor.scanMask)) {
+            error = "ADS1115_CONFIG_INVALID"; return false;
+        }
+        if (!parameter("calibrationGain", sensor.calibrationGain, changedDriver || !sensor.calibrationGain,
+                       "ADS1115_CALIBRATION_INVALID", true)) return false;
+        sensor.calibrationGain = static_cast<float>(number);
+        if (!parameter("calibrationOffset", sensor.calibrationOffset, changedDriver,
+                       "ADS1115_CALIBRATION_INVALID", true)) return false;
+        sensor.calibrationOffset = static_cast<float>(number);
+    }
     config.params.sensor = sensor;
     error = "";
     return true;
@@ -125,11 +188,22 @@ void serializeSensorConfig(JsonObject params, const PeripheralConfig& config) {
     params["sensorType"] = sensor.sensorType;
     params["sampleInterval"] = sensor.sampleInterval ? sensor.sampleInterval : 1000;
     if (!sensor.driver[0]) return;
-    params["driver"] = sensor.driver;
+    params["driver"] = JsonString(sensor.driver, false);
     params["address"] = sensor.address;
     params["mode"] = sensor.mode;
     params["frequency"] = sensor.frequency;
-    params["busPeripheralId"] = sensor.busPeripheralId;
+    params["busPeripheralId"] = JsonString(sensor.busPeripheralId, false);
+    if (sensorNameEquals(sensor.driver, "ADS1115")) {
+        params["mux"] = sensor.mux;
+        params["scanMask"] = sensor.scanMask;
+        params["fullScaleMv"] = sensor.fullScaleMv;
+        params["dataRate"] = sensor.dataRate;
+        const auto* meta = sensorDriverMetadata(sensor.driver);
+        const auto* gain = meta ? meta->getParameter("calibrationGain") : nullptr;
+        const auto* offset = meta ? meta->getParameter("calibrationOffset") : nullptr;
+        params["calibrationGain"] = gain ? gain->canonicalFloatValue(sensor.calibrationGain) : double(sensor.calibrationGain);
+        params["calibrationOffset"] = offset ? offset->canonicalFloatValue(sensor.calibrationOffset) : double(sensor.calibrationOffset);
+    }
     if (sensorNameEquals(sensor.driver, "INA226")) {
         params["shuntResistance"] = sensor.shuntResistance;
         params["maxCurrent"] = sensor.maxCurrent;
@@ -159,6 +233,23 @@ bool validateSensorConfig(const PeripheralConfig& config, String& error) {
     }
     if (sensor.mode > 1 || (!sensorNameEquals(sensor.driver, "MPU6050") && sensor.mode != 0)) {
         error = "SENSOR_MODE_INVALID"; return false;
+    }
+    if (sensorNameEquals(sensor.driver, "ADS1115")) {
+        ADS1115ConversionConfig adsConfig;
+        if (!makeADS1115ConversionConfig(sensor.mux, sensor.fullScaleMv, sensor.dataRate, adsConfig) ||
+            !ads1115ScanMaskValid(sensor.scanMask)) {
+            error = "ADS1115_CONFIG_INVALID"; return false;
+        }
+        const auto* gain = meta->getParameter("calibrationGain");
+        const auto* offset = meta->getParameter("calibrationOffset");
+        if (!gain || !offset || !gain->acceptsNumber(gain->canonicalFloatValue(sensor.calibrationGain)) ||
+            !offset->acceptsNumber(offset->canonicalFloatValue(sensor.calibrationOffset))) {
+            error = "ADS1115_CALIBRATION_INVALID"; return false;
+        }
+        const uint32_t budget = std::max<uint32_t>(100, ads1115ReadBudgetMs(sensor.dataRate, sensor.scanMask));
+        if (sensor.sampleInterval && sensor.sampleInterval < budget) {
+            error = "ADS1115_INTERVAL_TOO_SHORT"; return false;
+        }
     }
     if (sensor.busPeripheralId[0]) {
         if (config.pinCount != 0) { error = "I2C_REFERENCE_INVALID: choose bus reference or two pins"; return false; }
@@ -196,10 +287,18 @@ void buildSensorDriverParams(JsonDocument& params, const PeripheralConfig& confi
         params["conversionTimeUs"] = sensor.conversionTimeUs;
         params["averaging"] = sensor.averaging;
     }
+    if (sensorNameEquals(sensor.driver, "ADS1115")) {
+        params["mux"] = sensor.mux;
+        params["scanMask"] = sensor.scanMask;
+        params["fullScaleMv"] = sensor.fullScaleMv;
+        params["dataRate"] = sensor.dataRate;
+        params["calibrationGain"] = sensor.calibrationGain;
+        params["calibrationOffset"] = sensor.calibrationOffset;
+    }
 }
 
 bool resolveSensorChannel(const char* driver, uint8_t mode, const char* requested,
-                          String& channel, String& error) {
+                          String& channel, String& error, uint8_t scanMask) {
     const auto* metadata = DriverRegistry::getInstance().getMetadata(driver);
     if (!metadata) { error = "SENSOR_DRIVER_UNAVAILABLE"; return false; }
     channel = requested ? requested : "";
@@ -209,8 +308,8 @@ bool resolveSensorChannel(const char* driver, uint8_t mode, const char* requeste
     else if (channel == "gyro_x") channel = "gyroX";
     else if (channel == "gyro_y") channel = "gyroY";
     else if (channel == "gyro_z") channel = "gyroZ";
-    for (uint8_t i = 0; i < metadata->activeChannelCount(mode); ++i) {
-        const auto* descriptor = metadata->getChannel(i, mode);
+    for (uint8_t i = 0; i < metadata->activeChannelCount(mode, scanMask); ++i) {
+        const auto* descriptor = metadata->getChannel(i, mode, scanMask);
         if (channel.isEmpty() || channel == descriptor->name) {
             channel = descriptor->name;
             error = "";
@@ -226,6 +325,9 @@ uint32_t sensorSampleIntervalMs(const PeripheralConfig& config) {
     uint32_t interval = sensor.sampleInterval ? sensor.sampleInterval : 1000;
     const auto* metadata = DriverRegistry::getInstance().getMetadata(sensor.driver);
     if (metadata) interval = std::max(interval, metadata->minIntervalMs);
+    if (sensorNameEquals(sensor.driver, "ADS1115") && sensor.dataRate) {
+        interval = std::max<uint32_t>(interval, ads1115ReadBudgetMs(sensor.dataRate, sensor.scanMask));
+    }
     if (sensorNameEquals(sensor.driver, "INA226")) {
         interval = std::max(interval, static_cast<uint32_t>(
             (2UL * sensor.conversionTimeUs * sensor.averaging + 999UL) / 1000UL));

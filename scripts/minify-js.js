@@ -39,4 +39,19 @@ function minifyJS(src) {
     return out.trim();
 }
 
-module.exports = { minifyJS };
+// Runtime modules can contain URLs, regular expressions and template literals.
+// Parse them before removing comments; rename only local bindings. Keep public
+// properties, top-level bindings and function names available to other modules.
+// Use parser-driven, non-unsafe expression compression for lazy modules. The
+// request-governor chunk keeps its inspectable constant for release validation.
+function minifyRuntimeJS(source) {
+    return require('terser').minify_sync(source, {
+        compress: source.includes('WEB_PROFILE_REQUEST_LIMITS') ? false : { passes: 2 },
+        // The release verifier inspects this scoped constant in the published
+        // core chunk to prove the target-specific request pressure limit.
+        mangle: { reserved: ['WEB_PROFILE_REQUEST_LIMITS'] },
+        keep_fnames: true
+    }).code;
+}
+
+module.exports = { minifyJS, minifyRuntimeJS };

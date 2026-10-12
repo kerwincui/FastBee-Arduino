@@ -1,0 +1,203 @@
+#include "core/RuntimeResourceSnapshot.h"
+#include <cassert>
+#include <cstring>
+#include <future>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+using String = std::string;
+namespace FastBee { bool adcPinUnavailable(uint8_t) { return false; } } // ADC overlap has a separate combined backend fixture.
+static constexpr uint8_t CHIP_MAX_PWM_CH=16;
+static constexpr int INPUT=0, OUTPUT=1, INPUT_PULLUP=2, INPUT_PULLDOWN=3, LOW=0;
+static bool attachOk=true, detachOk=true, writeOk=true;
+static bool attachedPins[256]{};
+static unsigned attaches=0, detaches=0, writes=0, modes=0;
+static std::recursive_mutex managerMutex;
+class RecursiveMutexGuard {
+public:
+    explicit RecursiveMutexGuard(std::recursive_mutex* value, unsigned timeout=0): mutex(value) {
+        assert(timeout==0); held=mutex->try_lock();
+    }
+    ~RecursiveMutexGuard() { if(held)mutex->unlock(); }
+    bool isLocked() const { return held; }
+private: std::recursive_mutex* mutex; bool held;
+};
+bool ledcAttachChannel(uint8_t pin,uint32_t,uint8_t,uint8_t) {
+    ++attaches;if(!attachOk || attachedPins[pin])return false;
+    attachedPins[pin]=true;return true;
+}
+bool ledcAttach(uint8_t pin,uint32_t frequency,uint8_t resolution) { return ledcAttachChannel(pin,frequency,resolution,255); }
+bool ledcDetach(uint8_t pin) {
+    ++detaches;if(!detachOk || !attachedPins[pin])return false;
+    attachedPins[pin]=false;return true;
+}
+bool ledcWrite(uint8_t pin,uint32_t) { ++writes;return writeOk && attachedPins[pin]; }
+void pinMode(uint8_t,int) { ++modes; }
+void digitalWrite(uint8_t,int) { ++writes; }
+uint32_t millis() { return 42; }
+#define LOG_ERRORF(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+enum class GPIOState { STATE_LOW,STATE_HIGH };
+enum class DigitalInputMode { AUTO,PULL_UP,PULL_DOWN,FLOATING };
+enum class PeripheralType { GPIO_TOUCH,GPIO_DIGITAL_INPUT,GPIO_DIGITAL_INPUT_PULLUP,
+    GPIO_DIGITAL_INPUT_PULLDOWN,GPIO_INTERRUPT_RISING,GPIO_INTERRUPT_FALLING,
+    GPIO_INTERRUPT_CHANGE,GPIO_DIGITAL_OUTPUT,GPIO_ANALOG_INPUT,GPIO_PWM_OUTPUT,
+    GPIO_ANALOG_OUTPUT,PWM_SERVO };
+enum class PeripheralStatus { PERIPHERAL_INITIALIZED };
+struct PeripheralConfig {
+    String id="output";
+    PeripheralType type=PeripheralType::GPIO_PWM_OUTPUT;
+    bool enabled=true;
+    uint8_t pinCount=1,pins[1]={18};
+    struct {
+        struct { bool passive=false;uint8_t inputMode=0,pwmResolution=8,pwmChannel=2;
+            uint32_t pwmFrequency=5000;GPIOState initialState=GPIOState::STATE_LOW; } gpio;
+        struct { uint8_t resolution=12; } adc;
+        struct { uint32_t frequency=50;uint8_t pwmResolution=16,pwmChannel=2;
+            int initialAngle=90,minAngle=0,maxAngle=180,minPulse=500,maxPulse=2500;
+            bool inverted=false,releaseAfterMove=false; } servo;
+    } params;
+    uint8_t getPrimaryPin() const { return pins[0]; }
+};
+bool isServoConfigValid(const PeripheralConfig&) { return true; }
+uint16_t servoAngleToPulseUs(int,int,int,int,int,bool) { return 1500; }
+uint32_t servoPulseUsToDuty(uint16_t,uint32_t,uint8_t) { return 100; }
+struct Runtime { struct {
+    struct { bool signalAttached=false;int currentAngle=0;uint16_t currentPulseUs=0; } servo;
+    struct { GPIOState currentState=GPIOState::STATE_LOW; } gpio;
+    } state;
+    String lastError;uint32_t lastActivity=0;PeripheralStatus status=PeripheralStatus::PERIPHERAL_INITIALIZED; };
+struct PeripheralManager {
+    std::recursive_mutex* _mutex=&managerMutex;
+    struct { bool hasGpio(uint8_t) const { return false; } bool hasDac(uint8_t) const { return false; } } _managedPinIo;
+    bool scriptPinReady(uint8_t,uint8_t) const { return true; } // GPIO/DAC switching has the real backend fixture.
+    bool setupManagedDigital(const PeripheralConfig&) { return false; } // This fixture tests passive/LEDC branches only.
+    bool setupAnalogInput(const PeripheralConfig&) { return false; } // Checked ADC has a separate backend fixture.
+    FastBee::LedcResourceSnapshot::Lease _ledcResourceLeases[FastBee::LedcResourceSnapshot::CAPACITY]{};
+    std::map<String,Runtime> runtimeStates;
+    std::map<String,PeripheralConfig> peripherals;
+    bool isValidPin(uint8_t pin) const { return pin<40; }
+    bool isReservedPin(uint8_t pin) const { return pin==6; }
+    bool isInputOnlyPin(uint8_t pin) const { return pin==34; }
+    bool writePin(const String&,GPIOState) { ++writes;return true; }
+    bool scheduleServoRelease(const String&) { return true; }
+    bool cancelServoRelease(const String&, bool = false) { return true; }
+    PeripheralConfig* getPeripheral(const String& id) { auto it=peripherals.find(id);return it==peripherals.end()?nullptr:&it->second; }
+    bool attachManagedLedc(const String&,uint8_t,uint32_t,uint8_t,uint8_t,bool=false);
+    bool detachManagedLedc(const String&,uint8_t,bool=false);
+    bool writeScriptPwm(uint8_t,uint32_t);
+    bool releaseScriptPwm(uint8_t);
+    void snapshotLedcResources(FastBee::LedcResourceSnapshot&) const;
+    bool setupGPIOPin(const PeripheralConfig&);
+    bool setupPWMPin(const PeripheralConfig&);
+    bool attachServoSignal(const PeripheralConfig&);
+    bool setupServoPin(const PeripheralConfig&);
+    bool releaseServoSignal(const String&, uint8_t = 255, bool* = nullptr);
+    bool teardownNativeOutput(const PeripheralConfig&);
+};
+// @production@
+static FastBee::LedcResourceSnapshot observe(PeripheralManager& pm) {
+    FastBee::LedcResourceSnapshot result;pm.snapshotLedcResources(result);return result;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];PeripheralManager pm;
+    if(mode=="ledger") {
+        for(uint8_t i=0;i<16;++i) {
+            const uint8_t pin=i<6?i:i+1;
+            String id="output-"+std::to_string(i);
+            assert(pm.attachManagedLedc(id,pin,5000,8,i));id="changed";
+        }
+        auto snapshot=observe(pm);assert(snapshot.count==16 && attaches==16);
+        assert(std::strcmp(snapshot.leases[0].id,"output-0")==0);
+        assert(!pm.attachManagedLedc("extra",22,5000,8,0) && attaches==16);
+        assert(pm.detachManagedLedc("output-0",0));
+        assert(pm.attachManagedLedc("new",0,2700,8,0));
+        assert(std::strcmp(snapshot.leases[0].id,"output-0")==0);
+        assert(std::strcmp(observe(pm).leases[0].id,"new")==0);
+    } else if(mode=="admission") {
+        for(const auto& id:{String(),String(41,'x'),String("x\0bad",5)})
+            assert(!pm.attachManagedLedc(id,18,5000,8,2));
+        assert(!pm.attachManagedLedc("bad",6,5000,8,2));
+        assert(!pm.attachManagedLedc("bad",34,5000,8,2));
+        assert(!pm.attachManagedLedc("bad",18,5000,32,2));
+        assert(!pm.attachManagedLedc("bad",18,5000,8,16));
+        assert(attaches==0);attachOk=false;
+        assert(!pm.attachManagedLedc("bad",18,5000,8,2));
+        assert(observe(pm).count==0 && attaches==1);
+    } else if(mode=="retained") {
+        assert(pm.attachManagedLedc("original",18,5000,8,2));detachOk=false;
+        assert(!pm.detachManagedLedc("wrong",18) && detaches==0);
+        assert(!pm.detachManagedLedc("original",18));
+        assert(observe(pm).count==1 && observe(pm).leases[0].cleanupFailed);
+        assert(!pm.attachManagedLedc("original",18,5000,8,2));
+        assert(!pm.attachManagedLedc("changed",18,5000,8,2));
+        assert(attaches==1);detachOk=true;
+        assert(pm.detachManagedLedc("original",18));assert(observe(pm).count==0);
+        assert(pm.attachManagedLedc("changed",18,5000,8,2));
+        assert(!observe(pm).leases[0].cleanupFailed);
+    } else if(mode=="passive") {
+        assert(pm.attachManagedLedc("original",18,5000,8,2));
+        for(unsigned i=0;i<1000;++i)assert(observe(pm).count==1);
+        assert(attaches==1 && detaches==0 && writes==0 && modes==0);
+        std::promise<void> entered,release;auto released=release.get_future();
+        std::thread blocker([&] { std::lock_guard<std::recursive_mutex> guard(managerMutex);entered.set_value();released.wait(); });
+        entered.get_future().wait();
+        assert(observe(pm).status==FastBee::ResourceObservation::Busy);
+        assert(!pm.attachManagedLedc("other",19,5000,8,3));
+        assert(!pm.detachManagedLedc("original",18));
+        assert(attaches==1 && detaches==0);
+        release.set_value();blocker.join();assert(observe(pm).count==1);
+    } else if(mode=="script") {
+        assert(!pm.writeScriptPwm(18,256) && attaches==0);
+        attachOk=false;assert(!pm.writeScriptPwm(18,12) && writes==0 && observe(pm).count==0);
+        attachOk=true;assert(pm.writeScriptPwm(18,12));
+        const auto firstAttaches=attaches,firstWrites=writes;
+        for(uint32_t duty=0;duty<256;++duty)assert(pm.writeScriptPwm(18,duty));
+        assert(attaches==firstAttaches && writes==firstWrites+256);
+        auto snapshot=observe(pm);assert(snapshot.count==1 && snapshot.leases[0].commandScript);
+        assert(snapshot.leases[0].channel==255 && snapshot.leases[0].id[0]=='\0');
+        assert(pm.writeScriptPwm(19,12) && observe(pm).count==2);
+        assert(!pm.attachManagedLedc("native",18,5000,8,2));
+        assert(!pm.detachManagedLedc("native",18));
+        detachOk=false;assert(!pm.releaseScriptPwm(18));
+        assert(observe(pm).leases[0].cleanupFailed && !pm.writeScriptPwm(18,1));
+        detachOk=true;assert(pm.releaseScriptPwm(18));
+        assert(pm.attachManagedLedc("native",18,5000,8,2));
+        assert(!pm.releaseScriptPwm(18));
+        writeOk=false;detachOk=false;assert(!pm.writeScriptPwm(20,12));
+        snapshot=observe(pm);assert(snapshot.count==3 && snapshot.leases[2].cleanupFailed);
+        detachOk=true;assert(pm.releaseScriptPwm(20));assert(observe(pm).count==2);
+    } else if(mode=="lost") {
+        assert(pm.writeScriptPwm(18,12));const auto before=attaches;
+        attachedPins[18]=false; // External pinMode: no SDK attachment remains.
+        assert(!pm.writeScriptPwm(18,13));
+        assert(attaches==before && observe(pm).leases[0].cleanupFailed);
+        assert(!pm.writeScriptPwm(18,14) && attaches==before);
+        assert(!pm.releaseScriptPwm(18) && observe(pm).count==1);
+    } else {
+        PeripheralConfig config;pm.runtimeStates[config.id]={};
+        if(mode=="servo") {
+            config.type=PeripheralType::PWM_SERVO;config.params.servo.releaseAfterMove=true;
+        } else if(mode=="buzzer") {
+            config.type=PeripheralType::GPIO_DIGITAL_OUTPUT;config.params.gpio.passive=true;
+        } else assert(mode=="pwm");
+        pm.peripherals[config.id]=config;
+        auto setup=[&] { return mode=="buzzer"?pm.setupGPIOPin(config):pm.setupPWMPin(config); };
+        attachOk=false;assert(!setup());assert(observe(pm).count==0);
+        attachOk=true;writeOk=false;detachOk=false;
+        assert(!setup());assert(observe(pm).count==1 && observe(pm).leases[0].cleanupFailed);
+        assert(!pm.teardownNativeOutput(config) && modes==0);
+        detachOk=true;assert(pm.teardownNativeOutput(config));assert(observe(pm).count==0 && modes==1);
+        assert(!pm.runtimeStates[config.id].state.servo.signalAttached);
+        writeOk=true;assert(setup());assert(observe(pm).count==1);
+        const auto initialAttaches=attaches;
+        for(unsigned i=0;i<20;++i)assert(setup());
+        assert(attaches==initialAttaches); // SDK itself rejects reattach.
+        if(mode=="servo") {
+            detachOk=false;assert(!pm.releaseServoSignal(config.id));
+            assert(pm.runtimeStates[config.id].state.servo.signalAttached && observe(pm).leases[0].cleanupFailed);
+            detachOk=true;assert(pm.releaseServoSignal(config.id));assert(observe(pm).count==0);
+        } else assert(pm.teardownNativeOutput(config));
+    }
+}

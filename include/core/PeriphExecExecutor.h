@@ -5,6 +5,8 @@
 #include <vector>
 #include <functional>
 #include "AsyncExecTypes.h"
+#include "protocols/MqttClientLease.h"
+#include "core/ModbusActionMode.h"
 
 // 前向声明
 class PeriphExecManager;
@@ -53,6 +55,9 @@ class PeriphExecExecutor {
 public:
     PeriphExecExecutor();
     ~PeriphExecExecutor();
+    static String migrationChannelField(const String& category, const String& id, const String& field) {
+        return resolveChannelField(category, id, field);
+    }
 
     // 禁止拷贝
     PeriphExecExecutor(const PeriphExecExecutor&) = delete;
@@ -65,10 +70,14 @@ public:
 
     // 执行单个动作项
     bool executeActionItem(const ExecAction& action, const String& effectiveValue,
-                           const String& receivedValue = String());
+                           const String& receivedValue = String(),
+                           const FastBee::UartEventOrigin& uartOrigin = {},
+                           bool* sourceUnconfirmed = nullptr,
+                           const FastBee::OrdinaryControlContext* control = nullptr,
+                           FastBee::OrdinaryControlResult* controlResult = nullptr);
 
     // 执行规则的所有动作（同步）
-    // reportCountOut（可选）：回填本次实际上报的动作结果数量
+    // reportCountOut（可选）：回填交给上报路径的结果数，不是MQTT接收/投递确认
     // （采集或属性控制动作在 reportAfterExec 勾选时 > 0）
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule,
                                                     const String& receivedValue,
@@ -82,17 +91,27 @@ public:
 
     // 执行外设动作（GPIO、PWM、DAC、Modbus子设备等）
     bool executePeripheralAction(const ExecAction& action, const String& effectiveValue,
-                                 const String& receivedValue = String());
+                                 const String& receivedValue = String(),
+                                 const FastBee::UartEventOrigin& uartOrigin = {},
+                                 const FastBee::OrdinaryControlContext* control = nullptr,
+                                 FastBee::OrdinaryControlResult* controlResult = nullptr);
 
     // 执行Modbus轮询动作
     bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule,
-                                 std::vector<ActionExecResult>* controlResults = nullptr);
+                                 std::vector<ActionExecResult>* controlResults = nullptr,
+                                 FastBee::ModbusActionMode mode = FastBee::ModbusActionMode::ExecuteRule,
+                                 const FastBee::UartEventOrigin& uartOrigin = {},
+                                 bool* sourceUnconfirmedOut = nullptr,
+                                 const FastBee::OrdinaryControlContext* control = nullptr,
+                                 FastBee::OrdinaryControlResult* controlResult = nullptr);
 
     // 执行传感器读取动作
     bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
                                  bool recordHistory = false,
                                  const uint32_t* collectionStartedAt = nullptr,
-                                 PreparedSensorRead* prepared = nullptr);
+                                 PreparedSensorRead* prepared = nullptr,
+                                 const FastBee::UartEventOrigin& uartOrigin = {},
+                                 bool* sourceUnconfirmed = nullptr);
 
     // 按传感器类别推断默认数据通道名（仅用于通道选择/LCD 条目等内部用途，
     // 不作为上报 ID；上报 ID 通用规则见 reportActionResults：显式 dataField 优先，
@@ -104,17 +123,36 @@ public:
     static String resolveChannelField(const String& category, const String& periphId, const String& explicitField);
 
     // 执行系统动作（重启、恢复出厂等）
-    bool executeSystemAction(const ExecAction& action);
+    bool executeSystemAction(const ExecAction& action, const FastBee::UartEventOrigin& uartOrigin = {},
+                             bool* sourceUnconfirmed = nullptr);
 
     // 执行脚本动作
-    bool executeScriptAction(const ExecAction& action);
+    bool executeScriptAction(const ExecAction& action, const FastBee::UartEventOrigin& uartOrigin = {},
+                             bool* sourceUnconfirmed = nullptr,
+                             const FastBee::OrdinaryControlContext* control = nullptr,
+                             FastBee::OrdinaryControlResult* controlResult = nullptr);
 
     // 执行调用其他外设动作（receivedValue 用于 $value 模板替换）
     bool executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue,
-                                     const String& receivedValue = "");
+                                     const String& receivedValue = "", ActionExecResult* detail = nullptr,
+                                     uint32_t expectedConfigEpoch = 0,
+                                     const FastBee::UartEventOrigin& uartOrigin = {}, bool* sourceUnconfirmed = nullptr,
+                                     const FastBee::OrdinaryControlContext* control = nullptr,
+                                     FastBee::OrdinaryControlResult* controlResult = nullptr);
+    bool executeUartSendAction(const ExecAction& action, const String& effectiveValue,
+                              const String& receivedValue, uint32_t expectedConfigVersion,
+                              ActionExecResult& result);
+    bool resolveUartActionTarget(const ExecAction& action, uint32_t expectedConfigEpoch,
+                                bool& isUart, uint32_t& configEpoch, ActionExecResult* detail);
 
     // 执行规则控制动作（启用/禁用外设执行规则）
     bool executeRuleControlAction(const ExecAction& action);
+
+    // Typed DS1302 start/stop, serialized with HTTP and hardware lifecycle.
+    bool executeRtcAction(const ExecAction& action);
+    bool executeRtcReadAction(const ExecAction& action, ActionExecResult& result);
+    bool executeRtcSetAction(const ExecAction& action, ActionExecResult& result);
+    bool executeSdStatusAction(const ExecAction& action, ActionExecResult& result);
 
     // ========== 回调设置 ==========
 
@@ -127,14 +165,15 @@ public:
     // ========== 工具方法 ==========
 
     // 获取MQTTClient指针
-    MQTTClient* getMqttClient();
+    FastBee::MqttClientLease getMqttClient(bool* absent = nullptr);
+    uint32_t captureReportInstanceId();
 
     // 解析 actionValue 中的 ${periphId.field} 模板，从传感器读取缓存替换为最新值。
     // 支持忂零或多占位符。无缓存时保留原占位符文本，便于调试。
     static String resolveSensorTemplate(const String& input);
 
-    // 上报动作执行结果
-    void reportActionResults(const std::vector<ActionExecResult>& results);
+    // Capture origin before executing/collecting the batch; never infer it here.
+    void reportActionResults(const std::vector<ActionExecResult>& results, uint32_t originInstanceId);
 
     // ========== 启动后当前物模型状态只读采集与上报 ==========
     // 与 executeAllActions 不同：此方法“只读”采集规则内可上报动作的当前实际状态，
@@ -152,7 +191,9 @@ public:
 private:
     bool executeSensorReadGroup(const PeriphExecRule& rule, size_t first, size_t count,
                                 uint32_t collectionStartedAt, unsigned long deadlineAt,
-                                std::vector<ActionExecResult>& results);
+                                std::vector<ActionExecResult>& results,
+                                const FastBee::UartEventOrigin& uartOrigin = {},
+                                bool* sourceUnconfirmed = nullptr);
     PeriphExecManager* _manager = nullptr;
     ActionResultsCallback _reportCallback = nullptr;
     std::function<String(const String&)> _modbusReadCallback = nullptr;

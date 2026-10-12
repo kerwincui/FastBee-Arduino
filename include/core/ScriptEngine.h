@@ -2,13 +2,20 @@
 #define SCRIPT_ENGINE_H
 
 #include "core/FeatureFlags.h"
+#include "core/UartEventOrigin.h"
+#include "core/NativeOutputControl.h"
+#include "core/ScriptMqttPublish.h"
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
 
 #include <Arduino.h>
 #include <vector>
 
-// 前向声明
-class MQTTClient;
+// Synchronous callback only; context must outlive execute(). It acquires a
+// short client lease per MQTT command instead of pinning one across delays.
+struct ScriptMqttPublisher {
+    void* context = nullptr;
+    FastBee::ScriptPublishResult (*publish)(void*, size_t, const String&) = nullptr;
+};
 
 // 脚本命令类型
 enum class ScriptCmdType : uint8_t {
@@ -57,6 +64,7 @@ struct ScriptCommand {
 class ScriptEngine {
 public:
     static constexpr uint16_t MAX_SCRIPT_SIZE      = 1024;
+    static constexpr uint16_t MAX_EXPANDED_MESSAGE_SIZE = 1024;
     static constexpr uint8_t  MAX_COMMANDS          = 50;
     static constexpr uint32_t MAX_TOTAL_DELAY_MS    = 30000;
     static constexpr uint32_t MAX_SINGLE_DELAY_MS   = 10000;
@@ -68,11 +76,16 @@ public:
     // 验证命令列表合法性
     static bool validate(const std::vector<ScriptCommand>& cmds, String& errorMsg);
 
-    // 执行命令列表 (mqtt 可为 nullptr, 此时 MQTT 命令会跳过)
-    static bool execute(const std::vector<ScriptCommand>& cmds, MQTTClient* mqtt = nullptr);
+    // MQTT不可用或发布未接受时返回false，停止剩余命令；不自动重放。
+    static bool execute(const std::vector<ScriptCommand>& cmds, ScriptMqttPublisher mqtt = {},
+                        const FastBee::UartEventOrigin& uartOrigin = {},
+                        bool* sourceUnconfirmed = nullptr,
+                        const FastBee::OrdinaryControlContext* control = nullptr,
+                        FastBee::OrdinaryControlResult* controlResult = nullptr);
 
     // 处理字符串中的 RANDOM(min,max) 和 RANDOMF(min,max,decimals) 表达式
-    static String processRandomExpressions(const String& input);
+    // 输入输出须为不同对象。输出完整才返回true；非法表达式、超限或分配失败清空输出。
+    static bool processRandomExpressions(const String& input, String& output);
 
 private:
     // 解析单行命令
@@ -82,7 +95,8 @@ private:
     static std::vector<String> tokenize(const String& line);
 
     // 安全延时(内部喂 WDT + 超时检测)
-    static bool scriptDelay(uint32_t ms, unsigned long scriptStartTime);
+    static bool scriptDelay(uint32_t ms, unsigned long scriptStartTime,
+                            const FastBee::UartEventOrigin& uartOrigin, bool* sourceUnconfirmed);
 };
 
 #endif // FASTBEE_ENABLE_COMMAND_SCRIPT

@@ -1,0 +1,295 @@
+#include "core/ManagedPinIo.h"
+#include "core/ChipConfig.h"
+#include "core/ActionValueContract.h"
+#include "core/NativeOutputControl.h"
+#include "managed_pin_mock_state.h"
+#include <cstdlib>
+#include <future>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+
+class String : public std::string {
+public:
+    using std::string::string;
+    String()=default;
+    String(const std::string& s):std::string(s){}
+    bool isEmpty() const { return empty(); }
+    char charAt(size_t index) const { return index < size() ? at(index) : '\0'; }
+    long toInt() const { return std::strtol(c_str(), nullptr, 10); }
+};
+enum class PeripheralType { DAC, UART, GPIO_PWM_OUTPUT, GPIO_ANALOG_OUTPUT, GPIO_DIGITAL_OUTPUT };
+enum class GPIOState { STATE_LOW, STATE_HIGH, STATE_UNDEFINED };
+enum class PeripheralStatus { PERIPHERAL_DISABLED, PERIPHERAL_ENABLED,
+    PERIPHERAL_INITIALIZED, PERIPHERAL_RUNNING, PERIPHERAL_ERROR };
+enum class ExecActionType { ACTION_SET_DAC, ACTION_SET_PWM, ACTION_HIGH, ACTION_LOW,
+    ACTION_HIGH_INVERTED, ACTION_LOW_INVERTED, ACTION_BREATHE, ACTION_GPIO_TOGGLE, ACTION_BLINK };
+struct PeripheralConfig {
+    String id="dac"; bool enabled=true; PeripheralType type=PeripheralType::DAC;
+    uint8_t pin=25, pinCount=1; uint8_t getPrimaryPin() const { return pin; }
+    bool isExpanderChannel() const { return false; }
+    bool isModbusPeripheral() const { return false; }
+    struct { struct {
+        uint8_t pwmResolution=8, pwmChannel=0, aoMinPct=0, aoMaxPct=100;
+        uint32_t pwmFrequency=1000; bool aoMode=false, passive=false;
+    } gpio; } params;
+};
+struct Runtime {
+    String lastError;
+    uint32_t lastActivity=0;
+    struct { struct { GPIOState currentState=GPIOState::STATE_LOW; } gpio; } state;
+    bool memorySuspended=false, memoryCleanupPending=false;
+    PeripheralStatus status=PeripheralStatus::PERIPHERAL_INITIALIZED;
+};
+struct ExecAction { String targetPeriphId="dac"; };
+namespace FastBee {
+static bool adcBusy=false;
+bool adcPinUnavailable(uint8_t) { return adcBusy; }
+}
+static thread_local unsigned activeLocks=0;
+class RecursiveMutexGuard {
+public:
+    explicit RecursiveMutexGuard(std::recursive_mutex* mutex,unsigned timeout=0):mutex_(mutex) {
+        assert(timeout==0);
+        held_=mutex_ && mutex_->try_lock();
+        if(held_) ++activeLocks;
+    }
+    ~RecursiveMutexGuard() { if(held_) { --activeLocks; mutex_->unlock(); } }
+    bool isLocked() const { return held_; }
+private:
+    std::recursive_mutex* mutex_; bool held_=false;
+};
+struct Logger {
+    template<class... Args> void infof(Args...) {}
+    void warning(const char*) {}
+};
+#define LOG_WARNING(text) do {} while(0)
+static unsigned rawDacWrites=0;
+void dacWrite(uint8_t,uint8_t) { ++rawDacWrites; }
+static uint32_t millis() { return 50; }
+bool ledcWrite(uint8_t,uint32_t) { assert(false && "DAC fixture must never call LEDC"); return false; }
+// @scalar_mapping@
+namespace OC=FastBee::OrdinaryControl;
+
+struct PeripheralManager {
+    std::recursive_mutex mutex; std::recursive_mutex* _mutex=&mutex;
+    FastBee::ManagedPinIo _managedPinIo;
+    std::map<String,PeripheralConfig> peripherals{{"dac",{}}};
+    PeripheralConfig& config=peripherals.at("dac");
+    struct LedcLease {
+        uint8_t pin=255, channel=0, requestedResolution=0;
+        bool commandScript=false, cleanupFailed=false;
+        uint32_t requestedFrequency=0; char id[41]{};
+    };
+    LedcLease _ledcResourceLeases[1]{};
+    std::map<String,Runtime> runtimeStates{{"dac",{}}};
+    bool present=true, runtimePresent=true, originCurrent=true;
+    bool permitCurrent=true;
+    uint32_t version=7;
+    unsigned dataCalls=0;
+    std::recursive_mutex* getMutex() { return _mutex; }
+    bool getPeripheralSnapshot(const String& id,PeripheralConfig& out,uint32_t* revision=nullptr) {
+        RecursiveMutexGuard lock(_mutex,0);
+        if(!lock.isLocked()) return false;
+        if(!present || id!=config.id) return false;
+        out=config; if(revision) *revision=version; return true;
+    }
+    Runtime* getRuntimeState(const String& id) {
+        assert(activeLocks>0);
+        auto it=runtimeStates.find(id);
+        return runtimePresent && it!=runtimeStates.end()?&it->second:nullptr;
+    }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin&) {
+        assert(activeLocks>0); return originCurrent;
+    }
+    bool isValidPin(uint8_t pin) const { return pin<=CHIP_MAX_GPIO; }
+    bool isReservedPin(uint8_t) const { return false; }
+    bool isInputOnlyPin(uint8_t) const { return false; }
+    bool controlOutputPinIsClaimed(uint8_t) const { return false; }
+    bool checkPinConflict(uint8_t,const String&) const { return false; }
+    bool controlOutputIsClaimed(const String&) const { return false; }
+    bool ordinaryPermitCurrentLocked(const String&,const OC::Permit& permit) const {
+        assert(activeLocks>0);
+        return permitCurrent && permit.generation && permit.operation && permit.actor.identity;
+    }
+    bool writeOrdinaryScalarLocked(const String&,FastBee::ScalarOutputCommand,uint32_t,const OC::Permit&);
+    bool submitOrdinaryScalar(const String&,FastBee::ScalarOutputCommand,uint32_t,
+        const FastBee::OrdinaryControlContext&,FastBee::OrdinaryControlResult&);
+    bool writeManagedDac(const String&,uint8_t,uint8_t);
+    bool releaseManagedDac(const String&,uint8_t);
+    bool writeData(const String& id,const uint8_t* data,size_t len) {
+        assert(activeLocks>0); ++dataCalls;
+        assert(data && len==1);
+        if(id!=config.id || !config.enabled) return false;
+        const auto* config=&this->config;
+        bool success=false;
+        switch(config->type) {
+            // @write_data@
+            default: return false;
+        }
+        return success;
+    }
+};
+// @methods@
+namespace FastBee {
+// @scalar_helpers@
+// @admission@
+}
+// @scalar_write@
+
+// Explicit composition seam: this is NOT the production ordinary-control
+// admission policy. That complete PM implementation runs in the ordinary suite.
+// The actual locked scalar writer and real ManagedPinIo/SDK execute below it.
+bool PeripheralManager::submitOrdinaryScalar(const String& id,FastBee::ScalarOutputCommand command,
+    uint32_t value,const FastBee::OrdinaryControlContext& context,FastBee::OrdinaryControlResult& result) {
+    RecursiveMutexGuard lock(_mutex,0);
+    result.evaluated=true;
+    if(!lock.isLocked() || !present || !runtimePresent || context.configEpoch!=version ||
+       !originCurrent || id!=config.id || !context.request.actor.identity ||
+       !context.request.operation || command!=FastBee::ScalarOutputCommand::Dac) return false;
+    const OC::Permit permit{context.request.actor,context.request.operation,1};
+    result.accepted=writeOrdinaryScalarLocked(id,command,value,permit);
+    return result.accepted;
+}
+static FastBee::OrdinaryControlContext capturedContext(OC::Source source) {
+    FastBee::OrdinaryControlContext context;
+    context.configEpoch=7; context.request.actor={source,42}; context.request.operation=1;
+    context.request.holdMs=OC::isManual(source)?30000:0;
+    context.uartOrigin=FastBee::UartEventOrigin::captured(7,11);
+    return context;
+}
+static bool executeManual(PeripheralManager& pm,const String& text) {
+    const PeripheralConfig config; // Snapshot captured before any reconfiguration.
+    const auto context=capturedContext(OC::Source::Http);
+    FastBee::ScalarOutputCommand command;
+    uint32_t value=0;
+    if(!FastBee::parseOrdinaryScalarCommand(config,"dac",text,command,value)) return false;
+    return FastBee::dispatchOrdinaryScalarAction(pm,"dac",command,value,&context,nullptr);
+}
+
+static bool execute(PeripheralManager& pm,const String& effectiveValue) {
+    const ExecAction action;
+    const auto context=capturedContext(OC::Source::Rule);
+    const auto* control=&context;
+    FastBee::OrdinaryControlResult result;
+    auto* controlResult=&result;
+    const auto actType=ExecActionType::ACTION_SET_DAC;
+    PeripheralConfig digitalTarget;
+    const bool digitalTargetFound=pm.getPeripheralSnapshot(action.targetPeriphId,digitalTarget);
+    // @executor@
+    return false;
+}
+static FastBee::DacResourceSnapshot snapshot(PeripheralManager& pm) {
+    FastBee::DacResourceSnapshot out; pm._managedPinIo.snapshot(out); return out;
+}
+int main(int argc,char** argv) {
+    assert(argc==2); const std::string scenario=argv[1]; PeripheralManager pm;
+    if(scenario=="parser") {
+        for(unsigned n=0;n<256;++n) {
+            const auto text=std::to_string(n); uint8_t parsed=0;
+            assert(FastBee::parseDacActionValue(text.c_str(),text.size(),parsed) && parsed==n);
+        }
+        for(const std::string text:{"", " ", "+", "-", "-1", "256", "1.2", "1x", "0x10", "1 ",
+             "999999999999999999999999999999999999", "-9999999999999999999999999999999"}) {
+            uint8_t parsed=42;
+            assert(!FastBee::parseDacActionValue(text.c_str(),text.size(),parsed) && parsed==42);
+        }
+        const char nul[]={ '1', '\0', '2', '\0' }; uint8_t parsed=42;
+        assert(!FastBee::parseDacActionValue(nul,3,parsed) && parsed==42);
+        assert(!FastBee::parseDacActionValue(nullptr,0,parsed));
+        for(const std::string text:{"+7", " 7", "007"}) {
+            assert(FastBee::parseDacActionValue(text.c_str(),text.size(),parsed) && parsed==7);
+        }
+        assert(allCalls()==0 && rawDacWrites==0); return 0;
+    }
+#if !CHIP_HAS_DAC
+    assert(!execute(pm,"42"));
+    assert(!executeManual(pm,"42"));
+    assert(!snapshot(pm).supported && snapshot(pm).count==0);
+    assert(pm.dataCalls==0 && allCalls()==0 && rawDacWrites==0);
+    return 0;
+#else
+    if(scenario.find("manual_")==0) {
+        if(scenario=="manual_valid") {
+            assert(executeManual(pm,"42") && dacHandles[0].value==42 && rawDacWrites==0); return 0;
+        }
+        if(scenario=="manual_invalid") {
+            for(const char* invalid:{"", "wrong", "1.5", "-1", "256", "999999999999999999999999"})
+                assert(!executeManual(pm,invalid));
+            assert(pm.dataCalls==0 && allCalls()==0); return 0;
+        }
+        if(scenario=="manual_changed") pm.version=8;
+        else if(scenario=="manual_replaced") { pm.version=8; pm.config.type=PeripheralType::UART; }
+        else if(scenario=="manual_uninitialized") pm.runtimeStates["dac"].status=PeripheralStatus::PERIPHERAL_ENABLED;
+        else if(scenario=="manual_busy") {
+            std::promise<void> held,done; auto finished=done.get_future();
+            std::thread owner([&]{ std::lock_guard<std::recursive_mutex> guard(pm.mutex); held.set_value(); finished.wait(); });
+            held.get_future().wait();
+            assert(!executeManual(pm,"42")); done.set_value(); owner.join();
+            assert(pm.dataCalls==0 && allCalls()==0); return 0;
+        } else return 2;
+        assert(!executeManual(pm,"42") && pm.dataCalls==0 && allCalls()==0); return 0;
+    }
+    if(scenario=="valid") {
+        for(unsigned n=0;n<256;++n) {
+            assert(execute(pm,String(std::to_string(n))));
+            assert(dacHandles[0].value==n);
+        }
+        assert(count(Op::DacNew)==1 && count(Op::DacWrite)==256 && rawDacWrites==0);
+        assert(snapshot(pm).count==1 && !snapshot(pm).leases[0].fault);
+        assert(pm.runtimeStates["dac"].lastError.empty()); return 0;
+    }
+    if(scenario=="legacy_bypass") {
+        const uint8_t value=42;
+        { RecursiveMutexGuard lock(pm.getMutex(),0); assert(lock.isLocked());
+          assert(!pm.writeData("dac",&value,1)); }
+        assert(!FastBee::writeDacAtVersion(pm,"dac",7,value));
+        assert(pm.dataCalls==2 && !allCalls() && !rawDacWrites); return 0;
+    }
+    if(scenario=="invalid_value") {
+        for(const char* value:{"", "-1", "256", "garbage", "2.5", "999999999999999999999999"})
+            assert(!execute(pm,value));
+        assert(!execute(pm,String("1\0x",3)));
+        assert(pm.dataCalls==0 && allCalls()==0 && rawDacWrites==0); return 0;
+    }
+    if(scenario=="disabled") pm.config.enabled=false;
+    else if(scenario=="wrong_type") pm.config.type=PeripheralType::UART;
+    else if(scenario=="missing") pm.present=false;
+    else if(scenario=="missing_runtime") pm.runtimePresent=false;
+    else if(scenario=="uninitialized") pm.runtimeStates["dac"].status=PeripheralStatus::PERIPHERAL_ENABLED;
+    else if(scenario=="runtime_error") pm.runtimeStates["dac"].status=PeripheralStatus::PERIPHERAL_ERROR;
+    else if(scenario=="suspended") pm.runtimeStates["dac"].memorySuspended=true;
+    else if(scenario=="cleanup_pending") pm.runtimeStates["dac"].memoryCleanupPending=true;
+    else if(scenario=="stale_uart") pm.originCurrent=false;
+    else if(scenario=="permit_invalid") pm.permitCurrent=false;
+    else if(scenario=="no_mutex") pm._mutex=nullptr;
+    else if(scenario=="adc_busy") FastBee::adcBusy=true;
+    else if(scenario=="foreign_pin") buses[25]=ESP32_BUS_TYPE_LEDC;
+    else if(scenario=="foreign_owner") assert(pm._managedPinIo.writeDac("other",false,25,6));
+    else if(scenario=="sdk_new_failure" || scenario=="sdk_partial_new_failure") {
+        failure=Op::DacNew; partialAllocation=scenario=="sdk_partial_new_failure";
+    } else if(scenario=="sdk_write_failure") failure=Op::DacWrite;
+    else if(scenario=="busy") {
+        std::promise<void> held,done; auto finished=done.get_future();
+        std::thread owner([&]{ std::lock_guard<std::recursive_mutex> guard(pm.mutex);
+            held.set_value(); finished.wait(); });
+        held.get_future().wait();
+        assert(!execute(pm,"42"));
+        done.set_value(); owner.join();
+        assert(pm.dataCalls==0 && allCalls()==0 && rawDacWrites==0); return 0;
+    } else return 2;
+    const auto writes=count(Op::DacWrite);
+    assert(!execute(pm,"42") && rawDacWrites==0);
+    if(scenario.find("sdk_")==0) {
+        assert(snapshot(pm).count==1 && snapshot(pm).leases[0].fault);
+        assert(pm.runtimeStates["dac"].lastError=="DAC_WRITE_UNCONFIRMED");
+        const auto attempted=count(Op::DacWrite);
+        failure=Op::Count;
+        assert(!execute(pm,"7") && count(Op::DacWrite)==attempted); // No automatic retry.
+        assert(pm.releaseManagedDac("dac",25));
+        assert(snapshot(pm).count==0 && !dacHandles[0].alive);
+    } else assert(count(Op::DacWrite)==writes);
+    assert(activeLocks==0);
+#endif
+}

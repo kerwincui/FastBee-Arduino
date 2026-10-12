@@ -1,0 +1,201 @@
+#include "network/RunningImageSizeJson.h"
+#include <esp_app_format.h>
+#include <esp_partition.h>
+#include <cassert>
+#include <atomic>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <new>
+#include <cstdlib>
+#include <thread>
+#include <vector>
+
+using FastBee::RunningImageSizeError;
+static esp_partition_t partition{ESP_PARTITION_TYPE_APP, 0x10000, 4096};
+static bool partitionPresent=true;
+static std::vector<uint8_t> image;
+static std::atomic<unsigned> readCalls{0}, readBytes{0};
+static unsigned failAt=0;
+static bool rejectPayloadReads=true;
+static std::vector<std::pair<size_t,size_t>> allowedReads;
+static thread_local bool forbidHeap=false;
+void* operator new(std::size_t bytes) {
+    assert(!forbidHeap && "Metadata reader must not allocate heap");
+    void* result=std::malloc(bytes ? bytes : 1);
+    if (!result) throw std::bad_alloc();
+    return result;
+}
+void operator delete(void* p) noexcept {std::free(p);}
+void operator delete(void* p,std::size_t) noexcept {std::free(p);}
+void* operator new[](std::size_t bytes) {return ::operator new(bytes);}
+void operator delete[](void* p) noexcept {std::free(p);}
+void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+
+static FastBee::RunningImageSizeResult readMetadata() {
+    assert(!forbidHeap); forbidHeap=true;
+    auto result=FastBee::readRunningImageSize();
+    forbidHeap=false;
+    return result;
+}
+
+const esp_partition_t* esp_ota_get_running_partition() {return partitionPresent ? &partition : nullptr;}
+esp_err_t esp_partition_read(const esp_partition_t* p,size_t offset,void* dest,size_t length) {
+    assert(p==&partition);
+    assert(length<=48);
+    assert(offset<=p->size && length<=p->size-offset);
+    unsigned call=++readCalls;
+    readBytes+=length;
+    if (failAt && call==failAt) return -77;
+    if (rejectPayloadReads) {
+        bool allowed=false;
+        for (const auto& range:allowedReads) if (range.first==offset && range.second==length) allowed=true;
+        assert(allowed && "Production reader must not scan payload");
+    }
+    if (offset>image.size() || length>image.size()-offset) return -78;
+    memcpy(dest,image.data()+offset,length);
+    return ESP_OK;
+}
+
+static void fixture(unsigned segments=1,bool hash=false,unsigned dataLength=4,unsigned extraLast=0) {
+    partition={ESP_PARTITION_TYPE_APP,0x10000,4096};
+    partitionPresent=true; failAt=0; readCalls=0; readBytes=0; rejectPayloadReads=true;
+    esp_image_header_t header{};
+    header.magic=ESP_IMAGE_HEADER_MAGIC; header.segment_count=segments;
+    header.chip_id=static_cast<esp_chip_id_t>(CONFIG_IDF_FIRMWARE_CHIP_ID); header.hash_appended=hash;
+    image.assign(sizeof(header),0); memcpy(image.data(),&header,sizeof(header));
+    allowedReads={{0,sizeof(header)}};
+    for (unsigned i=0;i<segments;++i) {
+        esp_image_segment_header_t segment{0x3ffb0000,dataLength+(i+1==segments ? extraLast : 0)};
+        const size_t offset=image.size(); image.resize(offset+sizeof(segment)+segment.data_len,0x7a);
+        memcpy(image.data()+offset,&segment,sizeof(segment)); allowedReads.push_back({offset,sizeof(segment)});
+    }
+    const size_t offset=image.size(); const size_t tail=16-(offset&15)+(hash?32:0);
+    image.resize(offset+tail,0x99); allowedReads.push_back({offset,tail});
+}
+
+static void expectError(RunningImageSizeError error,int sdkError=ESP_OK) {
+    auto result=readMetadata();
+    assert(!result.known() && result.size==0 && result.error==error && result.readError==sdkError);
+    assert(readCalls<=18 && readBytes<=200);
+}
+
+struct WebHandlerContext {bool authenticated=true; bool requiresAuth(AsyncWebServerRequest*) {return authenticated;}};
+namespace FastBee {inline JsonDocument makeJsonDocument() {return JsonDocument();}}
+static bool shouldUseCompactSystemInfo() {return false;}
+static unsigned fillCalls=0;
+static void fillCompactSystemInfo(JsonObject data,WebHandlerContext*,bool,uint32_t size) {
+    ++fillCalls; data["flash"]["sketchSize"]=size; data["flash"]["used"]=size;
+}
+@COMPACT_SEND@
+static bool actualBatchInfoBranch(AsyncWebServerRequest* request,const std::string& url,JsonObject out,WebHandlerContext* ctx) {
+@BATCH_BRANCH@
+    return false;
+}
+
+[[maybe_unused]] static void testApiFailureAndSiblingSurvival() {
+    fixture(); failAt=1; fillCalls=0;
+    WebHandlerContext ctx; AsyncWebServerRequest request;
+    sendCompactSystemInfo(&request,&ctx,false);
+    assert(request.sent && request.response.status==503 && fillCalls==0);
+    assert(request.response.headers["Connection"]=="close");
+    JsonDocument reply;
+    assert(!deserializeJson(reply,request.response.body));
+    assert(reply["success"]==false && reply["code"]==503 && reply["espError"]==-77);
+    assert(reply["errorCode"]=="RUNNING_IMAGE_SIZE_UNAVAILABLE");
+    assert(reply["detail"]=="IMAGE_HEADER_READ_FAILED" && reply["data"].isNull());
+    JsonDocument batch; auto results=batch["results"].to<JsonArray>();
+    auto sibling=results.add<JsonObject>(); sibling["success"]=true; sibling["data"]["alive"]=true;
+    fixture(); failAt=1;
+    auto out=results.add<JsonObject>();
+    assert(actualBatchInfoBranch(&request,"/api/system/info",out,&ctx));
+    assert(out["success"]==false && out["code"]==503 && out["espError"]==-77);
+    assert(out["errorCode"]=="RUNNING_IMAGE_SIZE_UNAVAILABLE" && out["data"].isNull());
+    assert(sibling["success"]==true && sibling["data"]["alive"]==true && fillCalls==0);
+    fixture(); ctx.authenticated=false;
+    JsonDocument denied;
+    assert(actualBatchInfoBranch(&request,"/api/system/info",denied.to<JsonObject>(),&ctx));
+    assert(denied["success"]==false && denied["error"]=="Unauthorized" && readCalls==0);
+    fixture(); failAt=1; AsyncWebServerRequest failedAllocation; failedAllocation.failResponseAlloc=true;
+    FastBee::RunningImageSizeResult unknown;
+    assert(!FastBee::readRunningImageSizeForResponse(&failedAllocation,unknown));
+    assert(!failedAllocation.sent && failedAllocation.connection.closed);
+}
+
+int main(int argc,char** argv) {
+#if CONFIG_SECURE_BOOT || CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT
+    (void)argc; (void)argv;
+    fixture(); expectError(RunningImageSizeError::SignedImageUnsupported);
+    assert(readCalls==0);
+    FastBee::RunningImageSizeResult result; AsyncWebServerRequest request;
+    assert(!FastBee::readRunningImageSizeForResponse(&request,result));
+    assert(request.response.status==503 && request.response.body.find("SIGNED_IMAGE_SIZE_UNSUPPORTED")!=std::string::npos);
+    std::cout<<"SIGNED_SIZE_UNKNOWN_PASS\n";
+#else
+    for (unsigned segments:{1u,2u,16u}) for (bool hash:{false,true}) for (unsigned bytes:{0u,4u,12u,16u}) {
+        fixture(segments,hash,bytes);
+        auto result=readMetadata();
+        assert(result.known() && result.size==image.size());
+        assert(readCalls==segments+2 && readCalls<=18 && readBytes<=200);
+    }
+    fixture(1,false,0); partition.size=image.size();
+    assert(readMetadata().known());
+    fixture(); partitionPresent=false; expectError(RunningImageSizeError::NoRunningPartition); assert(readCalls==0);
+    for (unsigned invalidSize:{0u,23u,16u*1024u*1024u+1u,0xfffffff0u}) {
+        fixture(); partition.size=invalidSize; expectError(RunningImageSizeError::InvalidPartition); assert(readCalls==0);
+    }
+    fixture(); partition.type=ESP_PARTITION_TYPE_DATA; expectError(RunningImageSizeError::InvalidPartition);
+    fixture(); partition.address=0xfffff800u; expectError(RunningImageSizeError::InvalidPartition);
+    for (unsigned offset:{0u,1u,23u}) {
+        fixture(); image[offset]=offset==1?0:0xff; expectError(RunningImageSizeError::InvalidHeader);
+    }
+    fixture(); image[1]=17; expectError(RunningImageSizeError::InvalidHeader);
+    fixture(); image[12]^=1; expectError(RunningImageSizeError::InvalidHeader);
+    fixture(); image[23]=2; expectError(RunningImageSizeError::InvalidHeader);
+    fixture(); partition.size=31; expectError(RunningImageSizeError::TruncatedImage);
+    fixture(); partition.size=35; expectError(RunningImageSizeError::TruncatedImage);
+    fixture(); partition.size=image.size()-1; expectError(RunningImageSizeError::TruncatedImage);
+    fixture(1,true); partition.size=image.size()-1; expectError(RunningImageSizeError::TruncatedImage);
+    for (uint32_t length:{3u,16u*1024u*1024u,0xfffffffcu}) {
+        fixture(); memcpy(image.data()+28,&length,4); expectError(RunningImageSizeError::InvalidSegment);
+    }
+    fixture(); {uint32_t length=4096; memcpy(image.data()+28,&length,4);} expectError(RunningImageSizeError::TruncatedImage);
+    fixture(); {uint32_t addr=0xfffffffdu; memcpy(image.data()+24,&addr,4);} expectError(RunningImageSizeError::InvalidSegment);
+    for (unsigned call:{1u,2u,3u}) {
+        fixture(); failAt=call;
+        expectError(call==1 ? RunningImageSizeError::HeaderReadFailed : call==2 ? RunningImageSizeError::SegmentReadFailed : RunningImageSizeError::FooterReadFailed,-77);
+    }
+    fixture(); image.resize(image.size()-1); expectError(RunningImageSizeError::FooterReadFailed,-78);
+    // Bad checksum/hash bytes are deliberately accepted as structural metadata:
+    // callers must not describe this cheap API as payload/hash verification.
+    fixture(16,true); std::fill(image.end()-allowedReads.back().second,image.end(),0);
+    assert(readMetadata().known());
+    fixture(16,true,4,8); const uint32_t expected=image.size();
+    std::vector<std::thread> threads;
+    for (unsigned i=0;i<8;++i) threads.emplace_back([expected] {
+        for (unsigned j=0;j<100;++j) {auto result=readMetadata(); assert(result.known() && result.size==expected);}
+    });
+    for (auto& thread:threads) thread.join();
+    assert(readCalls==800*18 && readBytes==800*200);
+    testApiFailureAndSiblingSurvival();
+    fixture(); AsyncWebServerRequest request; WebHandlerContext ctx; fillCalls=0;
+    sendCompactSystemInfo(&request,&ctx,false);
+    JsonDocument reply; assert(!deserializeJson(reply,request.response.body));
+    assert(request.response.status==200 && reply["success"]==true && reply["data"]["flash"]["sketchSize"]==image.size() && fillCalls==1);
+    fixture(); JsonDocument batch;
+    assert(actualBatchInfoBranch(&request,"/api/system/info",batch.to<JsonObject>(),&ctx));
+    assert(batch["success"]==true && batch["data"]["flash"]["used"]==image.size());
+    if (argc==3) {
+        std::ifstream stream(argv[1],std::ios::binary);
+        assert(stream.good()); image.assign(std::istreambuf_iterator<char>(stream),{});
+        partition={ESP_PARTITION_TYPE_APP,0x10000,0x600000}; rejectPayloadReads=false;
+        readCalls=0; readBytes=0; failAt=0;
+        auto result=readMetadata();
+        assert(result.known() && result.size==std::stoul(argv[2]) && result.size==image.size());
+        assert(readCalls<=18 && readBytes<=200);
+        std::cout<<"ACTUAL_BINARY_METADATA_PASS bytes="<<result.size<<" calls="<<readCalls<<" readBytes="<<readBytes<<"\n";
+    }
+    std::cout<<"BOUNDED_METADATA_AND_API_PASS\n";
+#endif
+}

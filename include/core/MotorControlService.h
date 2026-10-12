@@ -1,9 +1,12 @@
 #pragma once
 #include "core/FeatureFlags.h"
+#include "core/UartEventOrigin.h"
+#include "core/ModbusOrdinaryControl.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
 struct MotorControlState {
+    bool commandPosition = false, parametersCached = false, parametersFresh = false;
     uint16_t speed = 0;
     uint16_t pulse = 0;
     uint8_t precision = 0;
@@ -19,6 +22,7 @@ struct MotorControlState {
     uint32_t acknowledgedMs = 0;
     bool softLimitEnabled = false;
     bool referenceKnown = false, stationaryConfirmed = false;
+    bool stopRequired = false, readbackRequired = false;
     bool forwardReady = false, reverseReady = false;
     int32_t possiblePositionMin = 0, possiblePositionMax = 0;
     char travelToken[24]{}, travelReason[64]{};
@@ -33,14 +37,22 @@ public:
     static MotorControlService& instance();
     void appendChoices(JsonArray out);
     bool validReference(const String& ref);
+    bool snapshotTarget(const String& ref, FastBee::ModbusControlTarget& target);
     bool submit(const String& ref, const String& action, int value,
-                const String& requestId, uint32_t& operationId, String& error);
+                const String& requestId, uint32_t& operationId, String& error,
+                const FastBee::OrdinaryControlContext* control = nullptr);
+    // The MQTT property identity/value were resolved from a frozen saved mapping.
+    bool submitMqtt(const String& ref, const String& action, int value,
+                    const String& requestId, const String& reportId, uint16_t requestedValue,
+                    uint32_t& operationId, String& error, const FastBee::OrdinaryControlContext& control);
     bool operation(uint32_t id, JsonObject out, bool* busy = nullptr);
     // Execution rules retain their legacy register value / bounded-pulse
     // semantics, but share the same scheduler, stop priority and result path.
     bool submitRule(const String& ref, const String& action, int value,
                     const String& requestId, uint32_t budgetMs, uint16_t timeoutMs,
-                    uint32_t& operationId, String& error);
+                    uint32_t& operationId, String& error,
+                    const FastBee::UartEventOrigin& uartOrigin = {},
+                    const FastBee::OrdinaryControlContext* control = nullptr);
     bool state(const String& ref, MotorControlState& out);
     bool confirmTravel(const String& ref, const String& token, bool reference,
                        int32_t position, bool stationary, String& error);
@@ -49,16 +61,22 @@ private:
     MotorControlService() = default;
     bool submitImpl(const String& ref, const String& action, int value,
                     const String& requestId, uint32_t budgetMs, uint16_t timeoutMs,
-                    bool legacyValue, uint32_t& operationId, String& error);
+                    bool legacyValue, uint32_t& operationId, String& error,
+                    const FastBee::UartEventOrigin& uartOrigin = {},
+                    const FastBee::OrdinaryControlContext* control = nullptr,
+                    const String& mqttReportId = String(), uint16_t mqttRequestedValue = 0);
 };
 
 #if !FASTBEE_ENABLE_MODBUS || !defined(ARDUINO_ARCH_ESP32)
 inline MotorControlService& MotorControlService::instance() { static MotorControlService s; return s; }
 inline void MotorControlService::appendChoices(JsonArray) {}
 inline bool MotorControlService::validReference(const String&) { return false; }
-inline bool MotorControlService::submit(const String&, const String&, int, const String&, uint32_t&, String& error) { error = "Motor control unavailable"; return false; }
+inline bool MotorControlService::snapshotTarget(const String&, FastBee::ModbusControlTarget&) { return false; }
+inline bool MotorControlService::submit(const String&, const String&, int, const String&, uint32_t&, String& error, const FastBee::OrdinaryControlContext*) { error = "Motor control unavailable"; return false; }
+inline bool MotorControlService::submitMqtt(const String&, const String&, int, const String&, const String&, uint16_t,
+    uint32_t&, String& error, const FastBee::OrdinaryControlContext&) { error = "Motor control unavailable"; return false; }
 inline bool MotorControlService::operation(uint32_t, JsonObject, bool* busy) { if (busy) *busy = true; return false; }
-inline bool MotorControlService::submitRule(const String&, const String&, int, const String&, uint32_t, uint16_t, uint32_t&, String& error) { error = "Motor control unavailable"; return false; }
+inline bool MotorControlService::submitRule(const String&, const String&, int, const String&, uint32_t, uint16_t, uint32_t&, String& error, const FastBee::UartEventOrigin&, const FastBee::OrdinaryControlContext*) { error = "Motor control unavailable"; return false; }
 inline bool MotorControlService::state(const String&, MotorControlState&) { return false; }
 inline bool MotorControlService::confirmTravel(const String&, const String&, bool, int32_t, bool, String& error) { error = "Motor control unavailable"; return false; }
 inline String MotorControlService::referenceForSlave(uint8_t) { return String(); }

@@ -909,15 +909,17 @@ static void test_gpio_string_and_cstr_paths_share_core() {
     const std::string writeCore = extractOptFunctionBody(src, writeCorePos);
     TEST_ASSERT_TRUE_MESSAGE(
         readCore.find("isReservedPin(pin)") != std::string::npos &&
-        readCore.find("digitalRead(pin)") != std::string::npos &&
-        readCore.find("analogRead(pin)") != std::string::npos &&
+        readCore.find("!_managedPinIo.read(config.id.c_str(), pin, high)") != std::string::npos &&
+        readCore.find("!readAnalogSampleByCStr(config.id.c_str(), sample)") != std::string::npos &&
+        readCore.find("config.params.gpio.invertLogic") != std::string::npos &&
         readCore.find("getRuntimeStateCStrLocked") != std::string::npos,
-        "shared read core must preserve GPIO input, reserved-pin and runtime-state behavior");
+        "shared reads must use checked inputs, preserve polarity and retain last-commanded output state");
     TEST_ASSERT_TRUE_MESSAGE(
-        writeCore.find("digitalWrite(pin") != std::string::npos &&
+        writeCore.find("_managedPinIo.write(") != std::string::npos &&
         writeCore.find("ledcWrite") != std::string::npos &&
+        writeCore.find("success ? state : GPIOState::STATE_UNDEFINED") != std::string::npos &&
         writeCore.find("getRuntimeStateCStrLocked") != std::string::npos,
-        "shared write core must preserve digital, PWM and runtime-state behavior");
+        "shared writes must propagate checked digital/PWM failure to undefined runtime state");
 }
 
 // ============================================================

@@ -2,8 +2,12 @@
 #define PERIPH_EXEC_SCHEDULER_H
 
 #include "core/ComplementaryInputMonitor.h"
+#include "core/UartTextFramer.h"
+#include "core/UartEventOrigin.h"
+#include "protocols/MqttClientLease.h"
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <vector>
 #include <map>
 #include <set>
@@ -84,13 +88,16 @@ public:
     // ========== 事件触发 ==========
 
     // 触发事件（由各系统模块调用）
-    void triggerEvent(EventType eventType, const String& eventData = "");
+    void triggerEvent(EventType eventType, const String& eventData = "",
+                      const FastBee::UartEventOrigin& uartOrigin = {}, bool publishToMqtt = true);
 
     // 触发事件（通过事件ID）
-    void triggerEventById(const String& eventId, const String& eventData = "");
+    void triggerEventById(const String& eventId, const String& eventData = "",
+                          const FastBee::UartEventOrigin& uartOrigin = {}, bool publishToMqtt = true);
 
     // 触发外设执行事件（内部使用）
-    void triggerPeriphExecEvent(const String& ruleId, const String& eventData = "");
+    void triggerPeriphExecEvent(const String& ruleId, const String& eventData = "",
+                                const FastBee::UartEventOrigin& uartOrigin = {});
 
     // ========== 消息/数据处理 ==========
 
@@ -98,7 +105,13 @@ public:
     void handleMqttMessage(const String& topic, const String& message);
 
     // 轮询数据处理入口（由 Modbus/其他本地数据源回调调用）
-    void handlePollData(const String& source, const String& data);
+    void handlePollData(const String& source, const String& data,
+                        const FastBee::UartEventOrigin& uartOrigin = {});
+
+    // Already constructed local samples retain the same array schema without
+    // a serialization/parser round trip on the peripheral worker stack.
+    void handlePollArray(const String& source, JsonArray& data,
+                         const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 数据下发命令处理：匹配 trigger.triggerPeriphId == item["id"]，执行规则并返回上报 JSON
     // 注意：此方法始终同步执行，立即返回结果
@@ -164,8 +177,13 @@ unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心�
 
     // UART receive buffers. Only UARTs referenced by enabled rules are polled.
     unsigned long _lastSerialCheck = 0;
-    std::map<String, String> _serialRxBuffers;
-    std::map<String, unsigned long> _serialRxLastByteAt;
+    using SerialTextFrame = FastBee::UartTextFramer<160>;
+    struct SerialRxState {
+        SerialTextFrame frame;
+        uint32_t configEpoch = 0;
+        uint32_t receiveGeneration = 0;
+    };
+    std::map<String, SerialRxState> _serialRxFrames;
 
     // ========== 内部方法 ==========
 
@@ -173,7 +191,8 @@ unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心�
     enum class DataSourceType : uint8_t { MQTT = 0, POLL = 1 };
 
     // 数据事件统一处理方法（提取公共 JSON 解析和规则匹配逻辑）
-    void handleDataEvent(const String& source, const String& data, DataSourceType sourceType);
+    void handleDataEvent(const String& source, const String& data, DataSourceType sourceType,
+                         const FastBee::UartEventOrigin& uartOrigin = {});
 
     // 条件评估（委托给 PeriphExecManager::evaluateCondition）
     static bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
@@ -191,7 +210,7 @@ unsigned long _webReserveSuspendedSince = 0;  // 进入暂停的时间戳（心�
     bool checkNetworkAndProtocolStatus(uint8_t& connectedProtocols);
 
     // 获取MQTTClient指针
-    MQTTClient* getMqttClient();
+    FastBee::MqttClientLease getMqttClient(bool* absent = nullptr);
 
     // 根据 MemGuard 级别计算动态检查周期
     uint32_t getDynamicCheckPeriod(MemoryGuardLevel level);

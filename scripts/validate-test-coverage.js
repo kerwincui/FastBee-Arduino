@@ -14,6 +14,474 @@ const TEST_ALL_FILE = path.join(ROOT_DIR, 'scripts', 'test-all.ps1');
 const EXCLUDED_TEST_DIRS = new Set(['browser', 'e2e', 'fixtures', 'mocks', 'test_embedded', 'unit']);
 const CRITICAL_REGRESSION_CONTRACTS = [
     {
+        name: 'panel navigation cancellation excludes genuine device request failures',
+        files: {
+            'test/unit/test_device_menu_read_only.py': [
+                'class DeviceMenuReadOnlyTests',
+                'def test_panel_navigation_abort_contract_rejects_real_failures',
+                'def test_status_post_allowlist_rejects_movement_and_ambiguous_payloads',
+                'def test_browser_scripts_block_unknown_writes_and_fail_on_diagnostics'
+            ],
+            'scripts/test-screen-panel-browser-device.mjs': [
+                'function isIntentionalBatchNavigationAbort(',
+                "failure !== 'net::ERR_ABORTED'",
+                'generation >= navigation.generation',
+                'until: at + 1500',
+                "assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 1), false)",
+                "assert.equal(cancelled(batchRequest, 'net::ERR_ABORTED', 0, 2501), false)"
+            ]
+        }
+    },
+    {
+        name: 'Basic finite responses bound real write failures without empty-send or duplicate-ACK progress',
+        files: {
+            'test/unit/test_web_basic_progress.py': [
+                'class WebBasicProgressTests',
+                'def test_original_add_failure_empty_send_stalls_at_30s_and_wrap',
+                'def test_actual_basic_deadlines_recovery_duplicate_ack_and_ownership',
+                'def test_original_basic_fails_the_bounded_regression'
+            ],
+            'test/unit/cpp/web_basic_progress_harness.cpp': [
+                '#define FASTBEE_FINITE_REFERENCE_MAIN',
+                'return clock.add(data,length);',
+                'initialWriteFailure(0);initialWriteFailure(UINT32_MAX-5000U);',
+                'partialThenStall();recoveryBeforeDeadline();pendingFlushIsNotProgress();',
+                'zeroSpaceAndDuplicateCallbacks();slowRealProgressAndOwnership();',
+                'f.clock._rx_last_ack=f.clock._rx_last_packet=at;',
+                'assert(f.closes==1&&f.disconnects==1);'
+            ]
+        }
+    },
+{
+    "name": "TCP admission diagnostics report the existing atomic count and reject partial dependency patches",
+    "files": {
+        "test/unit/test_asynctcp_admission_snapshot.py": [
+            "class AsyncTcpAdmissionSnapshotTests",
+            "def test_existing_source_is_preserved_and_patch_is_idempotent",
+            "def test_partial_duplicate_and_changed_providers_are_rejected",
+            "def test_real_provider_reads_current_count_caps_and_rejects_null_arguments",
+            "def test_missing_weak_provider_reports_unavailable"
+        ]
+    }
+},
+{
+    "name": "configuration document saves compare complete readback without a duplicate DOM and preserve generations on faults",
+    "files": {
+        "test/unit/test_config_storage_save_peak.py": [
+            "class ConfigStorageSavePeakTests",
+            "def test_complete_readback_faults_atomic_commit_and_measured_peak",
+            "def test_both_document_saves_are_pinned_to_the_borrowed_source"
+        ],
+        "test/unit/cpp/config_save_peak_harness.cpp.in": [
+            "assert(verifyJsonFile(\"candidate\"))",
+            "assert(!verifySerializedJsonFile(\"candidate\",source))",
+            "assert(peakBytes==before && liveBytes==before)",
+            "assert(!atomicReplaceFromTmp(\"primary.tmp\",\"primary\",&source))",
+            "assert(!storage.saveJSONConfigImpl(\"primary\",oom))",
+            "assert(legacyRead[\"admin\"][\"username\"]==\"admin\")",
+            "readLimit=limit",
+            "readFailureAt=failure",
+            "const bool saved=storage.flushToDisk(\"primary\",source)"
+        ]
+    }
+},
+{
+    "name": "IPC permanent ownership uses current-task creation numbers without waiting or rereading dynamic handles",
+    "files": {
+        "test/unit/test_ipc_task_owner.py": [
+            "class IpcTaskOwnerTests",
+            "def test_only_later_explicit_post_retries_nonqueued_busy_slot",
+            "def test_pending_not_reused_and_late_mapping_not_backfilled",
+            "def test_wrong_cpu_identity_stays_unknown",
+            "def test_duplicate_creation_numbers_stay_unknown",
+            "def test_real_backend_snapshot_and_json_keep_original_watermarks",
+            "def test_competing_submitters_and_readers_never_publish_torn_identity",
+            "def test_c3_does_not_submit_or_allocate_ipc_storage",
+            "def test_no_trace_does_not_submit_or_allocate_ipc_storage",
+            "def test_real_route_observe_only_after_boot_submits_no_ipc",
+            "def test_real_route_observe_only_reuses_ready_identity",
+            "def test_real_route_observe_only_never_retries_rejected_context",
+            "def test_real_route_rejects_unknown_empty_duplicate_and_file_parameters",
+            "def test_real_route_observe_only_preserves_auth_and_developer_checks"
+        ],
+        "test/unit/cpp/ipc_task_owner_harness.cpp": [
+            "task == nullptr && scan == pdFALSE",
+            "int esp_ipc_call_blocking(uint32_t, void (*)(void*), void*) { std::abort(); }",
+            "unsigned uxTaskGetTaskNumber(void*) { std::abort(); }",
+            "highWaterBytes == 252",
+            "round < 300",
+            "IpcOwnerStatus::PublishedAfterCapture",
+            "ipcCalls[0] == 1 && ipcCalls[1] == 1",
+            "!ipcCalls[0] && !ipcCalls[1] && infoCalls == 0"
+        ]
+    }
+},
+{
+    "name": "Log VFS operation deadlines reject genuine overruns and preserve historical negative controls",
+    "files": {
+        "test/unit/test_log_directory_budget.py": [
+            "def test_actual_r6_batch_budget_reproduces_129ms_cumulative_failure",
+            "def test_actual_individual_vfs_budget_accepts_129ms_and_wrap",
+            "baseline='r6',operation_r6=True"
+        ],
+        "test/unit/cpp/log_directory_r6_before.inc": [
+            "class LogDirectoryScanBudget",
+            "void readLogList("
+        ]
+    }
+},
+
+{
+    "name": "running image metadata uses bounded partition reads and fails visibly without payload verification",
+    "files": {
+        "test/unit/test_running_image_size.py": [
+            "class RunningImageSizeTests",
+            "test_unsigned_real_production_reader_four_chip_ids_bounds_failures_and_concurrency",
+            "test_signed_boot_and_signed_app_configurations_explicitly_reject_unknown_size",
+            "test_actual_pinned_rgb_binary_length_matches_independent_build_report",
+            "test_full_compact_and_batch_only_emit_flash_after_successful_shared_reader",
+            "src/systems/RunningImageSize.cpp",
+            "@COMPACT_SEND@",
+            "@BATCH_BRANCH@"
+        ],
+        "test/unit/cpp/running_image_size_harness.cpp.in": [
+            "forbidHeap=true",
+            "16u*1024u*1024u+1u",
+            "0xfffffffcu",
+            "failAt=call",
+            "800*18",
+            "800*200",
+            "IMAGE_HEADER_READ_FAILED",
+            "SIGNED_SIZE_UNKNOWN_PASS",
+            "failedAllocation.connection.closed",
+            "ACTUAL_BINARY_METADATA_PASS"
+        ]
+    }
+},
+{
+    "name": "deferred log reads bound directory scans and recheck memory after contention before synchronous task reclamation",
+    "files": {
+        "test/unit/test_log_deferred_reader.py": [
+            "class LogDeferredReaderTests",
+            "def test_real_worker_admission_lock_disconnect_cleanup_and_retirement",
+            "src/network/handlers/LogRouteHandler.cpp",
+            "@WORKER@",
+            "@GUARD@",
+            "@DESTRUCTOR@"
+        ],
+        "test/unit/test_log_internal_allocation.py": [
+            "class LogInternalAllocationTests",
+            "def test_real_allocator_caps_and_cold_start_oom_before_constructor",
+            "@ALLOCATE@",
+            "@SIZED_DELETE@",
+            "@INITIALIZE@"
+        ],
+        "test/unit/cpp/log_internal_allocation_harness.cpp.in": [
+            "MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT",
+            "allocationFails=true",
+            "constructions==0",
+            "routeRegistrations==0"
+        ],
+        "test/unit/test_log_directory_budget.py": [
+            "class LogDirectoryBudgetTests",
+            "def test_actual_directory_reader_bounds_and_resource_rechecks",
+            "src/network/handlers/LogRouteHandler.cpp",
+            "@READER@",
+            "@BUDGET@",
+            "@SCAN@"
+        ],
+        "test/unit/cpp/log_directory_budget_harness.cpp.in": [
+            "reset(64)",
+            "reset(65)",
+            "reset(500)",
+            "fileOpenElapsedMs=120",
+            "fileOpenElapsedMs=121",
+            "clockMs=UINT32_MAX-60",
+            "pressureCall=2"
+        ],
+        "test/unit/cpp/log_deferred_reader_harness.cpp.in": [
+            "deliverNotify=false",
+            "LOGGER.files.lock()",
+            "assert(!weak.expired()",
+            "allowSuspend=false",
+            "holdExternalDelete=true",
+            "liveTaskAllocations==1",
+            "FastBee::MemoryBudget::freeBytes=34000",
+            "FastBee::MemoryBudget::freeBytes=1000",
+            "request->ownedClient.rxTimeout==0",
+            "request->ownedClient.rxTimeout==3",
+            "assert(weak.expired())",
+            "operations==34"
+        ]
+    }
+},
+{
+    "name": "task stack SDK permanent owner matching never dereferences dynamic handles",
+    "files": {
+        "test/unit/test_task_stack_snapshot.py": [
+            "def test_permanent_owners_and_creation_numbers",
+            "def test_single_core_never_queries_idle1",
+            "def test_null_timer_remains_unknown",
+            "def test_scheduler_not_started_never_calls_permanent_getters",
+            "def test_smp_idle_api_unavailable_is_honest",
+            "def test_dangling_dynamic_handle_is_not_dereferenced"
+        ],
+        "test/unit/cpp/task_stack_snapshot_harness.cpp.in": [
+            "pcTaskGetName(void*) { std::abort(); }",
+            "uxTaskGetTaskNumber(void*) { std::abort(); }"
+        ]
+    }
+},
+{
+    "name": "public status entry activity survives cached and rejection branches",
+    "files": {
+        "test/unit/test_system_status_feature_intent.py": [
+            "def test_entry_activity_covers_cache_fresh_and_rejected_responses",
+            "def test_original_missing_activity_is_rejected",
+            "def test_cache_only_activity_is_rejected"
+        ]
+    }
+},
+{
+    "name": "catalog per-driver streaming preserves full wire shape and OOM cursor",
+    "files": {
+        "test/unit/test_peripheral_catalog_response.py": [
+            "def test_full_catalog_equivalence_memory_and_response_lifetime",
+            "036561c1f3d2fd1b8f0416a961a92914fe1efad28ca677eee7afb24965c6556c"
+        ],
+        "test/unit/cpp/peripheral_catalog_response_harness.cpp": [
+            "streamedSensorDescriptor",
+            "Reader::TryAgain",
+            "catalogAllocator.failAllocations = true",
+            "Captured feature state cannot change halfway through a response."
+        ]
+    }
+},
+    {
+        name: 'configuration load transfers verified DOM with caller allocator and preserves valid data on failure',
+        files: {
+            'test/unit/test_config_storage_load_ownership.py': [
+                'class ConfigStorageLoadOwnershipTests', 'def test_large_json_peak_failure_preservation_and_custom_allocator'
+            ],
+            'test/unit/cpp/config_storage_load_ownership_harness.cpp.in': [
+                '@PRODUCTION@', '@ORACLE@', 'customAllocator.fail=true', 'ownershipPeak < copyPeak', 'out.allocator()==&customAllocator'
+            ],
+            'test/unit/cpp/config_storage_load_before.inc': ['bool verifyJsonFileBefore(', '*out = parsed']
+        }
+    },
+    {
+        name: 'script shutdown drains readers and checked rule loading preserves valid configurations',
+        files: {
+            'test/unit/test_rule_script_lifecycle.py': [
+                'class RuleScriptLifecycleTests', 'retire_with_reader', 'concurrent_retirement', 'cancel_initialization'
+            ],
+            'test/unit/test_rule_script_import.py': [
+                'class RuleScriptImportTests', 'node_allocation_failure', 'load_json_allocation_failure',
+                'memory_rejection', 'startup_limits', 'structural_backup_recovery', 'legacy_defaults'
+            ],
+            'test/unit/cpp/rule_script_import_harness.cpp.in': [
+                'core/RuleScriptResources.h', '__wrap_malloc', 'failStringAt', 'LittleFS.backupRaw'
+            ]
+        }
+    },
+    {
+        name: 'OTA reply queues allocate on demand and retire after the last admitted caller',
+        files: {
+            'test/unit/test_ota_reply_queue_lifetime.py': [
+                'def test_actual_owner_cold_oom_inflight_retirement_and_concurrency',
+                'def test_flash_admission_and_cleanup_keep_reply_ownership'
+            ],
+            'test/unit/cpp/ota_reply_queue_lifetime_harness.cpp': [
+                'OtaReplyQueueOwner', 'failQueueCall', 'detachedLease',
+                'continueCreate', 'Queued terminal/reply/progress'
+            ]
+        }
+    },
+    {
+        name: 'recent log optional buffer survives admitted readers and allocation cancellation',
+        files: {
+            'test/unit/test_logger_recent_runtime.py': [
+                'def test_recent_buffer_lifetime_with_real_snapshot_and_disable'
+            ],
+            'test/unit/cpp/logger_recent_runtime_harness.cpp': [
+                'in-flight-reader', 'critical-survives', 'duringAllocation', 'releaseBefore'
+            ]
+        }
+    },
+    {
+        name: 'sensor cache allocates actual entries on demand and invalidates cooperative readers',
+        files: {
+            'test/unit/test_sensor_cache_demand.py': [
+                'class SensorCacheDemandTests',
+                'def test_actual_cache_cold_oom_release_eviction_and_cooperative_replacement'
+            ],
+            'test/unit/cpp/sensor_cache_demand_harness.cpp': [
+                'SENSOR_DRIVER_MEMORY_UNAVAILABLE', 'releaseAll', 'sensor cache demand lifecycle checks passed'
+            ]
+        }
+    },
+    {
+        name: 'observer exceptions preserve private originals and public failure judgments',
+        files: {
+            'test/unit/test_safe_observer_error.py': [
+                'def test_real_checkers_keep_cookie_errors_private_and_remain_failed',
+                'test/unit/test_safe_observer_error.mjs'
+            ],
+            'test/unit/test_safe_observer_error.mjs': [
+                'scripts/test-web-device-menus.mjs', 'scripts/test-com15-monitor-device.mjs',
+                'collectWorkerErrors', 'finalizeMonitorRun', 'privateCaptureFailed',
+                'privateSha256', 'publicEventsDropped'
+            ]
+        }
+    },
+    {
+        name: 'feature status immutable snapshots and allocation-safe finite streaming',
+        files: {
+            'test/unit/test_feature_network_fixed_json.py': [
+                'class FeatureStatusCatalogTests',
+                'def test_snapshot_matches_existing_schema_and_never_rereads_live_state',
+                'def test_small_slices_disconnect_and_preflight_reject_oversize_or_oom'
+            ],
+            'test/unit/cpp/feature_status_catalog_harness.cpp': [
+                'FeatureStatusCatalog', 'JsonVariantConst', 'rejectArray', 'arrayBudget = 1',
+                'changed after capture', 'oversized.measureLength()', 'allocator.live.empty()'
+            ]
+        }
+    },
+    {
+        name: 'log route waits for concurrent flush and preserves lock ownership',
+        files: {
+            'test/unit/test_log_route_contention.py': [
+                'def test_read_waits_for_flush_and_timeout_does_not_unlock_writer',
+                'src/network/handlers/LogRouteHandler.cpp',
+                'std::timed_mutex', 'assert(LOGGER.unlocks==1)'
+            ]
+        }
+    },
+    {
+        name: 'S3 fixed slab actual storage diagnostics',
+        files: {
+            'test/unit/test_static_slab_storage_diagnostics.py': [
+                'def test_actual_serializer_external_fallback_absence_and_inline_profiles',
+                'src/network/handlers/SystemRouteHandler.cpp'
+            ],
+            'test/unit/cpp/static_slab_storage_diagnostics_harness.cpp.in': [
+                '@PRODUCTION_POOL_SERIALIZER@', 'ACTUAL_POOL_SERIALIZER_PASS',
+                'pools.size()==3', 'pool["externalStorage"]==external'
+            ]
+        }
+    },
+    {
+        name: 'S3 worker budget and actual pool lifetime',
+        files: {
+            'test/unit/test_worker_budget_policy.py': ['def test_actual_policy_pool_exit_growth_and_network_baseline', 'src/core/PeriphExecWorkers.cpp'],
+            'test/unit/cpp/worker_budget_harness.cpp.in': [
+                '@POLICY@', '@POOL_HEADER@', '@POOL_SOURCE@', '@LIFETIME@', '@NETWORK_API@', '@BASELINE@', '@ADMISSION@',
+                'Partial begin failure never frees', 'Partial sentinel send retries', 'UINT32_MAX-999',
+                'A later fresh lease cannot replace the failed outer admission'
+            ]
+        }
+    },
+    {
+        name: 'historical raw device metrics contract and HTTP completeness',
+        files: {
+            'scripts/device_metrics_contract.py': ['def raw_metrics(body):', 'def metrics_response(response):'],
+            'test/unit/test_device_metrics_contract.py': [
+                'def test_real_historical_raw_shape_and_complete_http_body',
+                'def test_missing_groups_and_scalar_fields_cannot_fabricate_metrics',
+                'def test_error_and_explicit_failure_envelopes_never_use_raw_fallback',
+                'def test_truncated_invalid_length_or_http_failure_is_rejected',
+                'def test_other_api_routes_keep_strict_success_and_existing_data_semantics'
+            ]
+        }
+    },
+    {
+        name: 'fixed slab PSRAM storage capability and ownership',
+        files: {
+            'test/unit/test_static_slab_storage.py': [
+                'def test_external_storage_fallback_ownership_and_lifetime',
+                'def test_inline_profiles_and_missing_board_support'
+            ],
+            'test/unit/cpp/static_slab_storage_harness.cpp': [
+                '#include "utils/StaticPoolAllocator.h"',
+                'GLOBAL_DESTRUCTOR_SAFE', 'pool.deallocate(static_cast<unsigned char*>(a)+1)',
+                '!Failed::pool().storageAvailable()'
+            ]
+        }
+    },
+    {
+        name: 'web handler literal parameter bridge',
+        files: {
+            'test/unit/test_web_handler_parameter_bridge.py': [
+                'def test_actual_methods_preserve_post_query_null_empty_and_mixed_overloads',
+                'def test_literal_bridges_keep_shared_string_paths_and_compiler_boundaries'
+            ],
+            'test/unit/cpp/web_handler_parameter_bridge_harness.cpp.in': ['@PRODUCTION_METHODS@', '@ORIGINAL_METHODS@'],
+            'test/unit/cpp/web_handler_parameter_before.json': ['declarations', 'definitions']
+        }
+    },
+    {
+        name: 'web handler literal response bridge',
+        files: {
+            'test/unit/test_web_handler_response_bridge.py': [
+                'def test_actual_response_methods_preserve_status_escaping_truncation_and_headers',
+                'def test_three_literal_bridges_reuse_original_string_and_document_response_methods',
+                'PLATFORMIO_LIBDEPS_DIR'
+            ],
+            'test/unit/cpp/web_handler_response_bridge_harness.cpp.in': ['@PRODUCTION_METHODS@', '@ORIGINAL_METHODS@'],
+            'test/unit/cpp/web_handler_response_before.json': ['declarations', 'definitions']
+        }
+    },
+    {
+        name: 'shared literal String case match',
+        files: {
+            'test/unit/test_literal_string_case_match.py': [
+                'def test_actual_case_match_preserves_null_empty_case_utf8_and_long_inputs',
+                "ROOT/'src/network/LiteralStringMatch.cpp'"
+            ],
+            'test/unit/cpp/literal_string_case_match_harness.cpp.in': [
+                '#include "network/LiteralStringMatch.h"',
+                'Public case match declaration changed',
+                'value.equalsIgnoreCase(String(literal.c_str()))'
+            ],
+            'test/unit/cpp/literal_string_case_match_before.json': ['comparisonCases', 'nullLiteralComparisons', 'arrays']
+        }
+    },
+    {
+        name: 'modbus observation worker stack and online admission',
+        files: {
+            'test/unit/test_modbus_worker_stack.py': [
+                'def test_fixed_format_matches_printf_without_newlib_formatting',
+                'def test_production_observation_dispatch_preserves_wire_and_quality_without_parse'
+            ],
+            'test/unit/cpp/modbus_fixed_format_harness.cpp': ['formatModbusFixed'],
+            'test/unit/cpp/observation_direct_dispatch_harness.cpp': ['production_direct_dispatch.inc'],
+            'test/unit/test_worker_online_admission.py': ['def test_real_gate_preserves_online_web_budget_and_profile_behavior'],
+            'test/unit/test_worker_demand_lifecycle.py': [
+                'def test_production_demand_suspend_recovery_and_concurrent_creation',
+                'def test_dispatch_checks_worker_admission_before_operation_or_reservation'
+            ]
+        }
+    },
+    {
+        name: 'modbus hex capture worker stack',
+        files: {
+            'test/unit/test_modbus_hex_capture.py': [
+                'def test_actual_capture_preserves_bytes_spacing_and_heap_guards',
+                'def test_oracle_rejects_capture_regressions',
+                'def test_original_formatter_is_rejected_at_compile_time'
+            ],
+            'test/unit/cpp/modbus_hex_capture_harness.cpp.in': [
+                '#define snprintf FASTBEE_FORBIDDEN_snprintf',
+                '@TX_BLOCK@',
+                '@RX_BLOCK@',
+                'tx heapSafe false keeps both',
+                'rx heapSafe false keeps both',
+                'size_t(254), size_t(255), size_t(256)'
+            ]
+        }
+    },
+    {
         name: 'feature menu gating',
         files: {
             'test/unit/test_menu_feature_contract.py': [
@@ -23,6 +491,21 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'def test_status_failures_do_not_restore_all_menus',
                 'def test_fleet_quick_includes_live_menu_visibility_regression',
                 'def test_browser_navigation_rejects_hidden_preloaded_pages'
+            ],
+            'test/unit/test_menu_feature_runtime.py': [
+                'def test_compact_panel_intent_avoids_full_catalog_for_all_runtime_states',
+                'def test_incomplete_or_non_boolean_intent_retains_full_status_fallback',
+                'def test_compact_intent_cannot_replace_missing_runtime_status',
+                'def test_no_path_marks_feature_state_ready_before_its_response'
+            ],
+            'test/unit/test_system_status_feature_intent.py': [
+                'def test_compiled_and_user_intent_survive_admission_changes',
+                'def test_absent_panel_does_not_fabricate_intent_or_change_other_features',
+                'def test_allocation_limits_reject_overflow_instead_of_valid_status'
+            ],
+            'test/unit/cpp/system_status_feature_intent_harness.cpp': [
+                '#include "system_status_feature_block.inc"',
+                '#include "system_status_feature_methods.inc"'
             ]
         }
     },
@@ -32,7 +515,7 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             'scripts/test-memory-regressions.js': [
                 "setRuntimeDisabled(\"fileLogging\"",
                 'PeriphExec must reject heavy event rules during severe memory pressure',
-                'MQTTS recovery must fall back to persisted plain MQTT'
+                'Memory protection must pause/retry TLS without rewriting user scheme/port/enabled or permitting plaintext fallback'
             ],
             'test/unit/test_deploy_config_bundle.py': [
                 'def test_classic_no_psram_disables_mqtt_before_staging',
@@ -102,7 +585,7 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             'test/unit/test_config_transfer_contract.py': [
                 'def test_live_smoke_imports_the_just_exported_document',
                 'def test_import_success_checks_envelope_and_returned_file_name',
-                'def test_memory_degradation_requires_retryable_503_metadata'
+                'def test_import_requires_session_and_does_not_pass_degraded_or_unknown_write'
             ],
             'test/test_system_services.cpp': [
                 'static void test_config_import_valid_json()',
@@ -138,7 +621,39 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             'test/unit/test_libdeps_patch_contract.py': [
                 'def test_zero_read_fix_installs_upgrades_and_is_idempotent',
                 'def test_send_progress_accounting_installs_and_is_idempotent',
-                'def test_installed_312_copies_are_patched_when_available'
+                'def test_installed_312_copies_are_patched_when_available',
+                'def test_validator_requires_complete_four_file_finite_progress_contract',
+                'def test_validator_installed_sources_require_finite_progress_gate'
+            ],
+            'test/unit/test_web_finite_progress.py': [
+                'def test_actual_finite_progress_paths',
+                'def test_original_and_false_progress_mutations_are_detected',
+                'def test_partial_progress_upgrades_are_rejected',
+                'def test_four_file_partial_install_and_write_failure_preserve_originals',
+                'def test_fixed_pre_finite_fixture_upgrades_and_is_idempotent'
+            ],
+            'test/unit/cpp/web_finite_progress_harness.cpp': [
+                'void stalled(',
+                'void zeroSpacePollAndTimeout()',
+                'void setupAndRespond()',
+                'void repeatedAckAndPendingOutput()',
+                'void recoveryAndSlowProgress()',
+                'void peerHighWaterAndFinalFlush()',
+                'void excludedTypes()',
+                'void releaseOwnershipAndLease()',
+                '#include "web_peer_drain_harness.cpp"',
+                '#include "production_transport_clock.inc"',
+                '#include "production_owned_request.inc"',
+                '#include "production_file_destructor.inc"',
+                '#include "production_lease_types.inc"',
+                '#include "production_lease_release.inc"',
+                'int main()',
+                'stalled(true,0);stalled(false,0);stalled(false,UINT32_MAX-5000U);',
+                'zeroSpacePollAndTimeout();setupAndRespond();repeatedAckAndPendingOutput();',
+                'recoveryAndSlowProgress();peerHighWaterAndFinalFlush();excludedTypes();',
+                'releaseOwnershipAndLease();',
+                'assert(liveArrays==0);',
+                'assert(TransportClock::_fastbee_accepted_count==0);'
             ],
             'test/test_static_concurrency.cpp': [
                 'void test_page_loader_response_integrity_locked()',

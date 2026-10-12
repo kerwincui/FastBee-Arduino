@@ -106,7 +106,7 @@ Key 已设置时留空表示保留；勾选“清除 Key 并停用天气”并�
 
 ## Waveshare 本机背光极性修正
 
-2026-09-25 用户实物确认：本机 `backlightActiveHigh=true` 时 100% 黑屏、0% 最亮，配置方向反了。该显示外设 `panel_display` 应改为 `backlightActiveHigh=false`，公开[显示外设样例](waveshare-esp32s3-touch-lcd4/peripherals.json)已同步；其他设备仍按各自背光电路配置。
+2026-09-25 用户实物确认：本机 `backlightActiveHigh=true` 时 100% 黑屏、0% 最亮，配置方向反了。该显示外设 `panel_display` 应改为 `backlightActiveHigh=false`，公开[显示外设样例](device-test-configs/com8-com9-esp32s3-touch/config/peripherals.json)已同步；其他设备仍按各自背光电路配置。
 
 在“外设配置 → 显示外设”关闭“背光高电平有效”，保存后重启设备使显示运行时重新初始化。该板正确映射为 100% 最亮、0% 保留约 10% 可见亮度，立即息屏才关闭背光。部署后的实际亮度递增、最低亮度、息屏与触摸唤醒仍待现场确认；本次用户反馈确认的是旧配置方向错误，不能替代新配置效果验收。RGB 缓冲、时序及卷边保护仍以[板级说明](waveshare-esp32s3-touch-lcd4/README.md)和构建合同为准。
 

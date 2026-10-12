@@ -6,6 +6,7 @@
 #include <thread>
 using SemaphoreHandle_t = void*;
 inline std::atomic<unsigned> semaphoreCreates{0}, semaphoreDeletes{0};
+inline std::atomic<TickType_t> semaphoreLastWait{0};
 inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() {
     auto* result = new std::recursive_timed_mutex;
     ++semaphoreCreates;
@@ -18,6 +19,7 @@ inline void vSemaphoreDelete(SemaphoreHandle_t handle) {
     delete static_cast<std::recursive_timed_mutex*>(handle);
 }
 inline BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t handle, TickType_t timeout) {
+    semaphoreLastWait = timeout;
     return static_cast<std::recursive_timed_mutex*>(handle)->try_lock_for(
         std::chrono::milliseconds(timeout)) ? pdTRUE : pdFALSE;
 }

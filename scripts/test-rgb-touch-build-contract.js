@@ -14,8 +14,8 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const TOUCH_BUNDLE = path.join(ROOT, 'docs', 'waveshare-esp32s3-touch-lcd4');
-const CONTRACT_FILE = path.join(TOUCH_BUNDLE, 'rgb-build-contract.json');
+const TOUCH_BUNDLE = path.join(ROOT, 'docs', 'device-test-configs', 'com8-com9-esp32s3-touch', 'config');
+const CONTRACT_FILE = path.join(TOUCH_BUNDLE, '..', 'rgb-build-contract.json');
 const RGB_BACKEND_SOURCE = path.join(ROOT, 'src', 'screen', 'RgbDisplayBackend.cpp');
 const OPTIONAL_CANDIDATE_INI = path.join(ROOT, 'artifacts', 'platformio-rgb-xip16-r19.ini');
 const OPTIONAL_BUILD_REPORTS = [

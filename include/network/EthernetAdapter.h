@@ -19,6 +19,7 @@
 #include <SPI.h>
 #include <ETH.h>
 #include <WiFiClient.h>
+#include <atomic>
 #include "network/WiFiManager.h"
 #include "core/interfaces/INetworkAdapter.h"
 
@@ -67,6 +68,8 @@ public:
      * @brief 断开连接
      */
     void disconnect() override;
+    bool stop(String& error);
+    String lastError() const { return _lastError; }
 
     /**
      * @brief 获取 Arduino Client 指针（用于 PubSubClient）
@@ -84,15 +87,12 @@ public:
     String getStatusString() const override;
 
 private:
-    SPIClass* _spi = nullptr;
     WiFiClient _ethClient;  // ETH 使用 WiFiClient 兼容接口
-    wifi_event_id_t _ethEventId = 0;  // WiFi 事件回调 ID（用于 removeEvent）
-    bool _initialized = false;
-    bool _connected = false;
-    EthernetConfig _pinConfig;
+    String _lastError;
 
     static void onEthEvent(arduino_event_id_t event, arduino_event_info_t info);
-    static EthernetAdapter* _instance;  // 静态回调需要的实例指针
+    // Identity only; callbacks never dereference an adapter that may be destroyed.
+    static std::atomic<EthernetAdapter*> _instance;
 };
 
 #endif // FASTBEE_ENABLE_ETHERNET

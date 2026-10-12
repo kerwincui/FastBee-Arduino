@@ -1,11 +1,14 @@
 #include "core/PeriphExecWorkerPool.h"
 #include "core/PeriphExecManager.h"
 #include "systems/LoggerSystem.h"
+#if FASTBEE_WORKER_BUDGETED
+#include "core/MemoryBudget.h"
+#endif
 
 PeriphExecWorkerPool::PeriphExecWorkerPool()
     : _queue(nullptr), _started(false), _shuttingDown(false),
       _exitSemaphore(nullptr), _workersCreated(0), _workersExited(0),
-      _sentinelsSent(false) {
+      _sentinelsQueued(0) {
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
     }
@@ -15,11 +18,12 @@ PeriphExecWorkerPool::~PeriphExecWorkerPool() {
     shutdown();
 }
 
-bool PeriphExecWorkerPool::begin() {
+bool PeriphExecWorkerPool::begin(size_t initialCount) {
     if (_started) {
         return true;
     }
 
+    if (_queue || _workersCreated || initialCount == 0 || initialCount > WORKER_COUNT) return false;
     // 创建队列：存储 AsyncExecContext* 指针
     _queue = xQueueCreate(QUEUE_CAPACITY, sizeof(AsyncExecContext*));
     if (!_queue) {
@@ -35,14 +39,31 @@ bool PeriphExecWorkerPool::begin() {
     }
 
     _workersExited = 0;
-    _sentinelsSent = false;
+    _sentinelsQueued = 0;
     _shuttingDown = false;
 
-    // 创建 N 个常驻 worker 任务
-    char taskName[16];
-    for (size_t i = 0; i < WORKER_COUNT; ++i) {
-        snprintf(taskName, sizeof(taskName), "pexec_w%u", (unsigned)i);
+    for (size_t i = 0; i < initialCount; ++i) {
+        if (!createWorker(i)) {
+            // shutdown uses actual created/exited counts. A timeout leaves
+            // ownership intact; manager must retain this candidate for retry.
+            shutdown(2000);
+            return false;
+        }
+    }
 
+    _started = true;
+    LOGGER.infof("[WorkerPool] Started %u workers, stack=%u, queue=%u (heap=%d, largest=%d)",
+                 (unsigned)_workersCreated,
+                 (unsigned)WORKER_STACK,
+                 (unsigned)QUEUE_CAPACITY,
+                 (int)ESP.getFreeHeap(),
+                 (int)ESP.getMaxAllocHeap());
+    return true;
+}
+
+bool PeriphExecWorkerPool::createWorker(size_t index) {
+    char taskName[16];
+    snprintf(taskName, sizeof(taskName), "pexec_w%u", (unsigned)index);
         BaseType_t created =
 #if CHIP_DUAL_CORE
             xTaskCreatePinnedToCore(
@@ -51,7 +72,7 @@ bool PeriphExecWorkerPool::begin() {
                 WORKER_STACK,
                 this,
                 ASYNC_TASK_PRIORITY,
-                &_workers[i],
+                &_workers[index],
                 1                       // Core 1，与原 dispatchAsync 一致
             );
 #else
@@ -61,45 +82,33 @@ bool PeriphExecWorkerPool::begin() {
                 WORKER_STACK,
                 this,
                 ASYNC_TASK_PRIORITY,
-                &_workers[i]
+                &_workers[index]
             );
 #endif
 
-        if (created != pdPASS) {
-            LOGGER.errorf("[WorkerPool] Failed to create worker #%u (heap=%d, largest=%d)",
-                          (unsigned)i,
-                          (int)ESP.getFreeHeap(),
-                          (int)ESP.getMaxAllocHeap());
-            // 清理已创建的部分 worker（投递哨兵并等待退出）
-            _shuttingDown = true;
-            AsyncExecContext* sentinel = nullptr;
-            for (size_t j = 0; j < i; ++j) {
-                xQueueSend(_queue, &sentinel, 0);
-            }
-            for (size_t j = 0; j < i; ++j) {
-                xSemaphoreTake(_exitSemaphore, pdMS_TO_TICKS(2000));
-            }
-            _workersCreated = 0;
-            _workersExited = 0;
-            _sentinelsSent = false;
-            vQueueDelete(_queue);
-            _queue = nullptr;
-            vSemaphoreDelete(_exitSemaphore);
-            _exitSemaphore = nullptr;
-            return false;
-        }
-        _workersCreated++;
+    if (created != pdPASS) {
+        LOGGER.errorf("[WorkerPool] Failed to create worker #%u (heap=%d, largest=%d)",
+                      (unsigned)index, (int)ESP.getFreeHeap(), (int)ESP.getMaxAllocHeap());
+        return false;
     }
-
-    _started = true;
-    LOGGER.infof("[WorkerPool] Started %u workers, stack=%u, queue=%u (heap=%d, largest=%d)",
-                 (unsigned)WORKER_COUNT,
-                 (unsigned)WORKER_STACK,
-                 (unsigned)QUEUE_CAPACITY,
-                 (int)ESP.getFreeHeap(),
-                 (int)ESP.getMaxAllocHeap());
+    ++_workersCreated;
     return true;
 }
+
+#if FASTBEE_WORKER_BUDGETED
+bool PeriphExecWorkerPool::tryGrow(bool concurrencyDemand, bool baselineReady) {
+    if (!_started || _shuttingDown || !concurrencyDemand) return false;
+    if (!FastBee::WorkerPoolBudget::canAdd(
+            FastBee::MemoryBudget::dram8Free(), FastBee::MemoryBudget::dram8Largest(),
+            WORKER_STACK, baselineReady, _workersCreated, WORKER_COUNT, concurrencyDemand)) return false;
+    const uint32_t now = static_cast<uint32_t>(millis());
+    if (_growthAttempted && static_cast<uint32_t>(now - _lastGrowthAttemptMs) < 10000U) return false;
+    _growthAttempted = true;
+    _lastGrowthAttemptMs = now;
+    // Failed growth leaves the admitted first worker and queued jobs intact.
+    return createWorker(_workersCreated);
+}
+#endif
 
 bool PeriphExecWorkerPool::enqueue(AsyncExecContext* ctx) {
     if (!_started || !_queue || !ctx || _shuttingDown) {
@@ -123,13 +132,13 @@ bool PeriphExecWorkerPool::shutdown(uint32_t timeoutMs) {
 
     // 每个 worker 只需一个哨兵。重复调用 shutdown() 时不要无限追加
     // 哨兵，否则第一次超时留下的 semaphore 计数会掩盖仍在运行的 worker。
-    if (_queue && !_sentinelsSent) {
+    if (_queue && _sentinelsQueued < _workersCreated) {
         // Jobs still waiting in the queue own a task slot and a context-pool
         // entry. Cancel them before inserting sentinels; otherwise a memory
         // pressure pause can permanently exhaust the async pool even though
         // no worker will ever execute those jobs.
         AsyncExecContext* pending = nullptr;
-        while (xQueueReceive(_queue, &pending, 0) == pdTRUE) {
+        while (_sentinelsQueued == 0 && xQueueReceive(_queue, &pending, 0) == pdTRUE) {
             if (pending) {
                 if (pending->manager) {
                     pending->manager->cancelWorkerJob(pending);
@@ -141,18 +150,16 @@ bool PeriphExecWorkerPool::shutdown(uint32_t timeoutMs) {
         }
 
         AsyncExecContext* sentinel = nullptr;
-        bool allSentinelsQueued = true;
-        for (size_t i = 0; i < WORKER_COUNT; ++i) {
+        for (size_t i = _sentinelsQueued; i < _workersCreated; ++i) {
             if (xQueueSend(_queue, &sentinel, pdMS_TO_TICKS(1000)) != pdTRUE) {
                 LOGGER.errorf("[WorkerPool] Failed to queue shutdown sentinel #%u",
                               (unsigned)i);
                 // Do not claim that all sentinels were queued. A later retry
                 // can finish the request after workers free queue capacity.
-                allSentinelsQueued = false;
                 break;
             }
+            ++_sentinelsQueued;
         }
-        _sentinelsSent = allSentinelsQueued;
     }
 
     _started = false;
@@ -164,11 +171,13 @@ bool PeriphExecWorkerPool::shutdown(uint32_t timeoutMs) {
         if (elapsed >= timeoutTicks) break;
         TickType_t remaining = timeoutTicks - elapsed;
         // The semaphore is only a wake-up; _workersExited is the authoritative
-        // count, so stale notifications from an earlier retry cannot make us
+        // consumed count, so tickets from an earlier retry cannot make us
         // free the queue while a worker is still using it.
         if (_exitSemaphore) {
-            xSemaphoreTake(_exitSemaphore, remaining > pdMS_TO_TICKS(100)
-                                          ? pdMS_TO_TICKS(100) : remaining);
+            if (xSemaphoreTake(_exitSemaphore, remaining > pdMS_TO_TICKS(100)
+                                               ? pdMS_TO_TICKS(100) : remaining) == pdTRUE) {
+                ++_workersExited;
+            }
         } else {
             vTaskDelay(remaining > pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : remaining);
         }
@@ -189,7 +198,7 @@ bool PeriphExecWorkerPool::shutdown(uint32_t timeoutMs) {
     _exitSemaphore = nullptr;
     _workersCreated = 0;
     _workersExited = 0;
-    _sentinelsSent = false;
+    _sentinelsQueued = 0;
     _shuttingDown = false;
     for (size_t i = 0; i < WORKER_COUNT; ++i) {
         _workers[i] = nullptr;
@@ -209,7 +218,8 @@ void PeriphExecWorkerPool::workerLoopThunk(void* arg) {
     auto* self = static_cast<PeriphExecWorkerPool*>(arg);
     if (self) {
         self->workerLoop();
-        self->_workersExited++;
+        // This unique ticket is the worker's last access to pool storage.
+        // The shutdown owner alone updates exited count; no volatile RMW race.
         if (self->_exitSemaphore) xSemaphoreGive(self->_exitSemaphore);
     }
     vTaskDelete(nullptr);

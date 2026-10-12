@@ -8,6 +8,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANAGER_H = (ROOT / "include/core/PeriphExecManager.h").read_text(encoding="utf-8")
 MANAGER_CPP = (ROOT / "src/core/PeriphExecManager.cpp").read_text(encoding="utf-8")
+MANAGER_CPP += '\n' + (ROOT / "src/core/PeriphExecConfigStore.cpp").read_text(encoding="utf-8")
 ROUTE_CPP = (
     ROOT / "src/network/handlers/PeriphExecRouteHandler.cpp"
 ).read_text(encoding="utf-8")

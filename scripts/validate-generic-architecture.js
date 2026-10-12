@@ -23,9 +23,6 @@ const ALLOWED_FILES = new Set([
   path.join(ROOT, 'include/core/ChipConfig.h'),
   path.join(ROOT, 'include/core/ResourceProfile.h'),
   path.join(ROOT, 'include/network/WebMemoryGuard.h'),
-  // SPI2_HOST 在 Arduino Core 2.x 下不存在，按芯片映射 FSPI/HSPI 属核心兼容垫片，
-  // 映射关系已集中于此单点，不再扩散
-  path.join(ROOT, 'src/network/EthernetAdapter.cpp'),
 ]);
 
 const CHIP_MACRO_RE = /CONFIG_IDF_TARGET_ESP32[A-Z0-9]*|ARDUINO_ESP32[A-Z0-9]*\b/;

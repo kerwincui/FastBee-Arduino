@@ -68,7 +68,10 @@ function isChildPath(parent, child) {
 class BuildArtifactsValidator {
     constructor(options = {}) {
         this.rootDir = path.resolve(options.rootDir || ROOT_DIR);
-        this.buildDir = path.resolve(options.buildDir || path.join(this.rootDir, '.pio', 'build'));
+        const platformioBuildDir = process.env.PLATFORMIO_BUILD_DIR;
+        this.buildDir = path.resolve(options.buildDir || (platformioBuildDir
+            ? path.resolve(this.rootDir, platformioBuildDir)
+            : path.join(this.rootDir, '.pio', 'build')));
         this.deployDir = path.resolve(options.deployDir || path.join(this.rootDir, 'dist', 'firmware'));
         this.quiet = Boolean(options.quiet);
         this.headShaOverride = Object.prototype.hasOwnProperty.call(options, 'headSha') ? options.headSha : undefined;
@@ -233,7 +236,7 @@ class BuildArtifactsValidator {
                     const buildPath = path.join(buildEnvDir, name);
                     if (!this.requireNonEmptyFile(buildPath, `[${environment}] current build`)) return;
                     if (sha256(buildPath) !== sha256(deployFiles[name])) {
-                        this.errors.push(`[${environment}] ${name} differs between .pio/build and dist/firmware`);
+                        this.errors.push(`[${environment}] ${name} differs between current build ${buildEnvDir} and deployment ${deployEnvDir}`);
                     }
                 });
             }

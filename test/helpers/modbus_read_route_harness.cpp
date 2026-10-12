@@ -1,5 +1,6 @@
 #include "protocols/ModbusReadDiagnostics.h"
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <cassert>
 #include <cstdio>
 #include <map>

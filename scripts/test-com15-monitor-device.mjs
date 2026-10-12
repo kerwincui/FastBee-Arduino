@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isReadOnlyBatch } from './lib/read-only-device-requests.mjs';
+import { safeObservationError, safeObservationEvents, safeObservationCaptureStats } from './lib/safe-observer-error.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, expect: baseExpect } = require('../test/browser/node_modules/@playwright/test');
@@ -16,7 +17,7 @@ const output = path.resolve(process.argv[2]);
 fs.mkdirSync(output, { recursive: false });
 const report = { at: new Date().toISOString(), displayPassed: false, passed: false,
   measurementsAvailable: false, relayStatesAvailable: false,
-  checks: [], httpErrors: [], blocked: [], pageErrors: [], controlsResponses: [] };
+  checks: [], httpErrors: [], blocked: [], pageErrors: [], controlsResponses: [], safeObservationEvents, safeObservationCaptureStats };
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
 const page = await context.newPage();
@@ -33,7 +34,7 @@ await context.route('**/api/**', async route => {
   }
   await route.continue();
 });
-page.on('pageerror', error => report.pageErrors.push(error.message));
+page.on('pageerror', error => report.pageErrors.push(safeObservationError(error, 'pageerror')));
 page.on('response', response => {
   if (response.status() >= 400) report.httpErrors.push({ path: new URL(response.url()).pathname, status: response.status() });
   if (new URL(response.url()).pathname === '/api/periph-exec/controls') {
@@ -130,7 +131,7 @@ try {
   report.passed = report.displayPassed && report.measurementsAvailable && report.relayStatesAvailable &&
     !report.httpErrors.length && !report.blocked.length && !report.pageErrors.length;
 } catch (error) {
-  report.error = error.message.split(password).join('[redacted]');
+  report.error = safeObservationError(error, 'dashboard');
   await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true,
     mask: [page.locator('input[type="password"]')] }).catch(() => {});
 } finally {

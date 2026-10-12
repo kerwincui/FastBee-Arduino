@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include "core/NativeOutputControl.h"
 
 #include "panel_async_definitions.inc"
 
@@ -10,6 +11,7 @@ struct Operation {
     uint32_t operationId;
     AsyncExecStatus status;
     AsyncExecError errorCode;
+    FastBee::OrdinaryControlResult ordinaryControlResult{};
 };
 
 struct Card {
@@ -25,7 +27,8 @@ void updateCard(Card& cardOut, const std::array<Operation, 2>& recentOperations)
 int main() {
     const char* expectedErrors[] = {
         "none", "low_memory", "deadline_exceeded", "action_failed",
-        "incomplete_actions", "cancelled_by_system", "worker_queue_full"
+        "incomplete_actions", "cancelled_by_system", "worker_queue_full",
+        "uart_source_unconfirmed", "rule_revision_unconfirmed"
     };
     for (unsigned value = 0; value <= 255; ++value) {
         Card card;
@@ -36,7 +39,7 @@ int main() {
         }};
         updateCard(card, operations);
         assert(!card.pending);
-        assert(std::strcmp(card.error, value < 7 ? expectedErrors[value] : "unknown") == 0);
+        assert(std::strcmp(card.error, value < std::size(expectedErrors) ? expectedErrors[value] : "unknown") == 0);
     }
 
     const AsyncExecStatus statuses[] = {
@@ -53,6 +56,39 @@ int main() {
         updateCard(card, operations);
         assert(card.pending == (index < 2 || index == 7));
         assert(std::strcmp(card.error, index >= 3 && index <= 6 ? "action_failed" : "") == 0);
+    }
+
+    // The production result accumulator must keep the first native rejection,
+    // and this real snapshot loop must display it rather than ACTION_FAILED.
+    FastBee::OrdinaryControlResult aggregate, rejected, laterSuccess, laterFailure;
+    rejected.evaluated = true;
+    rejected.reason = "CONTROL_CONFLICT";
+    laterSuccess.evaluated = true;
+    laterSuccess.accepted = true;
+    laterSuccess.reason = "CONTROL_ACCEPTED_SDK_ONLY";
+    laterFailure.evaluated = true;
+    laterFailure.reason = "CONTROL_OUTPUT_UNCONFIRMED";
+    FastBee::rememberOrdinaryControlResult(rejected, &aggregate);
+    FastBee::rememberOrdinaryControlResult(laterSuccess, &aggregate);
+    FastBee::rememberOrdinaryControlResult(laterFailure, &aggregate);
+    assert(aggregate.evaluated && !aggregate.accepted);
+    assert(std::strcmp(aggregate.reason, "CONTROL_CONFLICT") == 0);
+    Card conflict;
+    conflict.pending = true;
+    std::array<Operation, 2> rejectedOperations = {{
+        {99, AsyncExecStatus::COMPLETED, AsyncExecError::NONE},
+        {42, AsyncExecStatus::FAILED, AsyncExecError::ACTION_FAILED, aggregate}
+    }};
+    updateCard(conflict, rejectedOperations);
+    assert(!conflict.pending && std::strcmp(conflict.error, "CONTROL_CONFLICT") == 0);
+    // Unobserved or missing native reasons retain the generic failure; they
+    // must never clear the error or convert a failed operation to success.
+    for (bool evaluated : {false, true}) {
+        Card fallback;
+        rejectedOperations[1].ordinaryControlResult.evaluated = evaluated;
+        rejectedOperations[1].ordinaryControlResult.reason = evaluated ? nullptr : "CONTROL_CONFLICT";
+        updateCard(fallback, rejectedOperations);
+        assert(!fallback.pending && std::strcmp(fallback.error, "action_failed") == 0);
     }
 
     Card unmatched;

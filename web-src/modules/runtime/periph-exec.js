@@ -4,12 +4,15 @@
  * 子模块: periph-exec-modbus.js、periph-exec-form.js，以及按需加载的传感器/灯效扩展
  */
 (function() {
+    Object.assign(AppState, window.PeriphExecRunValuePrompt);
     AppState.registerModule('periph-exec', {
 
         // ============ 状态变量 ============
         _pePeripherals: [],
         _peDataSources: [],
         _peSensorSources: [],
+        _peThermostats: null,
+        _peSdRecorder: undefined,
         _peRemoteChannels: [],
         _peWeatherSources: [],
         _peRemoteResourcesAvailable: false,
@@ -30,13 +33,14 @@
         _peDynamicEvents: null,
         _peDynamicEventsFetchedAt: 0,
         _peDynamicEventsPromise: null,
-        _periphExecRunPromptState: null,
+        _periphExecRunPromptState: AppState._periphExecRunPromptState || null,
         _peEditLoadSeq: 0,
 
         _isPeriphExecEditorReady() {
             return typeof this._createPeriphExecTriggerElement === 'function' &&
                 typeof this._createPeriphExecActionElement === 'function' &&
-                typeof this.savePeriphExecRule === 'function';
+                typeof this.savePeriphExecRule === 'function' &&
+                typeof this._uartSendHelp === 'function';
         },
 
         _ensurePeriphExecEditor() {
@@ -106,7 +110,7 @@
         },
 
         _getPeriphExecLazyActionModule(actionType, targetId) {
-            if (actionType === 19) return 'periph-exec-sensor';
+            if (actionType === 19 || actionType === 39 || actionType === 40) return 'periph-exec-sensor';
             if (actionType === 27 || actionType === 11 ||
                 (actionType === 10 && this._isNeoPixelTarget(targetId))) {
                 return 'periph-exec-effects';
@@ -248,6 +252,8 @@
             var safeId = (editId && editId !== 'null' && editId !== 'undefined') ? editId : '';
             document.getElementById('periph-exec-original-id').value = safeId;
             this.clearInlineError('periph-exec-error');
+            this._pePreflightReview = null;
+            document.getElementById('periph-exec-preflight')?.remove();
             if (safeId) {
                 if (titleEl) titleEl.textContent = '编辑外设执行';
             } else {
@@ -260,6 +266,7 @@
             if (actionsContainer) actionsContainer.innerHTML = '';
             if (typeof this._updatePeriphExecAddButtons === 'function') this._updatePeriphExecAddButtons();
             this._clearPeriphExecRiskNotice();
+            if (typeof this._resetPeriphExecTemplateWizard === 'function') this._resetPeriphExecTemplateWizard(!safeId);
             if (safeId) { this.showModal(modal); return; }
             this._pePeripherals = [];
             this._peDataSources = [];
@@ -318,6 +325,9 @@
                     if (protoRes && protoRes.success && protoRes.data) {
                         const protoData = protoRes.data;
                         this._peDataSources = this._extractDataSources(protoData);
+                        this._masterTasks = [];
+                        this._modbusDevices = [];
+                        this._peTemplateModbusConfig = protoData.degraded ? null : (protoData.modbusRtu || null);
                         if (protoData.modbusRtu && protoData.modbusRtu.master) {
                             this._masterTasks = protoData.modbusRtu.master.tasks || [];
                             this._modbusDevices = protoData.modbusRtu.master.devices || [];
@@ -331,6 +341,7 @@
                     this._createPeriphExecActionElement({}, 0);
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
                     this._peEditorDataReady = true;
+                    if (typeof this._refreshPeriphExecTemplateChoices === 'function') this._refreshPeriphExecTemplateChoices(true);
                     if (saveButton) saveButton.disabled = !!this._peSavePending;
                 }).catch(err => {
                     if (!this._isPeriphExecEditLoadActive(loadSeq, pageGeneration) || (err && err._pageAborted)) return;
@@ -436,179 +447,19 @@
                     summary += ' · 已超出推荐上限';
                 }
             }
+            if (Array.isArray(this._peThermostats)) {
+                const uncertain = this._peThermostats.filter(item => item.retiring || item.padConfirmed !== true ||
+                    !Number.isFinite(item.checkAgeMs) || item.checkAgeMs > 2000);
+                if (uncertain.length) summary += ' · 温控输出待确认：' + uncertain.map(item => item.targetId || item.ruleId).join('、');
+            }
             return summary;
         },
 
-        // ============ 执行值输入弹窗 ============
-
-        _ensurePeriphExecRunValueModal() {
-            var modal = document.getElementById('periph-exec-run-value-modal');
-            if (modal) return modal;
-            if (!document.body) return null;
-
-            modal = document.createElement('div');
-            modal.id = 'periph-exec-run-value-modal';
-            modal.className = 'modal is-hidden';
-            modal.innerHTML = '' +
-                '<div class="modal-content u-modal-content-700">' +
-                    '<div class="modal-header">' +
-                        '<h2 class="modal-title" id="periph-exec-run-value-modal-title"></h2>' +
-                        '<button type="button" id="close-periph-exec-run-value-modal" class="modal-close-btn">&times;</button>' +
-                    '</div>' +
-                    '<div class="modal-body">' +
-                        '<div class="fb-form">' +
-                            '<div class="fb-form-group">' +
-                                '<label for="periph-exec-run-value-input" id="periph-exec-run-value-label"></label>' +
-                                '<input type="text" id="periph-exec-run-value-input" class="" maxlength="128" autocomplete="off" spellcheck="false">' +
-                                '<small id="periph-exec-run-value-help" class="pe-help-text"></small>' +
-                            '</div>' +
-                            '<div id="periph-exec-run-value-error" class="message message-error is-hidden"></div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="modal-footer">' +
-                        '<button class="fb-btn" id="cancel-periph-exec-run-value-btn" type="button"></button>' +
-                        '<button class="fb-btn fb-btn-primary" id="confirm-periph-exec-run-value-btn" type="button"></button>' +
-                    '</div>' +
-                '</div>';
-            document.body.appendChild(modal);
-
-            var self = this;
-            var closePrompt = function() {
-                self._resolvePeriphExecRunValuePrompt(null);
-            };
-
-            modal.addEventListener('click', function(event) {
-                if (event.target === modal) closePrompt();
-            });
-
-            var closeBtn = document.getElementById('close-periph-exec-run-value-modal');
-            if (closeBtn) {
-                closeBtn.addEventListener('click', function(event) {
-                    event.preventDefault();
-                    closePrompt();
-                });
-            }
-
-            var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
-            if (cancelBtn) {
-                cancelBtn.addEventListener('click', function() {
-                    closePrompt();
-                });
-            }
-
-            var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
-            if (confirmBtn) {
-                confirmBtn.addEventListener('click', function() {
-                    self._submitPeriphExecRunValuePrompt();
-                });
-            }
-
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (input) {
-                input.addEventListener('keydown', function(event) {
-                    if (event.key === 'Enter') {
-                        event.preventDefault();
-                        self._submitPeriphExecRunValuePrompt();
-                    }
-                });
-            }
-
-            return modal;
-        },
-
-        _setPeriphExecRunValuePromptError(message) {
-            var errorEl = document.getElementById('periph-exec-run-value-error');
-            if (!errorEl) return;
-            errorEl.textContent = message || '';
-            if (message) this.showElement(errorEl, 'block');
-            else this.hideElement(errorEl);
-        },
-
-        _resolvePeriphExecRunValuePrompt(value) {
-            var pending = this._periphExecRunPromptState;
-            this._periphExecRunPromptState = null;
-            this._setPeriphExecRunValuePromptError('');
-
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (input) input.value = '';
-
-            this.hideModal('periph-exec-run-value-modal');
-
-            if (pending && typeof pending.resolve === 'function') {
-                pending.resolve(value);
-            }
-        },
-
-        _submitPeriphExecRunValuePrompt() {
-            var input = document.getElementById('periph-exec-run-value-input');
-            if (!input) {
-                this._resolvePeriphExecRunValuePrompt(null);
-                return;
-            }
-
-            var value = String(input.value || '').trim();
-            if (!value.length) {
-                this._setPeriphExecRunValuePromptError('请输入要设置的值');
-                input.focus();
-                return;
-            }
-
-            this._resolvePeriphExecRunValuePrompt(value);
-        },
-
         promptPeriphExecRunValue(options) {
-            var opts = options || {};
-            var modal = this._ensurePeriphExecRunValueModal();
-            if (!modal) {
-                var fallbackValue = prompt(
-                '请输入要设置的值 (如：PWM 占空比、PID 参数等):',
-                opts.defaultValue != null ? String(opts.defaultValue) : ''
-            );
-                if (fallbackValue === null) return Promise.resolve(null);
-                var normalizedValue = String(fallbackValue || '').trim();
-                if (!normalizedValue.length) {
-                    Notification.warning('请输入要设置的值', '外设执行');
-                    return Promise.resolve(null);
-                }
-                return Promise.resolve(normalizedValue);
-            }
-
-            var titleEl = document.getElementById('periph-exec-run-value-modal-title');
-            var labelEl = document.getElementById('periph-exec-run-value-label');
-            var helpEl = document.getElementById('periph-exec-run-value-help');
-            var input = document.getElementById('periph-exec-run-value-input');
-            var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
-            var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
-
-            if (titleEl) titleEl.textContent = opts.title || '输入执行值';
-            if (labelEl) labelEl.textContent = opts.label || '执行值';
-
-            var helpText = opts.helpText || '请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。';
-            if (opts.ruleName) helpText = opts.ruleName + ' - ' + helpText;
-            if (helpEl) helpEl.textContent = helpText;
-
-            if (cancelBtn) cancelBtn.textContent = '取消';
-            if (confirmBtn) confirmBtn.textContent = opts.confirmText || '执行一次';
-            if (input) {
-                input.value = opts.defaultValue != null ? String(opts.defaultValue) : '';
-                input.placeholder = opts.placeholder || '';
-            }
-
-            this._setPeriphExecRunValuePromptError('');
-
-            if (this._periphExecRunPromptState && typeof this._periphExecRunPromptState.resolve === 'function') {
-                this._periphExecRunPromptState.resolve(null);
-            }
-
-            return new Promise((resolve) => {
-                this._periphExecRunPromptState = { resolve: resolve };
-                this.showModal(modal);
-                setTimeout(function() {
-                    if (input) {
-                        input.focus();
-                        input.select();
-                    }
-                }, 0);
+            return this._promptPeriphExecRunValue(options, {
+                fallbackMessage: '请输入要设置的值 (如：PWM 占空比、PID 参数等):',
+                warningTitle: '外设执行',
+                placeholder: ''
             });
         },
 
@@ -685,10 +536,12 @@
                     if (channel) channel.innerHTML = '';
                     this._syncConfiguredSensorAction(block);
                 }
+                this._syncPca9685ActionFields?.(this._getPeriphExecBlock('periph-exec-actions', index));
             }
             else if (target.classList.contains('pe-action-type')) this.onPeriphExecActionTypeChangeInBlock(target.value, index);
             else if (target.classList.contains('pe-use-received-value')) this.onPeriphExecUseRecvChangeInBlock(target, index);
             else if (target.classList.contains('pe-sensor-category')) this.onSensorCategoryChange(target, index);
+            else if (target.classList.contains('pe-sensor-datafield')) this._syncDhtSensorField(this._getPeriphExecBlock('periph-exec-actions', index));
             else if (target.classList.contains('pe-sensor-channel-field')) this._syncConfiguredSensorAction(this._getPeriphExecBlock('periph-exec-actions', index));
             else if (target.classList.contains('pe-modbus-device-select')) this._onPeriphDeviceSelect(target);
             else if (target.classList.contains('pe-modbus-channel-select')) this._onPeriphChannelSelect(target);
@@ -732,37 +585,23 @@
             return false;
         },
 
-        _refreshActionPeriphSelects() {
-            var isPollMode = this._isPollTriggerActive();
-            var container = document.getElementById('periph-exec-actions');
-            if (!container) return;
-            container.querySelectorAll('.periph-exec-config-item').forEach(block => {
-                var sel = block.querySelector('.pe-target-periph');
-                if (!sel) return;
-                var actionType = parseInt(block.querySelector('.pe-action-type')?.value || '0');
-                // 仅 Modbus 轮询动作(18)限制为 Modbus 采集任务；传感器读取(19)、OLED显示(27)等本地动作显示全部外设
-                var effectivePollOnly = isPollMode && actionType === 18;
-                if (actionType === 19 && typeof this._populateSensorPeriphSelect === 'function') {
-                    this._populateSensorPeriphSelect(block, block.querySelector('.pe-sensor-category')?.value || 'analog', sel.value);
-                } else if ((actionType === 33 || actionType === 34) && typeof this._populateRemoteResourceSelect === 'function') {
-                    this._populateRemoteResourceSelect(sel, actionType, sel.value);
-                } else {
-                    this._populatePeriphSelect(sel, sel.value, effectivePollOnly);
-                }
-            });
-        },
 
         _rebuildActionBlocksForTriggerChange() {
             var container = document.getElementById('periph-exec-actions');
             if (!container) return;
             // 收集当前动作数据（保留所有动作类型的特有配置）
             var existingActions = [];
-            container.querySelectorAll('.periph-exec-config-item').forEach(item => {
+            container.querySelectorAll('.periph-exec-config-item').forEach((item, index) => {
                 var actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
                 var actionValue = '';
                 var useReceivedValue = item.querySelector('.pe-use-received-value')?.checked || false;
                 if (actionType === 15) {
                     actionValue = item.querySelector('.pe-action-value-script')?.value || '';
+                } else if (actionType === 18) {
+                    // Preserve poll index zero and device-control parameters via
+                    // the same serializer used by save; never invent defaults.
+                    const current = this._collectPeriphExecActions()[index];
+                    actionValue = current?.actionType === 18 ? current.actionValue : '';
                 } else if (actionType === 27) {
                     actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
                 } else if (actionType === 19) {
@@ -783,6 +622,23 @@
                         (remoteChannel && remoteChannel.type === 'number'
                             ? (item.querySelector('.pe-action-value')?.value || '')
                             : (item.querySelector('.pe-remote-action-value')?.value || ''));
+                } else if (actionType === 35) {
+                    actionValue = item.querySelector('.pe-rtc-command')?.value || '';
+                    useReceivedValue = false;
+                } else if (actionType === 36 || actionType === 38) {
+                    actionValue = '';
+                    useReceivedValue = false;
+                } else if (actionType === 37) {
+                    actionValue = item.querySelector('.pe-rtc-set-source')?.value || '';
+                    useReceivedValue = false;
+                } else if (actionType === 39) {
+                    actionValue = item.querySelector('.pe-thermostat-sourceRef') && typeof this._collectThermostatConfig === 'function'
+                        ? JSON.stringify(this._collectThermostatConfig(item)) : item._peThermostatData?.actionValue || '';
+                    useReceivedValue = false;
+                } else if (actionType === 40) {
+                    actionValue = item.querySelector('.pe-sd-record-sourceRef') && typeof this._collectSdRecorderConfig === 'function'
+                        ? JSON.stringify(this._collectSdRecorderConfig(item)) : item._peSdRecorderData?.actionValue || '';
+                    useReceivedValue = false;
                 } else {
                     actionValue = item.querySelector('.pe-action-value')?.value || '';
                 }
@@ -862,12 +718,43 @@
             var statsText = String(rule.triggerCount || 0);
             var html = '<tr>';
             html += '<td>' + displayName + '</td>';
-            html += '<td>' + this._renderPeriphExecStatusBadge(rule.enabled) + '</td>';
+            html += '<td>' + this._renderPeriphExecStatusBadge(rule.enabled) + this._renderThermostatRuntime(rule) + this._renderSdRecorderRuntime(rule) + '</td>';
             html += '<td class="u-fs-12">' + flowHtml + '</td>';
             html += '<td class="u-fs-12 u-text-center">' + escapeHtml(statsText) + '</td>';
             html += '<td class="u-cell-nowrap">' + this._renderPeriphExecRuleActions(ruleId, !!rule.enabled, !!rule.hasSetMode, rule.name || '') + '</td>';
             html += '</tr>';
             return html;
+        },
+
+        _renderThermostatRuntime(rule) {
+            const thermostat = (rule.actions || []).some(action => Number(action.actionType) === 39);
+            const state = Array.isArray(this._peThermostats) ? this._peThermostats.find(item => item.ruleId === rule.id) : null;
+            if (!thermostat && !state) return '';
+            if (!Array.isArray(this._peThermostats)) return '<p class="u-help">温控诊断不可用；输出状态未知</p>';
+            if (!state) return '<p class="u-help">无活动温控会话；负载状态待实测</p>';
+            const labels = {WAITING_FRESH_SAMPLE: '等待新鲜温度', OFF_CONFIRMED: '关闭', ON_CONFIRMED: '开启',
+                MINIMUM_OFF_TIME: '等待最小关闭时间', MINIMUM_ON_TIME: '保持最小开启时间',
+                SOURCE_INVALID_SAFE_OFF: '温度无效，已请求关闭', FAULT_LATCHED_REENABLE_REQUIRED: '故障锁定，检查后停用再启用',
+                SOURCE_CHANGED_REENABLE_REQUIRED: '来源变化，检查后停用再启用', OUTPUT_UNCONFIRMED: '曾出现输出未确认，需人工检查',
+                MEMORY_SUSPENDED_SAFE_OFF: '内存保护，已请求关闭', RETIRING_OUTPUT_UNCONFIRMED: '正在停用，关闭尚未确认'};
+            const fresh = Number.isFinite(state.checkAgeMs) && state.checkAgeMs <= 2000;
+            const pad = state.padConfirmed === true && fresh ? (state.outputOn ? '引脚LOW' : '引脚HIGH') : '引脚状态未确认';
+            return '<p class="u-help">' + escapeHtml(labels[state.phase] || state.phase || '状态未知') + ' · ' + pad +
+                '（响应时快照，非负载反馈）</p>';
+        },
+
+        _renderSdRecorderRuntime(rule) {
+            if (!(rule.actions || []).some(action => Number(action.actionType) === 40)) return '';
+            const state = this._peSdRecorder;
+            if (state === undefined) return '<p class="u-help">SD 记录诊断不可用</p>';
+            if (!state || state.ruleId !== rule.id) return '<p class="u-help">无活动 SD 记录会话</p>';
+            const count = value => Number.isInteger(value) && value >= 0 ? String(value) : '未知';
+            const fresh = Number.isFinite(state.checkAgeMs) && state.checkAgeMs >= 0 && state.checkAgeMs <= 2000;
+            const phase = state.phase === 'WAITING_FRESH_SAMPLE' ? '等待新鲜样本' : state.phase === 'RECORDING' ? '记录中' : state.phase || '状态未知';
+            return '<p class="u-help">' + escapeHtml(phase) + (fresh ? '' : ' · 状态已失鲜或年龄未知') +
+                ' · 排队 ' + count(state.pending) + '/8 · 接受 ' + count(state.accepted) + ' · 已写 ' + count(state.written) +
+                ' · 丢弃 ' + count(state.dropped) + (state.lastError ? ' · ' + escapeHtml(String(state.lastError)) : '') +
+                '（响应时快照；写入/flush 非断电持久性证明）</p>';
         }
     });
 
@@ -966,6 +853,9 @@
                     if (protoRes && protoRes.success && protoRes.data) {
                         const protoData = protoRes.data;
                         this._peDataSources = this._extractDataSources(protoData);
+                        this._masterTasks = [];
+                        this._modbusDevices = [];
+                        this._peTemplateModbusConfig = protoData.degraded ? null : (protoData.modbusRtu || null);
                         if (protoData.modbusRtu && protoData.modbusRtu.master) {
                             this._masterTasks = protoData.modbusRtu.master.tasks || [];
                             this._modbusDevices = protoData.modbusRtu.master.devices || [];
@@ -1122,20 +1012,27 @@
         },
 
         runPeriphExecOnce(id, hasSetMode, ruleName) {
+            if (!this._peManualRuns) this._peManualRuns = new Map();
+            if (this._peManualRuns.has(id)) return this._peManualRuns.get(id);
             var self = this;
+            var generation = this._getPeriphExecPageGeneration();
+            var active = () => this.currentPage === 'periph-exec' &&
+                (generation === null || generation === this._getPeriphExecPageGeneration());
             var doRun = function(value) {
+                if (!active()) return;
                 var payload = { id: id };
                 if (value !== undefined && value !== '') payload.value = value;
-                apiPost('/api/periph-exec/run', payload)
+                return apiPost('/api/periph-exec/run', payload)
                     .then(res => {
                         if (res && res.success) {
-                            Notification.success('执行已提交', '外设执行');
                             if (self.currentPage === 'periph-exec') self.loadPeriphExecPage();
+                            return self._observeManualOutput(res, active);
                         } else {
-                            Notification.error(res?.error || '规则执行失败', '外设执行');
+                            if (active()) Notification.error(self._manualOutputMessage(res), '外设执行');
                         }
                     })
                     .catch(err => {
+                        if (!active()) return;
                         console.error('Run periph exec rule failed:', err);
                         var isNetworkError = err && (
                             err.name === 'TypeError' ||
@@ -1146,20 +1043,23 @@
                             ))
                         );
                         if (isNetworkError) {
-                            Notification.error('设备离线或不可达，请检查网络连接', '外设执行');
+                            Notification.error('执行结果未知，请检查设备和执行记录；不会自动重试输出', '外设执行');
                         } else {
-                            Notification.error('规则执行失败', '外设执行');
+                            Notification.error(self._manualOutputMessage(err?.data || err), '外设执行');
                         }
                     });
             };
-            if (hasSetMode) {
-                this.promptPeriphExecRunValue({ ruleName: ruleName || '' }).then(inputValue => {
+            var pending = Promise.resolve().then(() => {
+                if (!hasSetMode) return doRun('');
+                return this.promptPeriphExecRunValue({ ruleName: ruleName || '' }).then(inputValue => {
                     if (inputValue === null) return;
-                    doRun(inputValue);
+                    return doRun(inputValue);
                 });
-            } else {
-                doRun('');
-            }
+            }).finally(() => {
+                if (this._peManualRuns.get(id) === pending) this._peManualRuns.delete(id);
+            });
+            this._peManualRuns.set(id, pending);
+            return pending;
         },
 
         _refreshPeriphExecList() {
@@ -1173,6 +1073,68 @@
             setTimeout(function() {
                 if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; ' + '刷新'; }
             }, 2000);
+        },
+
+        _renderUartTextStatus(status, loading) {
+            const el = document.getElementById('periph-exec-uart-text-status');
+            if (!el) return;
+            const fields = ['dispatchAttempts','oversizedFrames','invalidByteFrames','readFailures',
+                'sourceChanges','staleFrames','serializationFailures','hardwareFifoFaults','hardwareBufferFaults',
+                'hardwareFrameFaults','hardwareParityFaults','hardwareBreakFaults'];
+            if (!status || status.available !== true || status.scope !== 'boot' || status.unit !== 'events' ||
+                status.peerVerified !== false || status.maxFrameBytes !== 160 || status.idleBoundaryMs !== 500 ||
+                status.hardwareErrorScope !== 'first_observed_generic_stream_fault' ||
+                status.hardwareErrorRecovery !== 'explicit_restart' || status.hardwareErrorDeliveryConfirmed !== false ||
+                typeof status.countsAreLowerBounds !== 'boolean' || fields.some(key =>
+                    !Number.isSafeInteger(status[key]) || status[key] < 0 || status[key] > 4294967295) ||
+                (fields.some(key => status[key] === 4294967295) && !status.countsAreLowerBounds)) {
+                el.textContent = loading ? 'UART文本接收诊断加载中…' : 'UART文本接收诊断未确认，不能判断没有丢帧';
+                return;
+            }
+            el.textContent = 'UART文本接收（本次启动累计' + (status.countsAreLowerBounds ? '，计数为下限' : '') +
+                '）：提交规则匹配尝试 ' + status.dispatchAttempts + '；超长帧 ' + status.oversizedFrames +
+                '，无效字节帧 ' + status.invalidByteFrames + '，读取失败 ' + status.readFailures +
+                '，来源变化观察 ' + status.sourceChanges + '，发布时来源未确认 ' + status.staleFrames +
+                '，序列化失败 ' + status.serializationFailures +
+                '；硬件首故障 FIFO ' + status.hardwareFifoFaults + '，缓冲满 ' + status.hardwareBufferFaults +
+                '，帧错误 ' + status.hardwareFrameFaults + '，奇偶错误 ' + status.hardwareParityFaults + '，BREAK ' + status.hardwareBreakFaults +
+                '。硬件故障后接收锁存，核对线路后显式停用再启用以恢复；不会重放旧数据。SDK错误通知可能延迟或缺失。' +
+                '160字节/换行或空读500ms边界；软件项仅统计规则文本接收，硬件项覆盖通用UART首故障，各项不可相加为丢帧总数，零计数不证明通信正常。提交不代表规则已执行或对端验证。';
+        },
+
+        _renderPendingReportStatus(status, loading) {
+            const el = document.getElementById('periph-exec-report-status');
+            if (!el) return;
+            const fields = ['depth','capacity','maxPayloadBytes','retryIntervalMs','admitted','evicted',
+                'rejectedInvalid','rejectedMemory','rejectedFull','rejectedBusy','contention','retryAccepted','retryRejected',
+                'oldestAttempts','retryDelayMs','rejectedUnknownInstance','discardedInstanceChanged'];
+            const retryState = status && (!status.depth ? 'empty' : status.inFlight ? 'in_flight' : status.retryDelayMs ? 'cooldown' : 'ready');
+            if (!status || status.available !== true || status.deliveryVerified !== false ||
+                status.bindingScope !== 'mqtt_instance' ||
+                typeof status.inFlight !== 'boolean' || fields.some(key => !Number.isSafeInteger(status[key]) || status[key] < 0) ||
+                status.depth > status.capacity || (status.inFlight && status.depth === 0) ||
+                status.retryState !== retryState || !['none','accepted','rejected','instance_changed'].includes(status.lastRetryResult) ||
+                status.retryDelayMs > 5000 || status.oldestAttempts > 4294967295 ||
+                ((!status.depth || status.inFlight) && status.retryDelayMs !== 0) ||
+                (!status.depth && status.oldestAttempts !== 0) ||
+                (status.depth > 0 && (!Number.isSafeInteger(status.oldestAgeMs) || status.oldestAgeMs < 0 || status.oldestAgeMs > 4294967295)) ||
+                status.capacity !== 5 || status.maxPayloadBytes !== 512 || status.retryIntervalMs !== 5000) {
+                el.textContent = loading ? '离线上报状态加载中…' : '离线上报状态未确认（旧固件、忙碌或请求失败），不能判断缓存为空';
+                return;
+            }
+            el.textContent = '离线上报缓存 ' + status.depth + '/' + status.capacity +
+                (status.depth ? '，最旧缓存约 ' + Math.floor(status.oldestAgeMs / 1000) + ' 秒（设备计时）' : '') +
+                (status.depth ? '，队首已尝试 ' + status.oldestAttempts + ' 次' : '') +
+                (status.inFlight ? '，正在尝试入队' : status.retryDelayMs ?
+                    '，冷却至少 ' + Math.ceil(status.retryDelayMs / 1000) + ' 秒后可重试' :
+                    status.depth ? '，待连接和调度就绪后重试' : '，无待重试报告') +
+                '；最近重试：' + ({none:'尚未完成',accepted:'本地接受',rejected:'拒绝，已保留',instance_changed:'实例已更换，报告未发送并丢弃'}[status.lastRetryResult]) +
+                '；启动以来：重试本地接受 ' + status.retryAccepted + '，拒绝并保留 ' + status.retryRejected +
+                '，满额淘汰旧报告 ' + status.evicted + '；拒绝缓存：格式/长度 ' + status.rejectedInvalid +
+                '，内存 ' + status.rejectedMemory + '，在途满额 ' + status.rejectedFull + '，锁忙 ' + status.rejectedBusy +
+                '，归属未确认 ' + status.rejectedUnknownInstance + '；实例更换丢弃 ' + status.discardedInstanceChanged +
+                '；入队/重试锁竞争 ' + status.contention +
+                '。只重试到原MQTT实例；同配置重建也不跨实例重放。仅内存缓存，重启丢失；本地接受不代表平台收到。';
         },
 
         loadPeriphExecPage() {
@@ -1189,6 +1151,10 @@
                 this._peListFilter = filterVal;
             }
             const requestSequence = this._peListSequence = (this._peListSequence || 0) + 1;
+            this._renderPendingReportStatus(null, true);
+            this._renderUartTextStatus(null, true);
+            this._peThermostats = null;
+            this._peSdRecorder = undefined;
 
             this.renderEmptyTableRow(tbody, 7, '加载中...');
 
@@ -1200,6 +1166,11 @@
             return apiGet(apiUrl)
                 .then(execRes => {
                     if (requestSequence !== this._peListSequence) return;
+                    this._renderPendingReportStatus(execRes && execRes.success ? execRes.pendingReports : null);
+                    this._renderUartTextStatus(execRes && execRes.success === true ? execRes.uartText : null);
+                    this._peThermostats = execRes && execRes.success === true && Array.isArray(execRes.thermostats) ? execRes.thermostats : null;
+                    this._peSdRecorder = execRes?.success === true && Object.prototype.hasOwnProperty.call(execRes, 'sdRecorder') &&
+                        (execRes.sdRecorder === null || (typeof execRes.sdRecorder === 'object' && !Array.isArray(execRes.sdRecorder))) ? execRes.sdRecorder : undefined;
                     // /api/periph-exec exposes the runtime degradation snapshot
                     // in its chunked header. Keep the page-level warning and
                     // request governor in sync with the device guard state.
@@ -1266,7 +1237,7 @@
                         29: '串口发送',
                         30: '电平翻转',
                         31: '启用功能',
-                        32: '禁用功能'
+                        32: '禁用功能', 39: '温控继电器', 40: 'SD 持续数值记录'
                     };
                     let html = '';
                     rules.forEach(r => {
@@ -1278,6 +1249,8 @@
                 })
                 .catch(() => {
                     if (requestSequence !== this._peListSequence) return;
+                    this._renderPendingReportStatus(null);
+                    this._renderUartTextStatus(null);
                     this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                     this._renderPeriphExecPagination(0, 1, 10);
                 });
@@ -1315,14 +1288,6 @@
             // 已删除“最近执行结果”功能
         },
 
-        _formatPeriphExecResultStatus(statusName) {
-            var name = String(statusName || '').toLowerCase();
-            if (name === 'completed') return { text: '成功', className: 'badge-success' };
-            if (name === 'failed') return { text: '失败', className: 'badge-danger' };
-            if (name === 'running') return { text: '运行中', className: 'badge-warning' };
-            if (name === 'pending') return { text: '等待中', className: 'badge-info' };
-            return { text: '未知', className: 'badge-info' };
-        },
 
         _formatPeriphExecUptimeMs(value) {
             var ms = Number(value || 0);
@@ -1372,6 +1337,9 @@
     // Invalidate editor chains even when a legacy caller changes pages without
     // going through the request governor's generation counter.
     if (typeof AppState.onPageHide === 'function') {
+        AppState.onPageHide('periph-exec', function() {
+            this._peListSequence = (this._peListSequence || 0) + 1;
+        });
         AppState.onPageHide('periph-exec-editor', function() {
             this._peEditLoadSeq++;
         });

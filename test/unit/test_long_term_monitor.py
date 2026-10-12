@@ -752,7 +752,11 @@ const errors = collectWorkerErrors([
   {status: 'rejected', reason: new Error('synthetic worker crash')},
   {status: 'fulfilled', value: undefined},
 ], [{label: 'synthetic-device'}, {label: 'healthy-device'}]);
-assert.deepEqual(errors, ['synthetic-device: worker synthetic worker crash']);
+assert.equal(errors.length, 1);
+assert.ok(errors[0].startsWith('synthetic-device: worker '));
+assert.deepEqual(JSON.parse(errors[0].slice('synthetic-device: worker '.length)),
+  {errorType: 'Error', phase: 'worker', safeCode: 'OBSERVER_ERROR'});
+assert.ok(!errors[0].includes('synthetic worker crash'));
 assert.deepEqual(finalizeMonitorRun({stopRequested: false, workerErrors: errors}), {finished: false, exitCode: 2});
 assert.deepEqual(finalizeMonitorRun({stopRequested: false, workerErrors: []}), {finished: true, exitCode: 0});
 console.log('worker failure contract passed');

@@ -40,9 +40,11 @@ const {
     extractZhTranslations,
     filterProdI18nTranslations
 } = require('./build-app-bundle');
-const { minifyJS } = require('./minify-js');
+const { minifyJS, minifyRuntimeJS } = require('./minify-js');
+const { minifyPrivateRuntimeJS, isPrivateRuntimeModule } = require('./web-private-properties');
 const { minify_sync } = require('terser');
 const { withWebPublishLock } = require('./web-publish-lock');
+const { stripReviewedHtmlComments } = require('./web-html-comments');
 
 function minifyCSS(css) {
     return css
@@ -65,6 +67,7 @@ const ALL_DIRECT_RUNTIME_MODULES = [
     'protocol.js',
     'periph-exec.js',
     'periph-exec-form.js',
+    'periph-exec-templates.js',
     'periph-exec-sensor.js',
     'periph-exec-effects.js',
     'periph-exec-modbus.js',
@@ -78,6 +81,7 @@ const ALL_DIRECT_RUNTIME_MODULES = [
     'dashboard.js',
     'dashboard-fullscreen.js',
     'device-config.js',
+    'device-config-transfer.js',
     'device-ota.js',
     'network.js',
     'feature-config.js',
@@ -348,7 +352,7 @@ function transformStaticAssetContent(relPath, content) {
         });
     }
 
-    return transformed;
+    return stripReviewedHtmlComments(normalized, transformed);
 }
 
 function normalizePath(relPath) {
@@ -376,6 +380,7 @@ function compiledModuleSequences(context = BUILD_CONTEXT) {
         sequences['periph-exec-editor'] = ['periph-exec'];
         if (capabilities.modbus) sequences['periph-exec-editor'].push('periph-exec-modbus');
         sequences['periph-exec-editor'].push('periph-exec-form');
+        sequences['periph-exec-editor'].push('periph-exec-templates');
     }
     if (capabilities.screenPanel) {
         sequences['screen-panel'] = ['screen-panel-model', 'screen-panel'];
@@ -478,7 +483,7 @@ function syncDirectRuntimeModules() {
         const panelModule = fileName === 'screen-panel-model.js' || fileName === 'screen-panel.js';
         // Panel modules share a cache so private editor properties keep the same
         // names across the model and view. Cross-module/public entry points stay stable.
-        const content = noMinify ? raw : ([
+        const content = noMinify ? raw : isPrivateRuntimeModule(fileName) ? minifyPrivateRuntimeJS(fileName, raw) : ([
             'periph-exec-form.js', 'peripherals.js', 'peripheral-io.js',
             'screen-panel-model.js', 'screen-panel.js'
         ].includes(fileName)
@@ -492,7 +497,7 @@ function syncDirectRuntimeModules() {
                 } },
                 nameCache: panelNameCache
             } : { compress: { passes: 2 }, mangle: true }).code
-            : minifyJS(raw));
+            : minifyRuntimeJS(raw));
         writeUtf8(publishFile, content);
 
         results.push({
@@ -522,7 +527,7 @@ function syncDirectRuntimeModules() {
 
             const publishFile = path.join(destDir, file);
             const raw = readUtf8(sourceFile);
-            const content = noMinify ? raw : minifyJS(raw);
+            const content = noMinify ? raw : minifyRuntimeJS(raw);
             writeUtf8(publishFile, content);
 
             const relName = subDir + '/' + file;
@@ -776,7 +781,7 @@ const SUBDIR_BUNDLES = [
         outName: 'protocol-modbus-rtu.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-config.js']
+        order: ['modbus-config.js', 'modbus-instruments.js']
     },
     {
         outName: 'protocol-modbus-control.js',
@@ -879,9 +884,9 @@ function buildSubdirBundles() {
         // optional remote-resource editor. Mangle only local bindings so the
         // public AppState/API property names remain stable while the full S3
         // profile stays inside its per-bundle Flash budget.
-        const content = noMinify ? raw : (['protocol.js', 'periph-exec.js'].includes(bundle.outName)
-            ? minify_sync(raw, { compress: false, mangle: true }).code
-            : minifyJS(raw));
+        const content = noMinify ? raw : isPrivateRuntimeModule(bundle.outName) ? minifyPrivateRuntimeJS(bundle.outName, raw) : (['protocol.js', 'periph-exec.js'].includes(bundle.outName)
+            ? minify_sync(raw, { compress: { passes: 2 }, mangle: true }).code
+            : minifyRuntimeJS(raw));
 
         const outPath = path.join(PUBLISH_MODULE_DIR, bundle.outName);
         writeUtf8(outPath, content);
@@ -1078,6 +1083,7 @@ module.exports = {
     compiledModuleSequences,
     syncStaticAssets,
     syncDirectRuntimeModules,
+    buildSubdirBundles,
     syncI18nModules,
     validateSourceCoverage,
     minifyCSS,

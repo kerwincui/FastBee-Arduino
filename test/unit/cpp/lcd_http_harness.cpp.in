@@ -1,0 +1,165 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "core/NativeOutputControl.h"
+#include "core/DisplayOutputTypes.h"
+#include "core/ActionValueContract.h"
+#include <cassert>
+#include <cstring>
+inline void convertToJson(const String& value,JsonVariant destination) { destination.set(value.c_str()); }
+struct AsyncWebParameter {
+    String key,text; bool post=true,file=false;
+    const String& name() const { return key; }
+    const String& value() const { return text; }
+    bool isPost() const { return post; }
+    bool isFile() const { return file; }
+};
+struct AsyncWebServerRequest {
+    std::vector<AsyncWebParameter> fields;
+    void add(const char* key,const char* value,bool post=true) { fields.push_back({key,value,post,false}); }
+    size_t params() const { return fields.size(); }
+    const AsyncWebParameter* getParam(size_t n) const { return n<fields.size()?&fields[n]:nullptr; }
+    const AsyncWebParameter* getParam(const char* key,bool post) const {
+        for(const auto& field:fields) if(field.key==key && field.post==post) return &field;
+        return nullptr;
+    }
+    bool hasParam(const char* key,bool post) const { return getParam(key,post)!=nullptr; }
+};
+struct AuthResult { bool success=true; uint64_t outputActor=42; };
+struct WebHandlerContext {
+    bool authorized=true,developer=true; AuthResult auth;
+    int status=0; String error; std::string body;
+    bool requireAuth(AsyncWebServerRequest*) { if(!authorized) status=401; return authorized; }
+    bool requireDeveloperMode(AsyncWebServerRequest*) { if(!developer) status=403; return developer; }
+    AuthResult authenticateRequest(AsyncWebServerRequest*) { return auth; }
+    void sendError(AsyncWebServerRequest*,int code,const char* reason) { status=code;error=reason; }
+    void sendJsonResponse(AsyncWebServerRequest*,int code,const JsonDocument& doc) { status=code;serializeJson(doc,body); }
+};
+enum class PeripheralType { LCD,SDIO,PCA9685_PWM,DS1302_RTC,LCD1602,RFID_MFRC522,SCREEN_DISPLAY };
+static String getPeripheralTypeName(PeripheralType) { return "display"; }
+struct PeripheralConfig { String id="lcd"; PeripheralType type=PeripheralType::LCD; bool enabled=true; };
+struct PeripheralManager {
+    unsigned begins=0,submits=0,finishes=0;
+    bool targetReady=true,contextReady=true,ack=true,attempted=true;
+    FastBee::OrdinaryControlContext context;
+    FastBee::LcdOutputRequest output;
+    std::map<String,PeripheralConfig> peripherals;
+    static PeripheralManager& getInstance() { static PeripheralManager pm; return pm; }
+    bool getActiveLcdTarget(String& id,uint32_t& epoch) { id="lcd";epoch=7;return targetReady; }
+    bool beginOrdinaryControl(FastBee::OrdinaryControl::Source source,uint64_t actor,uint32_t hold,
+        bool confirmed,uint64_t generation,const String& reviewed,uint32_t epoch,
+        const FastBee::UartEventOrigin& uart,FastBee::OrdinaryControlContext& out) {
+        ++begins; assert(!confirmed && !generation && reviewed.isEmpty() && uart.unbound());
+        out.request.actor={source,actor};out.request.holdMs=hold;out.request.operation=begins;
+        out.configEpoch=epoch;context=out;return contextReady;
+    }
+    bool submitOrdinaryLcd(const String& id,const FastBee::LcdOutputRequest& value,
+        const FastBee::OrdinaryControlContext* ctx,FastBee::OrdinaryControlResult* result) {
+        assert(ctx && id=="lcd" && ctx->request.actor.identity==42 && ctx->configEpoch==7);
+        ++submits;output=value;result->evaluated=true;result->attempted=attempted;
+        result->accepted=ack;result->reason=ack?"CONTROL_DISPLAY_TRANSPORT_ACKNOWLEDGED":"DISPLAY_TRANSFER_UNCONFIRMED";
+        return ack;
+    }
+    void finishOrdinaryControl(const FastBee::OrdinaryControlContext& ctx,bool cancelled) {
+        assert(!cancelled && ctx.request.operation);++finishes;
+    }
+    bool admit(const PeripheralConfig& config,String& errorMsg,bool checkRunningGraph=true) const {
+        // @singleton_validation@
+        return true;
+    }
+};
+namespace FastBee {
+void writeOrdinaryControlJson(JsonObject out,const OrdinaryControlResult& result) {
+    out["attempted"]=result.attempted;out["accepted"]=result.accepted;
+}
+}
+// @http_helpers@
+class LcdRouteHandler {
+    WebHandlerContext* ctx;
+public:
+    explicit LcdRouteHandler(WebHandlerContext* context):ctx(context) {}
+    void handleDisplayText(AsyncWebServerRequest*);
+    void handleClear(AsyncWebServerRequest*);
+    void handleShowInfo(AsyncWebServerRequest*);
+    void handleSetFont(AsyncWebServerRequest*);
+};
+// @routes@
+static bool importAllowed(const std::vector<PeripheralConfig>& candidates,String& error) {
+    for(const auto& config:candidates) for(const auto& other:candidates) {
+        if(&config==&other) continue;
+        // @singleton_import@
+    }
+    return true;
+}
+static void reset(PeripheralManager& pm,WebHandlerContext& web) { pm=PeripheralManager{};web=WebHandlerContext{}; }
+int main(int argc,char** argv) {
+    assert(argc==2); const String mode=argv[1];
+    auto& pm=PeripheralManager::getInstance(); WebHandlerContext web; LcdRouteHandler route(&web);
+    auto text=[] { AsyncWebServerRequest r;r.add("text","hello");return r; };
+    auto request=text();
+    if(mode=="auth") {
+        for(unsigned i=0;i<4;++i) {
+            reset(pm,web);
+            if(i==0) web.authorized=false;
+            if(i==1) web.developer=false;
+            if(i==2) web.auth.success=false;
+            if(i==3) web.auth.outputActor=0;
+            route.handleDisplayText(&request);
+            assert(!pm.begins && !pm.submits && web.status==(i==1?403:401));
+        }
+    } else if(mode=="fields") {
+        for(const char* key:{"source","actor","operation","id","confirmOverride","holdMs","text"}) {
+            reset(pm,web); auto malformed=text();malformed.add(key,"42");
+            route.handleDisplayText(&malformed);assert(web.status==400 && !pm.begins);
+        }
+        reset(pm,web);auto query=text();query.fields[0].post=false;
+        route.handleDisplayText(&query);assert(web.status==400 && !pm.begins);
+        reset(pm,web);auto file=text();file.fields[0].file=true;
+        route.handleDisplayText(&file);assert(web.status==400 && !pm.begins);
+    } else if(mode=="parameters") {
+        for(const char* number:{"-1","256","1.5","1x"," 1","+1","\t1","1 ","4294967296"}) {
+            reset(pm,web);auto bad=text();bad.add("x",number);
+            route.handleDisplayText(&bad);assert(web.status==400 && !pm.begins);
+        }
+        for(const char* number:{"0","4","-1","256"}) {
+            reset(pm,web);auto bad=text();bad.add("align",number);
+            route.handleDisplayText(&bad);assert(web.status==400 && !pm.begins);
+        }
+        reset(pm,web);auto bad=text();bad.fields[0].text=String(std::string(1025,'x'));
+        route.handleDisplayText(&bad);assert(web.status==400 && !pm.begins);
+        reset(pm,web);bad=text();bad.fields[0].text=String("x\0y",3);
+        route.handleDisplayText(&bad);assert(web.status==400 && !pm.begins);
+    } else if(mode=="context") {
+        pm.targetReady=false;route.handleDisplayText(&request);
+        assert(web.status==409 && !pm.begins && !pm.submits);
+        reset(pm,web);pm.contextReady=false;route.handleDisplayText(&request);
+        assert(web.status==409 && pm.begins==1 && !pm.submits && !pm.finishes);
+    } else if(mode=="failure") {
+        for(bool attempted:{false,true}) {
+            reset(pm,web);pm.ack=false;pm.attempted=attempted;
+            route.handleDisplayText(&request);
+            assert(web.status==(attempted?503:409) && pm.submits==1 && pm.finishes==1);
+            JsonDocument doc;assert(!deserializeJson(doc,web.body));
+            assert(!doc["success"].as<bool>() && !doc["data"]["control"]["accepted"].as<bool>());
+        }
+    } else if(mode=="singleton") {
+        PeripheralConfig first,second;second.id="second";second.enabled=false;String error;
+        pm.peripherals[first.id]=first;
+        assert(!pm.admit(second,error) && error.startsWith("SINGLETON_RESOURCE_BUSY"));
+        assert(pm.admit(first,error));assert(pm.admit(second,error,false));
+        assert(!importAllowed({first,second},error) && error=="CONFIG_IMPORT_SINGLETON_CONFLICT");
+        assert(importAllowed({first},error));
+    } else {
+        assert(mode=="commands");
+        using Command=FastBee::LcdOutputCommand;
+        route.handleDisplayText(&request);
+        assert(pm.output.command==Command::TextAt && pm.output.text=="hello" && web.status==200);
+        assert(pm.context.request.actor.source==FastBee::OrdinaryControl::Source::Http &&
+            pm.context.request.actor.identity==42 && pm.context.request.holdMs==30000);
+        reset(pm,web);request=text();request.add("line","2");
+        route.handleDisplayText(&request);assert(pm.output.command==Command::TextLine && pm.output.value==2);
+        reset(pm,web);request={};route.handleClear(&request);assert(pm.output.command==Command::Clear && pm.submits==1);
+        reset(pm,web);route.handleShowInfo(&request);assert(pm.output.command==Command::SystemInfo && pm.submits==1);
+        reset(pm,web);request.add("font","2");route.handleSetFont(&request);
+        assert(pm.output.command==Command::Font && pm.output.value==2 && pm.finishes==1);
+    }
+}

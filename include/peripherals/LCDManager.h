@@ -15,6 +15,8 @@
 #include <ArduinoJson.h>
 #include <freertos/semphr.h>
 #include "core/PeripheralConfig.h"
+#include "core/DisplayOutputTypes.h"
+#include "core/FeatureInstanceRegistry.h"
 #include <vector>
 
 /**
@@ -79,6 +81,7 @@ public:
      * @brief 获取单例实例
      */
     static LCDManager& getInstance();
+    FastBee::FeatureInstanceSnapshot observeFeatureInstance() const;
     
     // 禁止拷贝
     LCDManager(const LCDManager&) = delete;
@@ -97,13 +100,19 @@ public:
     /**
      * @brief 反初始化显示屏
      */
-    void deinitialize();
+    bool deinitialize(const String& expectedId = "");
     
     /**
      * @brief 检查是否已初始化
      */
     bool isInitialized() const { return _initialized; }
     
+private:
+    friend class PeripheralManager;
+    FastBee::DisplayWriteResult write(const PeripheralConfig& config, const FastBee::LcdOutputRequest& output);
+    bool matchesConfig(const PeripheralConfig& config) const;
+    bool quiescent(const PeripheralConfig& config) const;
+
     // ========== 显示操作 ==========
     
     /**
@@ -176,6 +185,7 @@ public:
      * @param unit 单位
      * @param decimals 小数位数
      */
+public:
     void updateSensorEntry(const String& id, const String& label, float value, 
                            const String& unit, uint8_t decimals = 1, uint32_t configVersion = 0);
     
@@ -193,7 +203,9 @@ public:
      * @param page 页码（0开始），-1 表示自动轮播
      * @return bool 成功返回true
      */
+private:
     bool showSensorPage(int8_t page = -1);
+public:
     
     /**
      * @brief 获取已注册的传感器条目数
@@ -212,6 +224,7 @@ public:
      * 
      * @param intervalMs 页面轮播间隔（毫秒），默认5秒
      */
+private:
     void autoRefreshSensorDisplay(unsigned long intervalMs = 5000);
     
     /**
@@ -289,8 +302,9 @@ public:
      * 开机初期（启动后 30 秒内）定期重申显示参数并重发缓冲区，
      * 抵御上电/WiFi 启动瞬间电压波动导致面板配置丢失而黑屏的情况。
      */
-    void performMaintenance();
+    void performMaintenance(const PeripheralConfig& config);
     
+public:
     // ========== 状态查询 ==========
     
     /**
@@ -332,6 +346,10 @@ private:
     uint8_t _contrast = 255;         // 对比度/亮度（来自配置）
     
     // 状态标志
+    String _activeId;
+    uint8_t _configuredWidth = 0, _configuredHeight = 0, _configuredContrast = 0;
+    bool _forceRefresh = false;
+    bool _foregroundFailed = false;
     bool _initialized = false;
     bool _contentChanged = false;
     unsigned long _lastUpdate = 0;

@@ -1,0 +1,306 @@
+{
+  "storageVersion": 1,
+  "touchUiMigration": 2,
+  "revision": 47,
+  "config": {
+    "schemaVersion": 1,
+    "displayRef": "panel_display",
+    "settings": {
+      "brightnessPercent": 52,
+      "idleSleepSeconds": 0,
+      "touchBeepEnabled": true,
+      "controlConfirmIdleSeconds": 60,
+      "homePageId": "environment",
+      "themeId": "dark",
+      "background": {
+        "presetId": "solid"
+      },
+      "allowSystemRestart": true,
+      "bottomNavPageIds": [
+        "environment",
+        "trends",
+        "motor",
+        "system"
+      ]
+    },
+    "pages": [
+      {
+        "id": "environment",
+        "title": "首页",
+        "layoutId": "mixed-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "clock",
+            "kind": "clock",
+            "visualType": "clock",
+            "title": "系统时间",
+            "precision": 1,
+            "rect": {
+              "x": 10,
+              "y": 10,
+              "w": 460,
+              "h": 122
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "temperature",
+            "kind": "data",
+            "visualType": "value",
+            "title": "温度",
+            "unit": "°C",
+            "precision": 1,
+            "sourceRef": "sht30_temperature",
+            "rect": {
+              "x": 248,
+              "y": 312,
+              "w": 225,
+              "h": 150
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "humidity",
+            "kind": "data",
+            "visualType": "value",
+            "title": "湿度",
+            "unit": "%RH",
+            "precision": 1,
+            "sourceRef": "sht30_humidity",
+            "rect": {
+              "x": 248,
+              "y": 144,
+              "w": 225,
+              "h": 150
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "local_weather",
+            "kind": "weather",
+            "visualType": "weather",
+            "title": "天气",
+            "precision": 1,
+            "sourceRef": "weather.home_weather",
+            "rect": {
+              "x": 8,
+              "y": 144,
+              "w": 225,
+              "h": 150
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "card-mun1kgn2vd83b",
+            "kind": "control",
+            "visualType": "action",
+            "title": "获取空气温湿度",
+            "precision": 1,
+            "controlRef": "rule.collect_sht30",
+            "bindingFingerprint": "5275bb90",
+            "rect": {
+              "x": 8,
+              "y": 312,
+              "w": 225,
+              "h": 150
+            },
+            "requireConfirmation": true,
+            "historyMode": "none"
+          }
+        ]
+      },
+      {
+        "id": "trends",
+        "title": "最近十点",
+        "layoutId": "detail",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "temperature_trend",
+            "kind": "chart",
+            "visualType": "line",
+            "title": "温度趋势",
+            "unit": "°C",
+            "precision": 1,
+            "sourceRef": "sht30_temperature",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 216
+            },
+            "requireConfirmation": false,
+            "historyMode": "recent10"
+          },
+          {
+            "id": "humidity_trend",
+            "kind": "chart",
+            "visualType": "line",
+            "title": "湿度趋势",
+            "unit": "%RH",
+            "precision": 1,
+            "sourceRef": "sht30_humidity",
+            "rect": {
+              "x": 16,
+              "y": 248,
+              "w": 448,
+              "h": 216
+            },
+            "requireConfirmation": false,
+            "historyMode": "recent10"
+          }
+        ]
+      },
+      {
+        "id": "motor",
+        "title": "电机控制",
+        "layoutId": "mixed-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "motorSpeed": 10,
+            "motorPulse": 100,
+            "motorSpeedStep": 1,
+            "motorPulseStep": 100,
+            "id": "motor_control",
+            "kind": "control",
+            "visualType": "motor",
+            "title": "电机控制",
+            "precision": 1,
+            "controlRef": "motor.8.0a1795a9",
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 456,
+              "h": 450
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          }
+        ]
+      },
+      {
+        "id": "system",
+        "title": "系统操作",
+        "layoutId": "tile-grid",
+        "layoutMode": "canvas",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": [
+          {
+            "id": "brightness_25",
+            "kind": "system",
+            "visualType": "slider",
+            "title": "亮度",
+            "precision": 1,
+            "systemActionId": "brightness",
+            "actionValue": 70,
+            "rect": {
+              "x": 16,
+              "y": 16,
+              "w": 448,
+              "h": 100
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "sleep_time",
+            "kind": "system",
+            "visualType": "select",
+            "title": "自动息屏",
+            "precision": 1,
+            "systemActionId": "sleep-time",
+            "rect": {
+              "x": 16,
+              "y": 128,
+              "w": 450,
+              "h": 104
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "card-mulhhdb27c7m7",
+            "kind": "system",
+            "visualType": "switch",
+            "title": "触摸音",
+            "precision": 1,
+            "systemActionId": "touch-beep",
+            "rect": {
+              "x": 16,
+              "y": 248,
+              "w": 210,
+              "h": 90
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          },
+          {
+            "id": "card-mulhhkai562bg",
+            "kind": "system",
+            "visualType": "action",
+            "title": "提示音",
+            "precision": 1,
+            "systemActionId": "buzzer",
+            "rect": {
+              "x": 256,
+              "y": 248,
+              "w": 210,
+              "h": 90
+            },
+            "requireConfirmation": true,
+            "historyMode": "none"
+          },
+          {
+            "id": "card-mulhltc523i4n",
+            "kind": "system",
+            "visualType": "action",
+            "title": "重启设备",
+            "precision": 1,
+            "systemActionId": "restart",
+            "rect": {
+              "x": 256,
+              "y": 360,
+              "w": 210,
+              "h": 100
+            },
+            "requireConfirmation": true,
+            "historyMode": "none"
+          },
+          {
+            "id": "card-mun1i6vmzy6fk",
+            "kind": "system",
+            "visualType": "action",
+            "title": "立即息屏",
+            "precision": 1,
+            "systemActionId": "sleep",
+            "rect": {
+              "x": 16,
+              "y": 360,
+              "w": 210,
+              "h": 100
+            },
+            "requireConfirmation": false,
+            "historyMode": "none"
+          }
+        ]
+      }
+    ]
+  }
+}

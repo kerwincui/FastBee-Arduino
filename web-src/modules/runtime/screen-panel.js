@@ -116,10 +116,14 @@
         _spPersistDraftSoon() {
             var model = this._spEnsureModel();
             if (model.draftTimer) clearTimeout(model.draftTimer);
+            model.draftTimer = null;
+            model.flushDraft = null;
             if (!model.deviceMac) return;
             var deviceMac = model.deviceMac, storageKey = STORAGE_KEY + '.' + deviceMac;
-            model.draftTimer = setTimeout(function() {
+            model.flushDraft = function() {
+                if (model.draftTimer) clearTimeout(model.draftTimer);
                 model.draftTimer = null;
+                model.flushDraft = null;
                 if (model.deviceMac !== deviceMac) return;
                 try {
                     if (!model.dirty && !model.historyDirty) {
@@ -138,13 +142,20 @@
                         updatedAt: Date.now()
                     }));
                 } catch (_) { /* A full/disabled storage area must not block device saving. */ }
-            }, 160);
+            };
+            model.draftTimer = setTimeout(model.flushDraft, 160);
+        },
+
+        _spFlushDraft() {
+            var model = this._spModel;
+            if (model && model.flushDraft) model.flushDraft();
         },
 
         _spClearDraft() {
             var model = this._spEnsureModel();
             if (model.draftTimer) clearTimeout(model.draftTimer);
             model.draftTimer = null;
+            model.flushDraft = null;
             if (model.deviceMac) try { localStorage.removeItem(STORAGE_KEY + '.' + model.deviceMac); } catch (_) { /* ignore */ }
         },
 
@@ -571,7 +582,7 @@
             toggle('sp-numeric-fields', ['data', 'gauge', 'bar', 'line'].indexOf(card.kind) >= 0 || numericControl);
             toggle('sp-card-step-field', numericControl); toggle('sp-card-initial-field', numericControl);
             ['sp-card-min', 'sp-card-max'].forEach(function(id) { screenElement(id).closest('label').classList.toggle('fb-hidden', !numericControl && ['gauge', 'bar'].indexOf(card.kind) < 0); });
-            toggle('sp-confirm-field', ['control'].concat(SYSTEM_ACTION_KINDS).indexOf(card.kind) >= 0);
+            toggle('sp-confirm-field', ['control', 'motor'].concat(SYSTEM_ACTION_KINDS).indexOf(card.kind) >= 0);
             [['speed','motorSpeed'], ['pulse','motorPulse'], ['speed-step','motorSpeedStep'], ['pulse-step','motorPulseStep']].forEach(function(pair) {
                 var field = screenElement('sp-motor-' + pair[0]); if (field) field.value = card[pair[1]] === undefined ? CARD_DEFAULTS.motor[pair[1]] : card[pair[1]];
             });
@@ -1104,7 +1115,7 @@
                 card.initialValue = finiteNumber(get('sp-card-initial')?.value, card.min);
                 card.size = get('sp-card-size')?.value || card.size || CARD_DEFAULTS[card.kind].size;
                 if (card.kind === 'control' && card.display === 'number' && card.size === 'small') card.size = 'large';
-                card.confirm = card.kind === 'motor' || get('sp-card-confirm')?.checked === true;
+                card.confirm = get('sp-card-confirm')?.checked === true;
                 var geometry = input && ['sp-card-x', 'sp-card-y', 'sp-card-w', 'sp-card-h'].indexOf(input.id) >= 0;
                 if (geometry || card.size !== oldSize) {
                     var rect = geometry ? clone(card.rect) : this._spPresetRect(card, page);
@@ -1410,6 +1421,7 @@
             var model = this._spEnsureModel();
             var envelope = {
                 storageVersion: 1,
+                touchUiMigration: 2,
                 revision: model.revision,
                 config: sanitizeConfig(model.config, model.choices)
             };
@@ -1581,7 +1593,7 @@
             } catch (error) {
                 if (error && error.status === 409) {
                     var currentRevision = error.data && (error.data.currentRevision || error.data.data && error.data.data.currentRevision);
-                    this._spSetMessage('设备配置已更新' + (currentRevision !== undefined ? ('（版本 ' + currentRevision + '）') : '') + '，可能来自触屏操作或其他窗口。存在冲突或版本再次变化，草稿已保留；请先导出草稿，再刷新核对或撤销草稿以读取设备配置。', 'error');
+                    this._spSetMessage('设备配置已更新' + (currentRevision !== undefined ? ('（版本 ' + currentRevision + '）') : '') + '，存在冲突，草稿已保留。请先导出草稿，再刷新核对或撤销草稿读取设备配置。', 'error');
                 } else if (!(error && error._pageAborted)) {
                     this._spSetMessage(error && error.data && (error.data.error || error.data.message) || error.message || '保存失败，请稍后重试', 'error');
                 }
@@ -1625,6 +1637,7 @@
                 if (!sameDevice) {
                     if (model.draftTimer) clearTimeout(model.draftTimer);
                     model.draftTimer = null;
+                    model.flushDraft = null;
                     model.historyDirty = model.weatherDirty = false;
                     model.recoverableDraft = null;
                 }
@@ -1706,12 +1719,14 @@
     if (typeof AppState.registerModule === 'function') AppState.registerModule('screen-panel', methods);
     else Object.assign(AppState, methods);
 
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('pagehide', function() { AppState._spFlushDraft(); });
+    }
     if (typeof AppState.onPageHide === 'function') {
         AppState.onPageHide('screen-panel', function() {
             if (this.currentPage !== 'screen-panel') return;
             this._spStopStatePolling();
-            var model = this._spEnsureModel();
-            if (model.dirty) this._spPersistDraftSoon();
+            this._spFlushDraft();
         });
     }
     if (typeof AppState.onPageShow === 'function') {

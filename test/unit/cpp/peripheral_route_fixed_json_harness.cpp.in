@@ -1,0 +1,666 @@
+// Actual peripheral configuration/status helpers and response sections.
+// No GPIO, networking, storage, target validation or device access.
+#include <Arduino.h>
+#undef malloc
+#undef free
+#include <ArduinoJson.h>
+#include <ArduinoJson/Variant/JsonVariantVisitor.hpp>
+#include "core/PeripheralConfig.h"
+#include "core/RtcBootSeedConfig.h"
+#include "core/PeripheralResourcePlanner.h"
+#include "core/SensorDriverMetadata.h"
+#include "core/interfaces/ISensorDriver.h"
+#include "network/FixedJsonField.h"
+#include "network/JsonDocumentResponse.h"
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+static std::string activeCase;
+#define CHECK(expression) do { if (!(expression)) { \
+    std::cerr << activeCase << ':' << __LINE__ << ": " << #expression << '\n'; \
+    std::exit(86); } } while (0)
+
+struct TraceAllocator : ArduinoJson::Allocator {
+    static constexpr size_t never = std::numeric_limits<size_t>::max();
+    std::map<void*, size_t> blocks;
+    std::vector<std::string> events;
+    size_t growthCalls = 0, failures = 0, failAt = never;
+    bool transient = false;
+    bool reject(const char* kind, size_t bytes) {
+        const size_t call = growthCalls++;
+        const bool rejected = transient ? call == failAt : call >= failAt;
+        events.push_back(std::string(kind) + std::to_string(bytes) + (rejected ? ":fail" : ":ok"));
+        failures += rejected ? 1 : 0;
+        return rejected;
+    }
+    void* allocate(size_t bytes) override {
+        if (reject("allocate:", bytes)) return nullptr;
+        void* result = std::malloc(bytes); CHECK(result != nullptr);
+        blocks[result] = bytes; return result;
+    }
+    void deallocate(void* pointer) override {
+        if (!pointer) return;
+        auto found = blocks.find(pointer); CHECK(found != blocks.end());
+        events.push_back("free:" + std::to_string(found->second));
+        blocks.erase(found); std::free(pointer);
+    }
+    void* reallocate(void* pointer, size_t bytes) override {
+        auto found = blocks.find(pointer);
+        if (pointer) CHECK(found != blocks.end());
+        // AJ shrinkToFit retains a valid allocation. Do not inject a shrinking
+        // realloc failure; inject only allocate/growing-reallocate points.
+        if (pointer && bytes <= found->second) {
+            events.push_back("shrink:" + std::to_string(bytes)); return pointer;
+        }
+        if (reject("reallocate:", bytes)) return nullptr;
+        if (pointer) blocks.erase(found);
+        void* result = std::realloc(pointer, bytes); CHECK(result != nullptr);
+        blocks[result] = bytes; return result;
+    }
+};
+
+struct Shape : ArduinoJson::detail::JsonVariantVisitor<std::string> {
+    std::string visit(JsonObjectConst object) {
+        std::string result = "object{";
+        for (JsonPairConst field : object) {
+            result += std::string(field.key().c_str(), field.key().size());
+            result += field.key().isStatic() ? ":linked-key=" : ":copied-key=";
+            result += ArduinoJson::detail::accept(field.value(), *this) + ";";
+        }
+        return result + "}";
+    }
+    std::string visit(JsonArrayConst array) {
+        std::string result = "array[";
+        for (JsonVariantConst value : array) result += ArduinoJson::detail::accept(value, *this) + ";";
+        return result + "]";
+    }
+    std::string visit(JsonString value) { return value.isStatic() ? "linked-string" : "owned-string"; }
+    template<class T> std::string visit(const T&) {
+        if constexpr (std::is_same<T, bool>::value) return "bool";
+        if constexpr (std::is_same<T, std::nullptr_t>::value) return "null";
+        if constexpr (std::is_floating_point<T>::value) return "float" + std::to_string(sizeof(T));
+        if constexpr (std::is_integral<T>::value) return std::is_signed<T>::value ? "signed" : "unsigned";
+        CHECK(false); return "unsupported";
+    }
+};
+
+struct Snapshot {
+    std::string bytes, shape;
+    bool overflowed = false;
+    bool operator==(const Snapshot& other) const {
+        return bytes == other.bytes && shape == other.shape && overflowed == other.overflowed;
+    }
+};
+static Snapshot capture(const JsonDocument& document) {
+    Snapshot result;
+    serializeJson(document, result.bytes);
+    Shape shape; result.shape = ArduinoJson::detail::accept(document.as<JsonVariantConst>(), shape);
+    result.overflowed = document.overflowed();
+    return result;
+}
+static TraceAllocator* activeAllocator = nullptr;
+static Snapshot lastDocument;
+static unsigned documentsCreated = 0;
+struct TrackedDocument : JsonDocument {
+    TrackedDocument() : JsonDocument(activeAllocator) { CHECK(activeAllocator); ++documentsCreated; }
+    ~TrackedDocument() { lastDocument = capture(*this); }
+};
+
+static std::vector<std::string> reads;
+static unsigned scenario = 0;
+static bool returnValue = false;
+static std::vector<Snapshot> observations;
+static void observe(const JsonDocument& doc) { observations.push_back(capture(doc)); }
+struct FakeRequest { int status = 0; unsigned sends = 0; std::string body; };
+static FakeRequest request;
+struct FakeContext {
+    void sendError(FakeRequest* req, int code, const char* message) {
+        reads.push_back("sendError"); req->status = code; ++req->sends; req->body = message;
+    }
+};
+static FakeContext context;
+static FakeContext* ctx = &context;
+static bool deferJsonSend = false;
+static FastBee::JsonDocumentResponse* pendingJsonResponse = nullptr;
+static std::vector<std::pair<std::string, std::string>> deferredExpectedText;
+namespace HandlerUtils {
+void sendJsonStream(FakeRequest* req, JsonDocument& doc) {
+    reads.push_back("send"); observe(doc); req->status = 200; ++req->sends;
+    if (deferJsonSend) {
+        CHECK(pendingJsonResponse == nullptr);
+        for (const auto& expected : deferredExpectedText) {
+            const JsonString actual = doc["data"]["params"][expected.first.c_str()].as<JsonString>();
+            CHECK(!actual.isStatic());
+            CHECK(actual.size() == expected.second.size());
+            CHECK(std::strcmp(actual.c_str(), expected.second.c_str()) == 0);
+        }
+        pendingJsonResponse = new FastBee::JsonDocumentResponse(std::move(doc));
+    } else {
+        serializeJson(doc, req->body);
+    }
+}
+}
+class PeripheralManager {
+public:
+    std::map<std::string, PeripheralConfig> entries;
+    PeripheralRuntimeState state;
+    EncoderReading encoder;
+    bool runtimeAvailable = true, encoderAvailable = true, pcaAvailable = true;
+    int getMutex() { reads.push_back("mutex"); return 1; }
+    uint64_t getConfigurationReviewVersion() { reads.push_back("version"); return 0x100000003ULL; }
+    bool getPeripheralSnapshot(const String& id, PeripheralConfig& out) {
+        reads.push_back("config:" + std::string(id.c_str()));
+        auto it = entries.find(id.c_str());
+        if (it == entries.end()) return false;
+        out = it->second; return true;
+    }
+    template<class Visitor> void forEachPeripheral(Visitor visit) {
+        for (const auto& item : entries) visit(item.second);
+    }
+    bool getRuntimeStateSnapshot(const String&, PeripheralRuntimeState& out) {
+        reads.push_back("runtime"); if (!runtimeAvailable) return false; out = state; return true;
+    }
+    bool getEncoderReading(const String&, EncoderReading& out) {
+        reads.push_back("encoder"); if (!encoderAvailable) return false; out = encoder; return true;
+    }
+    bool getPca9685Status(const String&, JsonObject output) {
+        reads.push_back("pca-status");
+        // Unchanged delegate seam exercises allocation and RHS-before-LHS
+        // order. The actual PCA serializer is validated by its owning fixture.
+        output["fixtureStatus"] = String("a copied PCA status payload");
+        return pcaAvailable;
+    }
+};
+struct RecursiveMutexGuard {
+    RecursiveMutexGuard(int, unsigned) { reads.push_back("lock"); }
+    ~RecursiveMutexGuard() { reads.push_back("unlock"); }
+    bool isLocked() const { return !(scenario & 32U); }
+};
+#ifndef pdMS_TO_TICKS
+#define pdMS_TO_TICKS(value) (value)
+#endif
+static String mcpGroupReviewToken(uint64_t) { reads.push_back("token"); return String(std::string(48, 't')); }
+namespace FastBee {
+class RuntimeFeatureManager {
+public:
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    bool shouldEnable(const char* feature) { reads.push_back(std::string("feature:") + feature); return (scenario & 1U) != 0; }
+};
+struct MockRtc {
+    bool isRunning() { reads.push_back("rtc-running"); return (scenario & 2U) != 0; }
+};
+class RtcAccess {
+public:
+    explicit RtcAccess(const String&) { reads.push_back("rtc-access"); }
+    MockRtc* driver() { reads.push_back("rtc-driver"); static MockRtc value; return (scenario & 1U) ? &value : nullptr; }
+    const char* error() { reads.push_back("rtc-error"); return "RTC_FIXTURE_UNAVAILABLE"; }
+};
+class SensorDriverCache {
+public:
+    static SensorDriverCache& instance() { static SensorDriverCache value; return value; }
+    bool getSnapshot(const String&, SensorReading& out, bool& stale, String& error) {
+        reads.push_back("sensor-snapshot"); stale = (scenario & 2U) != 0;
+        error = (scenario & 4U) ? "sensor history" : "";
+        out.channelCount = (scenario & 8U) ? 4 : 2; out.timestamp = 0xfffffffeUL;
+        out.channelMetadata = (scenario & 64U) != 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            out.channelTimestamps[i] = 0xfffffffeUL - i;
+            out.channelErrors[i] = static_cast<SensorChannelError>(i);
+        }
+        out.values[0] = -1.25f; out.values[1] = 125.5f; out.values[2] = NAN; out.values[3] = INFINITY;
+        return (scenario & 1U) != 0;
+    }
+};
+class DriverRegistry {
+public:
+    static DriverRegistry& getInstance() { static DriverRegistry value; return value; }
+    const SensorDriverMetadata* getMetadata(const char* name) {
+        reads.push_back("metadata"); return (scenario & 16U) ? nullptr : sensorDriverMetadata(name);
+    }
+};
+}
+struct SDCardStatus {};
+class SDCardManager {
+public:
+    static SDCardManager& getInstance() { static SDCardManager value; return value; }
+    SDCardStatus getStatus() { reads.push_back("sd-status"); return {}; }
+};
+namespace FastBee {
+void writeSdCardStatusJson(JsonObject target, const SDCardStatus&, const String& id) {
+    reads.push_back("sd-write"); target["fixtureSdOwner"] = id;
+}
+}
+class LCD1602Driver {
+public:
+    static LCD1602Driver& getInstance() { static LCD1602Driver value; return value; }
+    bool isInitialized() { reads.push_back("lcd-init"); return (scenario & 1U) != 0; }
+    uint8_t getCols() { reads.push_back("lcd-cols"); return 20; }
+    uint8_t getRows() { reads.push_back("lcd-rows"); return 4; }
+    bool isBacklightOn() { reads.push_back("lcd-light"); return (scenario & 2U) != 0; }
+};
+class RFIDDriver {
+public:
+    struct Status { bool initialized = false, cardPresent = false; String uid, cardType, lastError; };
+    static RFIDDriver& getInstance() { static RFIDDriver value; return value; }
+    bool getStatus(Status& value, String& error) {
+        reads.push_back("rfid-status"); value.initialized = true; value.cardPresent = (scenario & 2U) != 0;
+        value.uid = "DE AD BE EF"; value.cardType = "MIFARE fixture";
+        value.lastError = (scenario & 4U) ? "rfid history" : ""; error = "RFID_FIXTURE_BUSY";
+        return (scenario & 1U) != 0;
+    }
+    String getLastUID() { reads.push_back("rfid-uid"); return "DE AD BE EF"; }
+    String getLastCardType() { reads.push_back("rfid-type"); return "MIFARE fixture"; }
+};
+
+@SUPPORT_METHODS@
+
+// Only local JsonDocument construction gets a deterministic allocator; the
+// serializer statements, conditions, delegates and their order are unchanged.
+#define JsonDocument TrackedDocument
+@PRODUCTION_SERIALIZERS@
+#undef JsonDocument
+
+static unsigned selected = 0;
+#define INVOKE(method, ...) do { \
+    if (selected == 0) Oracle::method(__VA_ARGS__); \
+    else if (selected == 1) Current::method(__VA_ARGS__); \
+    else Draft::method(__VA_ARGS__); } while (0)
+#define INVOKE_RESULT(result, method, ...) do { \
+    if (selected == 0) result = Oracle::method(__VA_ARGS__); \
+    else if (selected == 1) result = Current::method(__VA_ARGS__); \
+    else result = Draft::method(__VA_ARGS__); } while (0)
+
+struct Outcome {
+    std::vector<Snapshot> observed;
+    Snapshot finalDocument;
+    std::vector<std::string> calls, allocations;
+    FakeRequest sent;
+    bool returned;
+    size_t growth;
+    unsigned documents;
+    bool operator==(const Outcome& other) const {
+        const bool matched = observed == other.observed && finalDocument == other.finalDocument &&
+            calls == other.calls && allocations == other.allocations && returned == other.returned &&
+            sent.status == other.sent.status && sent.sends == other.sent.sends && sent.body == other.sent.body &&
+            growth == other.growth && documents == other.documents;
+        if (!matched) {
+            const auto textDifference = [](const std::string& label, const std::string& left,
+                                           const std::string& right) {
+                if (left == right) return;
+                size_t first = 0;
+                while (first < left.size() && first < right.size() && left[first] == right[first]) ++first;
+                const size_t start = first > 48 ? first - 48 : 0;
+                std::cerr << label << " first=" << first << " sizes=" << left.size() << '/' << right.size()
+                          << "\n  oracle=" << left.substr(start, 144)
+                          << "\n  current=" << right.substr(start, 144) << '\n';
+            };
+            const auto traceDifference = [&](const char* label, const std::vector<std::string>& left,
+                                              const std::vector<std::string>& right) {
+                if (left == right) return;
+                size_t first = 0;
+                while (first < left.size() && first < right.size() && left[first] == right[first]) ++first;
+                std::cerr << label << " first-event=" << first << " counts=" << left.size() << '/' << right.size()
+                          << "\n  oracle=" << (first < left.size() ? left[first] : "<end>")
+                          << "\n  current=" << (first < right.size() ? right[first] : "<end>") << '\n';
+            };
+            std::cerr << activeCase << " compared-version=" << selected
+                      << " overflow=" << finalDocument.overflowed << '/' << other.finalDocument.overflowed
+                      << " observations=" << observed.size() << '/' << other.observed.size()
+                      << " returned=" << returned << '/' << other.returned
+                      << " HTTP=" << sent.status << '/' << other.sent.status
+                      << " sends=" << sent.sends << '/' << other.sent.sends
+                      << " growth=" << growth << '/' << other.growth
+                      << " documents=" << documents << '/' << other.documents << '\n';
+            textDifference("final bytes", finalDocument.bytes, other.finalDocument.bytes);
+            textDifference("final shape", finalDocument.shape, other.finalDocument.shape);
+            for (size_t i = 0; i < observed.size() && i < other.observed.size(); ++i) {
+                if (observed[i] == other.observed[i]) continue;
+                std::cerr << "observation=" << i << " overflow="
+                          << observed[i].overflowed << '/' << other.observed[i].overflowed << '\n';
+                textDifference("observed bytes", observed[i].bytes, other.observed[i].bytes);
+                textDifference("observed shape", observed[i].shape, other.observed[i].shape);
+                break;
+            }
+            textDifference("sent body", sent.body, other.sent.body);
+            traceDifference("reads", calls, other.calls);
+            traceDifference("allocations", allocations, other.allocations);
+        }
+        return matched;
+    }
+};
+template<class Callback> static Outcome evaluate(unsigned version, size_t failAt, bool transient, Callback callback) {
+    TraceAllocator allocator; allocator.failAt = failAt; allocator.transient = transient;
+    activeAllocator = &allocator; selected = version; reads.clear(); observations.clear();
+    request = {}; lastDocument = {}; documentsCreated = 0; returnValue = false;
+    callback();
+    CHECK(allocator.blocks.empty());
+    Outcome result{observations, lastDocument, reads, allocator.events, request, returnValue,
+                   allocator.growthCalls, documentsCreated};
+    activeAllocator = nullptr; return result;
+}
+template<class Callback> static void compare(const std::string& name, Callback callback) {
+    activeCase = name;
+    const Outcome complete = evaluate(0, TraceAllocator::never, false, callback);
+    CHECK(complete == evaluate(1, TraceAllocator::never, false, callback));
+    CHECK(complete == evaluate(2, TraceAllocator::never, false, callback));
+    for (size_t failure = 0; failure <= complete.growth; ++failure) {
+        for (bool transient : {false, true}) {
+            activeCase = name + "/oom=" + std::to_string(failure) + (transient ? "/once" : "/persistent");
+            const Outcome old = evaluate(0, failure, transient, callback);
+            CHECK(old == evaluate(1, failure, transient, callback));
+            CHECK(old == evaluate(2, failure, transient, callback));
+        }
+    }
+}
+
+static PeripheralConfig configFor(PeripheralType type, unsigned variant) {
+    PeripheralConfig config;
+    config.id = "peripheral-owner-long-enough-for-copy";
+    config.name = "device with \"quotes\" and UTF-8 温度";
+    config.type = type; config.enabled = (variant & 1U) != 0;
+    config.pinCount = 4; config.pins[0] = 2; config.pins[1] = 255; config.pins[2] = 3; config.pins[3] = 45;
+    switch (type) {
+    case PeripheralType::UART:
+        config.params.uart.baudRate = 921600; config.params.uart.dataBits = 7;
+        config.params.uart.parity = 2; config.params.uart.stopBits = 2; break;
+    case PeripheralType::IO_EXPANDER:
+        std::strcpy(config.params.ioExpander.driver, "MCP23017");
+        std::strcpy(config.params.ioExpander.busPeripheralId, "bus");
+        std::strcpy(config.params.ioExpander.resetPeripheralId, "reset");
+        config.params.ioExpander.address = 0x23; config.params.ioExpander.sampleInterval = 777; break;
+    case PeripheralType::GPIO_DIGITAL_INPUT:
+    case PeripheralType::GPIO_DIGITAL_OUTPUT:
+        config.params.gpio.ioSource = variant & 1U; config.params.gpio.channel = 15;
+        std::strcpy(config.params.gpio.providerId, "provider-with-owned-channel");
+        std::strcpy(config.params.gpio.pairedInputId, "input-with-a-long-linked-id");
+        config.params.gpio.debounceMs = variant ? 77 : 0; config.params.gpio.pairDebounceMs = variant ? 234 : 0;
+        config.params.gpio.invertLogic = variant & 2U; config.params.gpio.initialState = GPIOState::STATE_HIGH;
+        config.params.gpio.passive = variant & 4U; config.params.gpio.pwmFrequency = 1000;
+        config.params.gpio.pwmChannel = 3; config.params.gpio.pwmResolution = 10; config.params.gpio.defaultDuty = 25;
+        config.params.gpio.inputMode = 2; config.params.gpio.reportMode = 1; break;
+    case PeripheralType::ADC:
+    case PeripheralType::GPIO_ANALOG_INPUT:
+        config.params.adc.attenuation = 3; config.params.adc.resolution = 12;
+        config.params.adc.sampleRate = 1000; config.params.adc.sampleCount = variant ? 16 : 0;
+        config.params.adc.filterMode = 1; config.params.adc.signalMode = 3;
+        config.params.adc.conversionEnabled = true; config.params.adc.clampEnabled = variant & 1U;
+        config.params.adc.calibratedVoltage = true; config.params.adc.decimalPlaces = 6;
+        config.params.adc.inputMin = 4; config.params.adc.inputMax = 20;
+        config.params.adc.engineeringMin = -100; config.params.adc.engineeringMax = 300;
+        config.params.adc.engineeringOffset = -0.125f; config.params.adc.inputGain = 1.0125f;
+        config.params.adc.inputOffset = -0.001f; config.params.adc.voltageRatio = 3.03f;
+        config.params.adc.shuntResistance = 150; config.params.adc.vRef = 3.3f;
+        config.params.adc.rawMin = 12; config.params.adc.rawMax = 4090; break;
+    case PeripheralType::PWM_SERVO:
+        initializeServoDefaults(config); config.params.servo.minAngle = -90;
+        config.params.servo.inverted = variant & 1U; config.params.servo.releaseAfterMove = true; break;
+    case PeripheralType::SCREEN_DISPLAY: {
+        auto& display = config.params.display;
+        std::strcpy(display.backend, "rgb"); std::strcpy(display.driver, "st7701");
+        std::strcpy(display.touchBackend, "gt911"); std::strcpy(display.rgbInitProfile, "panel-profile");
+        std::strcpy(display.controlBackend, "ch32v003");
+        display.width = 480; display.height = 800; display.rotation = 3; display.colorDepth = 16;
+        display.bufferLines = 10; display.brightness = 87; display.backlightActiveHigh = true;
+        display.backlightChannel = 7; display.spiFrequency = 40000000; display.i2cFrequency = 400000;
+        display.rgbFrequency = 12000000; display.controlAddress = 0x30;
+        display.controlResetMask = 1; display.controlBacklightMask = 2; display.controlEnableMask = 4;
+        display.controlBuzzerMask = 8; display.controlInactiveMask = 16; display.controlTouchIntMask = 32;
+        display.touchBuzzerDurationMs = 100; display.mosi = -1; display.sclk = -1; display.cs = -1;
+        display.dc = -1; display.rst = -1; display.backlight = 45;
+        display.touchSda = 4; display.touchScl = 5; display.touchInt = -1; display.touchRst = -1;
+        for (unsigned i = 0; i < 16; ++i) display.rgbDataPins[i] = static_cast<int8_t>(i + 8);
+        display.rgbDe = 3; display.rgbVsync = 6; display.rgbHsync = 7; display.rgbPclk = 46;
+        display.controlSda = 4; display.controlScl = 5;
+        display.hsyncFrontPorch = 10; display.hsyncPulseWidth = 8; display.hsyncBackPorch = 50;
+        display.vsyncFrontPorch = 11; display.vsyncPulseWidth = 9; display.vsyncBackPorch = 51;
+        display.hsyncIdleLow = true; display.vsyncIdleLow = false; display.pclkActiveNeg = true; break;
+    }
+    case PeripheralType::SENSOR_GENERIC:
+        std::strcpy(config.params.sensor.driver, (variant & 1U) && !(variant & 128U) ? "MPU6050" : "ADS1115");
+        std::strcpy(config.params.sensor.busPeripheralId, "sensor-bus");
+        config.params.sensor.address = 0x48; config.params.sensor.mode = variant & 1U;
+        config.params.sensor.sampleInterval = 1000; config.params.sensor.frequency = 100000;
+        config.params.sensor.mux = 4; config.params.sensor.scanMask = variant & 64U ? 10 : 1;
+        config.params.sensor.fullScaleMv = 4096;
+        config.params.sensor.dataRate = 128; config.params.sensor.calibrationGain = 1.1f; break;
+    case PeripheralType::PCA9685_PWM:
+        std::strcpy(config.params.pca9685.busPeripheralId, "bus");
+        std::strcpy(config.params.pca9685.oePeripheralId, "oe");
+        config.params.pca9685.address = 0x40; config.params.pca9685.channelMask = 0xff;
+        config.params.pca9685.clockHz = 25000000; config.params.pca9685.pwmHz = 50;
+        config.params.pca9685.maxAngle = 180; config.params.pca9685.minPulseUs = 500;
+        config.params.pca9685.maxPulseUs = 2500; break;
+    case PeripheralType::I2C: config.params.i2c.frequency = variant ? 400000 : 0; config.params.i2c.address = 0x28; config.params.i2c.isMaster = true; break;
+    case PeripheralType::SPI: config.params.spi.frequency = 8000000; config.params.spi.mode = 3; config.params.spi.msbFirst = true; break;
+    case PeripheralType::DAC: config.params.dac.channel = 2; config.params.dac.defaultValue = 255; break;
+    case PeripheralType::STEPPER_MOTOR: config.params.stepper.stepsPerRevolution = 4096; config.params.stepper.speed = 60; break;
+    case PeripheralType::LCD: config.params.lcd.width = 20; config.params.lcd.height = 4; config.params.lcd.interface = 2; break;
+    case PeripheralType::NEO_PIXEL: config.params.neopixel.count = 64; config.params.neopixel.brightness = 128; break;
+    case PeripheralType::RF_MODULE: config.params.rf.mode = 1; config.params.rf.pulseWidth = 350; config.params.rf.repeat = 8; config.params.rf.bitLength = 24; config.params.rf.activeHigh = true; break;
+    case PeripheralType::RADAR_SENSOR: config.params.radar.activeHigh = true; config.params.radar.debounceMs = 33; config.params.radar.holdMs = 444; break;
+    case PeripheralType::SEVEN_SEGMENT_TM1637: config.params.segment.brightness = 7; break;
+    case PeripheralType::SDIO: config.params.sdcard.interface = 1; config.params.sdcard.frequency = 20000000; break;
+    case PeripheralType::DS1302_RTC:
+        config.params.ds1302.use24Hour = true; config.params.ds1302.trickleCharge = 0xA5;
+        config.params.ds1302.bootSeed = (variant & 1U) != 0;
+        config.params.ds1302.utcOffsetMinutes = variant & 2U ? -480 : variant & 1U ? 480 : INT16_MIN;
+        break;
+    case PeripheralType::LCD1602: config.params.lcd1602.cols = 20; config.params.lcd1602.rows = 4; config.params.lcd1602.address = 0x27; config.params.lcd1602.backlight = true; break;
+    case PeripheralType::RFID_MFRC522: config.params.rfid.frequency = 4000000; break;
+    case PeripheralType::ENCODER: config.params.encoder.resolution = 2048; config.params.encoder.useInterrupt = true; break;
+    default: break;
+    }
+    return config;
+}
+static void fillRuntime(PeripheralManager& manager, PeripheralType type) {
+    auto& state = manager.state;
+    state.status = PeripheralStatus::PERIPHERAL_DISABLED;
+    state.initTime = 0xffffffffUL; state.lastActivity = 12; state.errorCount = 17;
+    state.memorySuspended = scenario & 1U; state.lastError = "a long historical error with \"quotes\"";
+    state.controlOutputClaimed = true; state.controlOutputFault = scenario & 2U;
+    state.controlOutputRetiring = true; state.controlOutputRetirementAttempts = 42;
+    state.controlOutputRetirementFailed = scenario & 4U;
+    if (type == PeripheralType::PWM_SERVO) { state.state.servo.currentAngle = -45; state.state.servo.currentPulseUs = 1234; }
+    else if (type == PeripheralType::UART) { state.state.comm.bytesSent = 0xffffffffU; state.state.comm.bytesReceived = 23; state.state.comm.isConnected = true; state.state.comm.port = 255; state.state.comm.rxAvailable = 128; }
+    else if (type == PeripheralType::ENCODER) {
+        state.state.encoder.count = INT64_C(-9007199254740991); state.state.encoder.delta = INT64_C(4294967298);
+        state.state.encoder.direction = -1; state.state.encoder.frequencyHz = 123.125f; state.state.encoder.rpm = -42.75f;
+    }
+    manager.runtimeAvailable = (scenario & 1U) != 0;
+    manager.encoderAvailable = (scenario & 2U) != 0;
+    manager.encoder = {INT64_C(-9007199254740991), INT64_C(4294967298), -1, 123.125f, -42.75f};
+    manager.pcaAvailable = (scenario & 4U) != 0;
+}
+static const PeripheralType configTypes[] = {
+    PeripheralType::GPIO_DIGITAL_INPUT, PeripheralType::GPIO_DIGITAL_OUTPUT,
+    PeripheralType::ADC, PeripheralType::GPIO_ANALOG_INPUT, PeripheralType::PWM_SERVO,
+    PeripheralType::UART, PeripheralType::ENCODER, PeripheralType::IO_EXPANDER,
+    PeripheralType::SCREEN_DISPLAY, PeripheralType::SENSOR_GENERIC, PeripheralType::PCA9685_PWM,
+    PeripheralType::I2C, PeripheralType::SPI, PeripheralType::DAC, PeripheralType::STEPPER_MOTOR,
+    PeripheralType::LCD, PeripheralType::NEO_PIXEL, PeripheralType::RF_MODULE,
+    PeripheralType::RADAR_SENSOR, PeripheralType::SEVEN_SEGMENT_TM1637,
+    PeripheralType::SDIO, PeripheralType::DS1302_RTC, PeripheralType::LCD1602, PeripheralType::RFID_MFRC522
+};
+static void configCases() {
+    for (auto type : configTypes) for (unsigned variant : {0U, 7U}) {
+        scenario = variant;
+        compare("detail/" + std::to_string(static_cast<int>(type)) + '/' + std::to_string(variant), [=] {
+            PeripheralConfig config = configFor(type, variant); PeripheralManager manager; fillRuntime(manager, type);
+            INVOKE(detailResponse, &request, &config, config.id, manager);
+        });
+    }
+    for (bool advanced : {false, true}) {
+        scenario = 0;
+        compare(advanced ? "adc/full" : "adc/compact", [=] {
+            PeripheralConfig config = configFor(PeripheralType::ADC, 7);
+            TrackedDocument doc; JsonObject output = doc.to<JsonObject>();
+            INVOKE(addAnalogInputParams, output, config, advanced); observe(doc);
+        });
+    }
+}
+
+static FastBee::BoardProfile profileFor(unsigned variant) {
+    static constexpr FastBee::BoardPinProfile pins[] = {
+        {1, FastBee::PIN_CAP_INPUT | FastBee::PIN_CAP_OUTPUT, FastBee::PinPolicy::RECOMMENDED, 0, 0, 0},
+        {2, FastBee::PIN_CAP_INPUT | FastBee::PIN_CAP_OUTPUT | FastBee::PIN_CAP_ADC, FastBee::PinPolicy::RECOMMENDED, 0, 1, 1},
+        {3, FastBee::PIN_CAP_INPUT, FastBee::PinPolicy::HARD_FORBIDDEN, 0, 0, 0}
+    };
+    FastBee::BoardProfile profile{}; profile.key = "profile-key"; profile.displayName = "Profile fixture";
+    profile.version = "1.2.3"; profile.pins = pins; profile.pinCount = variant ? 3 : 0;
+    profile.resources.i2cBusCount = variant ? 2 : 0; profile.resources.spiBusCount = variant ? 1 : 0;
+    profile.resources.genericUartCount = 2; profile.resources.ledcChannelCount = 8;
+    profile.resources.ledcTimerCount = 4; profile.resources.rmtChannelCount = 4;
+    profile.resources.encoderSlotCount = 2; profile.resources.sdmmcSupported = variant & 1U;
+    return profile;
+}
+static FastBee::PreflightResult preflightFor(unsigned variant) {
+    FastBee::PreflightResult result;
+    result.requiresConfirmation = variant & 1U; result.claimsTruncated = variant & 2U; result.issuesTruncated = variant & 4U;
+    result.claimCount = variant & 8U ? FastBee::PREFLIGHT_MAX_CLAIMS : 14;
+    for (size_t i = 0; i < result.claimCount; ++i) {
+        auto& claim = result.claims[i]; claim.kind = static_cast<FastBee::ResourceKind>(i % 14);
+        claim.state = i & 1 ? FastBee::ClaimState::ACTIVE : FastBee::ClaimState::DORMANT;
+        claim.shareMode = i & 2 ? FastBee::ResourceShareMode::EXCLUSIVE : FastBee::ResourceShareMode::SHARED_IF_COMPATIBLE;
+        claim.pinRole = static_cast<FastBee::PinRole>(i % 15); claim.unit = i % 3; claim.index = i % 9;
+        claim.pinCount = 4; claim.pins[0] = 1; claim.pins[1] = 255; claim.pins[2] = 2; claim.pins[3] = 3;
+        claim.parameterA = 0xffffffffU; claim.parameterB = i;
+        claim.ownerId = i % 3 == 0 ? nullptr : (i % 3 == 1 ? "candidate" : "other-owner");
+    }
+    result.issueCount = variant & 8U ? FastBee::PREFLIGHT_MAX_ISSUES : 5;
+    for (size_t i = 0; i < result.issueCount; ++i) {
+        auto& issue = result.issues[i]; issue.code = static_cast<FastBee::PreflightIssueCode>(i % 42);
+        issue.severity = static_cast<FastBee::PreflightSeverity>(i % 4);
+        issue.resourceKind = static_cast<FastBee::ResourceKind>(i % 14); issue.unit = 255; issue.index = i;
+        issue.ownerId = i % 3 == 0 ? nullptr : "candidate";
+        issue.conflictingOwnerId = i % 2 == 0 ? nullptr : "other-owner";
+        issue.message = i % 2 == 0 ? nullptr : "resource conflict with a long explanation";
+    }
+    return result;
+}
+static void resourceCases() {
+    for (unsigned variant : {0U, 7U, 15U}) {
+        scenario = variant;
+        compare("preflight/" + std::to_string(variant), [=] {
+            auto profile = profileFor(variant); auto result = preflightFor(variant);
+            auto candidate = configFor(PeripheralType::UART, variant); candidate.id = "candidate";
+            TrackedDocument doc;
+            INVOKE(addPreflightResponse, doc, profile, result, candidate,
+                   static_cast<FastBee::PreflightOperation>(variant % 4), bool(variant & 1U),
+                   bool(variant & 2U), variant ? "diagnostic message" : nullptr);
+            observe(doc);
+        });
+        for (bool observed : {false, true}) compare("resources/" + std::to_string(variant) + '/' + std::to_string(observed), [=] {
+            auto profile = profileFor(variant); auto result = preflightFor(variant);
+            INVOKE(resourceResponse, &request, &profile, variant ? &profile : nullptr, result, observed);
+        });
+    }
+    for (unsigned count : {0U, 1U, 16U, 17U}) for (bool locked : {false, true}) {
+        scenario = locked ? 0U : 32U;
+        compare("mcp/" + std::to_string(count) + '/' + std::to_string(locked), [=] {
+            PeripheralManager manager; auto parent = configFor(PeripheralType::IO_EXPANDER, 0);
+            parent.id = "provider"; parent.enabled = false; manager.entries["provider"] = parent;
+            auto reset = configFor(PeripheralType::GPIO_DIGITAL_OUTPUT, 0); reset.id = "reset";
+            manager.entries["reset"] = reset; auto bus = configFor(PeripheralType::I2C, 0); bus.id = "bus"; manager.entries["bus"] = bus;
+            for (unsigned i = 0; i < count; ++i) {
+                auto child = configFor(PeripheralType::GPIO_DIGITAL_OUTPUT, 1);
+                child.id = String("channel-") + String(i); std::strcpy(child.params.gpio.providerId, "provider");
+                manager.entries[child.id.c_str()] = child;
+            }
+            String error; TrackedDocument doc;
+            INVOKE_RESULT(returnValue, buildMcpGroupPreview, manager, String("provider"), doc, error);
+            reads.push_back(std::string("error:") + error.c_str()); observe(doc);
+        });
+    }
+}
+static void statusCases() {
+    const PeripheralType types[] = {PeripheralType::GPIO_DIGITAL_OUTPUT, PeripheralType::PWM_SERVO,
+        PeripheralType::UART, PeripheralType::ENCODER, PeripheralType::IO_EXPANDER, PeripheralType::PCA9685_PWM,
+        PeripheralType::SDIO, PeripheralType::DS1302_RTC, PeripheralType::LCD1602,
+        PeripheralType::RFID_MFRC522, PeripheralType::SENSOR_GENERIC};
+    for (auto type : types) for (unsigned variant : {0U, 1U, 7U, 31U, 65U, 67U, 73U, 193U, 195U, 201U}) {
+        scenario = variant;
+        compare("status/" + std::to_string(static_cast<int>(type)) + '/' + std::to_string(variant), [=] {
+            auto config = configFor(type, variant); PeripheralManager manager; fillRuntime(manager, type);
+            INVOKE(statusResponse, &request, config, config.id, manager.runtimeAvailable, manager.encoderAvailable,
+                   manager.state, manager.encoder, manager);
+        });
+    }
+    scenario = 7;
+    compare("list-encoder", [] {
+        PeripheralManager manager; fillRuntime(manager, PeripheralType::ENCODER); TrackedDocument doc;
+        INVOKE(encoderResponse, doc, manager.state); observe(doc);
+    });
+    for (unsigned variant : {0U, 1U, 7U}) {
+        scenario = variant;
+        compare("pca-response/" + std::to_string(variant), [=] {
+            PeripheralManager manager; fillRuntime(manager, PeripheralType::PCA9685_PWM);
+            INVOKE(pcaResponse, &request, String("owner"), bool(variant & 1U), String("command outcome unknown"),
+                   UINT64_C(0x100000000000001), bool(variant & 2U), manager);
+        });
+        compare("rfid-response/" + std::to_string(variant), [=] {
+            uint8_t bytes[16]; for (unsigned i = 0; i < 16; ++i) bytes[i] = static_cast<uint8_t>(i * 17 + variant);
+            INVOKE(rfidResponse, &request, String("reader"), 15, bytes, RFIDDriver::getInstance());
+            for (auto byte : bytes) CHECK(byte == 0);
+        });
+    }
+}
+static void ownershipCases() {
+    for (unsigned variant : {0U, 7U}) {
+        scenario = variant;
+        compare("display-reuse/" + std::to_string(variant), [=] {
+            auto config = configFor(PeripheralType::SCREEN_DISPLAY, variant); TrackedDocument doc;
+            JsonObject output = doc.to<JsonObject>(); output["keep"] = String("previous-owned-value");
+            INVOKE(addGenericPeripheralFields, output, config); observe(doc);
+            std::strcpy(config.params.display.backend, "mutated");
+            config.params.display.width = 123; config.name = "changed";
+            observe(doc); INVOKE(addGenericPeripheralFields, output, config); observe(doc);
+        });
+        compare("diagnostic-replacement/" + std::to_string(variant), [=] {
+            auto config = configFor(PeripheralType::UART, variant); config.id = "RS485_Preserved";
+            TrackedDocument doc; auto output = doc.to<JsonObject>();
+            output["diagnosticBlockedReason"] = String("existing diagnostic text");
+            INVOKE(addPeripheralDiagnosticCapability, output, config); observe(doc);
+        });
+    }
+    scenario = 7;
+    compare("null-helper-targets", [] {
+        JsonObject null;
+        auto digital = configFor(PeripheralType::GPIO_DIGITAL_INPUT, 7);
+        auto analog = configFor(PeripheralType::ADC, 7);
+        auto servo = configFor(PeripheralType::PWM_SERVO, 7);
+        auto uart = configFor(PeripheralType::UART, 7);
+        auto encoder = configFor(PeripheralType::ENCODER, 7);
+        auto display = configFor(PeripheralType::SCREEN_DISPLAY, 7);
+        INVOKE(addDigitalInputParams, null, digital); INVOKE(addAnalogInputParams, null, analog, true);
+        INVOKE(addServoParams, null, servo); INVOKE(addUartParams, null, uart);
+        INVOKE(addEncoderParams, null, encoder); INVOKE(addDisplayParams, null, display);
+        INVOKE(addGenericPeripheralFields, null, display); INVOKE(addPeripheralDiagnosticCapability, null, uart);
+        for (auto type : {PeripheralType::SDIO, PeripheralType::DS1302_RTC, PeripheralType::LCD1602,
+                          PeripheralType::RFID_MFRC522, PeripheralType::SENSOR_GENERIC}) {
+            auto config = configFor(type, 7); INVOKE(addP1PeripheralParams, null, config);
+        }
+    });
+}
+@OWNERSHIP_REGRESSIONS@
+
+@DEFERRED_REGRESSIONS@
+
+int main(int argc, char** argv) {
+    CHECK(argc == 2); const std::string mode = argv[1];
+    if (mode == "config") configCases();
+    else if (mode == "resources") resourceCases();
+    else if (mode == "status") statusCases();
+    else if (mode == "ownership") ownershipCases();
+    else if (mode == "mcp-ownership") mcpOwnershipCases();
+    else if (mode == "deferred-ownership") deferredStringCases();
+    else CHECK(false);
+    std::cout << "Actual peripheral response differential/OOM checks passed: " << mode
+              << ", hardware feature branches=" << FIXTURE_HARDWARE_FEATURES << '\n';
+}
+
+

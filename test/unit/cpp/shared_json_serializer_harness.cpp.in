@@ -1,0 +1,346 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "utils/SharedJsonSerializer.h"
+#include "core/CheckedReportTemplate.h"
+#include "network/JsonDocumentResponse.h"
+#include "network/JsonFragmentsResponse.h"
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <vector>
+
+// Exact current production class definitions extracted by the Python driver.
+// This is not a hand-maintained reimplementation of the four writer policies.
+@PRODUCTION_SINKS@
+#include "legacy_responses.inc"
+#include "legacy_template.inc"
+
+#undef assert
+#define assert(expr) do { if (!(expr)) { std::cerr << __LINE__ << ": " << #expr << "\n"; std::exit(1); } } while (0)
+
+static bool jsonPsramAvailable = true;
+static int jsonPsramFailAt = -1;
+static std::vector<size_t> jsonPsramRequests;
+static std::map<void*, size_t> jsonPsramBlocks;
+namespace FastBee { bool psramAvailableForJson(size_t) { return jsonPsramAvailable; } }
+void* heap_caps_malloc(size_t count, int caps) {
+    assert(caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    const int call = static_cast<int>(jsonPsramRequests.size());
+    jsonPsramRequests.push_back(count);
+    if (call == jsonPsramFailAt) return nullptr;
+    void* pointer = std::malloc(count);
+    if (pointer) jsonPsramBlocks[pointer] = count;
+    return pointer;
+}
+void heap_caps_free(void* pointer) {
+    assert(jsonPsramBlocks.erase(pointer) == 1); std::free(pointer);
+}
+
+struct Event {
+    bool span;
+    std::string bytes;
+    size_t result;
+    bool operator==(const Event& other) const {
+        return span == other.span && bytes == other.bytes && result == other.result;
+    }
+};
+template <class Sink> struct TraceWriter {
+    Sink& sink;
+    std::vector<Event> events;
+    size_t write(uint8_t value) {
+        const size_t n = sink.write(value);
+        events.push_back({false, std::string(1, static_cast<char>(value)), n}); return n;
+    }
+    size_t write(const uint8_t* value, size_t size) {
+        const size_t n = sink.write(value, size);
+        events.push_back({true, std::string(reinterpret_cast<const char*>(value), size), n}); return n;
+    }
+};
+
+struct Result {
+    size_t count = 0, operations = 0;
+    std::string output;
+    bool good = true;
+    std::vector<Event> events;
+    bool operator==(const Result& other) const {
+        return count == other.count && operations == other.operations && output == other.output &&
+            good == other.good && events == other.events;
+    }
+};
+template <class Sink>
+static Result serializeWithSink(JsonVariantConst doc, Sink& sink, bool shared) {
+    TraceWriter<Sink> writer{sink, {}};
+    Result result;
+    result.count = shared ? FastBee::serializeJsonShared(doc, writer) : serializeJson(doc, writer);
+    result.events = std::move(writer.events);
+    result.operations = jsonTextFault.operations;
+    return result;
+}
+static std::string bytes(const String& value) { return {value.c_str(), value.length()}; }
+
+static Result textResult(JsonVariantConst doc, int kind, bool shared, JsonTextFault fault, size_t limit = 65536) {
+    jsonTextFault = fault;
+    String output("seed|");
+    Result result;
+    if (kind == 0) {
+        AppendWriter sink{output}; result = serializeWithSink(doc, sink, shared);
+    } else if (kind == 1) {
+        ConfigStringAppender sink(output); result = serializeWithSink(doc, sink, shared);
+    } else {
+        FastBee::CheckedTemplateWriter<String> sink{output, limit};
+        result = serializeWithSink(doc, sink, shared); result.good = sink.good;
+    }
+    result.output = bytes(output);
+    return result;
+}
+
+static void populate(JsonDocument& doc) {
+    auto root = doc.to<JsonArray>();
+    root.add(nullptr); root.add(false); root.add(true);
+    root.add(std::numeric_limits<int64_t>::min()); root.add(std::numeric_limits<int64_t>::max());
+    root.add(std::numeric_limits<uint64_t>::max());
+    root.add(-0.0); root.add(1.0f / 3.0f); root.add(1.0 / 3.0);
+    for (double number : {1e-8, 1e-7, 1e-6, 1e6, 1e7, 1e8,
+            std::numeric_limits<double>::max(), std::numeric_limits<double>::min(),
+            std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::quiet_NaN()}) root.add(number);
+    root.add("UTF-8: 温度🙂\n\r\t\b\f\"\\");
+    root.add(JsonString("x\0y", 3, true));
+    auto object = root.add<JsonObject>();
+    object["escaped\"key"] = std::string("owned source");
+    auto array = object["nested"].to<JsonArray>(); array.add(17); array.add("tail");
+}
+
+class TrackingAllocator : public ArduinoJson::Allocator {
+public:
+    std::map<void*, size_t> blocks;
+    size_t calls = 0;
+    int failedCall = -1;
+    bool fail() { return static_cast<int>(calls++) == failedCall; }
+    void* allocate(size_t size) override {
+        if (fail()) return nullptr;
+        void* pointer = std::malloc(size); if (pointer) blocks[pointer] = size; return pointer;
+    }
+    void deallocate(void* pointer) override { blocks.erase(pointer); std::free(pointer); }
+    void* reallocate(void* pointer, size_t size) override {
+        if (!pointer) return allocate(size);
+        // ArduinoJson StringBuilder requires shrinking reallocations to succeed.
+        // Retain the allocation on shrink; inject faults only for real growth.
+        if (size <= blocks.at(pointer)) { blocks[pointer] = size; return pointer; }
+        if (fail()) return nullptr;
+        auto entry = blocks.extract(pointer);
+        void* next = std::realloc(pointer, size);
+        if (next) { entry.key() = next; entry.mapped() = size; }
+        blocks.insert(std::move(entry));
+        return next;
+    }
+};
+
+static void verifyText(bool faults) {
+    TrackingAllocator allocator;
+    {
+        JsonDocument doc(&allocator); populate(doc); assert(!doc.overflowed());
+        const size_t calls = allocator.calls;
+        for (int kind = 0; kind < 3; ++kind) {
+            const Result baseline = textResult(doc, kind, false, {});
+            assert(baseline == textResult(doc, kind, true, {}));
+            if (!faults) continue;
+            for (size_t at = 0; at <= baseline.operations + 1; ++at) {
+                for (bool persistent : {false, true}) for (bool partial : {false, true})
+                for (bool lie : {false, true}) {
+                    JsonTextFault fault{static_cast<int>(at), persistent, partial, lie, 0};
+                    const Result old = textResult(doc, kind, false, fault);
+                    assert(old == textResult(doc, kind, true, fault));
+                }
+            }
+            if (kind == 2) for (size_t limit : {size_t(0), size_t(4), size_t(5), size_t(19), size_t(128)})
+                assert(textResult(doc, kind, false, {}, limit) == textResult(doc, kind, true, {}, limit));
+        }
+        assert(allocator.calls == calls); // Serialization does not allocate in the source document.
+        assert(!doc.overflowed());
+    }
+    assert(allocator.blocks.empty());
+}
+
+static void verifyRange() {
+    JsonDocument doc; populate(doc); std::string full; serializeJson(doc, full);
+    for (size_t skip : {size_t(0), size_t(1), full.size() / 2, full.size(), full.size() + 7}) {
+        for (size_t capacity : {size_t(0), size_t(1), size_t(7), size_t(31), size_t(511)}) {
+            std::array<uint8_t, 520> oldBytes, newBytes; oldBytes.fill(0xA5); newBytes.fill(0xA5);
+            RangeWriter oldSink(oldBytes.data() + 4, skip, capacity), newSink(newBytes.data() + 4, skip, capacity);
+            jsonTextFault = {}; Result old = serializeWithSink(doc, oldSink, false);
+            jsonTextFault = {}; Result current = serializeWithSink(doc, newSink, true);
+            assert(old == current && oldBytes == newBytes && oldSink.written() == newSink.written());
+            assert(current.count == full.size()); // Range returns requested length even when full/skipped.
+            const std::string copied(reinterpret_cast<char*>(newBytes.data() + 4), newSink.written());
+            assert(copied == (skip < full.size() ? full.substr(skip, capacity) : ""));
+        }
+    }
+}
+
+template <class Response> static void documentLifetime(bool cancel) {
+    TrackingAllocator allocator;
+    {
+        JsonDocument doc(&allocator); populate(doc);
+        doc[0] = std::string(6000, 'x');
+        std::string expected; serializeJson(doc, expected); const size_t before = allocator.calls;
+        Response response(std::move(doc)); doc.clear();
+        assert(response._sourceValid() && response._contentLength == expected.size());
+        uint8_t buffer[73]; std::string output;
+        assert(response._fillBuffer(buffer, 0) == 0);
+        while (response._sentLength < response._contentLength) {
+            const size_t count = response._fillBuffer(buffer, sizeof(buffer));
+            assert(count > 0 && count <= sizeof(buffer));
+            output.append(reinterpret_cast<char*>(buffer), count); response._sentLength += count;
+            if (cancel) break;
+        }
+        assert(allocator.calls == before);
+        if (!cancel) {
+            assert(output == expected && allocator.blocks.empty());
+            assert(response._fillBuffer(buffer, sizeof(buffer)) == 0);
+        } else assert(!allocator.blocks.empty());
+    }
+    assert(allocator.blocks.empty());
+}
+
+struct FragmentResult {
+    std::vector<bool> accepted;
+    std::vector<size_t> heapRequests;
+    size_t length = 0, operations = 0, liveBeforeDrain = 0;
+    bool valid = false;
+    std::string output;
+    bool operator==(const FragmentResult& other) const {
+        return accepted == other.accepted && heapRequests == other.heapRequests && length == other.length &&
+            operations == other.operations && liveBeforeDrain == other.liveBeforeDrain && valid == other.valid && output == other.output;
+    }
+};
+template <class Response>
+static FragmentResult fragments(bool psram, JsonTextFault fault, int heapFail, bool cancel) {
+    assert(jsonPsramBlocks.empty()); jsonPsramAvailable = psram; jsonPsramFailAt = heapFail; jsonPsramRequests.clear();
+    jsonTextFault = {}; JsonDocument doc; populate(doc);
+    FragmentResult result;
+    {
+        Response response(2); assert(response.allocated()); jsonTextFault = fault;
+        result.accepted.push_back(response.set(0, doc, "[", ","));
+        result.accepted.push_back(response.set(1, doc, "", "]"));
+        result.valid = response._sourceValid(); result.length = response._contentLength;
+        result.operations = jsonTextFault.operations; result.heapRequests = jsonPsramRequests;
+        result.liveBeforeDrain = jsonPsramBlocks.size(); doc.clear();
+        if (result.valid) {
+            uint8_t buffer[37];
+            assert(response._fillBuffer(buffer, 0) == 0);
+            while (result.output.size() < result.length) {
+                const size_t count = response._fillBuffer(buffer, sizeof(buffer));
+                assert(count > 0 && count <= sizeof(buffer));
+                result.output.append(reinterpret_cast<char*>(buffer), count);
+                if (cancel) break;
+            }
+            if (!cancel) { assert(response._fillBuffer(buffer, sizeof(buffer)) == 0); assert(jsonPsramBlocks.empty()); }
+        }
+    }
+    assert(jsonPsramBlocks.empty()); return result;
+}
+static void verifyFragments() {
+    using Old = FastBee::LegacyJsonFragmentsResponse; using Current = FastBee::JsonFragmentsResponse;
+    for (bool psram : {false, true}) {
+        const auto baseline = fragments<Old>(psram, {}, -1, false);
+        assert(baseline.valid && baseline == fragments<Current>(psram, {}, -1, false));
+        assert(fragments<Old>(psram, {}, -1, true) == fragments<Current>(psram, {}, -1, true));
+        for (size_t at = 0; at <= baseline.operations + 1; ++at) {
+            for (bool persistent : {false, true}) for (bool partial : {false, true}) {
+                JsonTextFault fault{static_cast<int>(at), persistent, partial, partial, 0};
+                assert(fragments<Old>(psram, fault, -1, false) == fragments<Current>(psram, fault, -1, false));
+            }
+        }
+        if (psram) for (int failure : {0, 1, 2})
+            assert(fragments<Old>(true, {}, failure, false) == fragments<Current>(true, {}, failure, false));
+    }
+}
+
+static Result transform(const String& script, const String& input, size_t limit, bool shared, JsonTextFault fault) {
+    jsonTextFault = fault; String output;
+    Result result;
+    result.good = shared ? FastBee::applyCheckedReportTemplate(script, input, output, limit)
+        : FastBee::legacyApplyCheckedReportTemplate(script, input, output, limit);
+    result.output = bytes(output); result.operations = jsonTextFault.operations; return result;
+}
+static void verifyTemplate() {
+    for (const char* input : {"raw text", "{}", "[]", "{\"a\":4,\"b\":true}",
+            "{\"a\":{\"n\":[3,1.25]},\"b\":null}", "{\"a\":\"x\\u0000y\"}",
+            "[{\"id\":\"a\",\"value\":\"${b}\"},{\"id\":\"b\",\"value\":7}]"}) {
+        for (size_t limit : {size_t(8), size_t(32), size_t(2048)}) {
+            const String script("${a}|${b}"), source(input);
+            const Result baseline = transform(script, source, limit, false, {});
+            assert(baseline == transform(script, source, limit, true, {}));
+            for (size_t at = 0; at <= baseline.operations + 1; ++at) {
+                for (bool persistent : {false, true}) for (bool partial : {false, true}) {
+                    JsonTextFault fault{static_cast<int>(at), persistent, partial, partial, 0};
+                    assert(transform(script, source, limit, false, fault) == transform(script, source, limit, true, fault));
+                }
+            }
+        }
+    }
+}
+
+static void verifyPartialDocuments() {
+    for (int failure = 0; failure < 20; ++failure) {
+        TrackingAllocator allocator; allocator.failedCall = failure;
+        {
+            JsonDocument doc(&allocator); populate(doc);
+            const size_t before = allocator.calls; const bool overflow = doc.overflowed();
+            for (int kind = 0; kind < 3; ++kind)
+                assert(textResult(doc, kind, false, {}) == textResult(doc, kind, true, {}));
+            assert(allocator.calls == before && doc.overflowed() == overflow);
+        }
+        assert(allocator.blocks.empty());
+    }
+}
+struct WriterException { size_t call; };
+struct ThrowingWriter {
+    int failAt;
+    size_t calls = 0;
+    std::vector<Event> events;
+    size_t record(bool span, const uint8_t* value, size_t size) {
+        const size_t call = calls++;
+        events.push_back({span, std::string(reinterpret_cast<const char*>(value), size), size});
+        if (static_cast<int>(call) == failAt) throw WriterException{call};
+        return size;
+    }
+    size_t write(uint8_t byte) { return record(false, &byte, 1); }
+    size_t write(const uint8_t* data, size_t size) { return record(true, data, size); }
+};
+static void verifyExceptions() {
+    JsonDocument doc; populate(doc);
+    ThrowingWriter baseline{-1, 0, {}}; serializeJson(doc, baseline);
+    for (size_t at = 0; at < baseline.calls; ++at) {
+        ThrowingWriter old{static_cast<int>(at), 0, {}}, current{static_cast<int>(at), 0, {}};
+        bool oldThrew = false, currentThrew = false;
+        try { serializeJson(doc, old); }
+        catch (const WriterException& error) { oldThrew = true; assert(error.call == at); }
+        try { FastBee::serializeJsonShared(doc, current); }
+        catch (const WriterException& error) { currentThrew = true; assert(error.call == at); }
+        assert(oldThrew && currentThrew && old.calls == current.calls && old.events == current.events);
+    }
+}
+int main(int argc, char** argv) {
+    assert(argc == 2); const std::string mode(argv[1]);
+    if (mode == "values") verifyText(false);
+    else if (mode == "write-failures") verifyText(true);
+    else if (mode == "range") verifyRange();
+    else if (mode == "ownership") {
+        for (bool cancel : {false, true}) {
+            documentLifetime<FastBee::LegacyJsonDocumentResponse>(cancel);
+            documentLifetime<FastBee::JsonDocumentResponse>(cancel);
+        }
+    } else if (mode == "fragments") verifyFragments();
+    else if (mode == "templates") verifyTemplate();
+    else if (mode == "partial-documents") verifyPartialDocuments();
+    else if (mode == "exceptions") verifyExceptions();
+    else return 2;
+    std::cout << "shared serializer equivalence " << mode << " passed\n";
+}

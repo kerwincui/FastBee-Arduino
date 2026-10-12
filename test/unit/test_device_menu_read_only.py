@@ -7,6 +7,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class DeviceMenuReadOnlyTests(unittest.TestCase):
+    def test_panel_navigation_abort_contract_rejects_real_failures(self):
+        result = subprocess.run(
+            ['node', 'scripts/test-screen-panel-browser-device.mjs', '--contract-only'],
+            cwd=ROOT, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS: screen-panel browser contract', result.stdout)
+
     def test_status_post_allowlist_rejects_movement_and_ambiguous_payloads(self):
         source = r'''
 import assert from 'node:assert/strict';
@@ -70,35 +77,64 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { waitForMainShellStyles } from './scripts/lib/browser-main-style-check.mjs';
+const startedAt = Date.now();
+const phase = name => console.log(JSON.stringify({ phase: name, elapsedMs: Date.now() - startedAt }));
+phase('module-ready');
 const require = createRequire(import.meta.url);
 const { chromium } = require('./test/browser/node_modules/playwright');
+phase('launch:start');
 const browser = await chromium.launch({ headless: true });
+phase('launch:done');
+phase('newPage:start');
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+phase('newPage:done');
 const shell = css => `<!doctype html><style id="fb-main-stylesheet" data-ready="1">${css}</style>
   <div id="app-container" class="app-container"><div class="app-wrapper">
     <aside id="sidebar" class="sidebar"></aside>
     <main class="main-content"><header class="header"></header><section class="content"></section></main>
   </div></div>`;
 try {
+  phase('empty-setContent:start');
   await page.setContent(shell(''));
+  phase('empty-setContent:done');
+  phase('empty-style-check:start');
   await assert.rejects(
     waitForMainShellStyles(page, { timeoutMs: 50, pollMs: 10 }),
     /Global main stylesheet is not applied:.*main CSS rule count too small/,
   );
+  phase('empty-style-check:done');
+  phase('main-css-read-and-setContent:start');
   await page.setContent(shell(await readFile('./web-src/css/main.css', 'utf8')));
+  phase('main-css-read-and-setContent:done');
+  phase('desktop-style-check:start');
   const evidence = await waitForMainShellStyles(page, { timeoutMs: 500, pollMs: 20 });
   assert.ok(evidence.ruleCount >= 5);
   assert.equal(evidence.computed.wrapperDisplay, 'flex');
   assert.ok(evidence.rects.sidebar.width >= 180);
   assert.ok(evidence.rects.main.left >= evidence.rects.sidebar.right - 1);
+  phase('desktop-style-check:done');
+  phase('mobile-viewport:start');
   await page.setViewportSize({ width: 390, height: 844 });
+  phase('mobile-viewport:done');
+  phase('mobile-style-check:start');
   const mobileEvidence = await waitForMainShellStyles(page, { timeoutMs: 500, pollMs: 20 });
   assert.equal(mobileEvidence.computed.wrapperDirection, 'column');
+  phase('mobile-style-check:done');
   console.log('browser main style gate passed');
 } finally {
+  phase('close:start');
   await browser.close();
+  phase('close:done');
 }
 '''
-        result = subprocess.run(['node', '--input-type=module', '--eval', source], cwd=ROOT,
-                                capture_output=True, text=True, timeout=20)
+        try:
+            result = subprocess.run(['node', '--input-type=module', '--eval', source], cwd=ROOT,
+                                    capture_output=True, text=True, timeout=20)
+        except subprocess.TimeoutExpired as error:
+            def captured(value):
+                return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else (value or '')
+            self.fail(
+                f'Browser main style diagnostic timed out after {error.timeout}s; original timeout unchanged.\n'
+                f'stdout:\n{captured(error.stdout)}\nstderr:\n{captured(error.stderr)}'
+            )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

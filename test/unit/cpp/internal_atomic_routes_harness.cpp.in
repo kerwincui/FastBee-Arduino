@@ -1,0 +1,229 @@
+#include "protocols/MqttClientLease.h"
+#include "protocols/MqttMemoryDeadline.h"
+#include "protocols/MqttReportRetirement.h"
+#include "network/NetworkTransitionGuard.h"
+#include <cassert>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
+#define LOG_INFO(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+#define pdMS_TO_TICKS(value) (value)
+unsigned delays = 0, clientTouches = 0;
+unsigned configReads = 0, reboots = 0;
+unsigned configWrites = 0, downgrades = 0, independentRestores = 0;
+using String = std::string;
+struct JsonObject {};
+struct JsonDocument {
+    JsonDocument& operator[](const char*) { return *this; }
+    template<class T> T as() const { return true; }
+    template<class T> bool is() const { return true; }
+    template<class T> T operator|(T fallback) const { return fallback; }
+    template<class T> JsonDocument& operator=(const T&) { return *this; }
+};
+namespace HandlerUtils {
+template<class F> bool updateJsonConfig(const char*, F update) {
+    ++configWrites; JsonDocument doc; update(doc); return true;
+}
+}
+namespace FileSystem { const char* PROTOCOL_CONFIG_FILE = "fixture-only"; }
+struct { template<class... T> void printf(const char*, T...) {} void println(const char*) {} } Serial;
+struct ConfigStorage {
+    static ConfigStorage& getInstance() { static ConfigStorage value; return value; }
+    bool loadProtocolSection(const char*, JsonDocument&) { ++configReads; return true; }
+};
+struct SystemRebooter {
+    static void scheduleConfigReboot(const char*) { ++reboots; }
+};
+void vTaskDelay(unsigned) { ++delays; assert(false && "unavailable storage cannot drain by waiting"); }
+struct MQTTClient {
+    void setReportRetirementReason(FastBee::MqttRetirementReason) { ++clientTouches; }
+    bool isStopped() const { ++clientTouches; return true; }
+    bool stop() { ++clientTouches; return true; }
+    bool isStoppedByMemory() const { ++clientTouches; return true; }
+    void setStoppedByMemory(bool) { ++clientTouches; }
+    struct Config { String scheme = "mqtts"; unsigned port = 8883; };
+    Config getConfig() const { ++clientTouches; return {}; }
+    ~MQTTClient() { ++clientTouches; }
+};
+struct ProtocolManager {
+    FastBee::MqttClientLifetime mqttLifetime;
+    std::atomic<bool> mqttShutdownPending{false}, mqttRestartPending{false}, mqttStopPending{false};
+    bool shutdownComplete = false, isInitialized = true;
+    void *messageCallback = nullptr, *txCallback = nullptr, *rxCallback = nullptr, *sseCallback = nullptr;
+    std::vector<int> protocols;
+    std::unique_ptr<MQTTClient> mqttClient;
+    @AVAILABLE@
+    void shutdown();
+    void handleLifecycleForTest();
+    unsigned rebuilds = 0;
+    bool restartMQTT();
+    bool restartMQTTDeferred(bool forceRebuild = false, FastBee::MqttRestartResult* result = nullptr);
+    bool stopMQTT();
+    bool finishMqttStop();
+    void requestMqttRestartAsync();
+    FastBee::MqttClientLifetime::Write prepareMqttNetworkSwitch();
+    FastBee::MqttClientLease acquireMQTTClient() { ++clientTouches; return {}; }
+};
+struct FastBeeFramework {
+    inline static ProtocolManager* protocol = nullptr;
+    static FastBeeFramework* getInstance() { static FastBeeFramework value; return &value; }
+    ProtocolManager* getProtocolManager() { return protocol; }
+};
+namespace FastBee {
+struct RuntimeFeatureManager {
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    void clearRuntimeDisabled(const char*) { ++independentRestores; }
+    void setRuntimeDisabled(const char*, const char*) {}
+};
+}
+struct PeriphExecScheduler { void setMemoryPaused(bool) { ++independentRestores; } };
+struct PeriphExecManager {
+    static PeriphExecManager& getInstance() { static PeriphExecManager value; return value; }
+    PeriphExecScheduler* getScheduler() { static PeriphExecScheduler value; return &value; }
+};
+enum class MemoryGuardLevel { NORMAL, WARN, SEVERE, CRITICAL };
+constexpr unsigned long MQTT_MEMORY_CONFIG_RETRY_MS = 30000;
+struct HealthMonitor {
+    bool _mqttRecoveryBlockedForStorage = false, _mqttRestorePendingForMemory = true;
+    bool _mqttStoppedForMemory = true, _mqttsMemoryDowngrade = true, _mqttDisabledForMemory = false;
+    bool _periphExecPausedForMemory = true, _optionalPeripheralsSuspendedForMemory = false;
+    bool _modbusRestorePendingForMemory = false;
+    unsigned long _mqttRestoreRetryAtMs = 42, _mqttsRestoreRetryAtMs = 42, _mqttsRestoreCooldownMs = 0;
+    unsigned long _criticalStartTime = 0;
+    char _mqttsOriginalScheme[8] = "mqtts";
+    uint16_t _mqttsOriginalPort = 8883;
+    MemoryGuardLevel _currentLevel = MemoryGuardLevel::NORMAL;
+    bool refreshMqttRecoveryAdmission();
+    void reconcilePendingMemoryRecovery();
+    void restoreMemoryRecovery();
+    void downgradeMqttsToMqtt() { ++downgrades; }
+    void restoreMqttsAfterMemory() { ++downgrades; }
+};
+unsigned long millis() { return 10000; }
+struct FBNetworkManager {
+    FastBee::MqttClientLifetime _networkTransitionLifetime;
+    FastBee::NetworkProtocolAdmission _preNetworkSwitchCb;
+    bool pendingRestart = false;
+    unsigned long pendingRestartTime = 0;
+    unsigned mutations = 0;
+    bool restartNetwork(bool* deferred);
+};
+std::unique_ptr<FastBee::MqttClientLifetime> testGate;
+#define s_mqttTestGate (*testGate)
+struct AsyncWebServerRequest {};
+struct Context {
+    ProtocolManager* protocolManager = nullptr;
+    bool authorized = true;
+    int response = 0;
+    std::string error;
+    bool requireAuth(AsyncWebServerRequest*) { return authorized; }
+    void sendError(AsyncWebServerRequest*, int status, const char* message) {
+        response = status; error = message;
+    }
+};
+struct MqttRouteHandler {
+    Context* ctx;
+    unsigned continued = 0;
+    void handleTestMqttConnection(AsyncWebServerRequest*);
+    void handleGetMqttStatus(AsyncWebServerRequest*);
+    void handleMqttReconnect(AsyncWebServerRequest*);
+    void handleMqttDisconnect(AsyncWebServerRequest*);
+    void handleMqttNtpSync(AsyncWebServerRequest*);
+};
+@METHODS@
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    using namespace AtomicSdkMock;
+    testGate.reset(new FastBee::MqttClientLifetime);
+    allInternal = false;
+    failAllocation = mode != "available";
+    {
+        ProtocolManager pm;
+        FastBeeFramework::protocol = &pm;
+        Context context;
+        context.protocolManager = &pm;
+        MqttRouteHandler route{&context};
+        AsyncWebServerRequest request;
+        if (mode == "health") {
+            HealthMonitor health;
+            for (unsigned i = 0; i < 1000; ++i) {
+                health._mqttRestorePendingForMemory = true;
+                health._mqttRestoreRetryAtMs = health._mqttsRestoreRetryAtMs = 42;
+                health.restoreMemoryRecovery();
+                health.reconcilePendingMemoryRecovery();
+                assert(health._mqttRecoveryBlockedForStorage && !health._mqttRestorePendingForMemory);
+                assert(health._mqttRestoreRetryAtMs == 0 && health._mqttsRestoreRetryAtMs == 0);
+                assert(health._mqttStoppedForMemory && health._mqttsMemoryDowngrade);
+            }
+            assert(clientTouches == 0 && configReads == 0 && configWrites == 0 && downgrades == 0 && reboots == 0);
+            assert(pm.rebuilds == 0 && independentRestores > 0 && !health._periphExecPausedForMemory);
+        } else if (mode == "permanent") {
+            // Network storage is good, but its dependent protocol cannot admit.
+            allInternal = true;
+            FBNetworkManager network;
+            allInternal = false;
+            network._preNetworkSwitchCb = [&] { return pm.prepareMqttNetworkSwitch(); };
+            for (unsigned i = 0; i < 1000; ++i) {
+                pm.mqttRestartPending = true;
+                assert(!pm.restartMQTT() && !pm.mqttRestartPending);
+                auto outcome = FastBee::MqttRestartResult::Ready;
+                assert(!pm.restartMQTTDeferred(true, &outcome));
+                assert(outcome == FastBee::MqttRestartResult::StorageUnavailable && !pm.mqttRestartPending);
+                assert(!pm.stopMQTT() && !pm.mqttStopPending);
+                pm.mqttStopPending = true;
+                assert(!pm.finishMqttStop() && !pm.mqttStopPending);
+                pm.requestMqttRestartAsync();
+                assert(!pm.mqttRestartPending && pm.rebuilds == 0);
+                pm.mqttStopPending = true; pm.mqttRestartPending = true;
+                pm.handleLifecycleForTest();
+                assert(!pm.mqttStopPending && !pm.mqttRestartPending && reboots == 0 && configReads == 0);
+                auto admission = pm.prepareMqttNetworkSwitch();
+                assert(!admission && admission.storageUnavailable());
+                bool deferred = true;
+                network.pendingRestart = true;
+                assert(!network.restartNetwork(&deferred) && !deferred && !network.pendingRestart);
+                assert(network.mutations == 0);
+            }
+            // Independent network storage failure must skip the callback too.
+            FBNetworkManager unavailableNetwork;
+            unsigned callbacks = 0;
+            unavailableNetwork._preNetworkSwitchCb = [&] {
+                ++callbacks; return pm.prepareMqttNetworkSwitch();
+            };
+            bool deferred = true;
+            assert(!unavailableNetwork.restartNetwork(&deferred) && !deferred);
+            assert(!unavailableNetwork.pendingRestart && unavailableNetwork.mutations == 0 && callbacks == 0);
+            assert(clientTouches == 0 && delays == 0 && allocations == 2);
+        } else if (mode == "shutdown") {
+            assert(!pm.mqttLifetimeAvailable());
+            pm.shutdown();
+            assert(pm.shutdownComplete && !pm.isInitialized && delays == 0 && clientTouches == 0);
+            pm.shutdown();
+            assert(delays == 0 && clientTouches == 0);
+        } else {
+            if (mode == "unauthorized") context.authorized = false;
+            auto run = [&](auto method) {
+                context.response = 0; context.error.clear(); route.continued = 0;
+                (route.*method)(&request);
+                if (mode == "unauthorized") assert(context.response == 0 && route.continued == 0);
+                else if (mode == "available") assert(context.response == 0 && route.continued == 1);
+                else {
+                    assert(context.response == 503 && route.continued == 0);
+                    assert(context.error == "MQTT admission storage unavailable; restart required");
+                }
+            };
+            run(&MqttRouteHandler::handleTestMqttConnection);
+            run(&MqttRouteHandler::handleGetMqttStatus);
+            run(&MqttRouteHandler::handleMqttReconnect);
+            run(&MqttRouteHandler::handleMqttDisconnect);
+            run(&MqttRouteHandler::handleMqttNtpSync);
+            assert(clientTouches == 0 && delays == 0);
+        }
+    }
+    testGate.reset();
+    assert(internalAllocations.empty() && allocations == (mode == "permanent" ? 2U : 1U));
+    assert(frees == (mode == "available" ? 1U : 0U));
+}

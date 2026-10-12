@@ -1,0 +1,81 @@
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+#include <memory>
+#include <atomic>
+#include <unordered_set>
+constexpr uint32_t MALLOC_CAP_INTERNAL=1,MALLOC_CAP_8BIT=2,MALLOC_CAP_SPIRAM=4;
+bool allocationFails=false,routeScopeActive=true;
+uint32_t lastCaps=0;
+int constructions=0,destructions=0,routeRegistrations=0,maintenanceCalls=0,errorLogs=0;
+std::unordered_set<void*> internalAllocations;
+void* heap_caps_malloc(size_t bytes,uint32_t caps){
+    lastCaps=caps;
+    // Simulate RoutePsramScope permitting ordinary small allocations in PSRAM;
+    // explicit caps must still make this handler independent of that policy.
+    assert(routeScopeActive);
+    if(allocationFails)return nullptr;
+    assert(caps==(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    void* storage=std::malloc(bytes);assert(storage);internalAllocations.insert(storage);return storage;
+}
+void heap_caps_free(void* storage){assert(internalAllocations.erase(storage)==1);std::free(storage);}
+struct WebHandlerContext{};
+class LogRouteHandler {
+public:
+    static void* operator new(size_t bytes) noexcept;
+    static void operator delete(void* storage) noexcept;
+    static void operator delete(void* storage,size_t bytes) noexcept;
+    explicit LogRouteHandler(WebHandlerContext*){
+        ++constructions;assert(internalAllocations.count(this)==1);
+        auto low=reinterpret_cast<uintptr_t>(this),high=low+sizeof(*this);
+        for(const void* address:{static_cast<void*>(&active),static_cast<void*>(&stopping),
+                                static_cast<void*>(&task),static_cast<void*>(&completed),
+                                static_cast<void*>(&cleanupBusy)}){
+            auto member=reinterpret_cast<uintptr_t>(address);assert(member>=low&&member<high);
+        }
+    }
+    ~LogRouteHandler(){++destructions;}
+    void setupRoutes(void*){++routeRegistrations;}
+    void performMaintenance(){++maintenanceCalls;}
+    std::atomic<bool> active{false},stopping{false};
+    std::atomic<void*> task{nullptr};
+    std::atomic<bool> completed{false},cleanupBusy{false};
+};
+@ALLOCATE@
+@DELETE@
+@SIZED_DELETE@
+void ets_printf(const char*,...){++errorLogs;}
+struct ConfigManager {
+    std::unique_ptr<WebHandlerContext> ctx=std::make_unique<WebHandlerContext>();
+    std::unique_ptr<LogRouteHandler> logHandler;
+    bool initialize(){
+@INITIALIZE@
+        logHandler->setupRoutes(nullptr);
+        return true;
+    }
+    void maintenance(){if(logHandler)logHandler->performMaintenance();}
+};
+int main(){
+    // A nonthrowing class allocator returning nullptr prevents constructor and
+    // FeatureOwner construction, and initialize fails before registration.
+    allocationFails=true;
+    {
+        ConfigManager manager;assert(!manager.initialize());manager.maintenance();
+        assert(!manager.logHandler&&constructions==0&&destructions==0);
+        assert(routeRegistrations==0&&maintenanceCalls==0&&errorLogs==1);
+        assert(internalAllocations.empty()&&lastCaps==(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    }
+    allocationFails=false;
+    {
+        ConfigManager manager;assert(manager.initialize());manager.maintenance();
+        assert(constructions==1&&routeRegistrations==1&&maintenanceCalls==1);
+        assert(internalAllocations.size()==1);
+    }
+    assert(destructions==1&&internalAllocations.empty());
+    // Verify the matching sized path even on compilers preferring unsized delete.
+    void* storage=LogRouteHandler::operator new(sizeof(LogRouteHandler));
+    assert(storage);LogRouteHandler::operator delete(storage,sizeof(LogRouteHandler));
+    assert(internalAllocations.empty());
+    puts("PASS actual INTERNAL|8BIT allocator and cold OOM before construction/route registration");
+}

@@ -1,0 +1,73 @@
+#include "core/PeripheralExecution.h"
+#include <cassert>
+#include <cstring>
+#include <utility>
+
+struct PeripheralConfig {
+    bool modbus = false;
+    struct { struct { char sensorId[32] = "property"; uint8_t channelCount = 4; } modbus; } params;
+    bool isModbusPeripheral() const { return modbus; }
+};
+struct PeripheralManager {
+    PeripheralConfig config;
+    uint64_t version = 1;
+    bool found = true, changeDuringSnapshot = false;
+    static PeripheralManager& getInstance() { static PeripheralManager value; return value; }
+    uint64_t getConfigurationReviewVersion() const { return version; }
+    bool getPeripheralSnapshot(const String&, PeripheralConfig& out) {
+        out = config;
+        if (changeDuringSnapshot) ++version;
+        return found;
+    }
+};
+
+// @production@
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const String mode = argv[1];
+    if (mode == "split_boundaries") {
+        uint16_t channel = 99; size_t offset = 99;
+        assert(FastBee::splitModbusReportValue("65535:1", channel, offset) && channel == 65535 && offset == 6);
+        assert(FastBee::splitModbusReportValue("1", channel, offset) && channel == 0 && offset == 0);
+        for (const auto* value : {"65536:1", "9999999999999999:0", "-1:0", "+1:0", "1x:0", ":1", "1:"})
+            assert(!FastBee::splitModbusReportValue(value, channel, offset));
+        return 0;
+    }
+    auto& pm = PeripheralManager::getInstance();
+    ExecAction action;
+    action.targetPeriphId = "device";
+    action.actionType = static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE);
+    pm.config.modbus = mode != "gpio";
+    String requested = "2:1";
+    if (mode == "gpio") { action.actionType = static_cast<uint8_t>(ExecActionType::ACTION_HIGH); requested = "1"; }
+    if (mode == "register") action.actionType = static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE);
+    if (mode == "single_channel") pm.config.params.modbus.channelCount = 1;
+    if (mode == "unmapped") pm.config.params.modbus.sensorId[0] = '\0';
+    if (mode == "snapshot_missing") pm.found = false;
+    if (mode == "snapshot_changed") pm.changeDuringSnapshot = true;
+    if (mode == "malformed_channel") requested = "65536:1";
+    if (mode == "unterminated_id") memset(pm.config.params.modbus.sensorId, 'x', 32);
+    ActionExecResult binding; uint64_t owner = 0; bool strip = false;
+    prepareOutputReport(action, requested, "", binding, owner, strip);
+    // Simulate unrelated work/I/O after capture, before the report is finished.
+    if (mode == "owner_changed") ++pm.version;
+    if (mode == "owner_busy") pm.version = 0;
+    std::vector<ActionExecResult> results;
+    appendActionResult(results, action.targetPeriphId, mode == "gpio" ? "1" : "2:1",
+                       mode != "failed_write", mode == "failed_write" ? "modbus_write_failed" : "success");
+    if (mode == "already_invalid") results[0].reportIdentity = FastBee::ActionReportIdentity::Invalid;
+    finishOutputReport(results[0], std::move(binding), owner, strip);
+    const bool rejected = mode == "owner_changed" || mode == "owner_busy" || mode == "snapshot_missing" ||
+        mode == "snapshot_changed" || mode == "malformed_channel" || mode == "unterminated_id" || mode == "already_invalid";
+    const String* captured = FastBee::capturedReportId(results[0]);
+    assert(static_cast<bool>(captured) != rejected);
+    if (rejected) return 0;
+    assert(*captured == (mode == "gpio" || mode == "unmapped" ? "device" :
+        mode == "single_channel" ? "property" : "property_ch2"));
+    assert(results[0].actualValue == (mode == "unmapped" ? "2:1" : "1"));
+    // Later configuration replacement must never mutate the captured report.
+    strcpy(pm.config.params.modbus.sensorId, "replacement"); ++pm.version;
+    assert(FastBee::capturedReportId(results[0]) == captured);
+    assert(results[0].success == (mode != "failed_write"));
+}

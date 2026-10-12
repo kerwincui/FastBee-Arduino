@@ -1,0 +1,148 @@
+// This fragment is combined with the real NeoPixel integration fixture.
+// @includes@
+#include "core/NativeOutputControl.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/ScreenOutputIdentity.h"
+namespace OC = FastBee::OrdinaryControl;
+using Context = FastBee::OrdinaryControlContext;
+using Result = FastBee::OrdinaryControlResult;
+static int64_t clockUs = 1000000;
+int64_t esp_timer_get_time() { return clockUs; }
+// @declarations@
+    uint64_t _nextOrdinaryControlOperation = 0, _nextOrdinaryControlGeneration = 0;
+    struct ActionTickerData {
+        OC::Permit ordinaryPermit;
+        struct Timer { bool stopAndDelete() { assert(false); return false; } } ordinaryTimer;
+    };
+    std::map<String, ActionTickerData*> actionTickers;
+    bool beginOrdinaryControl(OC::Source, uint64_t, uint32_t, bool, uint64_t,
+        const String&, uint32_t, const FastBee::UartEventOrigin&, Context&);
+    void finishOrdinaryControl(const Context&, bool cancelled = false);
+    void finishOrdinaryModbusLocked(const Context&, bool) {} // Actual Modbus backend tested separately.
+    bool ordinaryPermitCurrentLocked(const String&, const OC::Permit&) const;
+    bool ordinaryBackendSupportedLocked(const PeripheralConfig& config) const {
+        return config.type == PeripheralType::NEO_PIXEL;
+    }
+    bool ordinaryProducerPresentLocked(const String&) const { return false; } // NeoPixel has no timer.
+    bool retireOrdinaryIoProducerLocked(const String&, bool) { return true; } // No IOX in this fixture.
+    bool retireOrdinaryRfLocked(const String&, bool*) { return true; } // No RF in this fixture.
+    bool ordinaryBackendQuiescentLocked(const String& id) const { return ordinaryNeoPixelQuiescentLocked(id); }
+    bool ordinaryNeoPixelQuiescentLocked(const String&) const;
+    bool retireOrdinaryDigitalLocked(const String&, uint64_t, bool = false, bool = false, bool* = nullptr);
+    bool retireOrdinaryMotionLocked(const String&, bool, bool*) { return true; } // No motion in this fixture.
+    bool inspectOrdinaryControlLocked(const String&, const Context&, OC::Intent, Result&, uint64_t&);
+    bool commitOrdinaryControlLocked(const String&, const Context&, OC::Intent, Result&, uint64_t&, bool, OC::Permit&);
+    void updateOrdinaryControlResultLocked(const String&, uint64_t, Result&) const;
+    bool completeOrdinaryControlLocked(const String&, uint64_t, Result&, bool, const char*);
+    bool controlNeoPixel(const String&, const String&, const String&, const Context*, Result*);
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin&) const { return true; }
+// @cases@
+static Context request(PeripheralManager& pm, OC::Source source = OC::Source::Rule,
+                       uint64_t actor = 1, uint32_t hold = 0) {
+    Context context;
+    assert(pm.beginOrdinaryControl(source, actor, hold, false, 0, "",
+        FastBee::SensorConfigEpoch::current(), {}, context));
+    return context;
+}
+static void ordinaryCase(const String& mode) {
+    PeripheralManager pm;
+    PeripheralConfig config;
+    pm.peripherals.emplace(config.id, config);
+    pm.runtimeStates.emplace(config.id, PeripheralRuntimeState{});
+    Result result;
+    if (mode == "missing") {
+        assert(!pm.controlNeoPixel("rgb", "red", "", nullptr, &result));
+        assert(String(result.reason) == "CONTROL_CONTEXT_REQUIRED" && !transportWrites);
+        return;
+    }
+    if (mode == "brightness_invalid") {
+        auto context = request(pm, OC::Source::Http, 1, 30000);
+        for (const auto text : {"", "oops", "256", "65536", "-1", "1.5", "1x", "+2"}) {
+            result = Result{};
+            assert(!pm.controlNeoPixel("rgb", "brightness", text, &context, &result));
+            assert(!result.attempted && String(result.reason) == "CONTROL_PARAMETER_INVALID");
+            assert(pm.peripherals.at("rgb").params.neopixel.brightness == 64);
+            assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Idle);
+        }
+        assert(!transportWrites); return;
+    }
+    auto manual = request(pm, OC::Source::Http, 1, 30000);
+    if (mode == "brightness") {
+        assert(pm.controlNeoPixel("rgb", "brightness", "255", &manual, &result));
+        assert(!result.attempted && String(result.reason) == "CONTROL_ACCEPTED_CONFIG_ONLY");
+        assert(pm.peripherals.at("rgb").params.neopixel.brightness == 255 && !transportWrites);
+        pm.finishOrdinaryControl(manual);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Held);
+        return;
+    }
+    if (mode == "stale_epoch") {
+        FastBee::SensorConfigEpoch::advance();
+        assert(!pm.controlNeoPixel("rgb", "red", "", &manual, &result));
+        assert(String(result.reason) == "CONTROL_SOURCE_STALE" && !transportWrites); return;
+    }
+    if (mode == "fault") writeResult = FASTBEE_NEO_WRITE_FAILED;
+    const bool first = pm.controlNeoPixel("rgb", "rainbow", "", &manual, &result);
+    if (mode == "fault") {
+        assert(!first && result.attempted && pm.neopixelRainbowIndex.at("rgb") == 0);
+        const auto writes = transportWrites;
+        pm.finishOrdinaryControl(manual);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Fault);
+        auto other = request(pm, OC::Source::Http, 2, 30000);
+        result = Result{}; writeResult = FASTBEE_NEO_OK;
+        assert(!pm.controlNeoPixel("rgb", "off", "", &other, &result));
+        assert(transportWrites == writes && !objectDeletes && retainedPin == 4); return;
+    }
+    assert(first && result.accepted && result.attempted && pm.neopixelRainbowIndex.at("rgb") == 1);
+    const auto writes = transportWrites;
+    if (mode == "continue") {
+        result = Result{};
+        assert(pm.controlNeoPixel("rgb", "rainbow", "", &manual, &result));
+        assert(pm.neopixelRainbowIndex.at("rgb") == 2 && transportWrites == writes + 1); return;
+    }
+    if (mode == "terminal") {
+        pm.finishOrdinaryControl(manual, true);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Idle);
+        assert(transportWrites == writes && !objectDeletes && g_neopixelInstance);
+        result = Result{};
+        assert(!pm.controlNeoPixel("rgb", "off", "", &manual, &result));
+        assert(String(result.reason) == "CONTROL_OPERATION_STALE" && transportWrites == writes); return;
+    }
+    if (mode == "stop") {
+        result = Result{};
+        assert(pm.controlNeoPixel("rgb", "stop", "", &manual, &result));
+        assert(result.cleanupConfirmed && !result.attempted && transportWrites == writes);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Retiring);
+        pm.finishOrdinaryControl(manual);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Idle);
+        assert(g_neopixelInstance && !objectDeletes && transportWrites == writes); return;
+    }
+    pm.finishOrdinaryControl(manual);
+    assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Held);
+    auto rule = request(pm, OC::Source::Rule, 2);
+    if (mode == "expired") clockUs += 30000000;
+    if (mode == "invalid_preserves") {
+        auto next = request(pm, OC::Source::Http, 1, 30000);
+        result = Result{};
+        assert(!pm.controlNeoPixel("rgb", "brightness", "nonsense", &next, &result));
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.operation == manual.request.operation);
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Held);
+        assert(transportWrites == writes); return;
+    }
+    result = Result{};
+    assert(!pm.controlNeoPixel("rgb", "rainbow", "", &rule, &result));
+    assert(transportWrites == writes && pm.neopixelRainbowIndex.at("rgb") == 1);
+    if (mode == "conflict") assert(String(result.reason) == "CONTROL_CONFLICT");
+    else if (mode == "expired") {
+        assert(String(result.reason) == "CONTROL_EXPIRED_RETRY_NEW_OPERATION");
+        assert(pm.runtimeStates.at("rgb").ordinaryControl.phase == OC::Phase::Idle);
+        result = Result{};
+        assert(!pm.controlNeoPixel("rgb", "red", "", &rule, &result));
+        assert(String(result.reason) == "CONTROL_OPERATION_STALE" && transportWrites == writes);
+        auto fresh = request(pm, OC::Source::Rule, 2);
+        result = Result{};
+        assert(pm.controlNeoPixel("rgb", "red", "", &fresh, &result));
+        assert(transportWrites == writes + 1);
+    } else assert(false);
+}
+int main(int argc, char** argv) { assert(argc == 2); ordinaryCase(argv[1]); }

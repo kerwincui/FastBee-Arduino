@@ -2,12 +2,20 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+#include "core/ResourceConsumerIdentity.h"
+// Return deterministic diagnostics instead of a Windows CRT assertion dialog.
+// Keep every assertion active, including builds that happen to define NDEBUG.
+#undef assert
+#define assert(expression) do { if (!(expression)) { \
+    std::fprintf(stderr, "RGB CHECK line %d: %s\n", __LINE__, #expression); \
+    std::exit(86); } } while(false)
 #ifndef FASTBEE_RGB_SCAN_TELEMETRY
 #define FASTBEE_RGB_SCAN_TELEMETRY 0
 #endif
@@ -22,7 +30,8 @@ enum { OUTPUT=1, INPUT=0, HIGH=1, LOW=0, MALLOC_CAP_SPIRAM=1, MALLOC_CAP_8BIT=2,
        ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NO_MEM=-2, LCD_CLK_SRC_DEFAULT=0 };
 using esp_err_t = int;
 #define GPIO_IS_VALID_OUTPUT_GPIO(pin) ((pin) >= 0 && (pin) <= 48)
-void pinMode(int, int) {}
+static unsigned pinModes=0;
+void pinMode(int, int) { ++pinModes; }
 void digitalWrite(int, int) {}
 uint32_t elapsedMs=0;
 uint32_t millis() { return elapsedMs; }
@@ -32,7 +41,9 @@ bool ledcAttachChannel(int, int, int, int) { return true; }
 int lastBacklightDuty = -1;
 bool failBacklightWrite = false;
 bool ledcWrite(int, int duty) { if(failBacklightWrite)return false;lastBacklightDuty=duty;return true; }
-void ledcDetach(int) {}
+bool failBacklightDetach=false;
+unsigned backlightDetaches=0;
+bool ledcDetach(int) { ++backlightDetaches;return !failBacklightDetach; }
 size_t psramBytes = 8*1024*1024;
 constexpr size_t normalInternalBytes = 96*1024;
 constexpr size_t normalInternalLargest = 64*1024;
@@ -74,8 +85,9 @@ struct TwoWire {
     unsigned reads[256]{};
     bool writeOnlyControl=true;
     bool fail=false;
+    bool pendingRead=false;
     void beginTransmission(uint8_t) { writeBytes.clear(); }
-    void write(uint8_t byte) { writeBytes.push_back(byte); }
+    size_t write(uint8_t byte) { writeBytes.push_back(byte); return 1; }
     int endTransmission(bool = true) {
         if (fail) return 1;
         current=writeBytes[0];
@@ -86,21 +98,38 @@ struct TwoWire {
         }
         return 0;
     }
-    int requestFrom(uint8_t, uint8_t) { return fail ? 0 : 1; }
-    int read() { ++reads[current]; return writeOnlyControl && (current==2 || current==3) ? 0 : registers[current]; }
+    int requestFrom(uint8_t, uint8_t) { pendingRead=!fail; return fail ? 0 : 1; }
+    int available() const { return pendingRead ? 1 : 0; }
+    int read() {
+        if(!pendingRead) return -1;
+        pendingRead=false;
+        ++reads[current];
+        return writeOnlyControl && (current==2 || current==3) ? 0 : registers[current];
+    }
 } wire;
 namespace FastBee {
 class I2CBusManager {
 public:
     const void* owner=nullptr;
     bool releaseFails=false, deferred=false;
+    uint8_t claimedAddress=0, externalAddress=0;
     static I2CBusManager& instance() { static I2CBusManager instance; return instance; }
-    bool acquire(const void* value,int8_t,int8_t,uint32_t,String&) { owner=value; return true; }
-    bool release(const void*) { if (releaseFails) return false; owner=nullptr; return true; }
-    void deferRelease(const void*) { deferred=true; owner=nullptr; }
+    bool acquire(const void* value,int8_t,int8_t,uint32_t,String&,ResourceConsumerRole role) {
+        assert(role==ResourceConsumerRole::Display); owner=value; return true;
+    }
+    bool claimAddress(const void* value,uint8_t address,String& error) {
+        if(value!=owner || address==externalAddress) { error="I2C_ADDRESS_CONFLICT"; return false; }
+        if(address<8 || address>0x77) { error="I2C_ADDRESS_INVALID"; return false; }
+        claimedAddress=address; return true;
+    }
+    bool ownsAddress(const void* value,uint8_t address) const {
+        return value==owner && address==claimedAddress && address!=externalAddress;
+    }
+    bool release(const void*) { if (releaseFails) return false; owner=nullptr; claimedAddress=0; return true; }
+    void deferRelease(const void*) { deferred=true; owner=nullptr; claimedAddress=0; }
     TwoWire* wire(const void* value) { return owner==value ? &::wire : nullptr; }
 };
-class I2CBusLock { public: bool locked() const { return true; } };
+class I2CBusLock { public: explicit I2CBusLock(uint32_t=1000) {} bool locked() const { return true; } };
 }
 struct esp_lcd_rgb_panel_config_t {
     int clk_src=0, data_width=0,bits_per_pixel=0,num_fbs=0,dma_burst_size=0;
@@ -140,6 +169,7 @@ esp_lcd_rgb_panel_config_t lastConfig;
 FakePanel* activePanel=nullptr;
 int livePanels=0;
 bool failInit=false;
+bool failPanelDelete=false;
 bool failRotation=false, failDraw=false;
 bool failBounce=false, consumeExtraMemory=false;
 size_t allocatedBounce=0;
@@ -175,6 +205,7 @@ int esp_lcd_panel_mirror(FakePanel* panel, bool x, bool y) {
 }
 int esp_lcd_panel_del(FakePanel* panel) {
     assert(recoveryAttached != panel);
+    if(failPanelDelete)return ESP_FAIL;
     internalBytes+=allocatedBounce;
     if(allocatedBounce) internalLargest=largestBeforeAllocation;
     allocatedBounce=0;
@@ -278,7 +309,61 @@ int main() {
 int main() {
     using namespace FastBee::Screen;
     auto& manager=FastBee::I2CBusManager::instance();
+    // Admission and cleanup must not alter another client's expander address.
+    for(const char* controller : {"ch32v003","tca9554"}) {
+        auto config=configuration();std::strcpy(config.controlBackend,controller);
+        config.controlBuzzerMask=std::strcmp(controller,"ch32v003")==0 ? 0x40 : 0;
+        const auto before=wire.writes.size();
+        const auto panelCalls=newPanelCalls;
+        manager.externalAddress=config.controlAddress;
+        String error; auto display=createRgbDisplayBackend(config,error);
+        assert(!display->begin(config,error));
+        assert(error=="I2C_ADDRESS_CONFLICT" && !display->ready());
+        assert(wire.writes.size()==before && newPanelCalls==panelCalls);
+        assert(!manager.owner && manager.externalAddress==config.controlAddress);
+        manager.externalAddress=0;
+    }
+    // A bus lease alone is insufficient after ownership loss, including end().
+    {
+        auto config=configuration();config.controlBuzzerMask=0x40;
+        String error;auto display=createRgbDisplayBackend(config,error);
+        assert(display->begin(config,error));
+        const auto before=wire.writes.size();
+        manager.claimedAddress=0;
+        assert(!display->setBrightness(10) && !display->setBuzzer(true));
+        display->end();
+        assert(wire.writes.size()==before && !manager.owner && livePanels==0);
+    }
     // Existing display backends need not implement optional housekeeping.
+    {
+        auto config=configuration();config.backlight=45;config.backlightChannel=3;
+        String error;auto display=createRgbDisplayBackend(config,error);
+        assert(display->begin(config,error));
+        const auto before=pinModes;const int newBefore=newPanelCalls;
+        auto* originalPanel=activePanel;
+        failBacklightDetach=true;
+        assert(!display->stop(error) && error=="SCREEN_BACKLIGHT_DETACH_FAILED: display retained");
+        assert(!display->ready() && activePanel==originalPanel && livePanels==1 && manager.owner);
+        FastBee::BacklightResourceSnapshot retained;
+        display->snapshotBacklightResource(retained);
+        assert(retained.available && retained.retained && retained.cleanupFailed && retained.pin==45);
+        const auto detachBefore=backlightDetaches;
+        for(unsigned i=0;i<1000;++i)display->snapshotBacklightResource(retained);
+        assert(backlightDetaches==detachBefore && pinModes==before);
+        assert(pinModes==before);
+        auto replacement=config;replacement.backlight=46;
+        assert(!display->begin(replacement,error));
+        assert(newPanelCalls==newBefore && static_cast<RgbDisplayBackend*>(display.get())->_config.backlight==45);
+        failBacklightDetach=false;failPanelDelete=true;
+        assert(!display->stop(error) && error=="SCREEN_RGB_PANEL_DELETE_FAILED");
+        assert(activePanel==originalPanel && livePanels==1 && manager.owner && pinModes==before);
+        const auto detached=backlightDetaches;failPanelDelete=false;
+        assert(display->stop(error));
+        assert(backlightDetaches==detached && !manager.owner && livePanels==0);
+        display->snapshotBacklightResource(retained);
+        assert(retained.available && !retained.retained && !retained.cleanupFailed && retained.pin==-1);
+        assert(display->begin(replacement,error));assert(display->stop(error));
+    }
     DefaultServiceDisplay defaultService;
     defaultService.service(1234);
     // Four rotations: asymmetric points establish orientation, bounds and colors.

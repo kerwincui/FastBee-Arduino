@@ -39,6 +39,7 @@ function readPublished(relPath) {
 }
 
 const deviceJs = read('web-src/modules/runtime/device-config.js');
+const transferJs = read('web-src/modules/runtime/device-config-transfer.js');
 const otaJs = read('web-src/modules/runtime/device-ota.js');
 const sessionJs = read('web-src/js/state-session.js');
 const stateJs = read('web-src/js/state.js');
@@ -49,9 +50,16 @@ const deployPs1 = read('scripts/deploy.ps1');
 const browserRunnerPs1 = read('scripts/run-browser-tests.ps1');
 
 parseJavaScript('web-src/modules/runtime/device-config.js', deviceJs);
+parseJavaScript('web-src/modules/runtime/device-config-transfer.js', transferJs);
 parseJavaScript('web-src/modules/runtime/device-ota.js', otaJs);
 parseJavaScript('web-src/js/state-session.js', sessionJs);
 assert(!deviceJs.includes('\uFFFD'), 'device-config.js contains replacement characters');
+assert(deviceJs.includes("this._loadModule('device-config-transfer'") && !deviceJs.includes('_importMigrationBundle(entries'),
+    'device landing module must defer transfer code until a user action');
+assert(transferJs.includes("AppState.registerModule('device-config-transfer'") && transferJs.includes('PageLoader._cacheModalTemplates'),
+    'transfer module must register its methods and cache its lazy modal templates');
+assert(!read('web-src/pages/modals.html').includes('config-transfer-modal'),
+    'global modal download must not retain on-demand migration dialogs');
 assert(!otaJs.includes('\uFFFD'), 'device-ota.js contains replacement characters');
 assert(sessionJs.includes('function clearLegacyAuthArtifacts()'),
     'session management must define a legacy auth cleanup helper');

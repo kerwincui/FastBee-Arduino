@@ -7,12 +7,18 @@
 #include <PubSubClient.h>
 #include <esp_random.h>
 #include <vector>
+#include <atomic>
 #include <freertos/semphr.h>
 #include <core/SystemConstants.h>
+#include "core/ReportInstanceBinding.h"
+#include "protocols/MqttReconnectLifetime.h"
+#include "protocols/MqttReportRetirement.h"
+#include "network/TlsTransportObservation.h"
 
 enum class MqttPayloadEncoding : uint8_t {
     TEXT = 0,
-    MODBUS_RTU_HEX = 1
+    MODBUS_RTU_HEX = 1,
+    CONFIGURED_TOPIC_TEXT = 2 // Already transformed; topic row belongs to this immutable client config.
 };
 
 // 固定大小的 MQTT 上报槽（零堆分配）
@@ -20,6 +26,7 @@ struct MqttSlot {
     char payload[513];    // 最多512字节payload，额外1字节用于字符串终止符
     uint16_t length;      // 实际 payload 长度
     MqttPayloadEncoding encoding; // 入队时固化，禁止消费时根据协议瞬时状态猜测
+    uint16_t topicIndex = UINT16_MAX; // Only CONFIGURED_TOPIC_TEXT uses this field.
     bool occupied;        // 槽位是否被占用
     
     MqttSlot() : length(0), encoding(MqttPayloadEncoding::TEXT), occupied(false) {
@@ -29,6 +36,7 @@ struct MqttSlot {
     void clear() {
         length = 0;
         encoding = MqttPayloadEncoding::TEXT;
+        topicIndex = UINT16_MAX;
         occupied = false;
         payload[0] = '\0';
     }
@@ -126,14 +134,14 @@ public:
     MQTTClient();
     ~MQTTClient();
 
-    bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE); 
     bool begin(uint32_t taskStartupDelayMs = 3000);
-    void shutdown();  // 关闭后台任务（在系统关闭前调用）
+    void shutdown();  // Terminal drain; never call from this client's worker callback.
     bool connect();
-    void disconnect();
-    void stop();           // 显式停止MQTT（断开并阻止自动重连）
+    bool disconnect(); // False: transport owner busy; retain the instance.
+    bool stop();           // false: worker cancellation queued; keep object/transport alive.
     bool publish(const String& topic, const String& message);
     bool publishToTopic(size_t topicIndex, const String& message);
+    bool queueTopicMessage(size_t topicIndex, const String& message); // Local retention, never delivery confirmation.
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
@@ -144,15 +152,31 @@ public:
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本
     bool queueModbusRtuReport(const String& hexPayload); // 固化 RAW 编码后入队
-    uint8_t getQueueDepth() const { return _slotCount; } // 获取上报队列深度
+    uint8_t getQueueDepth() const; // Ring plus retained consumer slot.
     // ── 队列背压统计 ──
     struct QueueStats {
-        uint32_t enqueueTotal;    // 累计入队请求数
-        uint32_t dropTotal;       // 累计丢弃数（队列满时丢弃最旧）
-        uint32_t publishTotal;    // 累计成功发布数
+        uint32_t enqueueTotal;    // Accepted ring admissions, including replacement.
+        uint32_t dropTotal;       // Invalid rejections + ring evictions; excludes throttling.
+        uint32_t publishTotal;    // Local publish acceptance, not broker/platform receipt.
         uint32_t throttleDrops;   // 背压限流丢弃数
+        uint32_t invalidDrops;
+        uint32_t evictedOldest;
+        uint32_t publishRejected;
+        uint32_t allocationDeferred;
+        uint32_t testModeRejected;
+        uint32_t configuredTopicAccepted;
     };
-    QueueStats getQueueStats() const { return _queueStats; }
+    struct QueueSnapshot {
+        uint8_t depth = 0, ringDepth = 0;
+        bool pendingReport = false, consumerActive = false;
+        uint32_t pendingAttempts = 0, retryDelayMs = 0;
+        QueueStats stats{};
+    };
+    QueueSnapshot getReportQueueSnapshot() const;
+    QueueStats getQueueStats() const;
+    static FastBee::MqttReportRetirement::Snapshot getReportRetirementSnapshot();
+    // Manager write lease required; annotates destruction, never clears/replays.
+    void setReportRetirementReason(FastBee::MqttRetirementReason reason) { _reportRetirementReason = reason; }
     bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
     // Dedicated configured remote channels: exact topics, no transforms/prefix,
@@ -166,10 +190,15 @@ public:
     
     // 获取配置引用
     const MQTTConfig& getConfig() const { return config; }
+    uint32_t getReportInstanceId() const { return _connectionTestOnly ? 0 : _reportInstanceId; }
+    bool isConnectionTestOnly() const { return _connectionTestOnly; }
+    const String& getConnectionTestId() const { return _connectionTestId; }
     
     // 详细状态信息
     bool getIsConnected() const { return isConnected; }
     bool isStopped() const { return stopped; }  // 是否被显式停止
+    bool isReconnectWorkerActive() const { return _reconnectLifetime.active(); }
+    bool isReconnectCancellationRequested() const { return _reconnectLifetime.stopping(); }
     int  getLastErrorCode() const { return lastErrorCode; }
     // 最近一次 MQTTS 失败是否由 TLS 内存准入/分配失败引起。
     // 供状态 API 区分网络超时与内存保护，不分配额外缓冲。
@@ -183,23 +212,21 @@ public:
     void setStoppedByMemory(bool stopped) { _stoppedByMemory = stopped; }
     uint32_t getReconnectCount() const { return reconnectCount; }
     unsigned long getLastConnectedTime() const { return lastConnectedTime; }
-    bool isTlsTransportAllocated() const { return _wifiClientSecure != nullptr; }
+    bool isTlsTransportAllocated() const { return _tlsTransportAllocated.load(); }
     bool isWebPausedForMqtts() const { return _webServerPaused; }
     
     // MQTT 上报降采样：设置最小上报间隔（毫秒），0 表示无限制
     void setMinReportInterval(uint32_t ms);
 
     // 设置外部 Transport Client（由 NetworkManager 注入，用于非 WiFi 联网方式）
-    void setTransportClient(Client* client);
+    bool setTransportClient(Client* client, bool secure = false); // Trusted provider only; before begin.
 
     // 重置错误计数器（网络类型切换后调用，清除慢模式状态）
     // 重置 consecutiveTimeouts、reconnectInterval、reconnectCount、lastErrorCode
     void resetErrorCounters();
 
-    // Web 前台请求到达时同步让位：MQTT publish 会把 free8 压到 3-5KB 并
-    // 占满 WiFi TX 通道，handle() 的让位要等下一个 protocol_handle tick，
-    // 此时响应已入队卡死（soak 首请求 1/40 挂起根因）。请求分发路径
-    // （WebHandlerContext::noteWebRequestActivity）直接调用本方法立即断开。
+    // Web memory pressure requests transport yielding. Try immediately; if a
+    // loop/handshake owns the socket, defer to handle instead of stopping it concurrently.
     void yieldToWeb();
 
     // 设置消息回调（topic, message, topicType）
@@ -220,16 +247,28 @@ public:
 
 private:
     WiFiClient wifiClient;
+    FastBee::TlsTransportObservation _tlsOwner;
     WiFiClientSecure* _wifiClientSecure = nullptr;  // MQTTS (TLS) 传输层（动态分配，失败时销毁释放 ~20KB TLS 内存）
+    std::atomic<bool> _tlsTransportAllocated{false}; // Status never reads a concurrently deleted pointer.
     Client* _externalClient = nullptr;  // 外部注入的 Client（非 WiFi 时使用）
+    bool _externalClientSecure = false; // Published with transport before begin; never inferred from scheme.
     PubSubClient mqttClient;
     MQTTConfig config;
-    bool isConnected;
-    bool stopped;                     // 是否被显式停止（阻止自动重连）
+    // Loaded once, before ProtocolManager publishes the instance to readers.
+    bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE);
+    bool publishToTopicImpl(size_t topicIndex, const String& message, bool prepared);
+    bool publishPreparedTopic(size_t topicIndex, const String& message);
+    std::atomic<bool> _beginAttempted{false};
+    bool _connectionTestOnly = false;
+    String _connectionTestId;
+    const uint32_t _reportInstanceId = FastBee::nextReportInstanceId();
+    std::atomic<bool> isConnected;
+    std::atomic<bool> stopped;         // Cancellation is visible to the reconnect worker.
+    std::atomic<bool> _stopCompleted{false};
     unsigned long lastReconnectAttempt;
-    unsigned long lastConnectedTime;  // 上次连接成功时间
-    int  lastErrorCode;               // 上次错误码
-    uint32_t reconnectCount;          // 重连次数
+    std::atomic<unsigned long> lastConnectedTime;  // Individually sampled status observations.
+    std::atomic<int> lastErrorCode;
+    std::atomic<uint32_t> reconnectCount;
     uint32_t reconnectInterval;       // 当前重连间隔（指数退避，毫秒）
     uint8_t  consecutiveTimeouts;     // 连续超时次数（用于检测 DNS 故障）
     unsigned long lastLoopTime;       // 上次loop()调用的时间（用于检测连接健康）
@@ -241,7 +280,12 @@ private:
     unsigned long lastMonitorTime = 0;    // 上次发布监测数据的时间
     
     // NTP 时间同步状态
-    unsigned long long ntpDeviceSendTime = 0;  // 发送 NTP 请求时的设备本地时间戳（millis）
+    unsigned long long ntpDeviceSendTime = 0;  // Monotonic milliseconds, no 49-day token reuse
+    uint32_t ntpTimeSequence = 0;
+    uint32_t ntpRequestConnection = 0;
+    std::atomic<uint32_t> ntpConnectionEpoch{0};
+    bool ntpRequestPending = false;
+    std::atomic_flag ntpRequestBusy = ATOMIC_FLAG_INIT;
     
     std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
     std::function<String()> _monitorDataProvider;  // 实时监测数据提供者
@@ -251,39 +295,42 @@ private:
     void _notifyStatusChange();  // 内部辅助方法
 
     // 后台重连任务（避免 reconnect() 阻塞 loopTask）
-    volatile bool _reconnectPending;
-    volatile bool _reconnectRunning;
-    TaskHandle_t _reconnectTaskHandle;
+    std::atomic<bool> _reconnectPending;
+    std::atomic<bool> _reconnectRunning;
+    FastBee::MqttReconnectLifetime _reconnectLifetime;
     uint32_t _taskStartupDelayMs;  // 重连任务启动延迟（ms），首次启动 3000ms，deferred 重启 500ms
-    // 重连自愈看门狗：记录调度重连任务的时间戳，若标志卡死超过阈值则强制重置，
-    // 避免一次性重连任务异常终止（如栈溢出）后 _reconnectPending/_reconnectRunning 永久卡死、
-    // 导致 handle() 永不再调度自动重连（表现为必须手动打开协议界面刷新才能恢复）。
-    unsigned long _reconnectScheduledMs = 0;
+    // Watchdog requests cooperative cancellation; it never kills a task that
+    // may own TLS/socket/allocator locks or resumes a second worker over it.
+    std::atomic<unsigned long> _reconnectScheduledMs{0};
     static constexpr uint32_t RECONNECT_WATCHDOG_TIMEOUT_MS = 90000;  // 重连执行最大允许时长（ms）
     // 8BIT 卡滞救援：MQTT 断开后 free8 <8KB 的起始时间 + 上次 WiFi 救援时间
     unsigned long _low8SinceMs = 0;
     unsigned long _lastWifiRescueMs = 0;
-    bool _lastMqttsTlsMemoryFailure = false;
-    bool _disabledByMemory = false;
-    bool _stoppedByMemory = false;
+    std::atomic<bool> _lastMqttsTlsMemoryFailure{false};
+    std::atomic<bool> _disabledByMemory{false};
+    std::atomic<bool> _stoppedByMemory{false};
     bool _mqttsMemoryBackoffActive = false;
     static void reconnectTaskEntry(void* param);
     bool ensureReconnectTask();  // 按需创建重连任务（连接时任务已删除，断开时重新创建）
     void doReconnect();  // 实际执行重连（在后台任务中调用）
-    void recoverStuckReconnect(const char* reason);  // 自愈：强制重置卡死的重连标志与僵死任务
+    void recoverStuckReconnect(const char* reason);  // Request cancellation, retain lifetime.
 
     // MQTTS TLS 内存管理：动态创建/销毁 WiFiClientSecure，确保失败后释放全部 TLS DRAM
     void ensureTlsTransport();    // 按需创建 _wifiClientSecure（已存在则跳过）
+    bool validateTransportSecurity(); // Reject untyped/plain external clients for MQTTS.
     void releaseTlsTransport();   // 销毁 _wifiClientSecure 释放 TLS 上下文和缓冲区
     bool reclaimDramForMqtts(bool pauseWeb = false);   // 回收 TLS/SSE 内存；以太网 MQTTS 可短暂暂停 Web 换取连续 DRAM
     void resumeWebServices();     // 显式暂停路径使用后恢复 Web 服务
-    bool _webServerPaused = false; // MQTTS 深度回收时短暂停止 Web，握手后恢复
+    std::atomic<bool> _webServerPaused{false}; // MQTTS 深度回收时短暂停止 Web，握手后恢复
     bool _mdnsPausedForMqtts = false;
     // 前台推迟超限后的强制深度暂停标志（一次性，reclaimDramForMqtts 消费后清零）
     bool _mqttsForceWebPause = false;
 
-    // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
+    // One recursive owner for ALL PubSubClient, socket/TLS and mutable protocol
+    // state. Public operations try without waiting; callbacks may reenter on
+    // the owner task. Never hold this while waiting for worker acknowledgement.
     SemaphoreHandle_t _publishMutex = nullptr;
+    std::atomic<bool> _webYieldPending{false};
 
     // 查找已启用的发布主题索引（按 topicType），找不到返回 -1
     int findEnabledPublishTopicIndex(MqttTopicType type) const;
@@ -298,18 +345,28 @@ private:
 
     // 异步任务上报环形缓冲区（PubSubClient 非线程安全，publish 必须在主循环执行）
     MqttSlot _reportSlots[MQTT_REPORT_SLOTS];  // 环形缓冲区 (~4KB)
+    FastBee::MqttRetirementReason _reportRetirementReason = FastBee::MqttRetirementReason::Unspecified;
+    bool _reportRetirementRecorded = false;
+    void recordReportQueueRetirement(); // Destructor only, after all callers/workers drain.
     MqttSlot _pendingReportSlot;               // 发布失败时保留，避免异步 Modbus 响应丢失
     uint8_t _slotWriteIndex = 0;                // 写入位置
     uint8_t _slotReadIndex = 0;                 // 读取位置
     uint8_t _slotCount = 0;                     // 当前已占用的槽位数
     // 环形缓冲索引自旋锁：生产者(pexec worker任务)与消费者(loopTask)跨核并发，
     // 三个索引的读改写必须在同一临界区内完成（临界区仅含索引操作+memcpy，微秒级）
-    portMUX_TYPE _slotMux = portMUX_INITIALIZER_UNLOCKED;
+    mutable portMUX_TYPE _slotMux = portMUX_INITIALIZER_UNLOCKED;
     uint32_t _minReportInterval = 0;            // 最小上报间隔（ms），0=无限制
-    unsigned long _lastReportQueueTime = 0;     // 上次入队上报数据的时间
+    uint32_t _lastReportQueueTime = 0;          // Last accepted admission.
+    bool _reportQueueAttempted = false;
+    bool _reportConsumerActive = false;
+    bool _reportFlushAttempted = false;
+    uint32_t _lastReportFlushMs = 0;
+    uint32_t _pendingReportAttempts = 0;
+    static void incrementQueueCounter(uint32_t& value) { if (value != UINT32_MAX) ++value; }
+    bool rejectInvalidReport();
     void processQueuedReports();
     bool queueReportDataEncoded(const char* payload, uint16_t length,
-                                MqttPayloadEncoding encoding);
+                                MqttPayloadEncoding encoding, uint16_t topicIndex = UINT16_MAX);
     
     // ── 队列背压统计与限流 ──
     QueueStats _queueStats = {};

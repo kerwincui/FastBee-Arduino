@@ -1,0 +1,125 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include "core/UartReceiveFault.h"
+#include "core/UartTextFramer.h"
+#include "core/UartEventOrigin.h"
+#include "core/SensorConfigEpoch.h"
+#include <cassert>
+#include <functional>
+#include <thread>
+using Fault = FastBee::UartReceiveFault;
+static uint32_t clockNow = 1000;
+static uint32_t streamToken = 1;
+static bool faultOnSerialize = false;
+static void corrupt() { Fault::observe(1,streamToken,Fault::Error::Frame); }
+uint32_t uartTestMillis() { return clockNow; }
+#define millis uartTestMillis
+size_t uartTestSerializeJson(JsonDocument& doc, String& out) {
+    const size_t n = serializeJson(doc,out);
+    if (faultOnSerialize) corrupt();
+    return n;
+}
+#define serializeJson uartTestSerializeJson
+namespace FastBee { struct MemoryBudget { static uint32_t dramFree() { return 100000; } }; }
+struct Log { template<class... T> void debugf(T&&...){} void warning(const char*){} } LOGGER;
+struct RecursiveMutexGuard { RecursiveMutexGuard(int,int){} bool isLocked()const{return true;} };
+enum class PeripheralType { UART };
+struct PeripheralConfig { String id="uart"; bool enabled=true; PeripheralType type=PeripheralType::UART; };
+class PeripheralManager {
+public:
+    std::string next;
+    std::function<void()> readHook;
+    unsigned reads=0;
+    PeripheralConfig config;
+    static PeripheralManager& getInstance() { static PeripheralManager p;return p; }
+    int getMutex()const{return 1;}
+    template<class F> void forEachPeripheral(F f) { f(config); }
+    uint32_t getUartReceiveGeneration(const String&)const {
+        return Fault::healthy(1,streamToken)?streamToken:0;
+    }
+    bool getPeripheralSnapshot(const String&,PeripheralConfig& out,uint32_t* epoch) {
+        out=config;*epoch=FastBee::SensorConfigEpoch::current();return true;
+    }
+    // Only transport is a fake; scheduler, framer and fault token are production.
+    // The separate transfer-quality harness executes the actual readData body.
+    bool readData(const String&,uint8_t* bytes,size_t& length) {
+        ++reads;length=std::min(length,next.size());
+        std::memcpy(bytes,next.data(),length);next.erase(0,length);
+        if(readHook)readHook();
+        return true;
+    }
+};
+struct RuleManager {
+    bool faultAfterFirst=false;
+    std::vector<String> values;
+    bool hasDataSourceRule(const String&)const{return true;}
+    void handlePollData(const char*,const String& text,const FastBee::UartEventOrigin& origin) {
+        assert(Fault::healthy(1,origin.receiveGeneration));
+        JsonDocument doc;assert(!deserializeJson(doc,text.c_str()));
+        values.emplace_back(doc[0]["value"].as<const char*>());
+        if(faultAfterFirst)corrupt();
+    }
+};
+class PeriphExecScheduler {
+public:
+    RuleManager* _manager=nullptr;
+    unsigned long _lastSerialCheck=0;
+    String _serializeBuffer;
+    using SerialTextFrame=FastBee::UartTextFramer<160>;
+    struct SerialRxState { SerialTextFrame frame;uint32_t configEpoch=0,receiveGeneration=0; };
+    std::map<String,SerialRxState> _serialRxFrames;
+    void checkSerialEvents();
+};
+constexpr unsigned long SERIAL_CHECK_INTERVAL_MS=250UL;
+constexpr size_t SERIAL_READ_CHUNK_BYTES=64;
+// @scheduler@
+extern bool peerHealthy(uint8_t,uint32_t);
+extern void peerObserve(uint8_t,uint32_t);
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];
+    Fault::arm(1,streamToken);
+    if(mode=="registry_concurrent") {
+        Fault::arm(2,99);assert(peerHealthy(1,1)&&peerHealthy(2,99));
+        std::vector<std::thread> threads;
+        for(unsigned n=0;n<8;++n)threads.emplace_back([]{
+            for(unsigned k=0;k<10000;++k)peerObserve(1,1);
+        });
+        // New receive generation must survive any late calls carrying old token.
+        Fault::arm(1,2);
+        for(auto& t:threads)t.join();
+        assert(Fault::healthy(1,2)&&peerHealthy(1,2)&&Fault::healthy(2,99));
+        assert(FastBee::UartTextDiagnostics::snapshot().values[FastBee::UartTextDiagnostics::HardwareFrameFault]<=1);
+        Fault::disarm(1,1);assert(Fault::healthy(1,2));
+        peerObserve(1,2);assert(!Fault::healthy(1,2));
+        Fault::observe(0,2,Fault::Error::Frame);Fault::observe(3,2,Fault::Error::Frame);
+        assert(Fault::healthy(2,99));return 0;
+    }
+    auto& pm=PeripheralManager::getInstance();
+    RuleManager rules;PeriphExecScheduler scheduler;scheduler._manager=&rules;
+    const auto tick=[&](const char* text){pm.next=text;clockNow+=1000;scheduler.checkSerialEvents();};
+    if(mode=="normal") {
+        tick("safe\nnext\n");assert(rules.values.size()==2&&rules.values[0]=="safe"&&rules.values[1]=="next");
+    } else if(mode=="after_read") {
+        pm.readHook=corrupt;tick("danger\n");assert(rules.values.empty());
+    } else if(mode=="during_serialization") {
+        faultOnSerialize=true;tick("danger\n");assert(rules.values.empty());
+        assert(FastBee::UartTextDiagnostics::snapshot().values[FastBee::UartTextDiagnostics::StaleFrame]==1);
+    } else if(mode=="between_frames") {
+        rules.faultAfterFirst=true;tick("before\nrejected\n");
+        // Completed pre-notification action is not rolled back; same-chunk tail is rejected.
+        assert(rules.values.size()==1&&rules.values[0]=="before");
+    } else if(mode=="idle_fault") {
+        tick("partial");assert(rules.values.empty());
+        pm.readHook=corrupt;tick("");assert(rules.values.empty());
+        tick("");assert(scheduler._serialRxFrames["uart"].frame.size()==0);
+    } else if(mode=="partial_restart") {
+        tick("old-part");corrupt();tick("old-tail\n");assert(rules.values.empty());
+        streamToken=2;Fault::arm(1,streamToken);
+        tick("unconfirmed-tail\nfresh\n");
+        assert(rules.values.size()==1&&rules.values[0]=="fresh");
+    } else assert(false);
+    if(mode!="normal"&&mode!="partial_restart") {
+        pm.readHook={};faultOnSerialize=false;const auto consumed=pm.reads;
+        tick("still-invalid\n");assert(pm.reads==consumed);
+    }
+}

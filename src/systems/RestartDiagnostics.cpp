@@ -78,15 +78,11 @@ void RestartDiagnostics::collectCurrentState(PreRestartSnapshot& snap) {
         snap.freeHeap,
         snap.largestFreeBlock);
     
-    // 任务栈水位
-    TaskHandle_t loopTask = xTaskGetHandle("loopTask");
-    TaskHandle_t asyncTcp = xTaskGetHandle("async_tcp");
-    TaskHandle_t mqttReconn = xTaskGetHandle("mqtt_reconn");
-    
-    // ESP-IDF's FreeRTOS port returns the minimum free stack in bytes.
-    if (loopTask)   snap.loopTaskWatermark = uxTaskGetStackHighWaterMark(loopTask);
-    if (asyncTcp)   snap.asyncTcpWatermark = uxTaskGetStackHighWaterMark(asyncTcp);
-    if (mqttReconn) snap.mqttReconnWatermark = uxTaskGetStackHighWaterMark(mqttReconn);
+    // A name lookup does not lease a task's lifetime. Preserve the RTC layout,
+    // but do not query possibly deleted tasks or store missing data as zero.
+    snap.loopTaskWatermark = UINT16_MAX;
+    snap.asyncTcpWatermark = UINT16_MAX;
+    snap.mqttReconnWatermark = UINT16_MAX;
     
     // 网络状态
     snap.wifiConnected = (WiFi.status() == WL_CONNECTED) ? 1 : 0;
@@ -109,9 +105,7 @@ void RestartDiagnostics::printSnapshot(const PreRestartSnapshot& snap) {
     Serial.printf( "  │ Low-mem counter:  %d consecutive                    \n", (int)snap.consecutiveLowMem);
     
     Serial.println("  ├─── Task Stacks ─────────────────────────────────────┤");
-    Serial.printf( "  │ loopTask:    %u bytes remaining                     \n", (unsigned)snap.loopTaskWatermark);
-    Serial.printf( "  │ async_tcp:   %u bytes remaining                     \n", (unsigned)snap.asyncTcpWatermark);
-    Serial.printf( "  │ mqtt_reconn: %u bytes remaining                     \n", (unsigned)snap.mqttReconnWatermark);
+    Serial.println("  │ Named-task stack watermarks: unknown (no lifetime lease)");
     
     Serial.println("  ├─── System ──────────────────────────────────────────┤");
     Serial.printf( "  │ WiFi:            %s (RSSI: %d dBm)                  \n",
@@ -234,10 +228,7 @@ void RestartDiagnostics::savePreRestartState(RestartReason reason, const char* c
                   (unsigned long)s_lastSnapshot.minFreeHeap,
                   (unsigned long)s_lastSnapshot.largestFreeBlock,
                   (int)s_lastSnapshot.heapFragmentation);
-    Serial.printf("[RESTART] Stacks — loop:%u async_tcp:%u mqtt:%u\n",
-                  (unsigned)s_lastSnapshot.loopTaskWatermark,
-                  (unsigned)s_lastSnapshot.asyncTcpWatermark,
-                  (unsigned)s_lastSnapshot.mqttReconnWatermark);
+    Serial.println("[RESTART] Named-task stack watermarks: unknown (no lifetime lease)");
     Serial.flush();
 }
 
@@ -280,9 +271,8 @@ void RestartDiagnostics::logBootDiagnostics() {
             if (snap.freeHeap < 8192) {
                 Serial.println("  >>> ROOT CAUSE LIKELY: Critical memory exhaustion <<<");
             }
-            if (snap.loopTaskWatermark > 0 && snap.loopTaskWatermark < 512) {
-                Serial.println("  >>> ROOT CAUSE LIKELY: loopTask stack overflow <<<");
-            }
+            // Legacy named-task fields had no lifetime lease; they cannot
+            // establish a current or historical stack-overflow root cause.
             if (snap.heapFragmentation > 80) {
                 Serial.println("  >>> CONTRIBUTING FACTOR: Severe heap fragmentation <<<");
             }

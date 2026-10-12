@@ -1,0 +1,126 @@
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <new>
+#include <string>
+#include "core/UartPortLease.h"
+#include "core/FeatureOwnerLifetime.h"
+#include "network/TlsTransportObservation.h"
+#include "network/CellularUartPort.h"
+using String=std::string;
+template<class... T> void logMessage(T&&...) {}
+#define LOG_INFO(...) logMessage(__VA_ARGS__)
+#define LOG_WARNING(...) logMessage(__VA_ARGS__)
+#define ets_printf(...) logMessage(__VA_ARGS__)
+constexpr int SERIAL_8N1=0,SIM_READY=1,MALLOC_CAP_INTERNAL=1;
+namespace FastBee { namespace MemoryBudget { constexpr uint32_t CELLULAR_BEGIN_MIN_DRAM=32000; }}
+uint32_t freeHeap=100000; int liveClients=0,powerOns=0,powerOffs=0;
+int allocations=0,failAllocation=0;
+bool failTlsAllocations=false;
+uint32_t heap_caps_get_free_size(int) { return freeHeap; }
+void delay(uint32_t) {}
+struct HardwareSerial {
+    int begins=0,ends=0;
+    void begin(uint32_t,int,int,int){++begins;} void end(){++ends;}
+    int available(){return 0;} int read(){return -1;}
+};
+HardwareSerial Serial1,Serial2;
+constexpr uint8_t port=CHIP_UART_COUNT>=3?2:1;
+struct Client {
+    Client(){++liveClients;}
+    virtual ~Client(){assert(!FastBee::UartPortLease::available(port));--liveClients;}
+    virtual void stop(){assert(!FastBee::UartPortLease::available(port));}
+    static void* operator new(std::size_t n,const std::nothrow_t&) noexcept {
+        if(++allocations==failAllocation || (failTlsAllocations && allocations>=4)) return nullptr;
+        return (std::malloc)(n);
+    }
+    static void operator delete(void* p) noexcept {(std::free)(p);}
+    static void operator delete(void* p,const std::nothrow_t&) noexcept {(std::free)(p);}
+};
+int simStatus=SIM_READY;
+struct TinyGsm:Client {
+    explicit TinyGsm(HardwareSerial&){}
+    String getModemInfo(){return "mock";} String getIMEI(){return "mock";}
+    int getSimStatus(){return simStatus;} int getSignalQuality(){return 20;}
+    void gprsDisconnect(){stop();}
+};
+struct TinyGsmClient:Client {explicit TinyGsmClient(TinyGsm&){} };
+struct CellularTrackedClient:Client {CellularTrackedClient(TinyGsmClient*,bool&,bool&){} };
+struct CellularSoftwareTlsClient:Client {
+    CellularSoftwareTlsClient(Client*,bool&,bool&) {
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Busy);
+    }
+    ~CellularSoftwareTlsClient() override {
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Retiring);
+    }
+};
+struct QuectelSslClient:Client {
+    QuectelSslClient(HardwareSerial&,int,int,int) {
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Busy);
+    }
+    ~QuectelSslClient() override {
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Retiring);
+    }
+    void setApn(const String&){}
+};
+struct CellularConfig {int txPin=7,rxPin=8,pwrPin=9;uint32_t baudRate=9600;String apn="test";};
+struct WiFiConfig {CellularConfig cellular;};
+class CellularAdapter {
+public:
+    FastBee::FeatureOwnerLifetime featureOwner_{FastBee::ObservedFeatureOwner::Cellular};
+    FastBee::TlsTransportObservation _softwareTlsOwner, _qsslOwner;
+    FastBee::UartPortLease _uartLease; HardwareSerial* _serial=nullptr;
+    TinyGsm* _modem=nullptr; TinyGsmClient* _gsmClient=nullptr;
+    CellularTrackedClient* _trackedClient=nullptr; CellularSoftwareTlsClient* _softwareTlsClient=nullptr;
+    QuectelSslClient* _qsslClient=nullptr;
+    bool _initialized=false,_connected=false,_clientBusy=false,ready=true,activate=true;
+    CellularConfig _pinConfig; String _apn;
+    void powerOn(){assert(_uartLease.owned());++powerOns;}
+    void powerOff(){assert(_uartLease.owned());++powerOffs;}
+    bool waitForReady(uint32_t){return ready;}
+    bool activateNetwork(){return activate;}
+    CellularAdapter();bool begin(const WiFiConfig&);void disconnect();~CellularAdapter();
+    Client* getClient();Client* getSecureClient();
+};
+// @production@
+int main() {
+    WiFiConfig config; auto& serial=CHIP_UART_COUNT>=3?Serial2:Serial1;
+    FastBee::UartPortLease peer; assert(peer.acquire(port));
+    {CellularAdapter rejected; assert(!rejected.begin(config)); rejected.disconnect();}
+    assert(peer.owned() && powerOns==0 && powerOffs==0 && serial.begins==0 && serial.ends==0);
+    assert(peer.releaseAfterStop());
+    for(int mode=0;mode<10;++mode) {
+        allocations=0;failAllocation=0;freeHeap=100000;simStatus=SIM_READY;failTlsAllocations=false;
+        {
+            CellularAdapter adapter;
+            if(mode==0) freeHeap=0;
+            if(mode==1) failAllocation=1;
+            if(mode==2) failAllocation=2;
+            if(mode==3) adapter.ready=false;
+            if(mode==4) simStatus=0;
+            if(mode==5) adapter.activate=false;
+            if(mode>=6 && mode<9) failAllocation=mode-3; // Optional transport allocations may fail safely.
+            if(mode==9) failTlsAllocations=true;
+            const bool ok=adapter.begin(config);
+            assert(ok==(mode>=6));
+            if(mode==9) {
+                assert(adapter.getClient() && !adapter.getSecureClient());
+                assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Stopped);
+            }
+            assert(adapter._uartLease.owned() && !peer.acquire(port));
+            allocations=0;failAllocation=0;freeHeap=100000;simStatus=SIM_READY;failTlsAllocations=false;
+            adapter.ready=true;adapter.activate=true;
+            if(!ok) {assert(adapter.begin(config));assert(liveClients==5);}
+            adapter.disconnect();
+            assert(!adapter._initialized && adapter._uartLease.owned() && !peer.acquire(port));
+            assert(adapter.begin(config) && liveClients==5); // Dispose retained clients before retry.
+        }
+        assert(liveClients==0 && FastBee::UartPortLease::available(port));
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("mqtts").state==FastBee::FeatureInstanceState::Stopped);
+        assert(peer.acquire(port));const int ends=serial.ends;
+        {CellularAdapter neverStarted;}
+        assert(serial.ends==ends && peer.owned());assert(peer.releaseAfterStop());
+    }
+    for(int i=0;i<1000;++i) {CellularAdapter adapter;assert(adapter.begin(config));}
+    assert(liveClients==0 && FastBee::UartPortLease::available(port));
+}

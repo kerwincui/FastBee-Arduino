@@ -1,0 +1,24 @@
+{
+  "peripherals": [
+    {
+      "id": "pca_demo_bus", "name": "PCA demo I2C", "type": 2, "enabled": false,
+      "pins": [8, 9],
+      "params": {"frequency": 100000, "address": 0, "isMaster": true}
+    },
+    {
+      "id": "pca_demo_oe", "name": "PCA dedicated OE", "type": 12, "enabled": false,
+      "pins": [10],
+      "params": {"ioSource": 0, "initialState": 1, "invertLogic": false, "passive": false}
+    },
+    {
+      "id": "pca_demo", "name": "PCA shared-frequency PWM", "type": 57, "enabled": false,
+      "pins": [],
+      "params": {
+        "busPeripheralId": "pca_demo_bus", "oePeripheralId": "pca_demo_oe",
+        "address": 64, "channelMask": 1, "pwmHz": 50, "clockHz": 25000000,
+        "minAngle": 0, "maxAngle": 180, "minPulseUs": 500, "maxPulseUs": 2500,
+        "openDrain": false
+      }
+    }
+  ]
+}

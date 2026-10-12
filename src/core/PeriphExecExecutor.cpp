@@ -6,11 +6,20 @@
  */
 
 #include "core/FeatureFlags.h"
+#include "network/LiteralStringMatch.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
 #include <cctype>
 #include <cstring>
 #include "core/PeriphExecExecutor.h"
+#include "core/NativeOutputDispatch.h"
+#include "core/MotionOutputDispatch.h"
+#include "core/RuleOutputIdentity.h"
+#include "core/Pca9685ConfigSupport.h"
+#include "core/RfOutputAction.h"
+#include "core/ActionValueContract.h"
+#include "core/ReportInstanceBinding.h"
+#include "core/SensorConfigEpoch.h"
 #include "core/MotorControlService.h"
 #include "core/PeriphExecManager.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
@@ -20,6 +29,9 @@
 #include "core/ScriptEngine.h"
 #include "core/FastBeeFramework.h"
 #include "utils/StringUtils.h"
+#include "utils/CheckedText.h"
+#include "utils/SystemTimeQuality.h"
+#include "utils/SystemTimeZone.h"
 #include "protocols/ProtocolManager.h"
 #if FASTBEE_ENABLE_MODBUS
 #include "protocols/ModbusHandler.h"
@@ -35,13 +47,20 @@
 #include "core/RuntimeFeatureManager.h"
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include "core/PeripheralManager.h"
+#include "core/ActionReportPayload.h"
+#if FASTBEE_ENABLE_MQTT
+static_assert(FastBee::kActionReportPayloadBytes == MQTT_SLOT_MAX_PAYLOAD,
+              "Action report serialization must match the MQTT slot budget");
+#endif
 #include "core/ChipConfig.h"
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 #include "peripherals/SensorDriver.h"
 #endif
 #include "core/SensorDriverCache.h"
 #include "core/SensorConfigSupport.h"
+#include "core/Ds18b20Selection.h"
 #include "core/DriverRegistry.h"
 #include "network/WebConfigManager.h"
 #include "network/NetworkManager.h"
@@ -61,6 +80,35 @@ struct PreparedSensorRead {
 };
 
 namespace {
+#if FASTBEE_ENABLE_SENSOR_DRIVER
+// Preserve each branch's snapshot point and warning; do not reuse boundConfig.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noclone))
+#elif defined(__clang__)
+__attribute__((noinline))
+#endif
+bool loadSensorReadSnapshot(PeripheralManager& pm, const char* periphId, PeripheralConfig& cfg) {
+    if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
+        LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+        return false;
+    }
+    return true;
+}
+
+#if FASTBEE_ENABLE_LCD
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noclone))
+#elif defined(__clang__)
+__attribute__((noinline))
+#endif
+void invalidateSensorReadDisplay(const char* periphId, const char* dataField) {
+    if (LCDManager::getInstance().isInitialized()) {
+        LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
+    }
+}
+#endif
+#endif
+
 size_t sensorReadGroupSize(const PeriphExecRule& rule, size_t first) {
     const auto& initial = rule.actions[first];
     if (first + 1 >= rule.actions.size() || initial.syncDelayMs || initial.useReceivedValue ||
@@ -73,7 +121,7 @@ size_t sensorReadGroupSize(const PeriphExecRule& rule, size_t first) {
     if (!PeripheralManager::getInstance().getPeripheralSnapshot(initial.targetPeriphId, config) ||
         !config.enabled || config.type != PeripheralType::SENSOR_GENERIC) return 1;
     const auto* metadata = FastBee::DriverRegistry::getInstance().getMetadata(config.params.sensor.driver);
-    const size_t limit = metadata ? std::min<size_t>(4, metadata->activeChannelCount(config.params.sensor.mode)) : 0;
+    const size_t limit = metadata ? std::min<size_t>(4, metadata->activeChannelCount(config.params.sensor.mode, config.params.sensor.scanMask)) : 0;
     if (limit < 2) return 1;
     String channels[4];
     String mappings[4];
@@ -84,12 +132,12 @@ size_t sensorReadGroupSize(const PeriphExecRule& rule, size_t first) {
             action.syncDelayMs || action.useReceivedValue || action.execMode != initial.execMode ||
             action.targetPeriphId != initial.targetPeriphId) break;
         JsonDocument parameters;
-        if (deserializeJson(parameters, action.actionValue) ||
+        if (deserializeJson(parameters, action.actionValue.c_str(), action.actionValue.length()) ||
             initial.targetPeriphId != (parameters["periphId"] | "")) break;
         const char* channel = parameters["channelField"] | "";
         String selected, error;
         if (!channel[0] || !FastBee::resolveSensorChannel(config.params.sensor.driver,
-                config.params.sensor.mode, channel, selected, error)) break;
+                config.params.sensor.mode, channel, selected, error, config.params.sensor.scanMask)) break;
         bool duplicate = false;
         const char* mapping = parameters["dataField"] | "";
         for (size_t j = 0; j < count; ++j) {
@@ -101,6 +149,23 @@ size_t sensorReadGroupSize(const PeriphExecRule& rule, size_t first) {
     }
     return count > 1 ? count : 1;
 }
+
+#if FASTBEE_ENABLE_MODBUS
+// Share parsing/copying only. The callers retain their distinct failure policy.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noclone))
+#elif defined(__clang__)
+__attribute__((noinline))
+#endif
+bool appendModbusPollReadings(JsonDocument& taskDoc, const String& encoded, JsonArray resultsArr) {
+    if (deserializeJson(taskDoc, encoded.c_str(), encoded.length())) return false;
+    JsonArray taskArr = taskDoc.as<JsonArray>();
+    for (JsonVariant item : taskArr) {
+        resultsArr.add(item);
+    }
+    return true;
+}
+#endif
 
 bool tryParseBoolLike(const String& rawValue, bool& outValue) {
     return StringUtils::tryParseBoolLike(rawValue, outValue);
@@ -268,11 +333,66 @@ void appendActionResult(std::vector<ActionExecResult>& results,
                         bool success,
                         const String& remark = "") {
     ActionExecResult result;
-    result.targetPeriphId = targetPeriphId;
-    result.actualValue = actualValue;
-    result.success = success;
-    result.remark = remark;
-    results.push_back(result);
+    if (strlen(targetPeriphId.c_str()) == targetPeriphId.length())
+        FastBee::captureLiteralReportIdentity(result, targetPeriphId.c_str());
+    FastBee::completeCapturedReport(result, actualValue, success, remark);
+    results.push_back(std::move(result));
+}
+
+// Capture output mapping before callbacks/I/O. A changed/busy configuration
+// owner suppresses this report; it cannot undo an already executed output.
+void prepareOutputReport(const ExecAction& action, const String& effectiveValue,
+                          const String& receivedValue, ActionExecResult& binding,
+                          uint64_t& owner, bool& stripChannel) {
+    auto& pm = PeripheralManager::getInstance();
+    owner = pm.getConfigurationReviewVersion();
+    stripChannel = false;
+    PeripheralConfig config;
+    if (!owner || strlen(action.targetPeriphId.c_str()) != action.targetPeriphId.length() ||
+        !pm.getPeripheralSnapshot(action.targetPeriphId, config) ||
+        pm.getConfigurationReviewVersion() != owner) return;
+    if (!config.isModbusPeripheral()) {
+        FastBee::captureLiteralReportIdentity(binding, action.targetPeriphId.c_str());
+        return;
+    }
+    uint16_t channel = 0;
+    size_t offset = 0;
+    const auto type = static_cast<ExecActionType>(action.actionType);
+    const bool channelCommand = type == ExecActionType::ACTION_MODBUS_COIL_WRITE ||
+        type == ExecActionType::ACTION_MODBUS_REG_WRITE;
+    if (channelCommand) {
+        const String value = normalizeScalarReportValue(effectiveValue, receivedValue, "");
+        if (!FastBee::splitModbusReportValue(value, channel, offset)) return;
+    }
+    FastBee::captureModbusReportIdentity(binding, action.targetPeriphId.c_str(),
+        config.params.modbus.sensorId, config.params.modbus.channelCount, channel);
+    stripChannel = channelCommand && binding.reportIdentity == FastBee::ActionReportIdentity::Field;
+}
+
+void finishOutputReport(ActionExecResult& result, ActionExecResult&& binding,
+                         uint64_t owner, bool stripChannel) {
+    if (result.reportIdentity == FastBee::ActionReportIdentity::Invalid) return;
+    if (!owner || PeripheralManager::getInstance().getConfigurationReviewVersion() != owner) {
+        result.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+        result.reportIdBytes = 0;
+        return;
+    }
+    if (stripChannel) {
+        uint16_t channel = 0;
+        size_t offset = 0;
+        if (!FastBee::splitModbusReportValue(result.actualValue, channel, offset)) {
+            binding.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+        } else if (offset) {
+            String value = result.actualValue.substring(offset);
+            if (value.length() != result.actualValue.length() - offset)
+                binding.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+            else result.actualValue = std::move(value);
+        }
+    }
+    result.reportIdentity = binding.reportIdentity;
+    result.reportIdBytes = binding.reportIdBytes;
+    result.targetPeriphId = std::move(binding.targetPeriphId);
+    result.dataField = std::move(binding.dataField);
 }
 
 template <size_t N>
@@ -330,6 +450,9 @@ const String* safeActionTraceValue(const ExecAction& action,
         case ExecActionType::ACTION_SENSOR_READ:
         case ExecActionType::ACTION_DISPLAY_NUMBER:
         case ExecActionType::ACTION_GPIO_TOGGLE:
+        case ExecActionType::ACTION_RTC_READ:
+        case ExecActionType::ACTION_RTC_SET:
+        case ExecActionType::ACTION_SD_STATUS:
             return actionResults.empty()
                 ? &effectiveValue : &actionResults.front().actualValue;
         default:
@@ -376,20 +499,6 @@ bool isBootReadableCallPeripheralOutputAction(const ExecAction& action) {
            cfg.type == PeripheralType::GPIO_ANALOG_OUTPUT;
 }
 
-bool looksLikeHexPayload(const String& rawValue) {
-    String value = rawValue;
-    value.trim();
-    if (value.length() < 4 || (value.length() % 2) != 0) return false;
-    for (size_t i = 0; i < value.length(); ++i) {
-        char c = value.charAt(i);
-        bool isHex =
-            (c >= '0' && c <= '9') ||
-            (c >= 'a' && c <= 'f') ||
-            (c >= 'A' && c <= 'F');
-        if (!isHex) return false;
-    }
-    return true;
-}
 }
 
 PeriphExecExecutor::PeriphExecExecutor() = default;
@@ -422,7 +531,30 @@ void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
 // ========== 动作执行接口 ==========
 
 bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue,
-                                           const String& receivedValue) {
+                                           const String& receivedValue, const FastBee::UartEventOrigin& uartOrigin,
+                                           bool* sourceUnconfirmed,
+                                           const FastBee::OrdinaryControlContext* control,
+                                           FastBee::OrdinaryControlResult* controlResult) {
+    if (sourceUnconfirmed) *sourceUnconfirmed = false;
+    if (!PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) {
+        if (sourceUnconfirmed) *sourceUnconfirmed = true;
+        return false;
+    }
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS)) {
+        ActionExecResult result;
+        return executeSdStatusAction(action, result);
+    }
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_CONTROL)) {
+        return executeRtcAction(action);
+    }
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_READ)) {
+        ActionExecResult result;
+        return executeRtcReadAction(action, result);
+    }
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_SET)) {
+        ActionExecResult result;
+        return executeRtcSetAction(action, result);
+    }
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_REMOTE_CHANNEL)) {
         LOGGER.warning("[PeriphExec] Remote channel action is retired");
         return false;
@@ -446,24 +578,24 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
 #endif
     // 调用其他外设 (actionType 10) 必须先于系统动作范围判断。
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
-        return executeCallPeripheralAction(action, effectiveValue, receivedValue);
+        return executeCallPeripheralAction(action, effectiveValue, receivedValue, nullptr, 0, uartOrigin, sourceUnconfirmed, control, controlResult);
     }
     // 专用外设控制动作 (11=灯效控制, 12=电机控制, 28=射频发送, 29=串口发送)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_NEOPIXEL_EFFECT) ||
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_STEPPER_CONTROL) ||
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RF_SEND) ||
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_UART_SEND)) {
-        return executeCallPeripheralAction(action, effectiveValue, receivedValue);
+        return executeCallPeripheralAction(action, effectiveValue, receivedValue, nullptr, 0, uartOrigin, sourceUnconfirmed, control, controlResult);
     }
     // 系统功能 (actionType 6-9) 与运行时功能开关 (actionType 31/32)
     if ((action.actionType >= 6 && action.actionType <= 9) ||
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_ENABLE) ||
         action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_FEATURE_DISABLE)) {
-        return executeSystemAction(action);
+        return executeSystemAction(action, uartOrigin, sourceUnconfirmed);
     }
     // 命令脚本 (actionType 15)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
-        return executeScriptAction(action);
+        return executeScriptAction(action, uartOrigin, sourceUnconfirmed, control, controlResult);
     }
     // 外设执行规则启用/禁用 (actionType 22/23)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_ENABLE_EXEC_RULE) ||
@@ -472,7 +604,7 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
     }
     // 外设动作（GPIO、Modbus子设备等统一由 PeripheralManager 管理）
     // receivedValue 透传：供 ACTION_OLED_DISPLAY 等需要访问原始下发值的动作替换 $value 占位符
-    return executePeripheralAction(action, effectiveValue, receivedValue);
+    return executePeripheralAction(action, effectiveValue, receivedValue, uartOrigin, control, controlResult);
 }
 
 std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
@@ -480,7 +612,41 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     size_t* reportCountOut, bool* completedAllOut, unsigned long deadlineAt,
     AsyncExecResult* traceOut) {
 
+    bool localCompleted = true;
+    bool ordinaryFailed = false;
+    if (!completedAllOut) completedAllOut = &localCompleted;
+    *completedAllOut = true;
+    FastBee::OrdinaryControlContext localControl;
+    auto* ordinaryControl = traceOut ? &traceOut->ordinaryControl : &localControl;
+    if (!traceOut) {
+        PeripheralManager::getInstance().beginOrdinaryControl(
+            FastBee::OrdinaryControl::Source::Rule, rule.outputActor, 0, false, 0, String(),
+            FastBee::SensorConfigEpoch::current(), {}, localControl);
+        localControl.ruleBound = true;
+        localControl.ruleEpoch = FastBee::RuleOutputIdentity::currentEpoch();
+    }
+    // Carry the operation's existing deadline through trusted output context.
+    // RF checks it at frame boundaries; no new duration or retry budget exists.
+    ordinaryControl->operationDeadlineAt = static_cast<uint32_t>(deadlineAt);
+    // Keep one operation through actions/delays. Only terminal acknowledgement
+    // permits a surviving producer to become independently owned.
+    struct OrdinaryTerminal {
+        const FastBee::OrdinaryControlContext& context;
+        const bool& completed;
+        const bool& failed;
+        ~OrdinaryTerminal() {
+            PeripheralManager::getInstance().finishOrdinaryControl(context, !completed || failed);
+        }
+    } ordinaryTerminal{*ordinaryControl, *completedAllOut, ordinaryFailed};
+    if (traceOut) traceOut->ordinaryControlResult = FastBee::OrdinaryControlResult{};
+
     const uint32_t collectionStartedAt = static_cast<uint32_t>(millis());
+    const uint32_t reportOrigin = rule.reportAfterExec && !suppressReport
+        ? captureReportInstanceId() : 0;
+    // Queue-backed operations carry their admission epoch. Synchronous direct
+    // callers bind at the start of the entire rule, before delays/earlier actions.
+    const uint32_t dispatchConfigEpoch = traceOut && traceOut->peripheralConfigEpoch
+        ? traceOut->peripheralConfigEpoch : FastBee::SensorConfigEpoch::current();
     if (completedAllOut) *completedAllOut = true;
     if (traceOut) {
         traceOut->actionCount = static_cast<uint8_t>(
@@ -496,8 +662,26 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     // 瞬时传输、规则控制和显示类动作不上报。
     std::vector<ActionExecResult> reportableResults;
 
+    // Recheck captured source after queue waits, earlier actions and delays.
+    // The PM lock is released by the validator before arbitrary callbacks/I/O.
+    // This deliberately does not claim atomicity with each hardware action.
+    auto sourceCurrent = [&](size_t index, const ExecAction& action) {
+        if (!_manager || !_manager->isRuleExecutionCurrent(rule)) {
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::RULE_REVISION_UNCONFIRMED;
+            appendActionTrace(traceOut, index, action, "", false, 0, 0, "rule_revision_unconfirmed");
+            return false;
+        }
+        if (!traceOut || PeripheralManager::getInstance().isUartEventOriginCurrent(traceOut->uartOrigin)) return true;
+        if (completedAllOut) *completedAllOut = false;
+        traceOut->errorCode = AsyncExecError::UART_SOURCE_UNCONFIRMED;
+        appendActionTrace(traceOut, index, action, "", false, 0, 0, "uart_source_unconfirmed");
+        return false;
+    };
+
     for (size_t actionIndex = 0; actionIndex < rule.actions.size(); ++actionIndex) {
         const auto& action = rule.actions[actionIndex];
+        if (!sourceCurrent(actionIndex, action)) break;
         if (operationDeadlineReached(deadlineAt)) {
             if (completedAllOut) *completedAllOut = false;
             if (traceOut) traceOut->errorCode = AsyncExecError::DEADLINE_EXCEEDED;
@@ -594,11 +778,14 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             }
         }
 
+        if (!sourceCurrent(actionIndex, action)) break;
         LOGGER.infof("[PeriphExec] Executing action: type=%d on %s, value=%s (useRecv=%d)",
             action.actionType, action.targetPeriphId.c_str(),
-            effectiveValue.c_str(), action.useReceivedValue);
+            (action.actionType == 10 || action.actionType == 29) ? "[omitted]" : effectiveValue.c_str(),
+            action.useReceivedValue);
 
         bool ok = false;
+        bool sourceUnconfirmed = false;
         std::vector<ActionExecResult> actionResults;
         // 标记本次动作是否属于采集类（可上报实时监测）
         bool isReportableAction = false;
@@ -606,7 +793,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             const size_t groupCount = sensorReadGroupSize(rule, actionIndex);
             if (groupCount > 1) {
                 const bool committed = executeSensorReadGroup(rule, actionIndex, groupCount,
-                    collectionStartedAt, deadlineAt, actionResults);
+                    collectionStartedAt, deadlineAt, actionResults,
+                    traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{}, &sourceUnconfirmed);
                 for (size_t i = 0; i < actionResults.size(); ++i) {
                     const auto& result = actionResults[i];
                     appendActionTrace(traceOut, actionIndex + i, rule.actions[actionIndex + i],
@@ -614,75 +802,140 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 }
                 results.insert(results.end(), actionResults.begin(), actionResults.end());
                 reportableResults.insert(reportableResults.end(), actionResults.begin(), actionResults.end());
-                if (!committed && traceOut && traceOut->errorCode == AsyncExecError::NONE) {
+                if (sourceUnconfirmed && traceOut) {
+                    traceOut->errorCode = AsyncExecError::UART_SOURCE_UNCONFIRMED;
+                } else if (!committed && traceOut && traceOut->errorCode == AsyncExecError::NONE) {
                     traceOut->errorCode = operationDeadlineReached(deadlineAt)
                         ? AsyncExecError::DEADLINE_EXCEEDED : AsyncExecError::ACTION_FAILED;
                 }
                 actionIndex += groupCount - 1;
-                if (operationDeadlineReached(deadlineAt)) {
+                if (sourceUnconfirmed || operationDeadlineReached(deadlineAt)) {
                     if (completedAllOut) *completedAllOut = false;
                     break;
                 }
                 continue;
             }
             ActionExecResult ar;
-            ok = executeSensorReadAction(action, ar, rule.recordHistory, &collectionStartedAt);
+            ok = executeSensorReadAction(action, ar, rule.recordHistory, &collectionStartedAt, nullptr,
+                traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{}, &sourceUnconfirmed);
             ar.success = ok;
-            ar.remark = ok ? "success" : "sensor_read_failed";
+            if (ar.remark.isEmpty()) ar.remark = ok ? "success" : "sensor_read_failed";
             actionResults.push_back(ar);
             isReportableAction = true;
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_RECORD)) {
+            ActionExecResult ar;
+            ok = _manager->getSdRecorderStatus(rule, ar);
+            actionResults.push_back(ar); // Passive status only; never arm, recover or replay.
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_THERMOSTAT)) {
+            ActionExecResult ar;
+            ok = _manager->getThermostatStatus(rule, ar);
+            actionResults.push_back(ar); // Status only, no manual output/rearm or numeric history.
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_READ)) {
+            ActionExecResult ar;
+            ok = executeRtcReadAction(action, ar);
+            actionResults.push_back(ar);
+            isReportableAction = true;
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS)) {
+            ActionExecResult ar;
+            ok = executeSdStatusAction(action, ar);
+            actionResults.push_back(ar);
+            isReportableAction = true;
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_SET)) {
+            ActionExecResult ar;
+            ok = executeRtcSetAction(action, ar);
+            actionResults.push_back(ar); // Trace only; never a numeric/history reading.
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
-            ok = executeModbusPollAction(action, rule, &actionResults);
+            FastBee::OrdinaryControlResult relayResult;
+            ok = executeModbusPollAction(action, rule, &actionResults, FastBee::ModbusActionMode::ExecuteRule,
+                traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{}, &sourceUnconfirmed,
+                ordinaryControl, &relayResult);
+            if (relayResult.evaluated) {
+                if (!relayResult.accepted) ordinaryFailed = true;
+                if (traceOut) FastBee::rememberOrdinaryControlResult(relayResult, &traceOut->ordinaryControlResult);
+            }
             if (!ok && actionResults.empty()) {
                 appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false, "modbus_poll_failed");
             }
             isReportableAction = true;
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_TRIGGER_EVENT)) {
-            // Canonical schema: targetPeriphId is the event ID and actionValue
-            // is payload. Keep a legacy fallback for old files, while all new
-            // Manager saves require the explicit target.
-            String triggerEventId = action.targetPeriphId;
-            if (triggerEventId.isEmpty()) {
-                triggerEventId = effectiveValue.isEmpty() ? rule.id : effectiveValue;
+            // Legacy received-value IDs cannot be covered by the local fixed
+            // event graph. Reject even manual execution of a disabled draft;
+            // retain its configuration so an explicit target can be supplied.
+            if (action.targetPeriphId.isEmpty() && action.useReceivedValue) {
+                ok = false;
+                appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false,
+                    "CONFIG_RULE_EVENT_DYNAMIC_TARGET");
+            } else {
+                // Canonical schema: targetPeriphId is the event ID and actionValue
+                // is payload. Keep a legacy fallback for old files, while all new
+                // Manager saves require the explicit target.
+                String triggerEventId = action.targetPeriphId;
+                if (triggerEventId.isEmpty()) {
+                    triggerEventId = effectiveValue.isEmpty() ? rule.id : effectiveValue;
+                }
+                LOGGER.infof("[PeriphExec] Trigger device event: id=%s name=%s (data=%s)",
+                             triggerEventId.c_str(), rule.name.c_str(), effectiveValue.c_str());
+                // 分发给规则（供其他规则订阅事件作为触发源），不受 reportAfterExec 控制
+                const FastBee::UartEventOrigin eventOrigin = traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{};
+                // The executor owns action21 reporting. Scheduler dispatch must not
+                // publish implicitly or bypass reportAfterExec/suppressReport.
+                PeriphExecManager::getInstance().triggerEventById(triggerEventId, effectiveValue, eventOrigin, false);
+                // 仅在勾选“是否上报数据”且未被外部抑制时，通过 DEVICE_EVENT 主题上报
+                if (rule.reportAfterExec && !suppressReport) {
+                    PeriphExecManager::getInstance().notifyMqttEventPublish(
+                        triggerEventId, rule.name, effectiveValue, eventOrigin);
+                }
+                ok = true;
+                appendActionResult(
+                    actionResults,
+                    triggerEventId,
+                    effectiveValue,
+                    ok,
+                    "event_triggered"
+                );
             }
-            LOGGER.infof("[PeriphExec] Trigger device event: id=%s name=%s (data=%s)",
-                         triggerEventId.c_str(), rule.name.c_str(), effectiveValue.c_str());
-            // 分发给规则（供其他规则订阅事件作为触发源），不受 reportAfterExec 控制
-            PeriphExecManager::getInstance().triggerEventById(triggerEventId, effectiveValue);
-            // 仅在勾选“是否上报数据”且未被外部抑制时，通过 DEVICE_EVENT 主题上报
-            if (rule.reportAfterExec && !suppressReport) {
-                PeriphExecManager::getInstance().notifyMqttEventPublish(
-                    triggerEventId, rule.name, effectiveValue);
-            }
-            ok = true;
-            appendActionResult(
-                actionResults,
-                triggerEventId,
-                effectiveValue,
-                ok,
-                "event_triggered"
-            );
         } else {
             // 将原始 receivedValue 透传给下层动作，便于 OLED_DISPLAY 等动作中 $value 占位符替换
-            ok = executeActionItem(action, effectiveValue, receivedValue);
+            ActionExecResult detail;
+            ActionExecResult reportBinding;
+            uint64_t reportOwner = 0;
+            bool stripReportChannel = false;
+            // Classify CALL_PERIPHERAL against the same pre-action generation.
+            isReportableAction = isReportableOutputAction(action.actionType) || isCallPeripheralOutputAction(action);
+            if (isReportableAction) prepareOutputReport(action, effectiveValue, receivedValue,
+                reportBinding, reportOwner, stripReportChannel);
+            const bool callAction = action.actionType == 10 || action.actionType == 11 ||
+                action.actionType == 12 || action.actionType == 28 || action.actionType == 29;
+            FastBee::OrdinaryControlResult outputResult;
+            ok = callAction
+                ? executeCallPeripheralAction(action, effectiveValue, receivedValue, &detail, dispatchConfigEpoch,
+                    traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{}, &sourceUnconfirmed,
+                    ordinaryControl, &outputResult)
+                : executeActionItem(action, effectiveValue, receivedValue,
+                    traceOut ? traceOut->uartOrigin : FastBee::UartEventOrigin{}, &sourceUnconfirmed,
+                    ordinaryControl, &outputResult);
+            if (outputResult.evaluated) {
+                if (!outputResult.accepted) detail.remark = outputResult.reason;
+                if (traceOut) FastBee::rememberOrdinaryControlResult(outputResult, &traceOut->ordinaryControlResult);
+            }
+            if (!ok && traceOut && !PeripheralManager::getInstance().isUartEventOriginCurrent(traceOut->uartOrigin))
+                sourceUnconfirmed = true;
             appendActionResult(
                 actionResults,
                 action.targetPeriphId,
-                buildActionReportValue(action, effectiveValue, receivedValue),
+                detail.remark.startsWith("UART_") ? String() :
+                    buildActionReportValue(action, effectiveValue, receivedValue),
                 ok,
-                ok ? "success" : "execute_failed"
+                sourceUnconfirmed ? String("uart_source_unconfirmed") :
+                    detail.remark.isEmpty() ? String(ok ? "success" : "execute_failed") : detail.remark
             );
             // 属性控制动作的结果也作为设备属性上报：用户勾选“上报数据”后，
             // GPIO、NeoPixel、Modbus 继电器/寄存器等控制状态可同步到物联网平台。
-            if (isReportableOutputAction(action.actionType)) {
-                isReportableAction = true;
-            } else if (ok && isCallPeripheralOutputAction(action)) {
-                // CALL_PERIPHERAL 调用 GPIO 输出外设（如 exec_015 平台控制 LED）：
-                // 与直接 GPIO 动作等价，结果同样上报，保证平台状态与设备实际一致
-                isReportableAction = true;
-            }
+            if (isReportableAction) finishOutputReport(actionResults.back(), std::move(reportBinding),
+                reportOwner, stripReportChannel);
         }
 
+        if (!ok) ordinaryFailed = true;
         results.insert(results.end(), actionResults.begin(), actionResults.end());
         // 采集类（SENSOR_READ / MODBUS_POLL）与属性控制类结果进入上报列表
         if (isReportableAction) {
@@ -699,7 +952,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 
         const String* traceValue = safeActionTraceValue(
             action, effectiveValue, actionResults);
-        const String traceRemark = actionResults.empty()
+        const String traceRemark = sourceUnconfirmed ? String("uart_source_unconfirmed") : actionResults.empty()
             ? String(ok ? "success" : "execute_failed")
             : actionResults.front().remark;
         if (traceValue) {
@@ -709,6 +962,11 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             appendActionTrace(traceOut, actionIndex, action,
                               effectiveValue.isEmpty() ? String() : String("[omitted]"), ok,
                               millis() - actionStartedAt, actionResults.size(), traceRemark);
+        }
+        if (sourceUnconfirmed) {
+            if (completedAllOut) *completedAllOut = false;
+            if (traceOut) traceOut->errorCode = AsyncExecError::UART_SOURCE_UNCONFIRMED;
+            break;
         }
         if (!ok && traceOut && traceOut->errorCode == AsyncExecError::NONE) {
             traceOut->errorCode = AsyncExecError::ACTION_FAILED;
@@ -724,8 +982,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     if (rule.reportAfterExec && !suppressReport && !reportableResults.empty()) {
         LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d action results",
             rule.name.c_str(), reportableResults.size());
-        reportActionResults(reportableResults);
-        // 回填本次实际上报的动作结果数量（供执行结果接口/回归测试观测）
+        reportActionResults(reportableResults, reportOrigin);
+        // Count results offered to reporting, not MQTT acceptance/delivery.
         if (reportCountOut) {
             *reportCountOut = reportableResults.size();
         }
@@ -745,13 +1003,16 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 // 绝不重新驱动任何输出（无副作用），用于设备重启后一次性对齐平台显示状态。
 size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
     // 只上报启用且勾选“上报数据”的规则，与正常 reportAfterExec 语义一致
-    if (!rule.enabled || !rule.reportAfterExec) return 0;
+    if (!rule.enabled || !rule.reportAfterExec || !_manager || !_manager->isRuleExecutionCurrent(rule)) return 0;
+
+    const uint32_t reportOrigin = captureReportInstanceId();
 
     PeripheralManager& pm = PeripheralManager::getInstance();
     std::vector<ActionExecResult> reportableResults;
     reportableResults.reserve(rule.actions.size());
 
     for (const auto& action : rule.actions) {
+        if (!_manager->isRuleExecutionCurrent(rule)) break;
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
             // 传感器读取：采集当前实时值（无副作用）
             ActionExecResult ar;
@@ -763,16 +1024,26 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
             // Modbus 轮询：只读采集从站寄存器当前值
             std::vector<ActionExecResult> pollResults;
-            executeModbusPollAction(action, rule, &pollResults);
+            executeModbusPollAction(action, rule, &pollResults, FastBee::ModbusActionMode::ReadOnlySnapshot);
             for (auto& pr : pollResults) {
                 if (pr.success) {
                     pr.remark = "boot_state";
                     reportableResults.push_back(pr);
                 }
             }
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RTC_READ)) {
+            ActionExecResult ar;
+            if (executeRtcReadAction(action, ar)) reportableResults.push_back(ar);
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS)) {
+            ActionExecResult ar;
+            if (executeSdStatusAction(action, ar)) reportableResults.push_back(ar);
         } else if (isBootReadableGpioOutputAction(action.actionType)) {
             // 物理输出控制：只读当前引脚电平，绝不重写输出（保持设备当前实际状态）
             if (action.targetPeriphId.isEmpty()) continue;
+            ActionExecResult binding;
+            uint64_t owner = 0;
+            bool stripChannel = false;
+            prepareOutputReport(action, "", "", binding, owner, stripChannel);
             GPIOState st = pm.readPin(action.targetPeriphId);
             if (st == GPIOState::STATE_UNDEFINED) {
                 // 无法确定实际电平（如 PWM/DAC 或引脚未初始化）：跳过，避免上报无效/缓存值
@@ -783,14 +1054,20 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
             appendActionResult(reportableResults, action.targetPeriphId,
                                physicalStateToLogicalValue(st, action.actionType),
                                true, "boot_state");
+            finishOutputReport(reportableResults.back(), std::move(binding), owner, false);
         } else if (isBootReadableCallPeripheralOutputAction(action)) {
             // CALL_PERIPHERAL 指向 GPIO 数字输出外设：只读当前电平上报启动状态。
             // 极性按非反转语义翻译（CALL_PERIPHERAL 无独立反转配置），与运行时上报一致。
+            ActionExecResult binding;
+            uint64_t owner = 0;
+            bool stripChannel = false;
+            prepareOutputReport(action, "", "", binding, owner, stripChannel);
             GPIOState st = pm.readPin(action.targetPeriphId);
             if (st == GPIOState::STATE_UNDEFINED) continue;
             appendActionResult(reportableResults, action.targetPeriphId,
                                physicalStateToLogicalValue(st, static_cast<uint8_t>(ExecActionType::ACTION_HIGH)),
                                true, "boot_state");
+            finishOutputReport(reportableResults.back(), std::move(binding), owner, false);
         }
         // 其它动作类型（系统/脚本/事件/显示/其它调用）不代表可上报的物模型状态，跳过
     }
@@ -800,14 +1077,17 @@ size_t PeriphExecExecutor::reportRuleCurrentState(const PeriphExecRule& rule) {
     LOGGER.infof("[PeriphExec] Boot state report for rule '%s': %d items",
                  rule.name.c_str(), (int)reportableResults.size());
     // 复用现有上报路径：保证 id/value 格式、dataField 物模型标识、MQTT 门控与未连接时缓存重试
-    reportActionResults(reportableResults);
+    reportActionResults(reportableResults, reportOrigin);
     return reportableResults.size();
 }
 
 // ========== 具体动作执行方法 ==========
 
 bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const String& effectiveValue,
-                                                 const String& receivedValue) {
+                                                 const String& receivedValue,
+                                                 const FastBee::UartEventOrigin& uartOrigin,
+                                                 const FastBee::OrdinaryControlContext* control,
+                                                 FastBee::OrdinaryControlResult* controlResult) {
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     if (action.targetPeriphId.isEmpty()) {
@@ -822,8 +1102,81 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 
     ExecActionType actType = static_cast<ExecActionType>(action.actionType);
     PeripheralConfig digitalTarget;
-    if (pm.getPeripheralSnapshot(action.targetPeriphId, digitalTarget) &&
-        digitalTarget.isExpanderChannel()) {
+    const bool digitalTargetFound = pm.getPeripheralSnapshot(action.targetPeriphId, digitalTarget);
+    if (digitalTargetFound && FastBee::isOrdinaryDigitalTarget(digitalTarget)) {
+        using Command = FastBee::DigitalOutputCommand;
+        Command command;
+        uint32_t intervalMs = 0;
+        switch (actType) {
+            case ExecActionType::ACTION_HIGH:
+            case ExecActionType::ACTION_LOW_INVERTED: command = Command::High; break;
+            case ExecActionType::ACTION_LOW:
+            case ExecActionType::ACTION_HIGH_INVERTED: command = Command::Low; break;
+            case ExecActionType::ACTION_GPIO_TOGGLE: command = Command::Toggle; break;
+            case ExecActionType::ACTION_BLINK:
+                command = Command::Blink;
+                if (!FastBee::parseOrdinaryBlinkInterval(effectiveValue, intervalMs))
+                    return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                        "CONTROL_PARAMETER_INVALID", controlResult);
+                break;
+            default:
+                return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                    "CONTROL_COMMAND_UNSUPPORTED", controlResult);
+        }
+        return FastBee::dispatchOrdinaryDigitalAction(pm, action.targetPeriphId,
+            command, intervalMs, control, controlResult);
+    }
+    if (digitalTargetFound && FastBee::isOrdinaryScalarTarget(digitalTarget)) {
+        using Scalar = FastBee::ScalarOutputCommand;
+        Scalar command = digitalTarget.type == PeripheralType::DAC ? Scalar::Dac : Scalar::Pwm;
+        uint32_t value = 0;
+        switch (actType) {
+            case ExecActionType::ACTION_HIGH:
+            case ExecActionType::ACTION_LOW_INVERTED:
+                if (!FastBee::ordinaryScalarHighValue(digitalTarget, value))
+                    return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                        "CONTROL_PARAMETER_INVALID", controlResult);
+                break;
+            case ExecActionType::ACTION_LOW:
+            case ExecActionType::ACTION_HIGH_INVERTED: break;
+            case ExecActionType::ACTION_GPIO_TOGGLE: command = Scalar::Toggle; break;
+            case ExecActionType::ACTION_BLINK:
+                command = Scalar::Blink;
+                if (!FastBee::parseOrdinaryBlinkInterval(effectiveValue, value))
+                    return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                        "CONTROL_PARAMETER_INVALID", controlResult);
+                break;
+            case ExecActionType::ACTION_SET_PWM:
+            case ExecActionType::ACTION_SET_DAC:
+                if ((actType == ExecActionType::ACTION_SET_DAC) !=
+                        (digitalTarget.type == PeripheralType::DAC) ||
+                    !FastBee::parseOrdinaryScalarValue(digitalTarget, effectiveValue, value))
+                    return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                        "CONTROL_PARAMETER_INVALID", controlResult);
+                break;
+            case ExecActionType::ACTION_BREATHE:
+                command = Scalar::Breathe;
+                if (digitalTarget.type == PeripheralType::DAC ||
+                    !FastBee::parseOrdinaryBreathePeriod(effectiveValue, value))
+                    return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                        "CONTROL_PARAMETER_INVALID", controlResult);
+                break;
+            default:
+                return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                    "CONTROL_COMMAND_UNSUPPORTED", controlResult);
+        }
+        return FastBee::dispatchOrdinaryScalarAction(pm, action.targetPeriphId,
+            command, value, control, controlResult);
+    }
+    if (digitalTargetFound && digitalTarget.type == PeripheralType::PWM_SERVO) {
+        uint32_t duty = 0;
+        if (actType != ExecActionType::ACTION_SET_PWM ||
+            !FastBee::parseServoRawDuty(digitalTarget, effectiveValue, duty))
+            return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                "CONTROL_PARAMETER_INVALID", controlResult);
+        return pm.submitOrdinaryServo(action.targetPeriphId, duty, true, control, controlResult);
+    }
+    if (digitalTargetFound && digitalTarget.isExpanderChannel()) {
         if (digitalTarget.type != PeripheralType::GPIO_DIGITAL_OUTPUT ||
             (actType != ExecActionType::ACTION_HIGH && actType != ExecActionType::ACTION_LOW &&
              actType != ExecActionType::ACTION_HIGH_INVERTED &&
@@ -834,6 +1187,74 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             const long interval = effectiveValue.isEmpty() ? 500L : effectiveValue.toInt();
             if (interval < 200L || interval > 65535L ||
                 pm.readPin(action.targetPeriphId) == GPIOState::STATE_UNDEFINED) return false;
+        }
+    }
+
+    if (digitalTargetFound && digitalTarget.isModbusPeripheral()) {
+        FastBee::OrdinaryControlResult result;
+        result.evaluated=true;
+        auto done=[&](bool accepted) {
+            FastBee::rememberOrdinaryControlResult(result,controlResult);return accepted;
+        };
+        auto reject=[&](const char* reason) {result.reason=reason;return done(false);};
+        if(!control)return reject("CONTROL_CONTEXT_REQUIRED");
+        if(!digitalTarget.enabled)return reject("CONTROL_TARGET_DISABLED");
+        auto decimal=[](const String& text,uint16_t& value) {
+            if(text.isEmpty() || text.length()>5 || text.length()!=std::strlen(text.c_str()))return false;
+            uint32_t number=0;
+            for(size_t i=0;i<text.length();++i) {
+                const char c=text.charAt(i);if(c<'0' || c>'9')return false;
+                number=number*10U+static_cast<uint32_t>(c-'0');if(number>65535)return false;
+            }
+            value=static_cast<uint16_t>(number);return true;
+        };
+        switch(actType) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_LOW_INVERTED:
+            return done(pm.writeModbusPin(action.targetPeriphId,GPIOState::STATE_HIGH,*control,result));
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+            return done(pm.writeModbusPin(action.targetPeriphId,GPIOState::STATE_LOW,*control,result));
+        case ExecActionType::ACTION_SET_PWM: {
+            uint16_t value=0;
+            if(!effectiveValue.isEmpty() && !decimal(effectiveValue,value))return reject("CONTROL_PARAMETER_INVALID");
+            return done(pm.writeModbusPWM(action.targetPeriphId,value,*control,result));
+        }
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
+            uint16_t channel=0;
+            String stateText=effectiveValue;
+            const int separator=effectiveValue.indexOf(':');
+            if(separator>=0) {
+                if(!decimal(effectiveValue.substring(0,separator),channel))return reject("CONTROL_PARAMETER_INVALID");
+                stateText=effectiveValue.substring(separator+1);
+            }
+            // ESP32 String comparisons may stop at an embedded NUL.
+            if(stateText.length()!=std::strlen(stateText.c_str()))
+                return reject("CONTROL_PARAMETER_INVALID");
+            bool value=false;
+            if(stateText=="1" || FastBee::stringEqualsIgnoreCaseLiteral(stateText, "true") || FastBee::stringEqualsIgnoreCaseLiteral(stateText, "on"))value=true;
+            else if(stateText!="0" && !FastBee::stringEqualsIgnoreCaseLiteral(stateText, "false") && !FastBee::stringEqualsIgnoreCaseLiteral(stateText, "off"))
+                return reject("CONTROL_PARAMETER_INVALID");
+            const auto& configured=digitalTarget.params.modbus;
+            if(configured.deviceType!=0 || configured.controlProtocol>1 ||
+                channel>=configured.channelCount || uint32_t(configured.coilBase)+channel>65535U)
+                return reject("CONTROL_PARAMETER_INVALID");
+            if(configured.ncMode)value=!value;
+            const uint16_t address=static_cast<uint16_t>(configured.coilBase+channel);
+            return done(configured.controlProtocol==0?
+                pm.writeModbusCoil(action.targetPeriphId,address,value,*control,result):
+                pm.writeModbusReg(action.targetPeriphId,address,value?1:0,*control,result));
+        }
+        case ExecActionType::ACTION_MODBUS_REG_WRITE: {
+            uint16_t address=digitalTarget.params.modbus.coilBase,value=0;
+            const int separator=effectiveValue.indexOf(':');
+            if(separator>=0) {
+                if(!decimal(effectiveValue.substring(0,separator),address) ||
+                    !decimal(effectiveValue.substring(separator+1),value))return reject("CONTROL_PARAMETER_INVALID");
+            } else if(!decimal(effectiveValue,value))return reject("CONTROL_PARAMETER_INVALID");
+            return done(pm.writeModbusReg(action.targetPeriphId,address,value,*control,result));
+        }
+        default:return reject("CONTROL_COMMAND_UNSUPPORTED");
         }
     }
 
@@ -853,15 +1274,13 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
         case ExecActionType::ACTION_BLINK: {
             LOGGER.infof("[PeriphExec] Execute BLINK on %s", action.targetPeriphId.c_str());
             uint16_t interval = effectiveValue.isEmpty() ? 500 : effectiveValue.toInt();
-            pm.startActionTicker(action.targetPeriphId, 1, interval);
-            return true;
+            return pm.startActionTicker(action.targetPeriphId, 1, interval, uartOrigin);
         }
 
         case ExecActionType::ACTION_BREATHE: {
             LOGGER.infof("[PeriphExec] Execute BREATHE on %s", action.targetPeriphId.c_str());
             uint16_t speed = effectiveValue.isEmpty() ? 2000 : effectiveValue.toInt();
-            pm.startActionTicker(action.targetPeriphId, 2, speed);
-            return true;
+            return pm.startActionTicker(action.targetPeriphId, 2, speed, uartOrigin);
         }
 
         case ExecActionType::ACTION_SET_PWM: {
@@ -872,13 +1291,25 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 
         case ExecActionType::ACTION_SET_DAC: {
 #if CHIP_HAS_DAC
-            uint8_t dacVal = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
+            uint8_t dacVal = 0;
+            if (!FastBee::parseDacActionValue(effectiveValue.c_str(), effectiveValue.length(), dacVal))
+                return false;
             LOGGER.infof("[PeriphExec] Execute SetDAC(%d) on %s", (int)dacVal, action.targetPeriphId.c_str());
+            // Keep type/readiness/source validation and the checked write under
+            // one PM lock: reconfiguration must not turn this byte into UART or
+            // another peripheral's command between snapshot and dispatch.
+            RecursiveMutexGuard lock(pm.getMutex(), 0);
+            if (!lock.isLocked()) return false;
             PeripheralConfig cfg;
-            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg)) return false;
-            uint8_t pin = cfg.getPrimaryPin();
-            dacWrite(pin, dacVal);
-            return true;
+            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg) ||
+                !cfg.enabled || cfg.type != PeripheralType::DAC) return false;
+            const auto* state = pm.getRuntimeState(action.targetPeriphId);
+            if (!state || state->memorySuspended || state->memoryCleanupPending ||
+                (state->status != PeripheralStatus::PERIPHERAL_INITIALIZED &&
+                 state->status != PeripheralStatus::PERIPHERAL_RUNNING) ||
+                !pm.isUartEventOriginCurrent(uartOrigin)) return false;
+            // SDK acknowledgement only; no voltage/readback or physical claim.
+            return pm.writeData(action.targetPeriphId, &dacVal, 1);
 #else
             LOGGER.warning("[PeriphExec] DAC not supported on this chip");
             return false;
@@ -902,62 +1333,6 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             return pm.togglePin(action.targetPeriphId);
         }
 
-        // Modbus 线圈写入 (FC05) — 支持 "channel:state" 或 "state" 格式
-        case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
-            PeripheralConfig cfg;
-            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg) || !cfg.isModbusPeripheral()) {
-                LOGGER.warningf("[PeriphExec] Modbus coil write: '%s' is not a Modbus peripheral",
-                                action.targetPeriphId.c_str());
-                return false;
-            }
-            uint16_t channel = 0;
-            bool coilState = false;
-            int sepIdx = effectiveValue.indexOf(':');
-            if (sepIdx > 0) {
-                channel = effectiveValue.substring(0, sepIdx).toInt();
-                coilState = effectiveValue.substring(sepIdx + 1).toInt() != 0;
-            } else {
-                coilState = effectiveValue.toInt() != 0;
-            }
-            // 通过 PeripheralManager 的 Modbus 写入接口
-            bool value = coilState;
-            if (cfg.params.modbus.ncMode) value = !value;
-            uint16_t coilAddr = cfg.params.modbus.coilBase + channel;
-            if (cfg.params.modbus.controlProtocol == 0) {
-                // 线圈模式 (FC05)
-                LOGGER.infof("[PeriphExec] Modbus FC05: slave=%d coil=%d state=%d",
-                    cfg.params.modbus.slaveAddress, coilAddr, value);
-                return pm.writeModbusCoil(action.targetPeriphId, coilAddr, value);
-            }
-            // 寄存器协议模式 (FC06)
-            uint16_t regVal = value ? 1 : 0;
-            LOGGER.infof("[PeriphExec] Modbus FC06 (coil): slave=%d reg=%d val=0x%04X",
-                cfg.params.modbus.slaveAddress, coilAddr, regVal);
-            return pm.writeModbusReg(action.targetPeriphId, coilAddr, regVal);
-        }
-
-        // Modbus 寄存器写入 (FC06) — 支持 "addr:value" 或 "value" 格式
-        case ExecActionType::ACTION_MODBUS_REG_WRITE: {
-            PeripheralConfig cfg;
-            if (!pm.getPeripheralSnapshot(action.targetPeriphId, cfg) || !cfg.isModbusPeripheral()) {
-                LOGGER.warningf("[PeriphExec] Modbus reg write: '%s' is not a Modbus peripheral",
-                                action.targetPeriphId.c_str());
-                return false;
-            }
-            uint16_t regAddr = cfg.params.modbus.coilBase;
-            uint16_t regVal = 0;
-            int sepIdx = effectiveValue.indexOf(':');
-            if (sepIdx > 0) {
-                regAddr = effectiveValue.substring(0, sepIdx).toInt();
-                regVal = effectiveValue.substring(sepIdx + 1).toInt();
-            } else {
-                regVal = effectiveValue.toInt();
-            }
-            LOGGER.infof("[PeriphExec] Modbus FC06: slave=%d reg=%d val=%d",
-                cfg.params.modbus.slaveAddress, regAddr, regVal);
-            return pm.writeModbusReg(action.targetPeriphId, regAddr, regVal);
-        }
-
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
         case ExecActionType::ACTION_DISPLAY_NUMBER: {
             // TM1637/数码管显示数字：支持 "12.34" / "12:34" / "1234" / "-12"
@@ -972,7 +1347,8 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                                 action.targetPeriphId.c_str());
                 return false;
             }
-            return SevenSegmentDriver::instance().displayNumber(action.targetPeriphId, resolved);
+            return pm.submitOrdinaryDisplay(action.targetPeriphId, FastBee::DisplayOutputCommand::Number,
+                resolved, 0, control, controlResult);
         }
 
         case ExecActionType::ACTION_DISPLAY_TEXT: {
@@ -987,7 +1363,8 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                                 action.targetPeriphId.c_str());
                 return false;
             }
-            return SevenSegmentDriver::instance().displayText(action.targetPeriphId, resolved);
+            return pm.submitOrdinaryDisplay(action.targetPeriphId, FastBee::DisplayOutputCommand::Text,
+                resolved, 0, control, controlResult);
         }
 
         case ExecActionType::ACTION_DISPLAY_CLEAR: {
@@ -999,7 +1376,8 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                                 action.targetPeriphId.c_str());
                 return false;
             }
-            return SevenSegmentDriver::instance().clear(action.targetPeriphId);
+            return pm.submitOrdinaryDisplay(action.targetPeriphId, FastBee::DisplayOutputCommand::Clear,
+                String(), 0, control, controlResult);
         }
 #endif
 
@@ -1027,7 +1405,10 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             }
             LOGGER.infof("[PeriphExec] Execute OledDisplay(%d bytes) on %s",
                          (int)resolved.length(), action.targetPeriphId.c_str());
-            return LCDManager::getInstance().showCustomText(resolved);
+            FastBee::LcdOutputRequest output;
+            output.command = FastBee::LcdOutputCommand::CustomText;
+            output.text = resolved;
+            return pm.submitOrdinaryLcd(action.targetPeriphId, output, control, controlResult);
         }
 #endif
 
@@ -1039,13 +1420,43 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 
 bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                                                  const PeriphExecRule& rule,
-                                                 std::vector<ActionExecResult>* controlResults) {
+                                                 std::vector<ActionExecResult>* controlResults,
+                                                 FastBee::ModbusActionMode mode,
+                                                 const FastBee::UartEventOrigin& uartOrigin,
+                                                 bool* sourceUnconfirmedOut,
+                                                 const FastBee::OrdinaryControlContext* control,
+                                                 FastBee::OrdinaryControlResult* controlResult) {
+    if (sourceUnconfirmedOut) *sourceUnconfirmedOut = false;
 #if !FASTBEE_ENABLE_MODBUS
-    (void)action; (void)rule; (void)controlResults;
+    (void)action; (void)rule; (void)controlResults; (void)mode; (void)uartOrigin;
+    (void)control; (void)controlResult;
     return false;
 #else
+    if (mode != FastBee::ModbusActionMode::ExecuteRule &&
+        mode != FastBee::ModbusActionMode::ReadOnlySnapshot) return false;
+    bool sourceUnconfirmed = false;
+    auto sourceCurrent = [&]() -> bool {
+        if (!sourceUnconfirmed && PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return true;
+        if (!sourceUnconfirmed && controlResults) {
+            appendActionResult(*controlResults, action.targetPeriphId, "", false, "uart_source_unconfirmed");
+        }
+        sourceUnconfirmed = true; // A transient busy check cannot silently resume this batch.
+        if (sourceUnconfirmedOut) *sourceUnconfirmedOut = true;
+        return false;
+    };
+    if (!sourceCurrent()) return false;
     const unsigned long batchStart = millis();
     constexpr unsigned long MODBUS_POLL_BATCH_TIMEOUT_MS = 30000; // 30s
+    FastBee::OrdinaryControlContext boundedControl;
+    if(control) {
+        boundedControl=*control;
+        uint32_t deadline=static_cast<uint32_t>(batchStart)+MODBUS_POLL_BATCH_TIMEOUT_MS;
+        if(!deadline)deadline=1; // Zero means no deadline in the existing context.
+        if(!boundedControl.operationDeadlineAt ||
+            static_cast<int32_t>(boundedControl.operationDeadlineAt-deadline)>0)
+            boundedControl.operationDeadlineAt=deadline;
+        control=&boundedControl;
+    }
     auto remainingBatchBudgetMs = [&]() -> uint32_t {
         const uint32_t elapsed = millis() - batchStart;
         return elapsed >= MODBUS_POLL_BATCH_TIMEOUT_MS
@@ -1068,6 +1479,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         LOGGER.warning("[PeriphExec] ModbusHandler unavailable or restarting for poll action");
         return false;
     }
+    if (!sourceCurrent()) return false; // Lease acquisition can wait.
 
     // 检查 Modbus 是否在 Master 模式
     if (modbus->getMode() != MODBUS_MASTER) {
@@ -1127,6 +1539,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     const bool rawTransfer = modbus->getConfigRef().transferType == 1;
     size_t rawFramesDispatched = 0;
     auto dispatchRawFrame = [&](uint8_t slaveAddress, const String& frame) {
+        if (!sourceCurrent()) return;
         rawFramesDispatched++;
         protMgr->dispatchModbusData(
             slaveAddress, frame, ModbusDataSource::PeriphExecPoll);
@@ -1136,7 +1549,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     if (actionVal.charAt(0) == '{') {
         // === 新 JSON 格式: {"poll":[0,1],"ctrl":[{"d":0,"a":"on","c":0}]} ===
         JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, actionVal);
+        DeserializationError err = deserializeJson(doc, actionVal.c_str(), actionVal.length());
         if (err) {
             Serial.printf("[PeriphExec] Failed to parse JSON actionValue: %s\n", err.c_str());
             return false;
@@ -1185,13 +1598,44 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             }
             return true;
         };
+        FastBee::ModbusControlTarget relayTarget;
+        bool activeRelay = false;
+        FastBee::OrdinaryControlResult relayResult;
+        auto writeRelayWithinBudget = [&](uint8_t function, uint16_t address, uint16_t value,
+                                         uint16_t timeout) {
+            const FastBee::OrdinaryControlContext absent;
+            OneShotResult written = PeripheralManager::getInstance().submitOrdinaryModbusRelay(
+                *modbus, relayTarget, function, address, value, control ? *control : absent, relayResult, timeout);
+            if (controlResult) FastBee::rememberOrdinaryControlResult(relayResult, controlResult);
+            return written;
+        };
+        auto writeFrameWithinBudget = [&](uint8_t slave,uint8_t function,uint16_t address,
+                                          uint16_t value,uint16_t effectiveTimeout) {
+            FastBee::ModbusOutputFrame frame;
+            FastBee::ModbusControlTarget target;
+            OneShotResult written;
+            written.error=ONESHOT_CONTROL_REJECTED;
+            relayResult={};relayResult.evaluated=true;
+            if(!control || !frame.single(slave,function,address,value) ||
+                !modbus->snapshotOrdinaryFrame(frame,target) ||
+                target.instance!=relayTarget.instance || target.configuration!=relayTarget.configuration ||
+                target.slave!=relayTarget.slave) {
+                relayResult.reason=!control?"CONTROL_CONTEXT_REQUIRED":"CONTROL_FRAME_MAPPING_UNCONFIRMED";
+                written.controlReason=relayResult.reason;
+            } else written=PeripheralManager::getInstance().submitOrdinaryModbusFrame(
+                *modbus,target,frame,*control,relayResult,effectiveTimeout);
+            if(controlResult)FastBee::rememberOrdinaryControlResult(relayResult,controlResult);
+            return written;
+        };
         auto writeCoilWithinBudget = [&](uint8_t slave, uint16_t address,
                                          bool value, OneShotResult& result) -> bool {
             uint16_t effectiveTimeout = 0;
             uint8_t effectiveRetries = 0;
             if (!prepareControlPolicy(effectiveTimeout, effectiveRetries)) return false;
-            result = modbus->writeCoilOnce(slave, address, value, true,
-                                           effectiveTimeout, effectiveRetries);
+            if (activeRelay) {
+                result = writeRelayWithinBudget(5, address, value ? 0xff00 : 0, effectiveTimeout); return true;
+            }
+            result = writeFrameWithinBudget(slave,5,address,value?0xff00:0,effectiveTimeout);
             return true;
         };
         auto writeRegisterWithinBudget = [&](uint8_t slave, uint16_t address,
@@ -1200,8 +1644,10 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             uint16_t effectiveTimeout = 0;
             uint8_t effectiveRetries = 0;
             if (!prepareControlPolicy(effectiveTimeout, effectiveRetries)) return false;
-            result = modbus->writeRegisterOnce(slave, address, value, true,
-                                               effectiveTimeout, effectiveRetries);
+            if (activeRelay) {
+                result = writeRelayWithinBudget(6, address, value, effectiveTimeout); return true;
+            }
+            result = writeFrameWithinBudget(slave,6,address,value,effectiveTimeout);
             return true;
         };
 
@@ -1234,10 +1680,12 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 : MODBUS_POLL_BATCH_TIMEOUT_MS - elapsedBeforePoll;
             String result = "[]";
             if (pollBudget > 0) {
+                if (!sourceCurrent()) return false;
                 result = modbus->executePollTaskBatch(
                     batchIdx, batchCount, timeout, retries, interDelay, false,
                     pollBudget, &pollBatchComplete, dispatchRawFrame);
             }
+            if (!sourceCurrent()) return false;
             if (!pollBatchComplete) {
                 allOperationsComplete = false;
                 if (controlResults) {
@@ -1252,12 +1700,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 anySuccess = true;
                 // 解析批量结果并追加到结构化数组（避免字符串拼接）
                 JsonDocument taskDoc;
-                if (!deserializeJson(taskDoc, result)) {
-                    JsonArray taskArr = taskDoc.as<JsonArray>();
-                    for (JsonVariant item : taskArr) {
-                        resultsArr.add(item);
-                    }
-                } else {
+                if (!appendModbusPollReadings(taskDoc, result, resultsArr)) {
                     Serial.printf("[PeriphExec] Poll batch result JSON parse failed\n");
                     allOperationsComplete = false;
                 }
@@ -1282,9 +1725,14 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
 
         // 处理 ctrl 数组: 执行控制命令
         JsonArray ctrlArr = doc["ctrl"].as<JsonArray>();
-        if (ctrlArr) {
-            const ModbusConfig& cfg = modbus->getConfigRef();
+        if (ctrlArr.size() && mode == FastBee::ModbusActionMode::ReadOnlySnapshot) {
+            LOGGER.info("[PeriphExec] Boot snapshot skipped Modbus control commands");
+        }
+        // Boot snapshots may use the poll selection but cannot replay relay,
+        // PWM, PID or motor commands, nor produce their completion events.
+        if (ctrlArr && mode == FastBee::ModbusActionMode::ExecuteRule) {
             for (JsonVariant cv : ctrlArr) {
+                if (!sourceCurrent()) return false;
                 requestedOperation = true;
                 // 批次总超时检查（poll+ctrl 共享同一时间预算）
                 if (remainingBatchBudgetMs() == 0) {
@@ -1312,20 +1760,65 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         break;
                     }
                 }
+                if (!cv["d"].is<uint8_t>() || (!cv["c"].isNull() && !cv["c"].is<uint16_t>()) ||
+                    (!cv["a"].isNull() && (!cv["a"].is<const char*>() ||
+                        cv["a"].as<JsonString>().size()!=std::strlen(cv["a"].as<const char*>())))) {
+                    allOperationsComplete = false;
+                    if (controlResults) appendActionResult(*controlResults, "", "", false, "CONTROL_PARAMETER_INVALID");
+                    break;
+                }
                 uint8_t devIdx = cv["d"].as<uint8_t>();
-                if (devIdx >= cfg.master.deviceCount) {
+                ModbusSubDevice dev;
+                if (!modbus->snapshotControlDevice(devIdx, dev, relayTarget)) {
                     Serial.printf("[PeriphExec] ctrl device index %d out of range\n", devIdx);
                     allOperationsComplete = false;
                     if (controlResults) {
                         appendActionResult(*controlResults, "modbus:" + String(devIdx), "", false,
                                            "invalid_device_index");
                     }
-                    continue;
+                    break; // A rejected target retires the remaining output suffix.
                 }
-                const ModbusSubDevice& dev = cfg.master.devices[devIdx];
+                activeRelay = std::strcmp(dev.deviceType, "relay") == 0;
+                if (activeRelay && !relayTarget.valid()) {
+                    allOperationsComplete = false;
+                    if (controlResults) appendActionResult(*controlResults, "modbus:" + String(devIdx), "", false,
+                        "CONTROL_RELAY_MAPPING_UNCONFIRMED");
+                    break;
+                }
+                if((!cv["c"].isNull() && !cv["c"].is<uint16_t>()) ||
+                    (!cv["v"].isNull() && !cv["v"].is<uint16_t>()) ||
+                    (!cv["a"].isNull() && !cv["a"].is<const char*>())) {
+                    allOperationsComplete=false;
+                    if(controlResults)appendActionResult(*controlResults,"modbus:"+String(devIdx),"",false,
+                        "CONTROL_PARAMETER_INVALID");
+                    break;
+                }
                 const char* act = cv["a"] | "on";
-                uint8_t ch = cv["c"] | 0;
+                uint16_t ch = cv["c"] | 0;
                 uint16_t val = cv["v"] | 0;
+                ActionExecResult controlReport;
+                char controlTarget[16];
+                snprintf(controlTarget, sizeof(controlTarget), "modbus:%u", static_cast<unsigned>(devIdx));
+                FastBee::captureModbusReportIdentity(controlReport, controlTarget,
+                    dev.sensorId, dev.channelCount, strcmp(dev.deviceType, "motor") == 0 ? 0 : ch);
+                auto recordControl = [&](const String& value, bool success, const String& remark,
+                                         bool includeChannel = false) {
+                    if (!controlResults) return;
+                    // Unmapped legacy subdevices keep their channel:value form.
+                    String reportValue;
+                    if (includeChannel && controlReport.reportIdentity == FastBee::ActionReportIdentity::Peripheral) {
+                        char prefix[8];
+                        const int count = snprintf(prefix, sizeof(prefix), "%u:", static_cast<unsigned>(ch));
+                        if (count <= 0 || static_cast<size_t>(count) >= sizeof(prefix) ||
+                            !FastBee::copyCheckedText(reportValue, prefix, static_cast<size_t>(count), 512) ||
+                            !FastBee::appendCheckedText(reportValue, value.c_str(), value.length(), 512))
+                            controlReport.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+                    } else reportValue = value;
+                    if (reportValue.length() < value.length())
+                        controlReport.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+                    FastBee::completeCapturedReport(controlReport, reportValue, success, remark);
+                    controlResults->push_back(std::move(controlReport));
+                };
 
                 if (interDelay > 0) {
                     const uint32_t remainingBeforeDelay = remainingBatchBudgetMs();
@@ -1340,12 +1833,18 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     }
                     vTaskDelay(pdMS_TO_TICKS(interDelay));
                 }
+                if (!sourceCurrent()) return false;
 
                 String devType(dev.deviceType);
                 if (devType == "relay") {
                     bool desiredState = false;
                     if (!tryParseBoolLike(String(act), desiredState)) {
-                        desiredState = (strcmp(act, "on") == 0);
+                        allOperationsComplete = false;
+                        recordControl("", false, "CONTROL_PARAMETER_INVALID"); break;
+                    }
+                    if (ch >= dev.channelCount || uint32_t(dev.coilBase) + ch > 65535U) {
+                        allOperationsComplete = false;
+                        recordControl("", false, "CONTROL_PARAMETER_INVALID"); break;
                     }
                     bool coilVal = dev.ncMode ? !desiredState : desiredState;
                     uint16_t addr = dev.coilBase + ch;
@@ -1385,22 +1884,23 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                             dev.slaveAddress, addr, regVal, ok);
                     }
                     if (controlResults) {
-                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           buildModbusReportValue(ch, "", String(desiredState ? 1 : 0),
-                                                                  desiredState),
-                                           ok,
-                                           ok ? "success" : "modbus_write_failed");
+                        recordControl(ok ? String(desiredState ? 1 : 0) : String(), ok,
+                                      relayResult.reason, true);
                     }
+                    if (!ok) { allOperationsComplete = false; break; } // Keep prior ACKs; no suffix writes/events.
                     // 控制成功后触发 mc: 事件，供其他规则监听
                     if (ok && _manager) {
                         char mcIdBuf[16];
                         snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
                         char mcDataBuf[96];
                         snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}", devIdx, ch, act);
-                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf), uartOrigin);
                     }
                 } else if (devType == "pwm") {
-                    uint16_t regAddr = dev.pwmRegBase + ch;
+                    if(ch>=dev.channelCount || uint32_t(dev.pwmRegBase)+ch>65535U) {
+                        allOperationsComplete=false;recordControl("",false,"CONTROL_PARAMETER_INVALID");break;
+                    }
+                    uint16_t regAddr = static_cast<uint16_t>(dev.pwmRegBase + ch);
                     OneShotResult res;
                     if (!writeRegisterWithinBudget(dev.slaveAddress, regAddr,
                                                    val, res)) {
@@ -1417,22 +1917,24 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     Serial.printf("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d\n",
                         dev.slaveAddress, regAddr, val, ok);
                     if (controlResults) {
-                        char idBuf[16], valBuf[16];
-                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
-                        snprintf(valBuf, sizeof(valBuf), "%d:%d", ch, val);
-                        appendActionResult(*controlResults, idBuf, valBuf, ok,
-                                           ok ? "success" : "modbus_write_failed");
+                        recordControl(ok ? String(val) : String(), ok, relayResult.reason, true);
                     }
+                    if(!ok) {allOperationsComplete=false;break;}
                     // 控制成功后触发 mc: 事件
                     if (ok && _manager) {
                         char mcIdBuf[16];
                         snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
                         char mcDataBuf[96];
                         snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"pwm\",\"v\":%d}", devIdx, ch, val);
-                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf), uartOrigin);
                     }
                 } else if (devType == "pid") {
                     const char* param = cv["p"] | "P";
+                    if((!cv["p"].isNull() && !cv["p"].is<const char*>()) ||
+                        (!cv["p"].isNull() && cv["p"].as<JsonString>().size()!=std::strlen(param)) ||
+                        (std::strcmp(param,"P") && std::strcmp(param,"I") && std::strcmp(param,"D"))) {
+                        allOperationsComplete=false;recordControl("",false,"CONTROL_PARAMETER_INVALID");break;
+                    }
                     uint8_t pidIdx = 3;
                     if (strcmp(param, "I") == 0) pidIdx = 4;
                     else if (strcmp(param, "D") == 0) pidIdx = 5;
@@ -1453,24 +1955,25 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     Serial.printf("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d\n",
                         dev.slaveAddress, param, regAddr, val, ok);
                     if (controlResults) {
-                        char idBuf[16], valBuf[16];
-                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
-                        snprintf(valBuf, sizeof(valBuf), "%d:%d", ch, val);
-                        appendActionResult(*controlResults, idBuf, valBuf, ok,
-                                           ok ? "success" : "modbus_write_failed");
+                        recordControl(ok ? String(val) : String(), ok, relayResult.reason, true);
                     }
+                    if(!ok) {allOperationsComplete=false;break;}
                     // 控制成功后触发 mc: 事件
                     if (ok && _manager) {
                         char mcIdBuf[16];
                         snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
                         char mcDataBuf[96];
                         snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"pid\",\"p\":\"%s\",\"v\":%d}", devIdx, param, val);
-                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf), uartOrigin);
                     }
                 } else if (devType == "motor") {
                     // Accepted is not completed: await the shared command result.
                     const char* act = cv["a"] | "stop";
-                    if (strcmp(act, "forward") && strcmp(act, "reverse") && strcmp(act, "stop")) act = "stop";
+                    if ((strcmp(act, "forward") && strcmp(act, "reverse") && strcmp(act, "stop")) ||
+                        (!cv["v"].isNull() && !cv["v"].is<uint16_t>())) {
+                        allOperationsComplete = false;
+                        recordControl("", false, "CONTROL_MOTOR_PARAMETER_INVALID"); break;
+                    }
                     const uint16_t motorValue = cv["v"] | 1;
                     auto& motors = MotorControlService::instance();
                     char requestId[64];
@@ -1479,30 +1982,62 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     uint32_t operationId = 0; String error;
                     const String ref = motors.referenceForSlave(dev.slaveAddress);
                     bool accepted = motors.submitRule(ref, String(act), motorValue, String(requestId),
-                                                       remainingBatchBudgetMs(), timeout, operationId, error);
-                    bool ok = false;
-                    while (accepted && remainingBatchBudgetMs()) {
+                                                       remainingBatchBudgetMs(), timeout, operationId, error, uartOrigin, control);
+                    bool ok = false, terminalKnown = !accepted, attempted = false;
+                    uint16_t acknowledgedSteps = 0;
+                    auto observeMotor = [&]() {
                         JsonDocument result;
-                        if (motors.operation(operationId, result.to<JsonObject>()) && !(result["pending"] | true)) {
-                            ok = result["success"] | false;
-                            error = result["error"] | "";
-                            break;
+                        if (!motors.operation(operationId, result.to<JsonObject>())) return false;
+                        // The bounded worker record retains all outputSteps.
+                        // A pending observation cannot prove zero UART writes.
+                        JsonArrayConst steps = result["outputSteps"].as<JsonArrayConst>();
+                        uint16_t acknowledgements = 0;
+                        size_t count = 0;
+                        for (JsonObjectConst step : steps) {
+                            if (++count > 8) break;
+                            attempted |= step["attempted"] | false;
+                            if (step["commandAcknowledged"] | false) ++acknowledgements;
                         }
+                        acknowledgedSteps = std::max(acknowledgedSteps, acknowledgements);
+                        if (result["pending"] | true) return false;
+                        terminalKnown = true; ok = result["success"] | false;
+                        error = result["error"] | ""; return true;
+                    };
+                    while (accepted && remainingBatchBudgetMs()) {
+                        if (observeMotor()) break;
                         vTaskDelay(pdMS_TO_TICKS(20));
                     }
+                    if (accepted && !terminalKnown) observeMotor(); // Read-only final cache observation.
+                    FastBee::OrdinaryControlResult motorResult;
+                    motorResult.evaluated = true; motorResult.attemptKnown = terminalKnown;
+                    motorResult.attempted = attempted; motorResult.accepted = ok;
+                    motorResult.backendOperationId = operationId; motorResult.acknowledgedSteps = acknowledgedSteps;
+                    if (relayTarget.valid()) relayTarget.key(motorResult.targetId);
+                    if (control) { motorResult.actor = control->request.actor; motorResult.operation = control->request.operation; }
+                    motorResult.phase = terminalKnown ? FastBee::OrdinaryControl::Phase::Idle : FastBee::OrdinaryControl::Phase::Executing;
+                    motorResult.reason = ok ? "CONTROL_ACKNOWLEDGED_TRANSPORT_ONLY" :
+                        terminalKnown ? "CONTROL_MOTOR_FAILED" : "CONTROL_MOTOR_RESULT_UNCONFIRMED";
+                    if (controlResult) FastBee::rememberOrdinaryControlResult(motorResult, controlResult);
                     if (!ok && error.isEmpty()) error = "motor_result_unconfirmed";
                     allOperationsComplete = allOperationsComplete && ok;
                     anySuccess = anySuccess || ok;
                     if (controlResults) {
                         const char* commandValue = !strcmp(act, "forward") ? "1" : !strcmp(act, "reverse") ? "2" : "0";
-                        appendActionResult(*controlResults, "modbus:" + String(devIdx), commandValue,
-                                           ok, ok ? String("success") : error);
+                        recordControl(ok ? String(commandValue) : String(), ok, ok ? String("success") : error);
                     }
                     // Only the shared service emits the motor-result event.
+                    if (error == "uart_source_unconfirmed" || error == "CONTROL_MOTOR_SOURCE_UNCONFIRMED") {
+                        // Preserve a worker/admission failure even if the PM
+                        // lock is available again at the next outer check.
+                        if (sourceUnconfirmedOut) *sourceUnconfirmedOut = true;
+                        return false;
+                    }
+                    if (!ok) break; // Preserve accepted prefix; caller timeout never releases the worker.
                 }
             }
         }
 
+        if (!sourceCurrent()) return false;
         if (controlResults) {
             for (size_t i = initialControlResultCount; i < controlResults->size(); ++i) {
                 if (!(*controlResults)[i].success) {
@@ -1544,19 +2079,16 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     bool legacyBatchComplete = false;
     const uint32_t legacyBudget = remainingBatchBudgetMs();
     if (legacyBudget == 0) return false;
+    if (!sourceCurrent()) return false;
     String legacyResult = modbus->executePollTaskBatch(
         legacyBatchIdx, legacyBatchCount, timeout, retries, interDelay, false,
         legacyBudget, &legacyBatchComplete, dispatchRawFrame);
+    if (!sourceCurrent()) return false;
     if (!rawTransfer && legacyResult != "[]") {
         anySuccess = true;
         // 解析批量结果并追加到结构化数组（避免字符串拼接）
         JsonDocument taskDoc;
-        if (!deserializeJson(taskDoc, legacyResult)) {
-            JsonArray taskArr = taskDoc.as<JsonArray>();
-            for (JsonVariant item : taskArr) {
-                resultsArr.add(item);
-            }
-        }
+        (void)appendModbusPollReadings(taskDoc, legacyResult, resultsArr);
     }
 
     if (rawTransfer) {
@@ -1632,15 +2164,25 @@ String PeriphExecExecutor::resolveChannelField(const String& category, const Str
 
 bool PeriphExecExecutor::executeSensorReadGroup(const PeriphExecRule& rule,
     size_t first, size_t count, uint32_t collectionStartedAt, unsigned long deadlineAt,
-    std::vector<ActionExecResult>& results) {
+    std::vector<ActionExecResult>& results, const FastBee::UartEventOrigin& uartOrigin,
+    bool* sourceUnconfirmed) {
+    if (sourceUnconfirmed) *sourceUnconfirmed = false;
+    bool sourceRejected = false;
+    auto sourceCurrent = [&]() {
+        if (!sourceRejected && PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return true;
+        sourceRejected = true;
+        if (sourceUnconfirmed) *sourceUnconfirmed = true;
+        return false;
+    };
     if (count < 2 || count > 4 || first + count > rule.actions.size()) return false;
     std::unique_ptr<PreparedSensorRead[]> prepared(new (std::nothrow) PreparedSensorRead[count]);
     try { results.resize(count); } catch (const std::bad_alloc&) { return false; }
-    bool ready = static_cast<bool>(prepared);
+    bool ready = sourceCurrent() && static_cast<bool>(prepared);
     const ObservationUpdate* updates[4] = {};
     for (size_t i = 0; i < count; ++i) {
         results[i].targetPeriphId = rule.actions[first + i].targetPeriphId;
         if (!ready) continue;
+        if (!sourceCurrent()) { ready = false; continue; }
         // Keep the same per-action memory/deadline admission, including when
         // the first physical conversion temporarily consumes internal RAM.
         auto* framework = FastBeeFramework::getInstance();
@@ -1653,17 +2195,21 @@ bool PeriphExecExecutor::executeSensorReadGroup(const PeriphExecRule& rule,
             continue;
         }
         ready = executeSensorReadAction(rule.actions[first + i], results[i],
-            rule.recordHistory, &collectionStartedAt, &prepared[i]);
+            rule.recordHistory, &collectionStartedAt, &prepared[i], uartOrigin, sourceUnconfirmed);
+        if (sourceUnconfirmed && *sourceUnconfirmed) { sourceRejected = true; ready = false; }
+        if (!sourceCurrent()) ready = false;
         updates[i] = &prepared[i].observation;
         if (ready && (prepared[i].configVersion != prepared[0].configVersion ||
-            updates[i]->sampleTimestamp != prepared[0].observation.sampleTimestamp)) ready = false;
+            updates[i]->sampleGroup != prepared[0].observation.sampleGroup ||
+            (!updates[i]->sampleGroup && updates[i]->sampleTimestamp != prepared[0].observation.sampleTimestamp))) ready = false;
     }
-    const bool committed = ready && !operationDeadlineReached(deadlineAt) &&
+    const bool committed = ready && sourceCurrent() && !operationDeadlineReached(deadlineAt) &&
         PeriphExecManager::getInstance().upsertSensorObservationBatch(
             updates, count, prepared[0].configVersion);
     for (size_t i = 0; i < count; ++i) {
         results[i].success = committed;
-        results[i].remark = committed ? "success" : "sensor_group_not_published";
+        results[i].remark = sourceRejected ? "uart_source_unconfirmed" :
+            committed ? "success" : "sensor_group_not_published";
         if (!committed) results[i].actualValue = "";
 #if FASTBEE_ENABLE_LCD
         if (committed && LCDManager::getInstance().isInitialized() &&
@@ -1680,7 +2226,20 @@ bool PeriphExecExecutor::executeSensorReadGroup(const PeriphExecRule& rule,
 bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result,
                                                  bool recordHistory,
                                                  const uint32_t* collectionStartedAt,
-                                                 PreparedSensorRead* prepared) {
+                                                 PreparedSensorRead* prepared,
+                                                 const FastBee::UartEventOrigin& uartOrigin,
+                                                 bool* sourceUnconfirmed) {
+    if (sourceUnconfirmed) *sourceUnconfirmed = false;
+    result = ActionExecResult{};
+    result.hasSensorSample = true;
+    auto sourceCurrent = [&]() {
+        if (PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return true;
+        if (sourceUnconfirmed) *sourceUnconfirmed = true;
+        result.remark = "uart_source_unconfirmed";
+        return false;
+    };
+    if (!sourceCurrent()) return false;
+    result.reportIdentity = FastBee::ActionReportIdentity::Invalid;
     String actionVal = action.actionValue;
     if (actionVal.isEmpty() || actionVal.charAt(0) != '{') {
         LOGGER.warning("[PeriphExec] Sensor read: empty or invalid actionValue");
@@ -1688,13 +2247,15 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, actionVal);
+    DeserializationError err = deserializeJson(doc, actionVal.c_str(), actionVal.length());
     if (err) {
         LOGGER.warningf("[PeriphExec] Sensor read: JSON parse failed: %s", err.c_str());
         return false;
     }
 
     const char* periphId = doc["periphId"] | "";
+    const char* reportField = doc["dataField"] | "";
+    if (!FastBee::captureLiteralReportIdentity(result, periphId, reportField)) return false;
     PeripheralManager& pm = PeripheralManager::getInstance();
     PeripheralConfig boundConfig;
     uint32_t sensorConfigVersion = 0;
@@ -1703,6 +2264,17 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             String(periphId), "SENSOR_NOT_READY", sensorConfigVersion);
         return false;
     }
+    bool sampleAccepted = false;
+    struct InvalidateFailedRead {
+        bool& accepted;
+        ActionExecResult& result;
+        const char* id;
+        uint32_t version;
+        ~InvalidateFailedRead() {
+            if (!accepted) PeriphExecManager::getInstance().invalidateSensorReadCache(
+                String(id), result.remark.isEmpty() ? String("SENSOR_READ_FAILED") : result.remark, version);
+        }
+    } failureGuard{sampleAccepted, result, periphId, sensorConfigVersion};
     const bool configuredI2cSensor = boundConfig.type == PeripheralType::SENSOR_GENERIC &&
         boundConfig.params.sensor.driver[0] != '\0';
     // Normalize imported/UI values once so aliases and mixed-case categories
@@ -1728,7 +2300,6 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
                                  ? resolveChannelField(categoryValue, String(periphId), explicitFieldStr)
                                  : explicitChannelField;
     const char* dataField = channelFieldStr.c_str();
-    uint8_t deviceIndex = doc["deviceIndex"] | 0;
 
     if (strlen(periphId) == 0) {
         LOGGER.warning("[PeriphExec] Sensor read: no periphId specified");
@@ -1739,6 +2310,14 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     String detectedUnit;
     uint32_t sensorSampleTimestamp = 0;
     uint32_t sensorMaxAgeMs = 0;
+    if (!sourceCurrent()) return false;
+    const int64_t acquisitionUs = esp_timer_get_time();
+    if (acquisitionUs < 0) { result.remark = "sensor_clock_invalid"; return false; }
+    auto& sample = result.sensorSample;
+    sample.sampledAtMs = static_cast<uint64_t>(acquisitionUs) / 1000;
+    sample.capturedAtMs = sample.sampledAtMs;
+    sample.maxAgeMs = PeriphExecManager::SENSOR_CACHE_TTL_MS;
+    sample.quality = FastBee::SensorSampleQuality::Good;
 
     if (strcmp(category, "analog") == 0) {
         // 热路径零分配：避免 String(periphId) 每周期堆构造
@@ -1801,10 +2380,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             }
         }
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
@@ -1823,13 +2399,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         }
         SensorDriverType dhtType = (strcmp(category, "dht11") == 0) ?
             SensorDriverType::DHT11 : SensorDriverType::DHT22;
-        rawValue = SensorDriver::getInstance().readDHT(pin, dhtType, String(dataField));
+        rawValue = SensorDriver::getInstance().readDHT(pin, dhtType, String(dataField), &sample);
+        detectedUnit = strcmp(dataField, "humidity") == 0 ? "%" : "°C";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: DHT read failed on '%s' pin %d", periphId, pin);
 #if FASTBEE_ENABLE_LCD
-            if (LCDManager::getInstance().isInitialized()) {
-                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
-            }
+            invalidateSensorReadDisplay(periphId, dataField);
 #endif
             return false;
         }
@@ -1843,10 +2418,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             }
         }
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
@@ -1856,42 +2428,42 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             LOGGER.warningf("[PeriphExec] Sensor read blocked: '%s' GPIO%d reserved on %s", periphId, pin, CHIP_NAME);
             return false;
         }
-        rawValue = SensorDriver::getInstance().readDS18B20(pin, deviceIndex);
+        uint8_t deviceIndex = 0, deviceAddress[8];
+        bool addressed = false;
+        if (const char* error = FastBee::parseDs18b20Selection(doc.as<JsonVariantConst>(), deviceIndex,
+                                                             deviceAddress, addressed)) {
+            result.remark = error;
+            return false;
+        }
+        rawValue = SensorDriver::getInstance().readDS18B20(pin, deviceIndex, &sample,
+            addressed ? deviceAddress : nullptr);
+        detectedUnit = "°C";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: DS18B20 read failed on '%s' pin %d", periphId, pin);
 #if FASTBEE_ENABLE_LCD
-            if (LCDManager::getInstance().isInitialized()) {
-                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
-            }
+            invalidateSensorReadDisplay(periphId, dataField);
 #endif
             return false;
         }
     } else if (strcmp(category, "ultrasonic") == 0) {
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         if (cfg.pinCount < 2 || cfg.pins[0] == 255 || cfg.pins[1] == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic '%s' needs trig+echo pins", periphId);
             return false;
         }
-        rawValue = SensorDriver::getInstance().readUltrasonic(cfg.pins[0], cfg.pins[1]);
+        rawValue = SensorDriver::getInstance().readUltrasonic(cfg.pins[0], cfg.pins[1], &sample);
+        detectedUnit = "cm";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic read failed on '%s'", periphId);
 #if FASTBEE_ENABLE_LCD
-            if (LCDManager::getInstance().isInitialized()) {
-                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
-            }
+            invalidateSensorReadDisplay(periphId, dataField);
 #endif
             return false;
         }
     } else if (strcmp(category, "current") == 0) {
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: current sensor '%s' has no valid pin", periphId);
@@ -1902,7 +2474,8 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         cal.offset = doc["zeroOffset"] | (doc["sensorOffset"] | 1.65f);
         cal.vRef = doc["vRef"] | 3.3f;
         cal.adcMax = doc["adcMax"] | 4095;
-        rawValue = SensorDriver::getInstance().readCurrent(pin, cal);
+        rawValue = SensorDriver::getInstance().readCurrent(pin, cal, &sample);
+        detectedUnit = "A";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: current read failed on '%s'", periphId);
             return false;
@@ -1914,10 +2487,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         // external shunt/front-end and is rejected when it is disconnected or
         // outside the configured range.
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         const uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: 4-20mA sensor '%s' has no valid pin", periphId);
@@ -1951,17 +2521,15 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         cal.sampleCount = static_cast<uint8_t>(doc["sampleCount"] | 8);
         cal.mapToEngineering = readBool("mapToEngineering", "engineeringMapping", false);
 
-        rawValue = SensorDriver::getInstance().readCurrentLoop(pin, cal);
+        rawValue = SensorDriver::getInstance().readCurrentLoop(pin, cal, &sample);
+        if (!cal.mapToEngineering) detectedUnit = "mA";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: 4-20mA read failed on '%s'", periphId);
             return false;
         }
     } else if (strcmp(category, "voltage") == 0) {
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: voltage sensor '%s' has no valid pin", periphId);
@@ -1971,7 +2539,8 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         cal.ratio = doc["ratio"] | 1.0f;
         cal.vRef = doc["vRef"] | 3.3f;
         cal.adcMax = doc["adcMax"] | 4095;
-        rawValue = SensorDriver::getInstance().readVoltage(pin, cal);
+        rawValue = SensorDriver::getInstance().readVoltage(pin, cal, &sample);
+        detectedUnit = "V";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: voltage read failed on '%s'", periphId);
             return false;
@@ -1979,10 +2548,7 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     } else if (strcmp(category, "ntc") == 0) {
         // NTC 热敏电阻（分压器 + B 参数法测温）
         PeripheralConfig cfg;
-        if (!pm.getPeripheralSnapshot(String(periphId), cfg)) {
-            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
-            return false;
-        }
+        if (!loadSensorReadSnapshot(pm, periphId, cfg)) return false;
         uint8_t pin = cfg.getPrimaryPin();
         if (pin == 255) {
             LOGGER.warningf("[PeriphExec] Sensor read: NTC sensor '%s' has no valid pin", periphId);
@@ -1995,7 +2561,8 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         cal.bCoefficient = doc["bCoefficient"] | 3950.0f;
         cal.vRef = doc["vRef"] | 3.3f;
         cal.adcMax = doc["adcMax"] | 4095;
-        rawValue = SensorDriver::getInstance().readNTC(pin, cal);
+        rawValue = SensorDriver::getInstance().readNTC(pin, cal, &sample);
+        detectedUnit = "°C";
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: NTC read failed on '%s'", periphId);
             return false;
@@ -2052,12 +2619,12 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         if (explicitChannelField.isEmpty()) {
             if (!explicitFieldStr.isEmpty() && FastBee::resolveSensorChannel(
                     cfg.params.sensor.driver, cfg.params.sensor.mode,
-                    explicitFieldStr.c_str(), selectedChannel, sensorError)) {
+                    explicitFieldStr.c_str(), selectedChannel, sensorError, cfg.params.sensor.scanMask)) {
                 channelFieldStr = selectedChannel;
             } else if (!FastBee::resolveSensorChannel(cfg.params.sensor.driver, cfg.params.sensor.mode,
-                                                      "", channelFieldStr, sensorError)) return failed(sensorError);
+                                                      "", channelFieldStr, sensorError, cfg.params.sensor.scanMask)) return failed(sensorError);
         } else if (!FastBee::resolveSensorChannel(cfg.params.sensor.driver, cfg.params.sensor.mode,
-                                                   explicitChannelField.c_str(), channelFieldStr, sensorError)) {
+                                                   explicitChannelField.c_str(), channelFieldStr, sensorError, cfg.params.sensor.scanMask)) {
             return failed(sensorError);
         }
         dataField = channelFieldStr.c_str();
@@ -2070,12 +2637,31 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         if (!FastBee::SensorDriverCache::instance().readChannel(
                 String(periphId), cfg.params.sensor.driver, sda,
                 driverParamsBuffer.c_str(), dataField, rawValue, detectedUnit, sensorError,
-                sensorMaxAgeMs, &sensorSampleTimestamp, sensorConfigVersion, collectionStartedAt)) {
+                sensorMaxAgeMs, &sensorSampleTimestamp, sensorConfigVersion, collectionStartedAt, &sample)) {
             return failed(sensorError);
         }
-        if (!detectedUnit.isEmpty()) unit = detectedUnit.c_str();
     }
 
+    if (!sourceCurrent()) return false;
+    if (!unit[0] && !detectedUnit.isEmpty()) unit = detectedUnit.c_str();
+    result.sampleUnit = unit;
+    if (strlen(unit) > 32 || result.sampleUnit != unit || result.sampleUnit.length() != strlen(unit)) {
+        result.reportIdentity = FastBee::ActionReportIdentity::Invalid;
+        return false;
+    }
+    result.sampleUnitBytes = static_cast<uint8_t>(result.sampleUnit.length());
+    const int64_t capturedUs = esp_timer_get_time();
+    if (capturedUs < 0) { sample.quality = FastBee::SensorSampleQuality::Unknown; return false; }
+    const uint64_t sampleGroup = sample.sampleGroup;
+    FastBee::describeSensorSample(rawValue, sample.sampledAtMs, static_cast<uint64_t>(capturedUs) / 1000,
+        sample.maxAgeMs, sample.quality == FastBee::SensorSampleQuality::Good, &sample);
+    if (sample.quality != FastBee::SensorSampleQuality::Good) {
+        result.remark = sample.quality == FastBee::SensorSampleQuality::Stale ? "sensor_read_stale" : "sensor_sample_unknown";
+        return false;
+    }
+    sample.sampleGroup = sampleGroup;
+    sensorSampleTimestamp = static_cast<uint32_t>(sample.sampledAtMs);
+    sensorMaxAgeMs = sample.maxAgeMs;
     float processed = rawValue * scaleFactor + offset;
     if (!std::isfinite(processed)) {
         PeriphExecManager::getInstance().invalidateSensorReadCache(String(periphId), "SENSOR_VALUE_NOT_FINITE", sensorConfigVersion);
@@ -2083,12 +2669,13 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
     if (decimals > 6) decimals = 6;
 
-    result.targetPeriphId = String(periphId);
     result.actualValue = String(processed, (unsigned int)decimals);
     // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时携带；
     // 未显式配置时留空，上报路径将回退用外设配置 id 作为物模型标识符，
     // 使平台物模型 ID 始终与设备外设配置 id 动态匹配，而非写死的默认字段
-    result.dataField = explicitFieldStr;
+    // Identity was captured from the rule before the read; do not overwrite it
+    // with a later copied field or reinterpret it through a Modbus config.
+    if (result.actualValue.isEmpty()) return false;
 
     if (prepared) {
         auto& value = prepared->observation;
@@ -2097,14 +2684,18 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         value.dataField = explicitFieldStr; value.periphId = periphId;
         value.sourceRevision = value.periphId + ":" + value.dataField + ":" + value.unit;
         value.sampleTimestamp = sensorSampleTimestamp;
+        value.sampledAtMs = sample.sampledAtMs;
         value.sampleIdentity = sensorSampleTimestamp;
+        value.sampleGroup = sample.sampleGroup;
         value.maxAgeMs = sensorMaxAgeMs; value.recordable = recordHistory;
+        value.uartOrigin = uartOrigin;
         prepared->configVersion = sensorConfigVersion;
         prepared->processed = processed; prepared->decimals = decimals;
-        return value.value == result.actualValue && value.label == label && value.unit == unit &&
+        sampleAccepted = value.value == result.actualValue && value.label == label && value.unit == unit &&
             value.periphId == periphId && value.dataField == explicitFieldStr &&
             value.sourceRef == String(periphId) + "_" + String(dataField) &&
             value.sourceRevision == value.periphId + ":" + value.dataField + ":" + value.unit;
+        return sampleAccepted;
     }
 
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
@@ -2117,8 +2708,9 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         String cacheKey = String(periphId) + "_" + String(dataField);
         if (!PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue,
             String(unit), explicitFieldStr, String(periphId), sensorSampleTimestamp, sensorMaxAgeMs,
-            recordHistory, sensorSampleTimestamp, "", sensorConfigVersion)) return false;
+            recordHistory, sensorSampleTimestamp, "", sensorConfigVersion, uartOrigin, sample.sampledAtMs)) return false;
     }
+    if (!sourceCurrent()) return false;
 
     // Publication has been claimed; display work must stay outside PM/cache
     // guards. The display also filters the epoch when rendering cached values.
@@ -2130,10 +2722,21 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     }
 #endif
 
+    sampleAccepted = true;
     return true;
 }
 
-bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
+bool PeriphExecExecutor::executeSystemAction(const ExecAction& action, const FastBee::UartEventOrigin& uartOrigin,
+                                           bool* sourceUnconfirmed) {
+    if (sourceUnconfirmed) *sourceUnconfirmed = false;
+    bool retired = false;
+    const auto sourceCurrent = [&]() {
+        if (!retired && PeripheralManager::getInstance().isUartEventOriginCurrent(uartOrigin)) return true;
+        retired = true;
+        if (sourceUnconfirmed) *sourceUnconfirmed = true;
+        return false;
+    };
+    if (!sourceCurrent()) return false;
     ExecActionType actType = static_cast<ExecActionType>(action.actionType);
 
     switch (actType) {
@@ -2148,9 +2751,10 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                 return false;
             }
             JsonDocument doc;
-            doc["features"][key.c_str()]["enabled"] = enable;
+            if (!doc["features"][key.c_str()]["enabled"].set(enable) || doc.overflowed()) return false;
             auto& fm = FastBee::RuntimeFeatureManager::instance();
             FastBee::RuntimeFeatureManager::UserConfigSnapshot previousState;
+            if (!sourceCurrent()) return false;
             const auto updateResult = fm.updateAndSave(doc, &previousState);
             if (updateResult == FastBee::RuntimeFeatureManager::ConfigUpdateResult::NO_VALID_ENTRIES) {
                 LOGGER.warningf("[PeriphExec] Feature toggle rejected for '%s'", key.c_str());
@@ -2161,6 +2765,8 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                 return false;
             }
 
+            // Retirement does not undo prior persistence or replay this action.
+            if (!sourceCurrent()) return false;
             if (key == "mdns") {
                 FastBeeFramework* framework = FastBeeFramework::getInstance();
                 FBNetworkManager* network = framework
@@ -2173,6 +2779,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                     return false;
                 }
                 WiFiConfig networkConfig = network->getConfig();
+                if (!sourceCurrent()) return false;
                 if (networkConfig.enableMDNS != enable) {
                     networkConfig.enableMDNS = enable;
                     if (!network->updateConfig(networkConfig, true)) {
@@ -2184,7 +2791,9 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                 }
             }
             LOGGER.infof("[PeriphExec] Feature '%s' %s, rebooting to apply...", key.c_str(), enable ? "enabled" : "disabled");
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
+            if (!sourceCurrent()) return false;
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "", uartOrigin);
+            if (!sourceCurrent()) return false;
             SystemRebooter::scheduleReboot("PeriphExec feature toggle", 1000UL, RestartReason::CONFIG_CHANGE);
             return true;
         }
@@ -2192,7 +2801,8 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
         case ExecActionType::ACTION_SYS_RESTART:
             LOGGER.info("[PeriphExec] Executing system restart...");
             // 触发 restart 事件以便 DEVICE_EVENT 主题上报
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "", uartOrigin);
+            if (!sourceCurrent()) return false;
             SystemRebooter::scheduleReboot("PeriphExec system restart", 1000UL, RestartReason::USER_COMMAND);
             return true;
 
@@ -2203,14 +2813,15 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
 
         case ExecActionType::ACTION_SYS_NTP_SYNC: {
             LOGGER.info("[PeriphExec] Executing NTP sync...");
-            configTzTime("CST-8", "cn.pool.ntp.org", "time.nist.gov");
-            return true;
+            FastBee::SystemTimeQuality::installSntpObserver();
+            if (!sourceCurrent()) return false;
+            return FastBee::SystemTimeZone::startSntp(nullptr, "cn.pool.ntp.org", "time.nist.gov");
         }
 
 #if FASTBEE_ENABLE_OTA
         case ExecActionType::ACTION_SYS_OTA:
             LOGGER.info("[PeriphExec] OTA action - reserved for future implementation");
-            return true;
+            return false;
 #endif
 
         default:
@@ -2219,7 +2830,10 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
     }
 }
 
-bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
+bool PeriphExecExecutor::executeScriptAction(const ExecAction& action,
+    const FastBee::UartEventOrigin& uartOrigin, bool* sourceUnconfirmed,
+    const FastBee::OrdinaryControlContext* control, FastBee::OrdinaryControlResult* controlResult) {
+    if (sourceUnconfirmed) *sourceUnconfirmed = false;
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
     if (!FastBee::RuntimeFeatureManager::instance().shouldEnable("commandScript")) {
         LOGGER.warning("[PeriphExec] Command script disabled by runtime feature config");
@@ -2244,26 +2858,106 @@ bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
 
     LOGGER.infof("[PeriphExec] Executing script (%d commands)", cmds.size());
 
-    MQTTClient* mqtt = getMqttClient();
-    return ScriptEngine::execute(cmds, mqtt);
+    ScriptMqttPublisher publisher;
+#if FASTBEE_ENABLE_MQTT
+    // Capture identity before any script command, release immediately. A busy
+    // or absent original instance stays unknown even if one appears later.
+    bool needsMqtt = false;
+    for (const auto& cmd : cmds) needsMqtt |= cmd.type == ScriptCmdType::CMD_MQTT;
+    struct PublishContext {
+        PeriphExecExecutor* executor;
+        uint32_t instance;
+        const FastBee::UartEventOrigin* origin;
+        bool* sourceUnconfirmed;
+    } context{this, needsMqtt ? captureReportInstanceId() : 0, &uartOrigin, sourceUnconfirmed};
+    publisher.context = &context;
+    publisher.publish = [](void* raw, size_t topic, const String& message) {
+        auto& bound = *static_cast<PublishContext*>(raw);
+        auto mqtt = bound.executor->getMqttClient();
+        if (!PeripheralManager::getInstance().isUartEventOriginCurrent(*bound.origin)) {
+            if (bound.sourceUnconfirmed) *bound.sourceUnconfirmed = true;
+            return FastBee::ScriptPublishResult::Rejected;
+        }
+        return FastBee::publishBoundScriptTopic(mqtt.get(), bound.instance, topic, message);
+    };
+#endif
+    return ScriptEngine::execute(cmds, publisher, uartOrigin, sourceUnconfirmed, control, controlResult);
 #else
-    (void)action;
+    (void)action; (void)uartOrigin;
     LOGGER.warning("[PeriphExec] Script action disabled (FASTBEE_ENABLE_COMMAND_SCRIPT=0)");
     return false;
 #endif
 }
 
 bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue,
-                                                      const String& receivedValue) {
+                                                      const String& receivedValue, ActionExecResult* detail,
+                                                      uint32_t expectedConfigEpoch,
+                                                      const FastBee::UartEventOrigin& uartOrigin, bool* sourceUnconfirmed,
+                                                      const FastBee::OrdinaryControlContext* control,
+                                                      FastBee::OrdinaryControlResult* controlResult) {
+    // Decide UART routing from the declared target under the same configuration
+    // generation used for final admission. Never let JSON redirect an action.
+    if (detail) *detail = ActionExecResult{};
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_UART_SEND) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
+        bool isUart = false;
+        uint32_t version = 0;
+        if (!resolveUartActionTarget(action, expectedConfigEpoch, isUart, version, detail)) return false;
+        if (!isUart) {
+            auto& pm = PeripheralManager::getInstance();
+            RecursiveMutexGuard guard(pm.getMutex(), 0);
+            PeripheralConfig current;
+            uint32_t currentVersion = 0;
+            if (!guard.isLocked() || !pm.getPeripheralSnapshot(action.targetPeriphId, current, &currentVersion) || currentVersion != version) {
+                if (detail) detail->remark = "CALL_CONFIG_UNCONFIRMED";
+                return false;
+            }
+            if (current.type == PeripheralType::PCA9685_PWM) {
+                FastBee::Pca9685Command command;
+                String error;
+                bool ok = !action.useReceivedValue && FastBee::parsePca9685Command(action.actionValue, command, error);
+                if (ok && !pm.isUartEventOriginCurrent(uartOrigin)) {
+                    if (sourceUnconfirmed) *sourceUnconfirmed = true;
+                    error = "uart_source_unconfirmed"; ok = false;
+                }
+                if (ok) ok = pm.commandPca9685(action.targetPeriphId, command.action, command.channel, command.value, error,
+                    control, controlResult);
+                if (detail) {
+                    detail->success = ok;
+                    detail->remark = ok ? "PCA_LOCAL_ACCEPTED_OUTPUT_UNVERIFIED" : error.isEmpty() ? "PCA_ACTION_INVALID" : error;
+                }
+                return ok;
+            }
+        }
+        if (isUart) {
+            ActionExecResult uartResult;
+            const bool ok = executeUartSendAction(action, effectiveValue, receivedValue, version, uartResult);
+            if (detail) *detail = uartResult;
+            return ok;
+        }
+    }
     // 支持两种格式:
+    // RF uses the declared target before the legacy JSON/string conversion.
+    // In particular no client actor, target rewrite or integer narrowing is admitted.
+    {
+        auto& rfManager = PeripheralManager::getInstance();
+        PeripheralConfig rfTarget; uint32_t rfEpoch = 0;
+        if (rfManager.getPeripheralSnapshot(action.targetPeriphId, rfTarget, &rfEpoch) &&
+            rfTarget.type == PeripheralType::RF_MODULE) {
+            if (!control || rfEpoch != expectedConfigEpoch || rfEpoch != control->configEpoch)
+                return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId,
+                    control ? "CONTROL_SOURCE_STALE" : "CONTROL_CONTEXT_REQUIRED", controlResult);
+            return FastBee::executeRfOutputAction(rfManager, action.targetPeriphId, action.actionValue,
+                effectiveValue, receivedValue, control, controlResult);
+        }
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RF_SEND))
+            return FastBee::rejectOrdinaryDigitalAction(action.targetPeriphId, "CONTROL_TARGET_UNSUPPORTED", controlResult);
+    }
     //   1) actionValue JSON: {"periphId":"xxx","action":"forward","value":"2"}
     //   2) targetPeriphId + actionValue 文本: forward / reverse / stop / faster / slower
     String targetId = action.targetPeriphId;
     String actionCmdStr;
     String valueString;
-    uint8_t rfBits = 0;
-    uint16_t rfPulseWidth = 0;
-    uint8_t rfRepeat = 0;
 
     // $value 替换优先级：receivedValue（平台下发值） > effectiveValue
     String substituteValue = !receivedValue.isEmpty() ? receivedValue : effectiveValue;
@@ -2279,13 +2973,16 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
             }
         }
         JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, jsonStr);
+        DeserializationError err = deserializeJson(doc, jsonStr.c_str(), jsonStr.length());
         if (err) {
             LOGGER.warningf("[PeriphExec] Call peripheral: JSON parse failed: %s", err.c_str());
             return false;
         }
         const char* jsonTarget = doc["periphId"] | "";
-        if (strlen(jsonTarget) > 0) targetId = jsonTarget;
+        if (strlen(jsonTarget) > 0 && targetId != jsonTarget) {
+            LOGGER.warning("[PeriphExec] Call peripheral: JSON target differs from declared target");
+            return false;
+        }
         actionCmdStr = doc["action"] | "";
         valueString = doc["value"] | "";
         if (valueString.isEmpty()) {
@@ -2303,9 +3000,6 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (valueString.isEmpty() && !substituteValue.isEmpty() && substituteValue != action.actionValue) {
             valueString = substituteValue;
         }
-        rfBits = doc["bits"] | (doc["bitLength"] | 0);
-        rfPulseWidth = doc["pulseWidth"] | 0;
-        rfRepeat = doc["repeat"] | 0;
     } else {
         // 纯文本格式: 支持 $value 占位符替换 (灯效控制/电机控制/射频发送/串口发送)
         actionCmdStr = action.actionValue;
@@ -2343,49 +3037,60 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
     cmd.toLowerCase();
     String valueStr = valueString;
 
+    if (FastBee::isOrdinaryDigitalTarget(*targetCfg)) {
+        using Command = FastBee::DigitalOutputCommand;
+        Command command;
+        uint32_t intervalMs = 0;
+        if (cmd == "on" || cmd == "high" || cmd == "1") command = Command::High;
+        else if (cmd == "off" || cmd == "low" || cmd == "0") command = Command::Low;
+        else if (cmd == "toggle") command = Command::Toggle;
+        else if (cmd == "stop") command = Command::Stop;
+        else if (cmd == "blink") {
+            command = Command::Blink;
+            if (!FastBee::parseOrdinaryBlinkInterval(valueStr, intervalMs))
+                return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_PARAMETER_INVALID", controlResult);
+        } else if (isAllDigits(actionCmdStr)) {
+            bool high = false;
+            for (size_t i = 0; i < actionCmdStr.length(); ++i) high |= actionCmdStr.charAt(i) != '0';
+            command = high ? Command::High : Command::Low;
+        } else {
+            return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_COMMAND_UNSUPPORTED", controlResult);
+        }
+        return FastBee::dispatchOrdinaryDigitalAction(pm, targetId, command, intervalMs, control, controlResult);
+    }
+
+    if (FastBee::isOrdinaryScalarTarget(*targetCfg)) {
+        FastBee::ScalarOutputCommand command;
+        uint32_t value = 0;
+        if (!FastBee::parseOrdinaryScalarCommand(*targetCfg, cmd, valueStr, command, value))
+            return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_PARAMETER_INVALID", controlResult);
+        return FastBee::dispatchOrdinaryScalarAction(pm, targetId, command, value, control, controlResult);
+    }
     if (targetCfg->type == PeripheralType::STEPPER_MOTOR) {
         int value = 0;
-        String valueLower = valueStr;
-        valueLower.toLowerCase();
-        if (cmd == "direction") {
-            value = (valueLower == "reverse" || valueLower == "backward" || valueLower == "ccw" || valueLower == "-1") ? -1 : 1;
-        } else {
-            value = valueStr.toInt();
-        }
-        return pm.controlStepper(targetId, cmd, value);
+        if (!FastBee::parseStepperCommandValue(cmd, valueStr, value))
+            return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_PARAMETER_INVALID", controlResult);
+        return pm.controlStepper(targetId, cmd, value, uartOrigin, control, controlResult);
+    }
+    if (targetCfg->type == PeripheralType::PWM_SERVO) {
+        uint32_t duty = 0;
+        if (cmd != "pwm" || !FastBee::parseServoRawDuty(*targetCfg, valueStr, duty))
+            return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_PARAMETER_INVALID", controlResult);
+        return pm.submitOrdinaryServo(targetId, duty, true, control, controlResult);
     }
 
     if (targetCfg->type == PeripheralType::NEO_PIXEL) {
-        return pm.controlNeoPixel(targetId, cmd, valueStr);
+        return pm.controlNeoPixel(targetId, cmd, valueStr, control, controlResult);
     }
 
-    if (targetCfg->type == PeripheralType::RF_MODULE) {
-        String code = valueStr;
-        if (code.isEmpty()) {
-            code = actionCmdStr;
-        }
-        bool recognizedSendAction = (cmd == "send" || cmd == "tx" || cmd == "write" || cmd == "code");
-        if (recognizedSendAction || valueStr.isEmpty()) {
-            if (code.isEmpty()) {
-                LOGGER.warningf("[PeriphExec] RF send: empty code for '%s'", targetId.c_str());
-                return false;
-            }
-            return pm.sendRfCode(targetId, code, rfBits, rfPulseWidth, rfRepeat);
-        }
-        LOGGER.warningf("[PeriphExec] RF send: unsupported action '%s'", actionCmdStr.c_str());
-        return false;
-    }
+    if (targetCfg->type == PeripheralType::RF_MODULE)
+        return FastBee::rejectOrdinaryDigitalAction(targetId, "CONTROL_SOURCE_STALE", controlResult);
 
     if (targetCfg->type == PeripheralType::UART) {
-        String payload = valueStr;
-        if (payload.isEmpty() && (cmd != "send" && cmd != "text" && cmd != "write")) {
-            payload = actionCmdStr;
-        }
-        if (payload.isEmpty()) {
-            LOGGER.warningf("[PeriphExec] UART send: empty payload for '%s'", targetId.c_str());
-            return false;
-        }
-        return pm.writeString(targetId, payload);
+        // A non-UART target changed while the legacy command was parsed, or a
+        // dedicated non-UART action selected UART. Do not bypass typed admission.
+        if (detail) detail->remark = "UART_CONFIG_CHANGED";
+        return false;
     }
 
     if (cmd == "on" || cmd == "high" || cmd == "1") {
@@ -2410,14 +3115,12 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (targetCfg->isExpanderChannel() && (interval < 200 ||
             targetCfg->type != PeripheralType::GPIO_DIGITAL_OUTPUT ||
             pm.readPin(targetId) == GPIOState::STATE_UNDEFINED)) return false;
-        pm.startActionTicker(targetId, 1, interval);
-        return true;
+        return pm.startActionTicker(targetId, 1, interval, uartOrigin);
     } else if (cmd == "breathe") {
         if (targetCfg->isExpanderChannel()) return false;
         uint16_t speed = valueStr.toInt();
         if (speed == 0) speed = 2000;
-        pm.startActionTicker(targetId, 2, speed);
-        return true;
+        return pm.startActionTicker(targetId, 2, speed, uartOrigin);
     } else if (isAllDigits(actionCmdStr)) {
         // 纯数字直出：平台直接下发数值（如蜂鸣器占空比 0/125/250）。
         // PWM/模拟输出外设 → 按占空比 writePWM；数字输出外设 → 非零视为高电平。
@@ -2470,23 +3173,35 @@ bool PeriphExecExecutor::executeRuleControlAction(const ExecAction& action) {
 
 // ========== 工具方法 ==========
 
-MQTTClient* PeriphExecExecutor::getMqttClient() {
+FastBee::MqttClientLease PeriphExecExecutor::getMqttClient(bool* absent) {
     auto* fw = FastBeeFramework::getInstance();
     if (fw) {
         auto* pm = fw->getProtocolManager();
-        if (pm) return pm->getMQTTClient();
+        if (pm) return pm->acquireMQTTClient(absent);
     }
-    return nullptr;
+    if (absent) *absent = true;
+    return {};
 }
 
-void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results) {
+uint32_t PeriphExecExecutor::captureReportInstanceId() {
+#if FASTBEE_ENABLE_MQTT
+    return FastBee::captureReportInstance([this] { return getMqttClient(); });
+#else
+    return 0;
+#endif
+}
+
+void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results,
+                                            uint32_t originInstanceId) {
     if (results.empty()) return;
 
     // 早期短路：MQTT 完全未启用（mqttClient == nullptr）时跳过所有上报构造，
     //   避免每次采集都构造 1KB JsonDocument + 序列化字符串入队，
     //   减少 CPU 浪费与堆碎片。
     //   （“启用但临时未连接”走下方 enqueueOrCache 的缓存重试分支，仍按原逻辑入队。）
-    if (!getMqttClient()) {
+    bool mqttAbsent = false;
+    (void)getMqttClient(&mqttAbsent);
+    if (mqttAbsent) {
         static unsigned long s_lastWarn = 0;
         unsigned long now = millis();
         if (now - s_lastWarn > 60000) {
@@ -2499,94 +3214,20 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 
     LOGGER.infof("[PeriphExec] reportActionResults: %d action results to process", results.size());
 
-    // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）并获取 ModbusHandler 指针
-    uint8_t modbusTransferType = 0;
-#if FASTBEE_ENABLE_MODBUS
-    ProtocolManager::ModbusHandlerLease modbusLease;
-    ModbusHandler* modbus = nullptr;
-    auto* fw = FastBeeFramework::getInstance();
-    if (fw) {
-        auto* protMgr = fw->getProtocolManager();
-        if (protMgr) {
-            modbusLease = protMgr->acquireModbusHandler(pdMS_TO_TICKS(2000));
-            modbus = modbusLease.get();
-            if (modbus) {
-                modbusTransferType = modbus->getTransferType();
-            }
-        }
-    }
-#endif
-
-    PeripheralManager& pm = PeripheralManager::getInstance();
-
     // 构建上报数据：[{"id":"led1","value":"1","remark":"success"}, ...]
-    // 每个结果约 80 字节 JSON，限制最多 8 个结果 ≈ 768 字节，加数组开销
+    // ArduinoJson 7 storage is elastic; allocation failure and exact wire-byte
+    // budgets are checked below. Structured SD values can exceed 80 bytes.
     StaticJsonDocument<1024> doc;
     JsonArray arr = doc.to<JsonArray>();
 
     for (const auto& ar : results) {
-        if (ar.targetPeriphId.isEmpty()) continue;
-
-        // 检查目标外设是否为 Modbus 子设备
-        bool isModbusTarget = false;
-        PeripheralConfig cfg;
-        const bool hasConfig = pm.getPeripheralSnapshot(ar.targetPeriphId, cfg);
-        if (hasConfig && cfg.isModbusPeripheral()) {
-            isModbusTarget = true;
-        } else if (!hasConfig) {
-            // 外设未在 PeripheralManager 中注册，仍使用原始 ID 上报，跳过 Modbus 映射
-            LOGGER.warningf("[PeriphExec] Report: peripheral '%s' not found in config, using raw ID",
-                            ar.targetPeriphId.c_str());
+        const auto captured = FastBee::appendCapturedReportRow(arr, ar);
+        if (captured == FastBee::CapturedReportRow::Added) continue;
+        if (captured == FastBee::CapturedReportRow::Invalid) {
+            LOGGER.warning("[PeriphExec] REPORT_IDENTITY_OR_SERIALIZATION_FAILED; batch not queued");
+            return;
         }
-
-        // 确定上报 ID 和 value：通用规则为外设配置 id（与平台物模型标识符对应）
-        String reportId = ar.targetPeriphId;
-        String reportValue = ar.actualValue;
-
-        // 仅当动作配置显式指定 dataField（多字段外设如 DHT11 温/湿）时才覆盖为 dataField：
-        // 平台需据此区分同一外设的不同数据字段；未显式配置时 result.dataField 为空，
-        // 保持外设配置 id 作为上报 ID，类别推断的默认字段不会顶替物模型标识符
-        if (!ar.dataField.isEmpty()) {
-            reportId = ar.dataField;
-        }
-
-        if (isModbusTarget
-#if FASTBEE_ENABLE_MODBUS
-            && modbus
-#endif
-            && cfg.params.modbus.sensorId[0] != '\0') {
-            // 从 actualValue 解析 channel（格式 "channel:state" 或 "state"）
-            uint16_t channel = 0;
-            int sepIdx = ar.actualValue.indexOf(':');
-            if (sepIdx > 0) {
-                channel = ar.actualValue.substring(0, sepIdx).toInt();
-                reportValue = ar.actualValue.substring(sepIdx + 1);
-            }
-#if FASTBEE_ENABLE_MODBUS
-            String sid = modbus->buildSensorId(cfg.params.modbus.deviceIndex, channel);
-            if (!sid.isEmpty()) {
-                reportId = sid;
-            }
-#endif
-        }
-
-        // 确定上报 remark：优先使用动作执行时设置的 remark，否则根据 success 生成
-        String reportRemark = ar.remark;
-        if (reportRemark.isEmpty()) {
-            reportRemark = ar.success ? "success" : "failed";
-        }
-
-        JsonObject obj = arr.add<JsonObject>();
-        if (isModbusTarget && modbusTransferType == 1 && looksLikeHexPayload(ar.actualValue)) {
-            // 透传模式：直接上报原始 HEX 值
-            obj["id"] = reportId;
-            obj["value"] = ar.actualValue;
-            obj["remark"] = reportRemark;
-        } else {
-            obj["id"] = reportId;
-            obj["value"] = reportValue;
-            obj["remark"] = reportRemark;
-        }
+        // No late PM/Modbus lookup, inference from a value, or raw-ID fallback.
     }
 
     if (arr.size() == 0) {
@@ -2594,77 +3235,29 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         return;
     }
 
-    String reportData;
-    serializeJson(doc, reportData);
+    if (doc.overflowed()) {
+        LOGGER.warning("[PeriphExec] REPORT_SERIALIZATION_FAILED before enqueue");
+        return;
+    }
 
     // 通过 MQTT 上报（使用线程安全队列，避免从异步任务直接调用 PubSubClient）
-    MQTTClient* mqtt = getMqttClient();
-
-    // 预算驱动分片：单个 MqttSlot 最大 512 字节
-    static constexpr uint16_t MQTT_MAX_PAYLOAD = 512;
+    auto mqtt = getMqttClient();
 
     auto enqueueOrCache = [&](const String& payload) {
-        if (mqtt && mqtt->getIsConnected()) {
-            bool ok = mqtt->queueReportData(payload);
-            LOGGER.infof("[PeriphExec] Reporting status: %s (%s)",
-                         payload.c_str(), ok ? "queued" : "queue_failed");
-        } else if (_manager) {
-            _manager->queuePendingReport(payload);
-            LOGGER.warningf("[PeriphExec] Reporting status: MQTT not connected, queued for retry (pending=%d)",
-                             _manager->getPendingReportCount());
-        } else {
-            LOGGER.warning("[PeriphExec] Reporting status: MQTT not connected, report dropped (no manager)");
-        }
+        const auto admission = FastBee::submitBoundReport(mqtt.get(), originInstanceId, payload,
+            [this](const String& value, uint32_t origin, uint32_t current) {
+                return _manager && _manager->queuePendingReport(value, origin, current);
+            });
+        LOGGER.infof("[PeriphExec] Reporting status: %s",
+            admission == FastBee::BoundReportAdmission::Queued ? "queued locally" :
+            admission == FastBee::BoundReportAdmission::Retained ? "retained with original instance" :
+            "not retained");
     };
 
-    if (reportData.length() <= MQTT_MAX_PAYLOAD) {
-        // 单条发送，无需分片
-        enqueueOrCache(reportData);
-    } else {
-        // 按 results 数组元素分片，确保每片 <= MQTT_MAX_PAYLOAD
-        // 先计算需要多少片
-        std::vector<std::vector<size_t>> chunks;  // 每片包含的元素索引
-        std::vector<size_t> currentChunk;
-        // JSON 数组开销: [] + 逗号分隔 ≈ 16 字节元数据 ("part":N,"total":N) + 包裹
-        // 每片格式: {"part":N,"total":N,"data":[...]}
-        static constexpr uint16_t CHUNK_OVERHEAD = 40;  // {"part":NN,"total":NN,"data":[]}
-        uint16_t currentSize = CHUNK_OVERHEAD;
-
-        for (size_t i = 0; i < arr.size(); i++) {
-            // 估算单个元素的序列化大小
-            String elemJson;
-            serializeJson(arr[i], elemJson);
-            uint16_t elemSize = elemJson.length() + 1;  // +1 for comma
-
-            if (currentSize + elemSize > MQTT_MAX_PAYLOAD && !currentChunk.empty()) {
-                // 当前片已满，开始新片
-                chunks.push_back(currentChunk);
-                currentChunk.clear();
-                currentSize = CHUNK_OVERHEAD;
-            }
-            currentChunk.push_back(i);
-            currentSize += elemSize;
-        }
-        if (!currentChunk.empty()) {
-            chunks.push_back(currentChunk);
-        }
-
-        uint8_t totalParts = chunks.size();
-        LOGGER.infof("[PeriphExec] Payload %d bytes exceeds %d, splitting into %d chunks",
-                     reportData.length(), MQTT_MAX_PAYLOAD, totalParts);
-
-        for (uint8_t partIdx = 0; partIdx < totalParts; partIdx++) {
-            JsonDocument chunkDoc;
-            chunkDoc["part"] = partIdx + 1;
-            chunkDoc["total"] = totalParts;
-            JsonArray chunkArr = chunkDoc["data"].to<JsonArray>();
-            for (size_t elemIdx : chunks[partIdx]) {
-                chunkArr.add(arr[elemIdx]);
-            }
-            String chunkPayload;
-            serializeJson(chunkDoc, chunkPayload);
-            enqueueOrCache(chunkPayload);
-        }
+    size_t emitted = 0;
+    if (const char* error = FastBee::emitActionReportPayloads(arr, enqueueOrCache, emitted)) {
+        LOGGER.warningf("[PeriphExec] %s (payload callbacks=%u); no automatic batch replay",
+                        error, static_cast<unsigned>(emitted));
     }
 }
 

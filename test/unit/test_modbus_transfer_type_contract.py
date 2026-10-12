@@ -17,7 +17,7 @@ class ModbusTransferTypeContractTests(unittest.TestCase):
     def test_save_api_strictly_accepts_only_json_or_raw(self):
         save = ROUTE[ROUTE.index("void ProtocolRouteHandler::handleSaveProtocolConfig"):]
         validation = save.index('requestedTransferType != "0" && requestedTransferType != "1"')
-        assignment = save.index('doc["modbusRtu"]["transferType"] = currentTransferType;')
+        assignment = save.index('FastBee::setFixedJsonField(doc, "modbusRtu", "transferType", currentTransferType);')
         persistence = save.index('ConfigStorage::getInstance().saveProtocolConfig(doc)')
 
         self.assertLess(validation, assignment)
@@ -33,7 +33,7 @@ class ModbusTransferTypeContractTests(unittest.TestCase):
             "bool loadProtocolConfigDocument",
         )
         self.assertIn("transferType != 0 && transferType != 1", normalize)
-        self.assertIn('doc["modbusRtu"]["transferType"] = 0;', normalize)
+        self.assertIn('FastBee::setFixedJsonField(doc, "modbusRtu", "transferType", 0);', normalize)
 
         sanitize = function_body(
             HANDLER,

@@ -1,0 +1,128 @@
+#include "protocols/MqttReconnectLifetime.h"
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+#define LOG_INFO(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+#define pdMS_TO_TICKS(n) (n)
+constexpr int pdPASS=1, SIMPLE_TASK_STACK=1024;
+using BaseType_t=int;
+using SemaphoreHandle_t=std::recursive_mutex*;
+using TickType_t=unsigned;
+constexpr unsigned portMAX_DELAY=~0u;
+constexpr int pdTRUE=1;
+int xSemaphoreTakeRecursive(SemaphoreHandle_t value,TickType_t timeout) {
+    if(timeout==portMAX_DELAY) {value->lock();return pdTRUE;}
+    assert(timeout==0);return value->try_lock()?pdTRUE:0;
+}
+void xSemaphoreGiveRecursive(SemaphoreHandle_t value) {value->unlock();}
+@GUARD@
+namespace FastBee { namespace MemoryBudget { constexpr int MQTTS_RECONNECT_TASK_STACK=2048; } }
+std::atomic<unsigned long> clockMs{0};
+unsigned long millis() {return clockMs.load();}
+void delay(unsigned ms) {clockMs.fetch_add(ms);std::this_thread::yield();}
+void vTaskDelay(unsigned ms) {delay(ms);}
+unsigned deletes=0;
+void vTaskDelete(void* task) {assert(task==nullptr);++deletes;}
+std::function<int(void(*)(void*),void*)> createTask;
+int xTaskCreate(void(*entry)(void*),const char*,unsigned,void* context,int,void* handle) {
+    assert(handle==nullptr);return createTask(entry,context);
+}
+class MQTTClient {
+public:
+    std::recursive_mutex mutex;
+    SemaphoreHandle_t _publishMutex=&mutex;
+    std::atomic<bool> stopped{false},_stopCompleted{false},_reconnectPending{true},_reconnectRunning{false};
+    std::atomic<unsigned long> _reconnectScheduledMs{100};
+    FastBee::MqttReconnectLifetime _reconnectLifetime;
+    uint32_t _taskStartupDelayMs=0;
+    struct {std::string scheme="mqtt";} config;
+    unsigned disconnects=0,resumes=0,notifications=0,runs=0;
+    std::function<void()> work;
+    void shutdown();bool stop();bool ensureReconnectTask();
+    void recoverStuckReconnect(const char* reason);
+    static void reconnectTaskEntry(void* param);
+    bool disconnect() {++disconnects;return true;}
+    void resumeWebServices() {++resumes;}
+    void _notifyStatusChange() {++notifications;}
+    void doReconnect() {_reconnectRunning=true;++runs;if(work)work();}
+};
+@METHODS@
+int main(int argc,char**argv) {
+    assert(argc==2);const std::string mode=argv[1];
+    using Lifetime=FastBee::MqttReconnectLifetime;
+    if(mode=="gate") {
+        Lifetime g;assert(g.reserve()&&!g.reserve()&&g.active());
+        assert(!g.requestStop()&&g.stopping()&&!g.reopen());
+        g.finish();assert(!g.active()&&g.requestStop()&&!g.reserve());
+        assert(g.reopen()&&g.reserve());g.finish();assert(g.reserve());g.finish();return 0;
+    }
+    if(mode=="contended_reserve") {
+        Lifetime g;std::atomic<unsigned> winners{0};std::vector<std::thread> threads;
+        for(unsigned i=0;i<16;++i)threads.emplace_back([&]{if(g.reserve())++winners;});
+        for(auto& t:threads) { t.join(); }
+        assert(winners==1);g.finish();return 0;
+    }
+    MQTTClient c;
+    void(*entry)(void*)=nullptr;void* context=nullptr;
+    createTask=[&](void(*e)(void*),void* ctx){entry=e;context=ctx;return pdPASS;};
+    if(mode=="create_failure") {
+        createTask=[](void(*)(void*),void*){return 0;};
+        assert(!c.ensureReconnectTask()&&!c._reconnectLifetime.active());
+        assert(c._reconnectLifetime.reserve());c._reconnectLifetime.finish();return 0;
+    }
+    if(mode=="early_exit") {
+        createTask=[](void(*e)(void*),void* ctx){e(ctx);return pdPASS;};
+        assert(c.ensureReconnectTask()&&!c._reconnectLifetime.active()&&c.runs==1);
+        c._reconnectPending=true;assert(c.ensureReconnectTask()&&c.runs==2&&deletes==2);return 0;
+    }
+    if(mode=="stop_idle") {
+        assert(c.stop()&&c.stop()&&c.disconnects==1&&c.notifications==1);
+        assert(!c.ensureReconnectTask());return 0;
+    }
+    if(mode=="owner_busy_stop") {
+        std::promise<void> entered,release;auto released=release.get_future();
+        std::thread owner([&]{std::lock_guard<std::recursive_mutex> lock(c.mutex);entered.set_value();released.wait();});
+        entered.get_future().wait();
+        assert(!c.stop()&&c.stopped&&!c._stopCompleted&&c.disconnects==0);
+        release.set_value();owner.join();
+        assert(c.stop()&&c.disconnects==1&&c.resumes==1&&c._stopCompleted);return 0;
+    }
+    assert(c.ensureReconnectTask()&&entry&&c._reconnectLifetime.active());
+    if(mode=="owner_busy_cleanup") {
+        std::promise<void> entered,release;auto released=release.get_future();
+        std::thread owner([&]{std::lock_guard<std::recursive_mutex> lock(c.mutex);entered.set_value();released.wait();});
+        entered.get_future().wait();assert(!c.stop());entry(context);
+        assert(!c._reconnectLifetime.active()&&!c._stopCompleted&&c.disconnects==0&&c.resumes==0);
+        release.set_value();owner.join();assert(c.stop()&&c.disconnects==1&&c.resumes==1);return 0;
+    }
+    if(mode=="cancel_startup") {
+        c._taskStartupDelayMs=3000;
+        assert(!c.stop()&&c.disconnects==0&&deletes==0);
+        entry(context);assert(c.runs==0&&c.disconnects==1&&c.resumes==1);
+        assert(c.stop()&&c.disconnects==1&&!c._reconnectLifetime.active()&&deletes==1);return 0;
+    }
+    if(mode=="terminal_drain") {
+        auto shutdown=std::async(std::launch::async,[&]{c.shutdown();});
+        while(!c._reconnectLifetime.stopping())std::this_thread::yield();
+        assert(shutdown.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready);
+        entry(context);shutdown.get();assert(c.runs==0&&deletes==1);return 0;
+    }
+    assert(mode=="running_stop"||mode=="watchdog");
+    std::promise<void> entered,release;auto released=release.get_future();
+    c.work=[&]{entered.set_value();released.wait();};
+    std::thread worker([&]{entry(context);});entered.get_future().wait();
+    if(mode=="watchdog")c.recoverStuckReconnect("test");else assert(!c.stop());
+    assert(c._reconnectLifetime.active()&&c._reconnectLifetime.stopping());
+    assert(c.disconnects==0&&deletes==0&&!c.ensureReconnectTask());
+    release.set_value();worker.join();assert(c.stop()&&c.disconnects==1&&deletes==1);
+    assert(c._reconnectLifetime.reopen());
+}

@@ -8,7 +8,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-ROUTE = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(encoding="utf-8")
+ROUTE = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/network/handlers/PeripheralRouteHandler.cpp",
+    "src/network/handlers/PeripheralCatalogRoutes.cpp",
+    "src/network/handlers/PeripheralRouteReadSupport.h",
+))
 PERSISTENCE = (ROOT / "src/core/PeripheralManagerPersistence.cpp").read_text(encoding="utf-8")
 
 
@@ -75,6 +79,8 @@ class GenericPeripheralRouteContractTests(unittest.TestCase):
                        f"-I{ROOT / 'include'}", f"-I{json_headers[0].parent}", f"-I{directory}",
                        str(ROOT / "test/unit/cpp/generic_peripheral_route_harness.cpp"),
                        str(ROOT / "src/core/SensorConfigSupport.cpp"),
+                       str(ROOT / "src/core/Pca9685ConfigSupport.cpp"),
+                       str(ROOT / "src/network/FixedJsonField.cpp"),
                        str(ROOT / "src/peripherals/drivers/INA226Driver.cpp"),
                        str(ROOT / "src/peripherals/drivers/MPU6050Driver.cpp"),
                        "-o", str(executable)]

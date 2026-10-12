@@ -1,0 +1,30 @@
+{
+  "storageVersion": 1,
+  "revision": 2,
+  "config": {
+    "schemaVersion": 1,
+    "displayRef": null,
+    "settings": {
+      "brightnessPercent": 70,
+      "idleSleepSeconds": 120,
+      "homePageId": "home",
+      "themeId": "dark",
+      "background": {
+        "presetId": "solid"
+      },
+      "allowSystemRestart": false
+    },
+    "pages": [
+      {
+        "id": "home",
+        "title": "Home",
+        "layoutId": "mixed-grid",
+        "layoutMode": "template",
+        "logicalWidth": 480,
+        "logicalHeight": 480,
+        "rotation": 0,
+        "cards": []
+      }
+    ]
+  }
+}

@@ -45,7 +45,9 @@ jobs:
         run: |
           npm ci
           python -m pip install --upgrade pip
-          pip install platformio
+          pip install platformio littlefs-python==0.19.0
+          npm ci --prefix test/browser
+          npx --prefix test/browser playwright install --with-deps chromium
       - name: Run host and native regressions
         run: npm run test:regression
       - name: Validate PowerShell scripts

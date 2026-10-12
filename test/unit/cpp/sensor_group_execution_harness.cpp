@@ -1,4 +1,5 @@
 #include <ArduinoJson.h>
+#include "core/UartEventOrigin.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -40,20 +41,24 @@ struct ActionExecResult {
 struct PeripheralConfig {
     bool enabled = true;
     PeripheralType type = PeripheralType::SENSOR_GENERIC;
-    struct { struct { const char* driver = "SHT30"; uint8_t mode = 0; } sensor; } params;
+    struct { struct { const char* driver = "SHT30"; uint8_t mode = 0, scanMask = 0; } sensor; } params;
 };
 struct PeripheralManager {
+    bool current = true, busy = false;
     static PeripheralManager& getInstance() { static PeripheralManager instance; return instance; }
     bool getPeripheralSnapshot(const String&, PeripheralConfig&) { return true; }
+    bool isUartEventOriginCurrent(const FastBee::UartEventOrigin& origin) {
+        return origin.unbound() || (current && !busy && origin.matches(7,19));
+    }
 };
-struct Metadata { uint8_t count = 2; uint8_t activeChannelCount(uint8_t) const { return count; } } metadata;
+struct Metadata { uint8_t count = 2; uint8_t activeChannelCount(uint8_t, uint8_t = 0) const { return count; } } metadata;
 namespace FastBee {
 struct DriverRegistry {
     static DriverRegistry& getInstance() { static DriverRegistry instance; return instance; }
     const Metadata* getMetadata(const char*) { return &metadata; }
 };
 namespace MemoryBudget { constexpr uint32_t PERIPH_EXEC_MIN_DRAM = 4096; }
-bool resolveSensorChannel(const char*, uint8_t, const char* input, String& output, String&) {
+bool resolveSensorChannel(const char*, uint8_t, const char* input, String& output, String&, uint8_t = 0) {
     if (strcmp(input,"temperature") && strcmp(input,"humidity") && strcmp(input,"pressure")) return false;
     output = input; return true;
 }
@@ -75,7 +80,7 @@ struct PeriphExecManager {
     static PeriphExecManager& getInstance() { static PeriphExecManager instance; return instance; }
     bool upsertSensorObservationBatch(const ObservationUpdate* const* values,size_t count,uint32_t epoch) {
         assert(count == 2 && epoch == 7);
-        assert(values[0]->sampleTimestamp == 100 && values[1]->sampleTimestamp == 100);
+        assert(values[0]->sampleTimestamp == 100 && values[1]->sampleTimestamp == (values[0]->sampleGroup ? 101U : 100U));
         assert(values[0]->maxAgeMs == 10000 && values[1]->maxAgeMs == 10000);
         ++publications; return commitResult;
     }
@@ -90,17 +95,24 @@ class PeriphExecExecutor {
 public:
     size_t reads = 0;
     int fault = 0;
-    bool executeSensorReadGroup(const PeriphExecRule&,size_t,size_t,uint32_t,unsigned long,std::vector<ActionExecResult>&);
+    bool executeSensorReadGroup(const PeriphExecRule&,size_t,size_t,uint32_t,unsigned long,std::vector<ActionExecResult>&,
+                                const FastBee::UartEventOrigin& = {},bool* = nullptr);
     bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result, bool history,
-                                const uint32_t* collection, PreparedSensorRead* prepared) {
+                                const uint32_t* collection, PreparedSensorRead* prepared,
+                                const FastBee::UartEventOrigin& origin, bool* sourceUnconfirmed) {
+        if (sourceUnconfirmed) *sourceUnconfirmed = false;
+        prepared->observation.uartOrigin = origin;
         assert(prepared && collection && *collection == 90 && history);
         ++reads;
         result.actualValue = "23.5"; result.targetPeriphId = action.targetPeriphId;
-        prepared->observation.sampleTimestamp = reads == 2 && fault == 2 ? 101 : 100;
+        prepared->observation.sampleTimestamp = reads == 2 && (fault == 2 || fault >= 10) ? 101 : 100;
+        prepared->observation.sampleGroup = fault >= 10 ? (reads == 2 && fault == 11 ? 0 : reads == 2 && fault == 12 ? 74 : 73) : 0;
         prepared->observation.maxAgeMs = 10000;
         prepared->configVersion = reads == 2 && fault == 3 ? 8 : 7;
         if (reads == 1 && fault == 4) memoryLow = true;
         if (reads == 1 && fault == 5) deadline = true;
+        if ((reads == 1 && fault == 7) || (reads == 2 && fault == 8))
+            PeripheralManager::getInstance().current = false;
         return !(reads == 2 && fault == 1);
     }
 };
@@ -148,6 +160,17 @@ static void groupExecution() {
         assert(executor.reads == static_cast<size_t>(fault == 4 || fault == 5 ? 1 : 2));
     }
 }
+static void scanGroupExecution() {
+    PeriphExecRule rule{{action("temperature"),action("humidity")}};
+    auto& manager=PeriphExecManager::getInstance();
+    memoryLow=deadline=false;manager.commitResult=true;
+    for(int fault=10;fault<=12;++fault){
+        PeriphExecExecutor executor;executor.fault=fault;
+        std::vector<ActionExecResult> result;
+        const bool ok=executor.executeSensorReadGroup(rule,0,2,90,0,result);
+        assert(ok==(fault==10));
+    }
+}
 static void panelSourceBounds() {
     JsonDocument document;
     assert(!deserializeJson(document,R"({"pages":[
@@ -163,7 +186,37 @@ static void panelSourceBounds() {
     assert(manager.snapshots == 2);
     assert(manager.selected == std::vector<String>({"inactive","sensor_temperature","sensor_humidity"}));
 }
+static void groupUartOrigin() {
+    PeriphExecRule rule{{action("temperature"),action("humidity")}};
+    auto& manager = PeriphExecManager::getInstance();
+    auto& pm = PeripheralManager::getInstance();
+    for (int scenario = 0; scenario < 7; ++scenario) {
+        pm = {}; memoryLow = deadline = false; manager.commitResult = true;
+        PeriphExecExecutor executor;
+        auto origin = FastBee::UartEventOrigin::captured(7,19);
+        if (scenario == 1) pm.current = false;
+        if (scenario == 2) origin.required = false;
+        if (scenario == 3) executor.fault = 7;
+        if (scenario == 4) executor.fault = 8;
+        if (scenario == 5) pm.busy = true;
+        if (scenario == 6) { origin = {}; pm.current = false; }
+        bool rejected = true;
+        const size_t before = manager.publications;
+        std::vector<ActionExecResult> results;
+        const bool ok = executor.executeSensorReadGroup(rule,0,2,90,0,results,origin,&rejected);
+        const bool valid = scenario == 0 || scenario == 6;
+        assert(ok == valid && rejected != valid);
+        assert(manager.publications - before == static_cast<size_t>(valid));
+        assert(executor.reads == (valid || scenario == 4 ? 2U : scenario == 3 ? 1U : 0U));
+        assert(results.size() == 2);
+        for (const auto& result : results) {
+            assert(result.success == valid);
+            assert(result.remark == (valid ? "success" : "uart_source_unconfirmed"));
+            if (!valid) assert(result.actualValue.empty());
+        }
+    }
+}
 int main() {
-    groupingBoundaries(); groupExecution(); panelSourceBounds();
+    groupingBoundaries(); groupExecution(); scanGroupExecution(); panelSourceBounds(); groupUartOrigin();
     std::printf("PreparedSensorRead host sizeof=%zu; at most four objects on bounded heap, not worker stack\n",sizeof(PreparedSensorRead));
 }

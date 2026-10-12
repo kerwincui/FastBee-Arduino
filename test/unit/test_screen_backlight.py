@@ -66,7 +66,7 @@ int main() {
     }
 }
 """
-        sample = json.loads((ROOT / 'docs/waveshare-esp32s3-touch-lcd4/peripherals.json').read_text(encoding='utf-8'))
+        sample = json.loads((ROOT / 'docs/device-test-configs/com8-com9-esp32s3-touch/config/peripherals.json').read_text(encoding='utf-8'))
         panel = next(item for item in sample['peripherals'] if item['id'] == 'panel_display')
         cpp = cpp.replace('PANEL_ACTIVE_HIGH', json.dumps(panel['params']['backlightActiveHigh']))
         with tempfile.TemporaryDirectory(prefix='fastbee-backlight-table-') as temporary:
@@ -104,12 +104,14 @@ constexpr int CMD_SLPIN=0x10,CMD_SLPOUT=0x11;
 int duty=-1;bool failed=false;
 bool ledcWrite(uint8_t,int value){if(failed)return false;duty=value;return true;}
 void delay(int){}
+struct SpiBusOperation { explicit SpiBusOperation(int) {} bool locked() const { return true; } };
 struct Spi {
  struct {int backlight=1;bool backlightActiveHigh=true;} _config;
  bool _ready=true,_sleeping=false,_backlightAttached=true;
  uint8_t _brightness=70;
  std::vector<int> commands;
  bool writeCommand(int cmd,void*,int){commands.push_back(cmd);return true;}
+ bool canTransfer() const { return true; }
  METHODS
 };
 int main(){

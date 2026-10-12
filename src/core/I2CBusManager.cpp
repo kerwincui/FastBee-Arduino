@@ -37,6 +37,29 @@ I2CBusManager& I2CBusManager::instance() {
     return manager;
 }
 
+void I2CBusManager::snapshotResources(I2CResourceSnapshot& result) const {
+    static_assert(MAX_CLIENTS == I2CResourceSnapshot::CAPACITY, "snapshot capacity");
+    result = I2CResourceSnapshot{};
+    void* handle = mutexHandle();
+    if (!handle) return; // No managed acquire has published its mutex yet.
+    RecursiveLock guard(handle, 0);
+    if (!guard.locked()) { result.status = ResourceObservation::Busy; return; }
+    result.initialized = _initialized;
+    result.sda = _sda;
+    result.scl = _scl;
+    result.frequency = _frequency;
+    for (size_t i = 0; i < MAX_CLIENTS; ++i) {
+        const void* owner = _owners[i].load(std::memory_order_acquire);
+        if (!owner) continue;
+        auto& lease = result.leases[result.count++];
+        lease.slot = static_cast<uint8_t>(i);
+        lease.address = _addresses[i];
+        lease.retiring = _deferredReleases[i].load(std::memory_order_acquire) == owner;
+        lease.consumer = _consumers[i];
+    }
+    // Use the raw semaphore guard: I2CBusManager::unlock() drains retirement.
+}
+
 bool I2CBusManager::ensureMutex() const {
     if (mutexHandle()) return true;
     void* created = static_cast<void*>(xSemaphoreCreateRecursiveMutex());
@@ -59,8 +82,14 @@ int I2CBusManager::findOwner(const void* owner) const {
 }
 
 bool I2CBusManager::acquire(const void* owner, int8_t sda, int8_t scl,
-                            uint32_t frequency, String& errorMsg) {
+                            uint32_t frequency, String& errorMsg,
+                            ResourceConsumerRole role, const char* consumerId) {
     errorMsg = "";
+    ResourceConsumerIdentity consumer;
+    if (!consumer.assign(role, consumerId)) {
+        errorMsg = "I2C_CONSUMER_INVALID";
+        return false;
+    }
     if (!owner) {
         errorMsg = "I2C owner is required";
         return false;
@@ -87,6 +116,10 @@ bool I2CBusManager::acquire(const void* owner, int8_t sda, int8_t scl,
     drainDeferredReleases();
     const int ownerIndex = findOwner(owner);
     if (ownerIndex >= 0) {
+        if (consumer.specified() && !consumer.equals(_consumers[ownerIndex])) {
+            errorMsg = "I2C_CONSUMER_CHANGED: release the previous lease first";
+            return false;
+        }
         if (_sda != sda || _scl != scl || _frequency != frequency) {
             errorMsg = "I2C owner requested a different bus configuration";
             return false;
@@ -123,8 +156,10 @@ bool I2CBusManager::acquire(const void* owner, int8_t sda, int8_t scl,
     }
 
     if (ownerIndex < 0) {
-        for (auto& slot : _owners) {
+        for (size_t i = 0; i < MAX_CLIENTS; ++i) {
+            auto& slot = _owners[i];
             if (!slot.load(std::memory_order_relaxed)) {
+                _consumers[i] = consumer;
                 slot.store(owner, std::memory_order_release);
                 ++_clientCount;
                 break;
@@ -132,6 +167,39 @@ bool I2CBusManager::acquire(const void* owner, int8_t sda, int8_t scl,
         }
     }
     return true;
+}
+
+bool I2CBusManager::claimAddress(const void* owner, uint8_t address, String& errorMsg) {
+    errorMsg = "";
+    if (!owner || address < 0x08 || address > 0x77) {
+        errorMsg = "I2C_ADDRESS_INVALID"; return false;
+    }
+    if (!mutexHandle()) { errorMsg = "I2C_ADDRESS_OWNER_REQUIRED"; return false; }
+    RecursiveLock guard(mutexHandle(), DEFAULT_LOCK_TIMEOUT_MS);
+    if (!guard.locked()) { errorMsg = "I2C_ADDRESS_BUSY"; return false; }
+    drainDeferredReleases();
+    const int index = findOwner(owner);
+    if (index < 0) { errorMsg = "I2C_ADDRESS_OWNER_REQUIRED"; return false; }
+    if (_addresses[index] && _addresses[index] != address) {
+        errorMsg = "I2C_ADDRESS_CHANGE_REQUIRES_RELEASE"; return false;
+    }
+    for (size_t i = 0; i < MAX_CLIENTS; ++i) {
+        if (static_cast<int>(i) != index && _addresses[i] == address) {
+            errorMsg = "I2C_ADDRESS_CONFLICT"; return false;
+        }
+    }
+    _addresses[index] = address;
+    return true;
+}
+
+bool I2CBusManager::ownsAddress(const void* owner, uint8_t address) const {
+    if (!owner || !mutexHandle()) return false;
+    RecursiveLock guard(mutexHandle(), DEFAULT_LOCK_TIMEOUT_MS);
+    if (!guard.locked()) return false;
+    const_cast<I2CBusManager*>(this)->drainDeferredReleases();
+    const int index = findOwner(owner);
+    return _initialized && index >= 0 && address >= 0x08 &&
+        address <= 0x77 && _addresses[index] == address;
 }
 
 bool I2CBusManager::release(const void* owner, uint32_t timeoutMs) {
@@ -165,6 +233,8 @@ void I2CBusManager::drainDeferredReleases() {
 void I2CBusManager::releaseLocked(const void* owner) {
     const int ownerIndex = findOwner(owner);
     if (ownerIndex < 0) return;
+    _addresses[ownerIndex] = 0;
+    _consumers[ownerIndex] = ResourceConsumerIdentity{};
     _owners[ownerIndex].store(nullptr, std::memory_order_release);
     --_clientCount;
 

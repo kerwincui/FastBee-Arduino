@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { allowedGet, hasFreshIdentity, runScreenPanelSoak } from '../../scripts/test-screen-panel-soak.mjs';
+import { allowedGet, hasFreshIdentity, internalDramSample, publishSoakReport, runScreenPanelSoak } from '../../scripts/test-screen-panel-soak.mjs';
 
 // Synthetic HTTP responses and a virtual clock exercise the production runner.
 // No network, serial port, real device credentials, or wall-clock waits are used.
@@ -16,10 +16,66 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const ok = data => Response.json({ success: true, data });
 const httpError = status => Response.json({ success: false }, { status });
 
+test('report publication retries Windows sharing failures without changing observation results', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fastbee-report-publish-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'report.json');
+  await fs.writeFile(target, '{"status":"RUNNING"}');
+  const report = { status: 'FAIL', transportErrors: 1, samples: 4, actualSampleSpanSeconds: 60 };
+  const waits = []; let attempts = 0;
+  await publishSoakReport(root, report, { platform: 'win32', wait: async ms => waits.push(ms),
+    rename: async (source, destination) => {
+      assert.equal(await fs.readFile(target, 'utf8'), '{"status":"RUNNING"}');
+      if (++attempts <= 2) throw Object.assign(new Error('sharing'), { code: attempts === 1 ? 'EPERM' : 'EACCES' });
+      await fs.rename(source, destination);
+    } });
+  assert.deepEqual(waits, [50, 50]);
+  assert.equal(attempts, 3);
+  assert.deepEqual(JSON.parse(await fs.readFile(target, 'utf8')), {
+    status: 'FAIL', transportErrors: 1, samples: 4, actualSampleSpanSeconds: 60,
+    reportPublishRetries: 2, reportPublishFailures: 0, reportPublishErrorCounts: { EPERM: 1, EACCES: 1 } });
+  await publishSoakReport(root, report);
+  assert(report.reportPublishRetries >= 2, 'A later successful save must retain prior failures');
+});
+
+for (const [platform, code, attempts] of [['win32', 'EPERM', 4], ['win32', 'EBUSY', 4],
+  ['linux', 'EPERM', 1], ['win32', 'ENOSPC', 1]]) {
+  test('report publication fails closed for ' + platform + '/' + code, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fastbee-report-failure-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const target = path.join(root, 'report.json');
+    await fs.writeFile(target, '{"status":"RUNNING"}');
+    const report = { status: 'FAIL', samples: 3 }, waits = [];
+    const failure = Object.assign(new Error('denied'), { code }); let count = 0;
+    await assert.rejects(publishSoakReport(root, report, { platform, wait: async ms => waits.push(ms),
+      rename: async () => { count++; throw failure; } }), error => error === failure);
+    assert.equal(count, attempts);
+    assert.deepEqual(waits, Array(attempts - 1).fill(50));
+    assert.equal(await fs.readFile(target, 'utf8'), '{"status":"RUNNING"}');
+    const pending = JSON.parse(await fs.readFile(path.join(root, 'report.pending'), 'utf8'));
+    assert.equal(pending.reportPublishErrorCounts[code], attempts);
+    assert.equal(pending.reportPublishRetries, attempts - 1);
+    assert.equal(pending.reportPublishFailures, 1);
+    assert.equal(pending.status, 'FAIL');
+  });
+}
+
+const soakDiagnostics = report => JSON.stringify(Object.fromEntries([
+  'status', 'stabilityStatus', 'dataStatus', 'continuous24hStatus', 'continuous7dStatus',
+  'errors', 'requestFailures', 'samples', 'actualSampleSpanSeconds', 'durationComplete', 'coveragePassed',
+  'reportPublishRetries', 'reportPublishFailures', 'reportPublishErrorCounts',
+  'preflightFailures', 'initializationFailures', 'identityFailures', 'touchFailures',
+  'configChanges', 'deploymentChanges', 'transportErrors', 'http429Count', 'restarts', 'samplingGaps',
+  'runtimeFailures', 'degradedSamples', 'memoryMetricErrors', 'sustainedHeapDecline',
+  'staleWeatherSamples', 'weatherUpdates', 'historyUpdates', 'missingHistorySamples', 'staleHistorySamples',
+].map(key => [key, report[key]])));
+
+// Diagnostics above select the runner's redacted errors/counters, never credentials or HTTP headers.
+
 async function fixture(t, hook) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fastbee-panel-soak-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const deployment = { written: true, verified: true, firmwareSha256: 'a'.repeat(64), webSha256: 'b'.repeat(64) };
+  const deployment = { written: true, verified: true, applicationWritten: true, firmwareSha256: 'a'.repeat(64), webSha256: 'b'.repeat(64) };
   const deploymentPath = path.join(root, 'deployment.json');
   await fs.writeFile(deploymentPath, JSON.stringify(deployment));
   const f = {
@@ -46,7 +102,8 @@ async function fixture(t, hook) {
       case '/api/auth/login': return Response.json({ success: true, sessionId: 'offline-token-' + f.visits[pathname] });
       case '/api/auth/logout': return ok({});
       case '/api/network/status': return ok({ macAddress: MAC });
-      case '/api/health': return ok({ memory: { heapFree: 60000, heapMaxAlloc: 30000 } });
+      case '/api/health': return ok({ memory: { heapFree: 7000000, heapMaxAlloc: 6000000 } });
+      case '/api/system/status': return ok({ macAddress: MAC, memory: { dram8Free: 60000, dram8Largest: 30000 } });
       case '/api/system/info': return ok({ network: { macAddress: MAC }, uptime: { seconds: 100 + Math.floor(f.clock / 1000) } });
       case '/api/screen-panel/config': return ok({ revision: 28, config: structuredClone(f.config) });
       case '/api/screen-panel/state': return ok({ revision: 28, capabilities: { touchReady: true, touchError: '' }, application: { runtime: { running: true } } });
@@ -82,7 +139,8 @@ async function fixture(t, hook) {
     const saved = JSON.parse(await fs.readFile(path.join(f.options.out, 'report.json'), 'utf8'));
     assert.equal(saved.status, report.status);
     assert.equal(saved.samples, report.samples);
-    assert.equal(saved.continuous24hStatus, 'NOT_RUN');
+    assert.equal(saved.continuous24hStatus, report.continuous24hStatus);
+    assert.equal(saved.continuous7dStatus, report.continuous7dStatus);
     assert.equal(saved.acceptanceStatus, 'INCOMPLETE');
     return report;
   };
@@ -101,6 +159,7 @@ test('finite healthy window records actual coverage, no actuation and no physica
   assert.equal(report.revision, 28);
   assert.equal(report.configSha256, digest(JSON.stringify(f.config)));
   assert.equal(report.deploymentReportSha256, digest(await fs.readFile(f.deploymentPath)));
+  assert.equal(report.observerSha256, digest(await fs.readFile(new globalThis.URL('../../scripts/test-screen-panel-soak.mjs', import.meta.url))));
   assert(report.finalUptime > report.initialUptime);
   assert(report.unverified.includes('physical-swipe'));
   assert(report.unverified.includes('physical-motor-response'));
@@ -121,11 +180,31 @@ test('route allowlist and neighbor gate reject unsafe targets', () => {
   assert.equal(hasFreshIdentity([{ IPAddress: '127.0.0.2', State: 'Reachable', LinkLayerAddress: MAC.replaceAll(':', '-') }], '127.0.0.2', MAC), true);
 });
 
+test('internal DRAM is mandatory even when aggregate heap and PSRAM are abundant', () => {
+  const memory = { heapFree: 7000000, heapMaxAlloc: 6000000, psramFree: 6500000, dram8Free: 24000, dram8Largest: 16000 };
+  assert.deepEqual(internalDramSample(memory), { dram8Free: 24000, dram8Largest: 16000 });
+  for (const field of ['dram8Free', 'dram8Largest']) {
+    for (const value of [undefined, null, true, -1, '100', 100.5, Infinity]) {
+      assert.throws(() => internalDramSample({ ...memory, [field]: value }), /internal DRAM/);
+    }
+  }
+});
+
+test('missing internal DRAM cannot produce complete healthy samples', async t => {
+  const f = await fixture(t, call => call.pathname === '/api/system/status' ? ok({ macAddress: MAC, memory: { heapFree: 7000000, heapMaxAlloc: 6000000 } }) : undefined);
+  const report = await f.run();
+  assert.notEqual(report.status, 'PASS');
+  assert.equal(report.samples, 0);
+  assert(report.memoryMetricErrors > 0);
+  assert.equal(report.transportErrors, 0);
+});
+
 test('invalid URL, MAC or timing fails before any request', async t => {
   const f = await fixture(t);
   for (const options of [{ url: 'http://name.local' }, { url: 'http://user:secret@127.0.0.2' },
     { url: URL + '/api/health' }, { url: URL + '?secret=x' }, { url: 'ftp://127.0.0.2' },
-    { expectedMac: '02:00:00:00:00:01-not-a-mac' }, { seconds: 0 }, { interval: 1 }]) {
+    { expectedMac: '02:00:00:00:00:01-not-a-mac' }, { seconds: 0 }, { seconds: 604801 },
+    { seconds: 86400.5 }, { seconds: Infinity }, { seconds: NaN }, { interval: 1 }]) {
     await assert.rejects(f.run(options));
   }
   assert.equal(f.calls.length, 0);
@@ -227,11 +306,25 @@ test('runtime stoppage and memory degradation have independent counters', async 
   assert.equal(report.touchFailures, 0);
 });
 
+test('NORMAL pressure with a pending service recovery is still degraded', async t => {
+  const f = await fixture(t, call => call.pathname === '/api/health' ? ok({
+    memory: { heapFree: 7000000, heapMaxAlloc: 6000000, guardLevel: 'NORMAL' },
+    memoryDegradation: { active: true, mqttRestorePending: true },
+  }) : undefined);
+  const report = await f.run();
+  assert.equal(report.status, 'FAIL');
+  assert.equal(report.degradedSamples, report.samples);
+  assert.equal(report.transportErrors, 0);
+  const rows = (await fs.readFile(path.join(f.options.out, 'samples.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert(rows.every(row => row.memoryDegradation.mqttRestorePending));
+});
+
 test('missing heap metrics cannot pass silently', async t => {
   const f = await fixture(t, call => call.pathname === '/api/health' ? ok({ memory: {} }) : undefined);
   const report = await f.run();
   assert.notEqual(report.status, 'PASS');
-  assert(report.transportErrors > 0);
+  assert(report.memoryMetricErrors > 0);
+  assert.equal(report.transportErrors, 0);
   assert.equal(report.samples, 0);
 });
 
@@ -279,6 +372,21 @@ test('mismatched observation plan refuses network requests', async t => {
   assert.equal(report.status, 'FAIL');
   assert.equal(report.deploymentChanges, 1);
   assert.equal(f.calls.length, 0);
+});
+
+test('missing application proof or malformed artifact hashes fail before network or evidence creation', async t => {
+  const f = await fixture(t);
+  const invalid = [null, [], true, {},
+    ...['written', 'verified', 'applicationWritten'].flatMap(key =>
+      [undefined, false, 'true', 1].map(value => ({...f.deployment, [key]: value}))),
+    ...['firmwareSha256', 'webSha256'].flatMap(key =>
+      [undefined, null, '', 'f'.repeat(63), 'z'.repeat(64), 123].map(value => ({...f.deployment, [key]: value})))];
+  for (const deployment of invalid) {
+    await fs.writeFile(f.deploymentPath, JSON.stringify(deployment));
+    await assert.rejects(f.run(), /Verified deployment required/);
+    await assert.rejects(fs.stat(f.options.out), {code: 'ENOENT'});
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.neighborReads, 0);
 });
 
 test('unverified deployment and existing output directory are never overwritten', async t => {
@@ -406,6 +514,55 @@ test('header transport failure stays distinct from a truncated successful HTTP r
   assert.notEqual(report.status, 'PASS');
 });
 
+for (const phase of ['headers', 'body']) {
+  for (const type of ['DOMException', 'frozen Error']) {
+    test(type + ' in ' + phase + ' preserves timeout evidence without mutating the exception', async t => {
+      let original, originalMessage;
+      const f = await fixture(t, (call, f) => {
+        if (call.pathname !== '/api/system/info' || f.visits[call.pathname] !== 2) return;
+        originalMessage = 'request timed out ' + f.credentials.password;
+        original = type === 'DOMException'
+          ? new DOMException(originalMessage, 'TimeoutError')
+          : Object.freeze(new Error(originalMessage, { cause: { code: 'ETIMEDOUT' } }));
+        if (phase === 'headers') throw original;
+        return { ok: true, status: 200, headers: new Headers({ 'content-length': '500' }),
+          json: async () => { throw original; } };
+      });
+      const report = await f.run();
+      assert.equal(original.message, originalMessage);
+      assert.equal(report.transportErrors, 1);
+      assert(report.samples > 1);
+      assert.notEqual(report.status, 'PASS');
+      assert.equal(report.requestFailures.length, 1);
+      const failure = report.requestFailures[0];
+      assert.equal(failure.phase, phase);
+      assert.equal(failure.route, '/api/system/info');
+      assert.equal(failure.causeCode, type === 'DOMException' ? '23' : 'ETIMEDOUT');
+      assert(report.errors[0].message.includes('/api/system/info [' + phase + ']'));
+      assert(report.errors[0].message.includes('request timed out'));
+      for (const name of await fs.readdir(f.options.out)) {
+        const data = await fs.readFile(path.join(f.options.out, name), 'utf8');
+        assert(!data.includes(f.credentials.password));
+        assert(!data.includes('only a getter'));
+      }
+    });
+  }
+}
+
+test('context wrapping preserves fatal classification and stops further sampling', async t => {
+  const original = Object.freeze(Object.assign(new Error('fatal transport boundary'), { fatal: true }));
+  const f = await fixture(t, (call, f) => {
+    if (call.pathname === '/api/system/info' && f.visits[call.pathname] === 2) throw original;
+  });
+  const report = await f.run();
+  assert.equal(report.status, 'FAIL');
+  assert.equal(report.samples, 1);
+  assert.equal(f.visits['/api/system/info'], 2);
+  assert.equal(report.transportErrors, 0);
+  assert.equal(report.errors.at(-1).kind, 'fatal');
+  assert.equal(original.message, 'fatal transport boundary');
+});
+
 test('local neighbor subprocess failure blocks credentials and is not a successful zero-error window', async t => {
   const f = await fixture(t);
   f.dependencies.readNeighbors = async () => { throw new Error('Local neighbor lookup failed: process timeout (30000ms)'); };
@@ -448,3 +605,68 @@ test('advancing weather and histories pass a long virtual window, not physical a
   assert(report.weatherUpdates > 0);
   assert(report.historyUpdates['test.temperature'] > 0);
 });
+
+for (const seconds of [86399, 86400, 604799, 604800]) {
+  test('monotonic virtual window ' + seconds + ' has honest 24h/7d results', async t => {
+    const f = await fixture(t, (call, f) => call.pathname === '/api/screen-panel/weather/refresh' ?
+      ok({ updatedMs: Math.floor(f.clock / 1800000) * 1800000 + 1000, stale: false }) : undefined);
+    const report = await f.run({ seconds, interval: 300 });
+    assert.equal(report.status, 'PASS', soakDiagnostics(report));
+    assert.equal(report.actualSampleSpanSeconds, seconds);
+    assert.equal(report.continuous24hStatus, seconds >= 86400 ? 'PASS' : 'NOT_RUN');
+    assert.equal(report.continuous7dStatus, seconds >= 604800 ? 'PASS' : 'NOT_RUN');
+    assert.equal(report.acceptanceStatus, 'INCOMPLETE');
+  });
+}
+
+test('a one-millisecond short seven-day window cannot pass even after cleanup', async t => {
+  const f = await fixture(t, (call, f) => {
+    if (call.pathname === '/api/screen-panel/weather/refresh')
+      return ok({ updatedMs: Math.floor(f.clock / 1800000) * 1800000 + 1000, stale: false });
+    if (call.pathname === '/api/auth/logout') f.clock += 120000;
+  });
+  f.dependencies.sleep = async ms => {
+    f.clock += ms;
+    // Production preflight has two 350ms pacing sleeps before sampling.
+    if (f.clock >= 604800700) { f.clock = 604800700 - 1; f.controller.abort(); }
+  };
+  const report = await f.run({ seconds: 604800, interval: 300 });
+  assert.equal(report.continuous7dStatus, 'INCOMPLETE', soakDiagnostics(report));
+  assert.equal(report.continuous24hStatus, 'INCOMPLETE', 'Interrupted parent run is not accepted as a stitched shorter run');
+  assert.equal(report.durationComplete, false);
+  assert(report.actualSampleSpanSeconds < 604800);
+});
+
+test('wall-clock corrections neither shorten nor inflate successful observation time', async t => {
+  const f = await fixture(t, (call, f) => {
+    if (call.pathname === '/api/system/info') f.wallOffset = f.clock >= 30000 ? 7 * 86400000 : 0;
+  });
+  const report = await f.run();
+  assert.equal(report.actualSampleSpanSeconds, 60);
+  assert.equal(report.continuous24hStatus, 'NOT_RUN');
+  assert.equal(report.status, 'PASS');
+});
+
+for (const mode of ['transport', 'gap', 'config', 'restart']) {
+  test('full virtual day retains ' + mode + ' failure after recovery', async t => {
+    const f = await fixture(t, (call, f) => {
+      if (call.pathname === '/api/screen-panel/weather/refresh')
+        return ok({ updatedMs: Math.floor(f.clock / 1800000) * 1800000 + 1000, stale: false });
+      if (f.visits[call.pathname] === 2 && call.pathname === '/api/system/info' && mode === 'transport') throw new Error('temporary outage');
+      if (f.visits[call.pathname] === 2 && call.pathname === '/api/system/info' && mode === 'restart')
+        return ok({ network: { macAddress: MAC }, uptime: { seconds: 0 } });
+      if (f.visits[call.pathname] === 2 && call.pathname === '/api/screen-panel/state' && mode === 'config')
+        return ok({ revision: 29, capabilities: { touchReady: true }, application: { runtime: { running: true } } });
+    });
+    let gapInjected = false;
+    if (mode === 'gap') f.dependencies.sleep = async ms => {
+      f.clock += ms;
+      if (!gapInjected && ms > 350) { f.clock += 1200000; gapInjected = true; }
+    };
+    const report = await f.run({ seconds: 86400, interval: 300 });
+    assert.notEqual(report.continuous24hStatus, 'PASS');
+    assert.equal(report.continuous7dStatus, 'NOT_RUN');
+    assert.equal(report.acceptanceStatus, 'INCOMPLETE');
+    assert(report[{ transport: 'transportErrors', gap: 'samplingGaps', config: 'configChanges', restart: 'restarts' }[mode]] > 0, 'Fault injection must actually fire');
+  });
+}

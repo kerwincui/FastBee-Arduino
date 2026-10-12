@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-18T07:27:07Z",
+  "features": {
+    "webServer": {
+      "enabled": true
+    },
+    "mdns": {
+      "enabled": false
+    },
+    "lcd": {
+      "enabled": true
+    },
+    "neopixel": {
+      "enabled": false
+    },
+    "sevenSegment": {
+      "enabled": false
+    },
+    "ds18b20": {
+      "enabled": false
+    },
+    "modbus": {
+      "enabled": false
+    },
+    "ruleScript": {
+      "enabled": false
+    },
+    "lcdGb2312": {
+      "enabled": false
+    },
+    "irRemote": {
+      "enabled": false
+    },
+    "rfid": {
+      "enabled": false
+    },
+    "ioExpander": {
+      "enabled": false
+    },
+    "i2cSensors": {
+      "enabled": false
+    },
+    "rfLearn": {
+      "enabled": false
+    },
+    "ds1302": {
+      "enabled": false
+    },
+    "lcd1602": {
+      "enabled": false
+    },
+    "commandScript": {
+      "enabled": false
+    },
+    "mqtts": {
+      "enabled": false
+    },
+    "deviceControl": {
+      "enabled": false
+    },
+    "screenPanel": {
+      "enabled": false
+    },
+    "ota": {
+      "enabled": false
+    },
+    "otaFs": {
+      "enabled": false
+    },
+    "logViewer": {
+      "enabled": false
+    },
+    "fileLogging": {
+      "enabled": false
+    },
+    "userAdmin": {
+      "enabled": false
+    },
+    "ble": {
+      "enabled": false
+    },
+    "ethernet": {
+      "enabled": false
+    },
+    "cellular": {
+      "enabled": false
+    }
+  }
+}

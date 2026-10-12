@@ -11,6 +11,7 @@
 #include <new>
 #include <string>
 #include <vector>
+#include "core/FeatureInstanceRegistry.h"
 
 using String = std::string;
 using vprintf_like_t = int (*)(const char*, va_list);
@@ -44,7 +45,9 @@ static std::function<void()> beforeLock;
 static constexpr int pdTRUE = 1;
 #define pdMS_TO_TICKS(value) (value)
 SemaphoreHandle_t xSemaphoreCreateMutex() { return failMutex ? nullptr : &mutex; }
-int xSemaphoreTake(SemaphoreHandle_t value, int) {
+static bool observing = false;
+int xSemaphoreTake(SemaphoreHandle_t value, int timeout) {
+    if (observing) assert(timeout == 0);
     if (beforeLock) { auto hook = std::move(beforeLock); beforeLock = {}; hook(); }
     if (!value || value->held || value->reject) return 0;
     value->held = true;
@@ -331,4 +334,38 @@ int main() {
     }
     verifyDeferredFileIO(LoggerSystem::getInstance(), 2);
     assert(!ringAllocation && allocationCount == releaseCount);
+    {
+        using FastBee::FeatureInstanceState;
+        LoggerSystem logger;
+        auto observe = [&] {
+            const auto beforeOpen = opens, beforeAllocation = allocationCount, beforeRelease = releaseCount;
+            observing = true;
+            const auto value = LoggerSystem::observeFeatureInstance(&logger);
+            observing = false;
+            assert(opens == beforeOpen && allocationCount == beforeAllocation && releaseCount == beforeRelease);
+            assert(!value.countKnown() && value.initializedCount == 0);
+            return value;
+        };
+        assert(!observe().observed());
+        logger.initialize();
+        assert(observe().state == FeatureInstanceState::Stopped);
+        logger.enableFileLogging(true);
+        assert(observe().state == FeatureInstanceState::Allocated);
+        mutex.reject = true;
+        logger.enableFileLogging(false);
+        assert(ringAllocation && observe().state == FeatureInstanceState::Busy);
+        mutex.reject = false;
+        for (int i = 0; i < 1000; ++i) {
+            assert(observe().state == FeatureInstanceState::Retiring);
+            assert(ringAllocation); // An observer must never run unlockLogFiles cleanup.
+        }
+        logger.enableFileLogging(false);
+        assert(!ringAllocation && observe().state == FeatureInstanceState::Stopped);
+        logger.fileLoggingState = static_cast<uint32_t>(LoggerSystem::FileLoggingState::Pending);
+        assert(observe().state == FeatureInstanceState::Busy);
+        logger.fileLoggingState = static_cast<uint32_t>(LoggerSystem::FileLoggingState::Enabled);
+        assert(!observe().observed()); // Enabled without a retained ring is inconsistent.
+        logger.fileLoggingState = static_cast<uint32_t>(LoggerSystem::FileLoggingState::Disabled);
+        assert(FastBee::FeatureInstanceRegistry::instance().observe("fileLogging").observed());
+    }
 }

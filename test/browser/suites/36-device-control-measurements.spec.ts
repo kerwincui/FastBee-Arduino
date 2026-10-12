@@ -7,6 +7,7 @@ test.beforeEach(async({page})=>{
  await page.setContent('<div id="device-control-page" class="active"><div id="dc-content"></div></div>');
  await page.addStyleTag({content:source('web-src/css/main.css')});
  await page.evaluate(()=>{const w=window as any;w.AppState={};w.escapeHtml=(v:any)=>String(v??'');});
+ await page.addScriptTag({content:source('web-src/js/utils.js')});
  for(const file of ['core','render','modbus-ops'])await page.addScriptTag({content:source(`web-src/modules/runtime/device-control/${file}.js`)});
  await page.evaluate(()=>{const a=(window as any).AppState;a.currentPage='device-control';a._featureActive={deviceControl:true};a._filterByActionType=(items:any[],types:number[])=>(items||[]).filter(i=>types.includes(i.actionType));});
 });
@@ -126,10 +127,14 @@ test('missing soil humidity displays zero without changing cached measurement or
  for(const sample of [{value:null,quality:'low'},{},{value:' '},{value:true},{value:0,valueValid:false},{value:6.9,quality:'disconnected'}]) {
   const result=await page.evaluate(sample=>{
    const a=(window as any).AppState;
-   const sensor={key:'ai_soil_humidity_soil_humidity',unit:'%',...sample};
+   const sensor:any={key:'ai_soil_humidity_soil_humidity',unit:'%',...sample};
    a._controlData={sensor:[{actionType:19,sensors:[sensor,{key:'ai_soil_temp_soil_temperature',value:null,unit:'°C'}]}]};
    document.getElementById('dc-content')!.innerHTML=a._renderMonitorDataCard(a._controlData);
-   return {unchanged:JSON.stringify(sensor)===JSON.stringify({key:'ai_soil_humidity_soil_humidity',unit:'%',...sample}),rawValue:a._dcMonitorValue(sensor)};
+   const receivedAt=sensor._dcSampleReceivedAt;
+   document.getElementById('dc-content')!.innerHTML=a._renderMonitorDataCard(a._controlData);
+   const {_dcSampleReceivedAt,...measurement}=sensor;
+   return {unchanged:JSON.stringify(measurement)===JSON.stringify({key:'ai_soil_humidity_soil_humidity',unit:'%',...sample}),
+    receiptPreserved:Number.isFinite(receivedAt)&&receivedAt===_dcSampleReceivedAt,rawValue:a._dcMonitorValue(sensor)};
   },sample);
   const card=page.locator('[data-id="ai_soil_humidity_soil_humidity"]');
   await expect(card.locator('.dc-monitor-value')).toHaveText('0');
@@ -139,7 +144,7 @@ test('missing soil humidity displays zero without changing cached measurement or
   await expect(card.locator('.dc-monitor-status')).toBeVisible();
   await expect(card.locator('.dc-monitor-status')).toContainText('无有效数据');
   await expect(page.locator('[data-id="ai_soil_temp_soil_temperature"] .dc-monitor-value')).toHaveText('--');
-  expect(result).toEqual({unchanged:true,rawValue:'--'});
+  expect(result).toEqual({unchanged:true,receiptPreserved:true,rawValue:'--'});
  }
 });
 

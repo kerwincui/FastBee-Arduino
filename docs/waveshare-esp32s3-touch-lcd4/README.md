@@ -1,5 +1,7 @@
 # Waveshare ESP32-S3-Touch-LCD-4 设备屏幕测试配置
 
+配置入口已于 2026-10-07 合并至 [com8-com9-esp32s3-touch](../device-test-configs/com8-com9-esp32s3-touch/README.md)，运行 JSON 仅保存在该设备的 config/ 中。本目录保留硬件说明和历史记录，下文历史默认值及验收结果不能作为当前配置或本轮通过证据。
+
 新版界面使用说明见[设备触摸屏：预览、编辑与操作](../touch-screen-user-guide.md)。该说明对应当前源码；本机部署与实屏验收状态应以本次发布记录为准，下方旧固件版本、IP 和测试记录仅作历史参考。
 
 本机背光极性修正：2026-09-25 用户实物反馈，现场 `backlightActiveHigh=true` 时 100% 黑屏、0% 最亮，确认当前配置方向相反。该 Rev4 显示外设 `panel_display` 应设为 `backlightActiveHigh=false`，公开 `peripherals.json` 已同步。此结论仅针对本机 CH32 背光连接，不全局反转其他屏。逻辑 0% 保留约 10% 可见亮度，100% 最亮；只有显式息屏关闭背光。实际部署后，亮度递增、端点及触摸唤醒效果仍待用户现场复核。
@@ -12,7 +14,7 @@
 
 当前操作请使用[新版使用说明](../touch-screen-user-guide.md)；[旧现场快速说明](panel-quick-start.md)仅保留历史记录。
 
-RGB 触控屏的编译期缓冲合同记录在 [`rgb-build-contract.json`](rgb-build-contract.json)：运行配置的 `bufferLines=16` 必须对应 `FASTBEE_RGB_BOUNCE_LINES=16`、`FASTBEE_RGB_REQUIRE_BOUNCE=1` 和 30,720 字节双 bounce。`npm run test:contracts` 会始终校验版本库合同；若本机存在候选 ini/构建报告，也会自动交叉校验。发布前可运行 `node scripts/test-rgb-touch-build-contract.js --require-build-report`，防止只改配置却没有用匹配宏重新构建。
+RGB 触控屏的编译期缓冲合同记录在 [`rgb-build-contract.json`](../device-test-configs/com8-com9-esp32s3-touch/rgb-build-contract.json)：运行配置的 `bufferLines=16` 必须对应 `FASTBEE_RGB_BOUNCE_LINES=16`、`FASTBEE_RGB_REQUIRE_BOUNCE=1` 和 30,720 字节双 bounce。`npm run test:contracts` 会始终校验版本库合同；若本机存在候选 ini/构建报告，也会自动交叉校验。发布前可运行 `node scripts/test-rgb-touch-build-contract.js --require-build-report`，防止只改配置却没有用匹配宏重新构建。
 
 目标环境 `esp32s3-F16R8`。触摸设备当前由操作系统枚举为 `COM8`，现场地址为 `192.168.5.33`；历史 `COM9` 只表示此前 USB 重枚举阶段。用户已确认板本 Rev4.0、SHT30；Modbus 步进电机控制器地址为 **8**、波特率为 **9600、8-N-1**，寄存器协议已提供。当前电机硬件断开，示例只准备通用 Modbus 采集任务和禁用控制规则，不试运转、不自动写寄存器；这不是电机专用固件，地址、寄存器及页面都可按其他设备协议重新配置。已移除不再接入的 PM2.5/PM10 任务、规则和页面来源。使用前仍须完成资源预检和硬件匹配检查，不是已通过实物验收的配置。不能替代 COM15 的 ECM50-A 配置，两者虽使用相同构建环境，外设接线完全不同。
 

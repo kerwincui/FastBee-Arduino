@@ -18,6 +18,7 @@
 #include <ArduinoJson.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "core/FeatureInstanceRegistry.h"
 
 namespace FastBee {
 
@@ -168,6 +169,9 @@ private:
     friend class FeatureBudgetRegistry;
     FeatureState* findFeature(const char* key);
     const FeatureState* findFeature(const char* key) const;
+    // Admission is permission to initialize/use, never proof of a live instance.
+    // Bounded dependency traversal also rejects missing parents and cycles.
+    const char* admissionState(const FeatureState& feature) const;
     void buildConfigDoc(JsonDocument& doc) const;  // 序列化当前状态
     // 同步依赖项。无显示名称的附属能力自动跟随父功能，返回是否修改了状态。
     bool applyDependencyRules();

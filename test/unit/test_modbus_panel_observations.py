@@ -93,15 +93,16 @@ int main() { verify(false); verify(true); }
         with tempfile.TemporaryDirectory(prefix="fastbee-modbus-panel-") as directory:
             temporary = pathlib.Path(directory)
             (temporary / "production_modbus_observations.inc").write_text(
-                "\n".join(signature + "{" + braced_block(source, signature) + "}"
-                          for signature in signatures), encoding="utf-8")
+                "struct MotorBusGuard {" + braced_block(source, "struct MotorBusGuard") + "};\n"
+                + "\n".join(signature + "{" + braced_block(source, signature) + "}"
+                            for signature in signatures), encoding="utf-8")
             executable = temporary / ("observations.exe" if os.name == "nt" else "observations")
             environment = dict(os.environ)
             environment["PATH"] = str(pathlib.Path(compiler).parent) + os.pathsep + environment.get("PATH", "")
             build = subprocess.run(
                 [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                  "-DFASTBEE_ENABLE_PERIPH_EXEC=1", "-DFASTBEE_ENABLE_SCREEN_PANEL=1",
-                 "-DFASTBEE_ENABLE_POINT_HISTORY=1", f"-I{temporary}",
+                 "-DFASTBEE_ENABLE_POINT_HISTORY=1", f"-I{temporary}", f"-I{ROOT / 'include'}",
                  str(ROOT / "test/unit/cpp/modbus_panel_observation_harness.cpp"),
                  "-o", str(executable)], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=60, env=environment)
@@ -109,7 +110,7 @@ int main() { verify(false); verify(true); }
             result = subprocess.run([str(executable)], capture_output=True, text=True,
                                     timeout=10, env=environment)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            self.assertIn("15 scenarios passed", result.stdout)
+            self.assertIn("mapping, quality, history and guarded stop lifecycle passed", result.stdout)
 
 
 if __name__ == "__main__":

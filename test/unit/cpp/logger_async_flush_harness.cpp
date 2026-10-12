@@ -17,10 +17,12 @@ int main() {
         const auto before = opens;
         logger.flushBufferIfDue();
         assert(pendingTask && opens == before && written.empty());
+        assert(LoggerSystem::observeFeatureInstance(&logger).state == FastBee::FeatureInstanceState::Allocated);
         const auto created = taskCreates;
         for (int i = 0; i < 20; ++i) logger.flushBufferIfDue();
         assert(taskCreates == created && opens == before);
         duringWrite = [&]() {
+            assert(LoggerSystem::observeFeatureInstance(&logger).state == FastBee::FeatureInstanceState::Busy);
             // A slow LittleFS call owns the mutex in the worker. The scheduler
             // callback still returns without waiting or queuing another task.
             clockMs += 4300;

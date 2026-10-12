@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 #include <vector>
+#include "core/ActionReportIdentity.h"
+#include "core/SensorSampleMetadata.h"
 
 // 条件操作符枚举
 enum class ExecOperator : uint8_t {
@@ -54,7 +56,13 @@ enum class ExecActionType : uint8_t {
     ACTION_FEATURE_ENABLE = 31,     // 启用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
     ACTION_FEATURE_DISABLE = 32,    // 禁用运行时功能（actionValue: 功能键 webServer/mdns；持久化到 features.json 并自动重启生效）
     ACTION_REMOTE_CHANNEL = 33,     // Retired. Preserve ID; legacy rules stay paused.
-    ACTION_REMOTE_READ = 34         // 受限远程数据读取（targetPeriphId=远程/天气来源 ID；actionValue 必须为空）
+    ACTION_REMOTE_READ = 34,        // 受限远程数据读取（targetPeriphId=远程/天气来源 ID；actionValue 必须为空）
+    ACTION_RTC_CONTROL = 35,        // DS1302 启停；actionValue 仅 start/stop，不接受触发源替换
+    ACTION_RTC_READ = 36,           // DS1302 日历只读；空参数，无时区字符串，不用于数值历史
+    ACTION_RTC_SET = 37,            // 显式 system-local：复制系统本地日历，保留计时启停，不发起 NTP
+    ACTION_SD_STATUS = 38,          // 只读生命周期/容量快照；带质量的 JSON 文本，不触发卡 I/O
+    ACTION_THERMOSTAT = 39,         // 独立持续温控；仅专用低电平吸合、HIGH 安全的原生 GPIO
+    ACTION_SD_RECORD = 40          // 持续采集/有界队列/批量SD记录；手动执行只读状态
 };
 
 // 传感器类别枚举
@@ -206,6 +214,7 @@ struct ExecTrigger {
     // 运行时字段（不持久化）
     unsigned long lastTriggerTime = 0;
     uint32_t triggerCount = 0;
+    uint32_t lastCalendarDay = 0;   // Boot-local max accepted YYYYMMDD; never persisted/imported.
     // 缓存解析值（由 sanitizeTriggerForSafety 填充，避免热路径重复解析字符串）
     int8_t _cachedHour = -1;     // timePoint 解析后的小时（-1=无效）
     int8_t _cachedMinute = -1;   // timePoint 解析后的分钟（-1=无效）
@@ -223,6 +232,12 @@ struct ExecAction {
 
 // 动作执行结果（用于精准上报）
 struct ActionExecResult {
+    FastBee::ActionReportIdentity reportIdentity = FastBee::ActionReportIdentity::Invalid;
+    uint16_t reportIdBytes = 0;      // Captured identity length, rejects incomplete later copies.
+    bool hasSensorSample = false;
+    uint8_t sampleUnitBytes = 0;
+    FastBee::SensorSampleMetadata sensorSample;
+    String sampleUnit;              // Unit captured with the value, never looked up at report time.
     String targetPeriphId;          // 目标外设 ID
     String actualValue;             // 执行后的实际值
     bool success = false;           // 是否成功
@@ -234,6 +249,8 @@ struct ActionExecResult {
 
 // 外设执行规则结构体
 struct PeriphExecRule {
+    uint64_t runtimeRevision = 0; // Boot-local, never serialized or reused after mutation.
+    uint64_t outputActor = 0; // Unique rule actor; runtimeRevision is shared by the graph.
     String id;                  // 唯一标识 (exec_<millis>)
     String name;                // 显示名称
     bool enabled = true;        // 启用状态

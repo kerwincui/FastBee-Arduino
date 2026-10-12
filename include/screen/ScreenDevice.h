@@ -17,7 +17,7 @@ public:
     bool configure(const PeripheralConfig& peripheral, String& error);
     bool unconfigure(const String& peripheralId);
     bool activate(String& error);
-    void deactivate();
+    bool deactivate(String* error = nullptr);
 
     bool configured() const { return _configured; }
     bool active() const { return _active; }
@@ -28,6 +28,7 @@ public:
     IDisplayBackend* display() { return _display.get(); }
     ITouchBackend* touch() { return _touch.get(); }
     DisplayCapabilities capabilities() const;
+    void snapshotBacklightResource(BacklightResourceSnapshot& result) const;
     // Screen-task only: retry a failed touch controller without restarting the display.
     bool serviceTouch(uint32_t nowMs);
     const String& touchError() const { return _touchError; }
@@ -40,6 +41,7 @@ private:
 
     bool _configured = false;
     bool _active = false;
+    bool _stopping = false;
     String _peripheralId;
     DisplayConfigParams _config{};
     String _touchError;

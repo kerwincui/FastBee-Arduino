@@ -77,7 +77,7 @@
         _hasProtocolConfigSection(tabId, config) {
             if (!config) return false;
             if (tabId === 'mqtt') return !!config.mqtt;
-            if (tabId === 'modbus-rtu') return !!config.modbusRtu;
+            if (tabId === 'modbus-rtu') return !!config.modbusRtu && config.compact !== true && config.degraded !== true;
             return true;
         },
 
@@ -94,7 +94,8 @@
             if (tabId === 'mqtt') {
                 params = { compact: 1, section: 'mqtt' };
             } else if (tabId === 'modbus-rtu') {
-                params = { compact: 1, section: 'runtime' };
+                // The editable form needs persisted fields omitted by runtime summaries.
+                params = { section: 'runtime' };
             }
             return getter('/api/protocol/config', params)
                 .then(res => {
@@ -115,9 +116,10 @@
         _fillProtocolForm(tabId, config, options) {
             if (tabId === 'modbus-rtu' && config.modbusRtu) {
                 const rtu = config.modbusRtu;
+                this._motorTravelDraftSupported = rtu.motorTravelDraftSupported === true;
                 this._setCheckbox('modbus-rtu-enabled', rtu.enabled ?? true);
                 this._loadUartPeripherals(rtu.peripheralId || '', options);
-                this._setValue('rtu-de-pin', rtu.dePin ?? 14);
+                this._setValue('rtu-de-pin', rtu.dePin === 255 ? -1 : (rtu.dePin ?? -1));
                 this._setValue('rtu-transfer-type', rtu.transferType ?? 0);
                 // Master 高级参数
                 if (rtu.master) {
@@ -231,7 +233,7 @@
                 data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
                 data.modbusRtu_peripheralId = document.getElementById('rtu-peripheral-id')?.value || '';
                 data.modbusRtu_mode = 'master';
-                data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
+                data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '-1';
                 data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
                 // Master 高级参数
                 data.modbusRtu_responseTimeout = document.getElementById('rtu-response-timeout')?.value || '1000';
@@ -271,8 +273,26 @@
             }
             const protocolName = this._getProtocolName(formId);
             return apiPost(this._getProtocolSaveEndpoint(formId), data, 30000)
-                .then(res => {
+                .then(async res => {
                     if (res && res.success) {
+                        if (isModbusForm) {
+                            var expectedMotors = JSON.parse(data.modbusRtu_master_devices).filter(device => device.deviceType === 'motor');
+                            if (expectedMotors.length) {
+                                if (typeof window.apiInvalidateCache === 'function') window.apiInvalidateCache('/api/protocol/config');
+                                var getter = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+                                var saved = await getter('/api/protocol/config', { section: 'runtime' });
+                                var devices = saved && saved.success && saved.data && saved.data.modbusRtu &&
+                                    saved.data.modbusRtu.master && saved.data.modbusRtu.master.devices;
+                                if (!Array.isArray(devices) || expectedMotors.some(expected => {
+                                    var actual = devices.find(device => device.deviceType === 'motor' && device.slaveAddress === expected.slaveAddress);
+                                    return !actual || actual.motorMinPosition !== expected.motorMinPosition ||
+                                        actual.motorMaxPosition !== expected.motorMaxPosition;
+                                })) {
+                                    Notification.error('设备行程配置读回不一致，尚未确认保存成功');
+                                    return false;
+                                }
+                            }
+                        }
                         this._protocolConfig = null;
                         if (res.data && res.data.mqttHotRestart) {
                             // 后端热重建 MQTT（不重启设备），连接进度由状态轮询展示
@@ -294,6 +314,10 @@
                                 mqttResult.textContent = res.data.mqttLastErrorMessage;
                                 mqttResult.style.color = '#e6a23c';
                             }
+                        } else if (res.data && res.data.mqttStopPending) {
+                            const pendingReason = res.data.mqttStatusReason || 'MQTT 停止已排队，等待在途操作结束';
+                            Notification.warning(pendingReason, '通信协议');
+                            if (typeof this._setMqttPendingStatus === 'function') this._setMqttPendingStatus(pendingReason);
                         } else if (res.data && res.data.mqttDisconnected) {
                             Notification.success('MQTT已断开连接', '通信协议');
                         } else if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
@@ -543,20 +567,10 @@
                     });
                     for (var j = 0; j < sortedMappings.length; j++) {
                         var m = sortedMappings[j];
-                        var rawVal = null;
-                        if (t.cachedData && t.cachedData.values && m.regOffset < t.cachedData.values.length) {
-                            switch (m.dataType) {
-                                case 0: rawVal = t.cachedData.values[m.regOffset]; break;
-                                case 1: rawVal = t.cachedData.values[m.regOffset]; if (rawVal > 32767) rawVal -= 65536; break;
-                                case 2: if (m.regOffset + 1 < t.cachedData.values.length) rawVal = (t.cachedData.values[m.regOffset] << 16) | t.cachedData.values[m.regOffset + 1]; break;
-                                case 3: if (m.regOffset + 1 < t.cachedData.values.length) { rawVal = (t.cachedData.values[m.regOffset] << 16) | t.cachedData.values[m.regOffset + 1]; if (rawVal > 2147483647) rawVal -= 4294967296; } break;
-                                default: rawVal = t.cachedData.values[m.regOffset]; break;
-                            }
-                        }
                         var displayVal = '--';
-                        if (rawVal !== null) {
-                            var scaled = rawVal * (m.scaleFactor || 1);
-                            displayVal = scaled.toFixed(m.decimalPlaces || 0);
+                        if (t.cachedData && t.cachedData.valid !== false && (!t.status || t.status === 'ok') &&
+                            Number(t.lastError || t.cachedData.lastError || 0) === 0) {
+                            displayVal = window.formatModbusMapping(t.cachedData.values, m);
                         }
                         html += this._buildMasterDataCard(
                             m.sensorId || ('R' + (t.startAddress + m.regOffset)),

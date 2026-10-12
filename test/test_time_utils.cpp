@@ -516,9 +516,19 @@ void test_ntp_https_downgraded() {
     TEST_ASSERT_TRUE_MESSAGE(
         source.find("secureClient.setCACertBundle(x509_crt_bundle_start, caBundleSize)") != std::string::npos,
         "HTTPS NTP must validate the peer with the built-in CA bundle");
-    TEST_ASSERT_TRUE_MESSAGE(
-        source.find("configTzTime(timezone.c_str()") != std::string::npos,
-        "HTTPS NTP must bootstrap certificate time through SNTP");
+    const size_t tlsStart = source.find("if (useTls)");
+    const size_t sequence = source.find("bootstrapSequence = FastBee::SystemTimeQuality::sequence()", tlsStart);
+    const size_t start = source.find("SystemTimeZone::startSntp(nullptr, \"pool.ntp.org\"", sequence);
+    const size_t wait = source.find("syncNTP(timeout, bootstrapSequence)", start);
+    TEST_ASSERT_TRUE_MESSAGE(tlsStart != std::string::npos && sequence != std::string::npos &&
+                             start != std::string::npos && wait != std::string::npos &&
+                             sequence < start && start < wait,
+        "HTTPS bootstrap must preserve timezone and await a newly observed SNTP sync");
+    const std::string zone = readSrcFile("src/utils/SystemTimeZone.cpp");
+    const std::string platform = readSrcFile("src/utils/SystemTimePlatform.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(zone.find("SystemTimePlatform::configureSntp(stable, server1, server2, server3)") != std::string::npos &&
+                             platform.find("configTzTime(timezone, server1, server2, server3)") != std::string::npos,
+        "The shared timezone owner must route SNTP configuration to the actual platform");
     TEST_ASSERT_TRUE_MESSAGE(
         source.find("double serverRecvTime") != std::string::npos,
         "Millisecond epoch calculations must use double precision");

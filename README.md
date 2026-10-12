@@ -50,6 +50,8 @@ flowchart LR
 
 4MB 环境使用单 app 分区，因此不提供 OTA；8MB/16MB 环境使用 `app0/app1` A/B 分区。`esp32-F4R0`、`esp32c3-F4R0`、`esp32c6-F4R0` 和 `esp32c6-F8R0` 不编译以太网与 4G；其他环境仍需对应硬件和运行时开关。编译/用户开关查看 `/api/features/status`，最终运行状态查看 `/api/system/status`。
 
+[自动生成的构建环境与 Web 能力矩阵](docs/generated-build-capabilities.md) 从当前配置生成，并由现有静态门禁检测过期；其中宏和资源选择不代表实物验证或运行时已初始化。
+
 ## 快速开始
 
 ### 1. 在线烧录
@@ -138,20 +140,12 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
 
 ## 六、预定义环境
 
-| PlatformIO 环境 | 版本 | 芯片 | Flash | PSRAM |
-| --- | --- | --- | --- | --- |
-| `esp32c3-F4R0` | Lite | ESP32-C3 | 4MB | 无 |
-| `esp32c6-F4R0` | Lite | ESP32-C6 | 4MB | 无 |
-| `esp32-F4R0` | Standard | ESP32 | 4MB | 无 |
-| `esp32s3-F8R0` | Standard | ESP32-S3 | 8MB | 无 |
-| `esp32-F8R4` | Full | ESP32 | 8MB | 4MB |
-| `esp32s3-F8R4` | Full | ESP32-S3 | 8MB | 4MB |
-| `esp32s3-F16R8` | Full | ESP32-S3 | 16MB | 8MB |
+完整且唯一的当前发布表见前文[支持的构建环境](#支持的构建环境)，由 `platformio.ini` 与构建矩阵门禁共同核对，不再按 Lite/Standard/Full 划分。
 
-> 版本选择的核心依据是 **Flash 容量**和**是否有 PSRAM**。
-1. Flash ≥8MB 的环境均支持 OTA 升级（4MB 环境受空间限制不支持）。
-2. 带 PSRAM 的模组（如 ESP32-WROVER、ESP32-S3-N8R2/N16R8）均可使用 Full 版。
-3. 预定义的环境不满足可以platformio中新增，配置合适flash、psram和需要支持的外设
+1. 同时核对芯片、实际 Flash/PSRAM 容量及总线模式；不能仅凭“带 PSRAM”选择固件。2MB/4MB PSRAM 模组不能被当作 R8 配置。
+2. 当前 4MB 环境为单 app 分区，不支持 OTA；8MB/16MB canonical 环境为 A/B 分区。自定义分区仍需单独核验，不能只按容量推断 OTA。
+3. 整板屏幕、扩展器、接线及供电不由环境名证明兼容；RGB 触屏需要对应专用构建，canonical S3 镜像不是替代品。
+4. 自定义厂商环境须单独维护板卡、Flash/PSRAM、功能与分区约束，不自动计入九个正式发布目标。
 
 > 功能对比详表与分区表见 [版本对比](https://fastbee.cn/doc/device/getting-started/edition-comparison.html)。
 

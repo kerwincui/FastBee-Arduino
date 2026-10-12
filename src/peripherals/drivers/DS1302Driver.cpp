@@ -3,12 +3,24 @@
 
 #include "peripherals/drivers/DS1302Driver.h"
 #include "core/RuntimeFeatureManager.h"
+#include "core/FeatureInstanceRegistry.h"
 #include "systems/LoggerSystem.h"
 
 // 单例实现
 DS1302Driver& DS1302Driver::getInstance()
 {
     static DS1302Driver instance;
+    static const FastBee::FeatureInstanceObserver observer{
+        "ds1302", [](const void* context) {
+            const auto* driver = static_cast<const DS1302Driver*>(context);
+            const bool initialized = driver->_initialized.load(std::memory_order_acquire);
+            return FastBee::FeatureInstanceSnapshot{initialized
+                ? FastBee::FeatureInstanceState::Initialized
+                : FastBee::FeatureInstanceState::NotInitialized,
+                static_cast<uint16_t>(initialized ? 1 : 0)};
+        }, &instance};
+    static const bool registered = FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
+    (void)registered; // Failure retains the truthful 'unobserved' status.
     return instance;
 }
 
@@ -88,11 +100,17 @@ void DS1302Driver::end()
 
 DS1302DateTime DS1302Driver::readDateTime()
 {
-    DS1302DateTime dt = {0, 0, 0, 0, 0, 0, 0};
+    return readClockSnapshot().dateTime;
+}
+
+DS1302ClockSnapshot DS1302Driver::readClockSnapshot()
+{
+    DS1302ClockSnapshot snapshot;
+    DS1302DateTime& dt = snapshot.dateTime;
     
     if (!_initialized) {
         LOG_WARNING("DS1302: Not initialized, returning zero datetime");
-        return dt;
+        return snapshot;
     }
     
     // 拉高 CE 开始通信
@@ -103,14 +121,20 @@ DS1302DateTime DS1302Driver::readDateTime()
     _writeByte(REG_CLOCK_BURST | 0x01);
     
     // 读取 8 个字节：秒、分、时、日、月、星期、年、写保护
-    dt.second = _bcdToDec(_readByte() & 0x7F);
+    const uint8_t secondsReg = _readByte();
+    dt.second = _bcdToDec(secondsReg & 0x7F);
     dt.minute = _bcdToDec(_readByte() & 0x7F);
     
     uint8_t hourReg = _readByte();
     if (hourReg & 0x80) {
         // 12 小时制
         dt.hour = _bcdToDec(hourReg & 0x1F);
-        if (hourReg & 0x20) dt.hour += 12; // PM
+        if (dt.hour < 1 || dt.hour > 12) {
+            dt.hour = 255; // Keep invalid data invalid through calendar validation.
+        } else {
+            dt.hour %= 12; // 12 AM is midnight; 12 PM is noon, not hour 24.
+            if (hourReg & 0x20) dt.hour += 12;
+        }
     } else {
         // 24 小时制
         dt.hour = _bcdToDec(hourReg & 0x3F);
@@ -127,10 +151,14 @@ DS1302DateTime DS1302Driver::readDateTime()
     // 拉低 CE 结束通信
     digitalWrite(_cePin, LOW);
     
-    return dt;
+    if (!dt.isValid()) return DS1302ClockSnapshot{};
+    snapshot.valid = true;
+    snapshot.running = !(secondsReg & 0x80);
+    snapshot.mode24 = !(hourReg & 0x80);
+    return snapshot;
 }
 
-bool DS1302Driver::setDateTime(const DS1302DateTime& dt)
+bool DS1302Driver::setDateTime(const DS1302DateTime& dt, bool running)
 {
     if (!_initialized) {
         LOG_ERROR("DS1302: Not initialized");
@@ -138,9 +166,7 @@ bool DS1302Driver::setDateTime(const DS1302DateTime& dt)
     }
     
     // 验证参数
-    if (dt.month < 1 || dt.month > 12 ||
-        dt.day < 1 || dt.day > 31 ||
-        dt.hour > 23 || dt.minute > 59 || dt.second > 59) {
+    if (!dt.isValid()) {
         LOG_ERROR("DS1302: Invalid datetime values");
         return false;
     }
@@ -156,7 +182,7 @@ bool DS1302Driver::setDateTime(const DS1302DateTime& dt)
     _writeByte(REG_CLOCK_BURST);
     
     // 写入 8 个字节
-    _writeByte(_decToBcd(dt.second));
+    _writeByte(static_cast<uint8_t>(_decToBcd(dt.second) | (running ? 0 : 0x80)));
     _writeByte(_decToBcd(dt.minute));
     _writeByte(_decToBcd(dt.hour)); // 24 小时制
     _writeByte(_decToBcd(dt.day));
@@ -199,13 +225,20 @@ void DS1302Driver::set24HourMode(bool mode24)
 {
     if (!_initialized) return;
     
-    uint8_t hour = _readRegister(REG_HOURS);
-    if (mode24) {
-        hour &= ~0x80; // 清除 12/24 位
-    } else {
-        hour |= 0x80;  // 设置 12/24 位
+    const uint8_t original = _readRegister(REG_HOURS);
+    uint8_t hour = _bcdToDec(original & ((original & 0x80) ? 0x1F : 0x3F));
+    if (original & 0x80) {
+        if (hour < 1 || hour > 12) return;
+        hour %= 12;
+        if (original & 0x20) hour += 12;
+    } else if (hour > 23) {
+        return;
     }
-    _writeRegister(REG_HOURS, hour);
+    // Convert the represented hour, not only the mode bit.
+    const uint8_t converted = mode24 ? _decToBcd(hour) :
+        static_cast<uint8_t>(0x80 | (hour >= 12 ? 0x20 : 0) |
+            _decToBcd(hour % 12 == 0 ? 12 : hour % 12));
+    if (converted != original) _writeRegister(REG_HOURS, converted);
 }
 
 bool DS1302Driver::is24HourMode()
@@ -353,14 +386,30 @@ uint8_t DS1302Driver::_decToBcd(uint8_t val)
 
 uint8_t DS1302Driver::_bcdToDec(uint8_t val)
 {
+    if ((val & 0x0F) > 9 || (val >> 4) > 9) return 255;
     return ((val >> 4) * 10) + (val & 0x0F);
 }
 
 // ========== DS1302DateTime 实现 ==========
 
+bool DS1302DateTime::isValid() const
+{
+    if (year > 99 || month < 1 || month > 12 || day < 1 ||
+        hour > 23 || minute > 59 || second > 59 ||
+        dayOfWeek < 1 || dayOfWeek > 7) return false;
+    static const uint8_t days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    const uint8_t maximum = days[month - 1] +
+        ((month == 2 && year % 4 == 0) ? 1 : 0);
+    return day <= maximum;
+}
+
 String DS1302DateTime::toString(const char* format) const
 {
+    if (!isValid() || !format) return String();
     String result = String(format);
+    // Disambiguate the documented default's minutes before replacing months.
+    // Keep the existing explicit nn token compatible.
+    result.replace("HH:MM", "HH:nn");
     
     char buf[5];
     
@@ -380,9 +429,7 @@ String DS1302DateTime::toString(const char* format) const
     snprintf(buf, sizeof(buf), "%02d", hour);
     result.replace("HH", String(buf));
     
-    // 替换分（注意 MM 已被替换为月份，这里用 NN 表示分钟）
-    // 但标准格式用 MM:SS，所以在 HH:MM:SS 中第二次出现的 MM 是分
-    // 为简化处理，假设格式中第一个 MM 是月份，后续用 nn 表示分
+    // 分钟：默认 HH:MM 已在月份替换前规范化为 HH:nn。
     snprintf(buf, sizeof(buf), "%02d", minute);
     result.replace("nn", String(buf));
     
@@ -395,6 +442,7 @@ String DS1302DateTime::toString(const char* format) const
 
 uint32_t DS1302DateTime::toUnixTimestamp() const
 {
+    if (!isValid()) return 0;
     // 简化的时间戳计算（从 2000-01-01 00:00:00 起算）
     static const uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     

@@ -709,9 +709,9 @@ static void test_periph_exec_save_truncation_guard() {
         "FileUtils must provide commitAtomicWrite (rename-first atomic replace)");
     TestLog::step("streaming write + truncation check + open/commitAtomicWrite present");
 
-    std::string mgr = readStabilitySrcFile("src/core/PeriphExecManager.cpp");
+    std::string mgr = readStabilitySrcFile("src/core/PeriphExecConfigStore.cpp");
     if (mgr.empty()) {
-        TEST_IGNORE_MESSAGE("PeriphExecManager.cpp not readable, skipping source check");
+        TEST_IGNORE_MESSAGE("PeriphExecConfigStore.cpp not readable, skipping source check");
         return;
     }
     size_t savePos = mgr.find("PeriphExecManager::saveConfiguration");
@@ -767,15 +767,22 @@ static void test_config_cache_read_your_write() {
 static void test_millis_wraparound_safe_comparisons() {
     TestLog::testStart("Stability: millis() comparisons must be wraparound-safe");
 
-    std::string modbus = readStabilitySrcFile("src/protocols/ModbusHandler.cpp");
+    std::string modbus = readStabilitySrcFile("src/protocols/ModbusDelay.cpp");
     if (!modbus.empty()) {
-        // 延时线圈任务误触发有物理侧后果（如"延时1小时关阀"变成立刻关阀）
+        // Delayed writes use checked 64-bit monotonic time. The old 32-bit
+        // millis signed-difference assertion no longer describes this path.
+        // Actual deadline/reversed-clock execution is covered by the Host harness.
         TEST_ASSERT_TRUE_MESSAGE(
-            modbus.find("(long)(now - coilDelayTasks[i].triggerTime) >= 0") != std::string::npos,
-            "processCoilDelayTasks must use signed-diff comparison");
+            modbus.find("const int64_t micros = esp_timer_get_time()") != std::string::npos &&
+            modbus.find("static_cast<uint64_t>(micros / 1000) < _delayLastTimeMs") != std::string::npos &&
+            modbus.find("if (!coilDelayTimeLocked(now)) return;") != std::string::npos &&
+            modbus.find("if (now < task.dueMs) continue;") != std::string::npos,
+            "processCoilDelayTasks must use checked nonreversing 64-bit monotonic time");
         TEST_ASSERT_TRUE_MESSAGE(
-            modbus.find("now >= coilDelayTasks[i].triggerTime") == std::string::npos,
-            "processCoilDelayTasks must not use absolute deadline comparison");
+            modbus.find("now > UINT64_MAX - delayMs") != std::string::npos &&
+            modbus.find("task.dueMs = now + delayMs") != std::string::npos &&
+            modbus.find("millis()") == std::string::npos,
+            "delayed writes must reject overflow and never truncate to millis");
     }
 
     std::string script = readStabilitySrcFile("src/core/ScriptEngine.cpp");
@@ -1131,24 +1138,24 @@ static void test_action_ticker_nothrow_precheck_locked() {
         TEST_IGNORE_MESSAGE("PeripheralManager.cpp not readable, skipping source check");
         return;
     }
-    // 预检 + nothrow 各出现两次（BLINK 与 BREATHE 分支）
-    size_t precheck = 0, nothrow = 0;
-    size_t pos = 0;
-    while ((pos = content.find("ACTION_TICKER_MIN_DRAM", pos)) != std::string::npos) {
-        precheck++; pos += 22;
-    }
-    pos = 0;
-    while ((pos = content.find("new (std::nothrow) ActionTickerData()", pos)) != std::string::npos) {
-        nothrow++; pos += 36;
-    }
-    TEST_ASSERT_TRUE_MESSAGE(precheck >= 3,  // 定义引用至少含 blink/breathe 两处比较
-        "startActionTicker must precheck DRAM before allocating ticker data");
-    TEST_ASSERT_TRUE_MESSAGE(nothrow == 2,
-        "Both BLINK and BREATHE must use nothrow allocation for ticker data");
-    // 判空降级：分配失败不得继续使用
+    // BLINK/BREATHE now share one allocation path; verify ordering and failure
+    // handling instead of counting duplicated implementations/log messages.
+    const size_t start = content.find("bool PeripheralManager::startActionTicker(");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, start);
+    // Bound the method by its own top-level closing brace; stepper methods
+    // live in a separate translation unit and are not its source boundary.
+    const size_t end = content.find("\n}", start);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, end);
+    const std::string body = content.substr(start, end - start);
+    const size_t precheck = body.find("ACTION_TICKER_MIN_DRAM");
+    const size_t allocation = body.find("new (std::nothrow) ActionTickerData()");
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, precheck);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, allocation);
+    TEST_ASSERT_TRUE_MESSAGE(precheck < allocation,
+        "Both action modes must precheck DRAM before the shared nothrow allocation");
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("blink ticker alloc failed") != std::string::npos &&
-        content.find("breathe ticker alloc failed") != std::string::npos,
+        body.find("if (!data)", allocation) < body.find("data->id = id", allocation) &&
+        body.find("action ticker alloc failed") != std::string::npos,
         "Ticker alloc failure must be checked and logged, not dereferenced");
 }
 
@@ -1550,9 +1557,14 @@ static void test_periph_exec_rule_actions_fail_closed() {
     TEST_ASSERT_EQUAL_MESSAGE(
         std::string::npos, validator.find("target.enabled"),
         "Disabled peripherals must remain valid preconfiguration targets");
+    const std::string targetContract =
+        readStabilitySrcFile("include/core/PeripheralActionContract.h");
+    TEST_ASSERT_FALSE_MESSAGE(targetContract.empty(), "Shared target contract must be readable");
     TEST_ASSERT_TRUE_MESSAGE(
-        manager.find("type == PeripheralType::ENCODER") != std::string::npos,
-        "Encoder peripherals must be valid sensor-read targets");
+        manager.find("PeripheralActionContract::matchesPeripheralTarget(actionType, target)") != std::string::npos &&
+        targetContract.find("case ExecActionType::ACTION_SENSOR_READ:\n            return isSensorTarget(type);") != std::string::npos &&
+        targetContract.find("type == PeripheralType::ENCODER") != std::string::npos,
+        "Manager must use the shared sensor-read contract that admits encoders");
 
     const size_t optionsStart = manager.find(
         "String PeriphExecManager::getValidActionTypes");

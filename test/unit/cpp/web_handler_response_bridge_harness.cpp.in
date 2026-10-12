@@ -1,0 +1,158 @@
+#define millis mockArduinoMillis
+#include <Arduino.h>
+#undef millis
+#define ARDUINOJSON_ENABLE_ARDUINO_STRING 0
+#define ARDUINOJSON_ENABLE_ARDUINO_STREAM 0
+#define ARDUINOJSON_ENABLE_PROGMEM 0
+#include <ArduinoJson.h>
+#include <cassert>
+#include <iostream>
+#include <memory>
+#include <limits>
+static unsigned long fakeMillis=0;
+unsigned long millis() { return fakeMillis; }
+struct AsyncWebServerResponse {
+    int code=200; std::string mime="application/json", body;
+    virtual ~AsyncWebServerResponse()=default;
+    AsyncWebServerResponse()=default;
+    AsyncWebServerResponse(int c,const char* m,const char* b):code(c),mime(m),body(b) {}
+    std::vector<std::pair<std::string,std::string>> headers;
+    void addHeader(const char* key,const char* value) { headers.emplace_back(key,value); }
+};
+struct AsyncWebServerRequest {
+    std::unique_ptr<AsyncWebServerResponse> response;
+    int beginCount=0,sendCount=0;
+    AsyncWebServerResponse* beginResponse(int code,const char* mime,const char* body) {
+        ++beginCount; return new AsyncWebServerResponse(code,mime,body);
+    }
+    void send(AsyncWebServerResponse* value) { ++sendCount; response.reset(value); }
+};
+static bool critical=false,allocatable=true,fragmentAllocate=true,fragmentSet=true;
+class HealthMonitor { public:bool isMemoryCritical() const {return critical;} };
+class FastBeeFramework { public:
+    static FastBeeFramework* getInstance(){static FastBeeFramework fw;return &fw;}
+    HealthMonitor* getHealthMonitor(){static HealthMonitor monitor;return &monitor;}
+};
+bool canAllocateResponse(size_t) {return allocatable;}
+namespace FastBee {
+bool psramAvailableForJson(size_t) {return false;}
+namespace MemoryBudget { size_t dramFree(){return 65536;} size_t dramLargest(){return 32768;} }
+class JsonFragmentsResponse:public AsyncWebServerResponse { public:
+    explicit JsonFragmentsResponse(size_t count){assert(count==1);}
+    static void* operator new(size_t bytes,const std::nothrow_t&) noexcept {
+        return fragmentAllocate?::operator new(bytes,std::nothrow):nullptr;
+    }
+    static void operator delete(void* p) noexcept {::operator delete(p);}
+    static void operator delete(void* p,const std::nothrow_t&) noexcept {::operator delete(p);}
+    bool set(size_t index,const JsonDocument& doc,const char* prefix,const char* suffix){
+        assert(index==0);
+        if(!fragmentSet || doc.overflowed()) return false;
+        std::string serialized;serializeJson(doc,serialized);body=std::string(prefix)+serialized+suffix;return true;
+    }
+};
+}
+
+struct OriginalWebHandlerContext {
+    int activity=0;
+    void noteWebRequestActivity() { ++activity; }
+    void sendServiceUnavailable(AsyncWebServerRequest* req) {
+        auto* response=req->beginResponse(503,"application/json","unavailable");
+        response->addHeader("Connection","close");req->send(response);
+    }
+@ORIGINAL_DECL@
+};
+struct WebHandlerContext {
+    int activity=0;
+    void noteWebRequestActivity() { ++activity; }
+    void sendServiceUnavailable(AsyncWebServerRequest* req) {
+        auto* response=req->beginResponse(503,"application/json","unavailable");
+        response->addHeader("Connection","close");req->send(response);
+    }
+@PRODUCTION_DECL@
+};
+@ORIGINAL_METHODS@
+@PRODUCTION_METHODS@
+static int comparisons=0;
+void compare(const AsyncWebServerRequest& a,const AsyncWebServerRequest& b,int aa,int bb) {
+    assert(a.beginCount==b.beginCount && a.beginCount>=0 && a.beginCount<=1 && a.sendCount==1 && b.sendCount==1);
+    assert(aa==1 && bb==1);
+    assert(a.response && b.response);
+    assert(a.response->code==b.response->code && a.response->mime==b.response->mime);
+    assert(a.response->mime=="application/json" && a.response->body==b.response->body);
+    assert(a.response->headers==b.response->headers);
+    assert(a.response->headers.size()==1 && a.response->headers[0].first=="Connection" && a.response->headers[0].second=="close");
+    // JSON data envelopes may exceed the fixed message buffer.
+    assert(a.response->body.size()==b.response->body.size());
+    ++comparisons;
+}
+int main() {
+    const std::vector<std::string> messages={"","simple","中文消息 café 🌱","quote\" and backslash\\","line\nreturn\rtab\t",
+        std::string("a\x01\x02\x1f")+"b",std::string(380,'x'),std::string(382,'x'),std::string(383,'x'),std::string(384,'x'),
+        std::string(1000,'x'),std::string(500,'\"'),std::string(500,'\\'),std::string(500,'\n'),std::string(500,'\t')};
+    const int codes[]={0,200,400,401,403,404,429,500,503,-1,2147483647};
+    for(unsigned long stamp : {0UL,1UL,4294967295UL}) {
+        fakeMillis=stamp;
+        for(const auto& message: messages) {
+            for(int code: codes) {
+                for(bool explicitString : {false,true}) {
+                    OriginalWebHandlerContext a; WebHandlerContext b; AsyncWebServerRequest ar,br;
+                    a.sendError(&ar,code,String(message));
+                    if(explicitString) b.sendError(&br,code,String(message)); else b.sendError(&br,code,message.c_str());
+                    compare(ar,br,a.activity,b.activity);
+                }
+            }
+            for(bool explicitString : {false,true}) {
+                OriginalWebHandlerContext a; WebHandlerContext b; AsyncWebServerRequest ar,br;
+                a.sendBadRequest(&ar,String(message));
+                if(explicitString) b.sendBadRequest(&br,String(message)); else b.sendBadRequest(&br,message.c_str());
+                compare(ar,br,a.activity,b.activity); assert(br.response->code==400);
+            }
+            OriginalWebHandlerContext a; WebHandlerContext b; AsyncWebServerRequest ar,br;
+            a.sendSuccess(&ar,String(message));b.sendSuccess(&br,String(message));compare(ar,br,a.activity,b.activity);
+            OriginalWebHandlerContext c; WebHandlerContext d; AsyncWebServerRequest cr,dr;
+            c.sendSuccess(&cr,String(message));d.sendSuccess(&dr,message.c_str());compare(cr,dr,c.activity,d.activity);
+        }
+        OriginalWebHandlerContext a; WebHandlerContext b; AsyncWebServerRequest ar,br;
+        a.sendError(&ar,500,String(static_cast<const char*>(nullptr))); b.sendError(&br,500,static_cast<const char*>(nullptr));
+        compare(ar,br,a.activity,b.activity);
+        OriginalWebHandlerContext c; WebHandlerContext d; AsyncWebServerRequest cr,dr;
+        c.sendBadRequest(&cr,String(static_cast<const char*>(nullptr)));d.sendBadRequest(&dr,static_cast<const char*>(nullptr));
+        compare(cr,dr,c.activity,d.activity);
+        OriginalWebHandlerContext e;WebHandlerContext f;AsyncWebServerRequest er,fr;
+        e.sendSuccess(&er);f.sendSuccess(&fr);compare(er,fr,e.activity,f.activity);
+        OriginalWebHandlerContext g;WebHandlerContext h;AsyncWebServerRequest gr,hr;
+        g.sendSuccess(&gr,String(static_cast<const char*>(nullptr)));h.sendSuccess(&hr,static_cast<const char*>(nullptr));compare(gr,hr,g.activity,h.activity);
+        for(int scenario=0;scenario<9;++scenario) {
+            critical=(scenario==3 || scenario==4);allocatable=scenario!=5;
+            fragmentAllocate=scenario!=6;fragmentSet=scenario!=7;
+            JsonDocument doc;
+            if(scenario!=0) {doc["valid"]=true;doc["zero"]=0;doc["message"]="中文\\\"\n";}
+            if(scenario==2 || scenario==3 || scenario==8) doc["large"]=std::string(1200,'x');
+            OriginalWebHandlerContext da;WebHandlerContext db;AsyncWebServerRequest dar,dbr;
+            da.sendSuccess(&dar,doc);db.sendSuccess(&dbr,doc);compare(dar,dbr,da.activity,db.activity);
+            assert(dbr.response->code==((scenario==3 || scenario==5 || scenario==6 || scenario==7)?503:200));
+            if(dbr.response->code==200) {
+                JsonDocument parsed;assert(!deserializeJson(parsed,dbr.response->body));
+                assert(parsed["success"].as<bool>() && parsed["timestamp"].as<unsigned long>()==stamp);
+                std::string expectedData,actualData;serializeJson(doc,expectedData);serializeJson(parsed["data"],actualData);assert(actualData==expectedData);
+            }
+        }
+        critical=false;allocatable=true;fragmentAllocate=true;fragmentSet=true;
+    }
+    using ErrorString=void(WebHandlerContext::*)(AsyncWebServerRequest*,int,const String&);
+    using ErrorLiteral=void(WebHandlerContext::*)(AsyncWebServerRequest*,int,const char*);
+    using BadString=void(WebHandlerContext::*)(AsyncWebServerRequest*,const String&);
+    using BadLiteral=void(WebHandlerContext::*)(AsyncWebServerRequest*,const char*);
+    [[maybe_unused]] ErrorString es=&WebHandlerContext::sendError;
+    [[maybe_unused]] ErrorLiteral el=&WebHandlerContext::sendError;
+    [[maybe_unused]] BadString bs=&WebHandlerContext::sendBadRequest;
+    [[maybe_unused]] BadLiteral bl=&WebHandlerContext::sendBadRequest;
+    using SuccessString=void(WebHandlerContext::*)(AsyncWebServerRequest*,const String&);
+    using SuccessLiteral=void(WebHandlerContext::*)(AsyncWebServerRequest*,const char*);
+    using SuccessDocument=void(WebHandlerContext::*)(AsyncWebServerRequest*,const JsonDocument&);
+    [[maybe_unused]] SuccessString ss=&WebHandlerContext::sendSuccess;
+    [[maybe_unused]] SuccessLiteral sl=&WebHandlerContext::sendSuccess;
+    [[maybe_unused]] SuccessDocument sd=&WebHandlerContext::sendSuccess;
+    assert(comparisons==1209);
+    std::cout<<"PASS compared="<<comparisons<<" actual production response methods\n";
+}

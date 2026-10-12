@@ -2,17 +2,22 @@
 #include <Wire.h>
 #include <set>
 #include <mutex>
+#include "core/ResourceConsumerIdentity.h"
 namespace FastBee {
 class I2CBusManager {
 public:
     static I2CBusManager& instance() { static I2CBusManager manager; return manager; }
-    bool acquire(const void* owner, int8_t data, int8_t clock, uint32_t frequency, String& error) {
+    bool acquire(const void* owner, int8_t data, int8_t clock, uint32_t frequency, String& error,
+                 ResourceConsumerRole = ResourceConsumerRole::Unknown, const char* = nullptr) {
         if (!owners.empty() && (data != _sda || clock != _scl || frequency != _frequency)) {
             error = "I2C_CONFLICT"; return false;
         }
         owners.insert(owner); _sda = data; _scl = clock; _frequency = frequency; return true;
     }
     bool release(const void* owner, uint32_t = 1000) { owners.erase(owner); return true; }
+    // Focused backend mock only. Real exclusion is tested with production manager.
+    bool claimAddress(const void* owner, uint8_t, String&) { return owners.count(owner) != 0; }
+    bool ownsAddress(const void* owner, uint8_t) const { return owners.count(owner) != 0; }
     void deferRelease(const void* owner) { owners.erase(owner); }
     bool lock(uint32_t) { mutex.lock(); ++sensorTestBusLockDepth; return true; }
     void unlock() { --sensorTestBusLockDepth; mutex.unlock(); }

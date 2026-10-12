@@ -1,0 +1,920 @@
+{
+  "schemaVersion": 1,
+  "status": "PREPARED_NOT_RUN",
+  "sourcePath": "src/network/handlers/MqttRouteHandler.cpp",
+  "rawBeforeSha256": "cff9eb8aff0d631dede878efd244ffdb814370f8e263778b5af26f486a2e14a6",
+  "normalizedBeforeSha256": "f01a68541ba43d42cdd60fbec162f91e07d6e8f106202edad5280b0b7dddc19a",
+  "comparison": "UTF-8 content after CRLF-to-LF normalization only; raw original SHA retained separately",
+  "totalAssignments": 64,
+  "methodCounts": {
+    "handleTestMqttConnection": 25,
+    "handleMqttReconnect": 33,
+    "handleMqttDisconnect": 5,
+    "handleMqttNtpSync": 1
+  },
+  "r8ResidentSymbolBytes": {
+    "handleTestMqttConnection": 10050,
+    "handleMqttReconnect": 2836,
+    "handleMqttDisconnect": 666,
+    "handleMqttNtpSync": 672
+  },
+  "elfSha256": "baf8a2eaf21c73608b3b97d51ad2e451ccb0a625ec985ba6566d8cbf20b793fa",
+  "changes": [
+    {
+      "line": 803,
+      "method": "handleTestMqttConnection",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecycleBusy"
+      ],
+      "rhs": "true",
+      "offset": 32834,
+      "original": "busy[\"data\"][\"lifecycleBusy\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"lifecycleBusy\", true);"
+    },
+    {
+      "line": 804,
+      "method": "handleTestMqttConnection",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "stateAvailable"
+      ],
+      "rhs": "false",
+      "offset": 32888,
+      "original": "busy[\"data\"][\"stateAvailable\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"stateAvailable\", false);"
+    },
+    {
+      "line": 805,
+      "method": "handleTestMqttConnection",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 实例切换中，本次测试未启动\"",
+      "offset": 32944,
+      "original": "busy[\"data\"][\"statusReason\"] = \"MQTT 实例切换中，本次测试未启动\";",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"statusReason\", \"MQTT 实例切换中，本次测试未启动\");"
+    },
+    {
+      "line": 892,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 37704,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 904,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 38251,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 905,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "error"
+      ],
+      "rhs": "-7",
+      "offset": 38297,
+      "original": "doc[\"data\"][\"error\"] = -7;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"error\", -7);"
+    },
+    {
+      "line": 906,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lastErrorCode"
+      ],
+      "rhs": "-7",
+      "offset": 38336,
+      "original": "doc[\"data\"][\"lastErrorCode\"] = -7;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"lastErrorCode\", -7);"
+    },
+    {
+      "line": 907,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lastErrorName"
+      ],
+      "rhs": "\"MQTT_AES_PASSWORD_FAILED\"",
+      "offset": 38383,
+      "original": "doc[\"data\"][\"lastErrorName\"] = \"MQTT_AES_PASSWORD_FAILED\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"lastErrorName\", \"MQTT_AES_PASSWORD_FAILED\");"
+    },
+    {
+      "line": 908,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lastErrorClass"
+      ],
+      "rhs": "\"config\"",
+      "offset": 38454,
+      "original": "doc[\"data\"][\"lastErrorClass\"] = \"config\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"lastErrorClass\", \"config\");"
+    },
+    {
+      "line": 909,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "errorMessage"
+      ],
+      "rhs": "aesErr.isEmpty() ? \"AES password generation failed\" : aesErr",
+      "offset": 38508,
+      "original": "doc[\"data\"][\"errorMessage\"] = aesErr.isEmpty() ? \"AES password generation failed\" : aesErr;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"errorMessage\", aesErr.isEmpty() ? \"AES password generation failed\" : aesErr);"
+    },
+    {
+      "line": 910,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "doc[\"data\"][\"errorMessage\"]",
+      "offset": 38612,
+      "original": "doc[\"data\"][\"statusReason\"] = doc[\"data\"][\"errorMessage\"];",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", doc[\"data\"][\"errorMessage\"]);"
+    },
+    {
+      "line": 916,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "clientId"
+      ],
+      "rhs": "clientId",
+      "offset": 38802,
+      "original": "doc[\"data\"][\"clientId\"] = clientId;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"clientId\", clientId);"
+    },
+    {
+      "line": 917,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "authType"
+      ],
+      "rhs": "\"AES\"",
+      "offset": 38846,
+      "original": "doc[\"data\"][\"authType\"] = \"AES\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"authType\", \"AES\");"
+    },
+    {
+      "line": 930,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "clientId"
+      ],
+      "rhs": "clientId",
+      "offset": 39328,
+      "original": "doc[\"data\"][\"clientId\"] = clientId;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"clientId\", clientId);"
+    },
+    {
+      "line": 931,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "authType"
+      ],
+      "rhs": "\"Simple\"",
+      "offset": 39372,
+      "original": "doc[\"data\"][\"authType\"] = \"Simple\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"authType\", \"Simple\");"
+    },
+    {
+      "line": 947,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 40018,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 995,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 41587,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 996,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connectionTestOnly"
+      ],
+      "rhs": "true",
+      "offset": 41625,
+      "original": "doc[\"data\"][\"connectionTestOnly\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connectionTestOnly\", true);"
+    },
+    {
+      "line": 997,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "testRestorePending"
+      ],
+      "rhs": "true",
+      "offset": 41671,
+      "original": "doc[\"data\"][\"testRestorePending\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"testRestorePending\", true);"
+    },
+    {
+      "line": 999,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "deferred"
+      ],
+      "rhs": "deferred || pending",
+      "offset": 41797,
+      "original": "doc[\"data\"][\"deferred\"] = deferred || pending;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"deferred\", deferred || pending);"
+    },
+    {
+      "line": 1000,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecyclePending"
+      ],
+      "rhs": "pending",
+      "offset": 41848,
+      "original": "doc[\"data\"][\"lifecyclePending\"] = pending;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"lifecyclePending\", pending);"
+    },
+    {
+      "line": 1001,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "server"
+      ],
+      "rhs": "server",
+      "offset": 41895,
+      "original": "doc[\"data\"][\"server\"] = server;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"server\", server);"
+    },
+    {
+      "line": 1002,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "port"
+      ],
+      "rhs": "port",
+      "offset": 41931,
+      "original": "doc[\"data\"][\"port\"] = port;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"port\", port);"
+    },
+    {
+      "line": 1004,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 测试重建已排队，等待在途操作结束\"",
+      "offset": 41986,
+      "original": "doc[\"data\"][\"statusReason\"] = \"MQTT 测试重建已排队，等待在途操作结束\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"MQTT 测试重建已排队，等待在途操作结束\");"
+    },
+    {
+      "line": 1010,
+      "method": "handleTestMqttConnection",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"正在仅连接测试，业务上报与订阅已隔离，结束后恢复配置\"",
+      "offset": 42271,
+      "original": "doc[\"data\"][\"statusReason\"] = \"正在仅连接测试，业务上报与订阅已隔离，结束后恢复配置\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"正在仅连接测试，业务上报与订阅已隔离，结束后恢复配置\");"
+    },
+    {
+      "line": 1345,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 58952,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1354,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 59349,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1355,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "reconnecting"
+      ],
+      "rhs": "false",
+      "offset": 59395,
+      "original": "doc[\"data\"][\"reconnecting\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"reconnecting\", false);"
+    },
+    {
+      "line": 1356,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "mqttDisabled"
+      ],
+      "rhs": "true",
+      "offset": 59444,
+      "original": "doc[\"data\"][\"mqttDisabled\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"mqttDisabled\", true);"
+    },
+    {
+      "line": 1357,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "disabledByMemory"
+      ],
+      "rhs": "true",
+      "offset": 59492,
+      "original": "doc[\"data\"][\"disabledByMemory\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"disabledByMemory\", true);"
+    },
+    {
+      "line": 1366,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 59889,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1367,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "reconnecting"
+      ],
+      "rhs": "false",
+      "offset": 59935,
+      "original": "doc[\"data\"][\"reconnecting\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"reconnecting\", false);"
+    },
+    {
+      "line": 1368,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "stoppedByMemory"
+      ],
+      "rhs": "true",
+      "offset": 59984,
+      "original": "doc[\"data\"][\"stoppedByMemory\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"stoppedByMemory\", true);"
+    },
+    {
+      "line": 1377,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 60371,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1378,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "mqttDisabled"
+      ],
+      "rhs": "true",
+      "offset": 60417,
+      "original": "doc[\"data\"][\"mqttDisabled\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"mqttDisabled\", true);"
+    },
+    {
+      "line": 1379,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "message"
+      ],
+      "rhs": "\"MQTT is disabled, reconnect rejected\"",
+      "offset": 60465,
+      "original": "doc[\"data\"][\"message\"] = \"MQTT is disabled, reconnect rejected\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"message\", \"MQTT is disabled, reconnect rejected\");"
+    },
+    {
+      "line": 1380,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 已禁用，请先在协议配置中启用\"",
+      "offset": 60542,
+      "original": "doc[\"data\"][\"statusReason\"] = \"MQTT 已禁用，请先在协议配置中启用\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"MQTT 已禁用，请先在协议配置中启用\");"
+    },
+    {
+      "line": 1389,
+      "method": "handleMqttReconnect",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "stateAvailable"
+      ],
+      "rhs": "false",
+      "offset": 60793,
+      "original": "busy[\"data\"][\"stateAvailable\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"stateAvailable\", false);"
+    },
+    {
+      "line": 1390,
+      "method": "handleMqttReconnect",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecycleBusy"
+      ],
+      "rhs": "true",
+      "offset": 60841,
+      "original": "busy[\"data\"][\"lifecycleBusy\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"lifecycleBusy\", true);"
+    },
+    {
+      "line": 1391,
+      "method": "handleMqttReconnect",
+      "root": "busy",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 实例切换中，本次重连未重复启动\"",
+      "offset": 60887,
+      "original": "busy[\"data\"][\"statusReason\"] = \"MQTT 实例切换中，本次重连未重复启动\";",
+      "replacement": "FastBee::setFixedJsonField(busy, \"data\", \"statusReason\", \"MQTT 实例切换中，本次重连未重复启动\");"
+    },
+    {
+      "line": 1401,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "true",
+      "offset": 61199,
+      "original": "doc[\"data\"][\"connected\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", true);"
+    },
+    {
+      "line": 1402,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "reconnecting"
+      ],
+      "rhs": "false",
+      "offset": 61240,
+      "original": "doc[\"data\"][\"reconnecting\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"reconnecting\", false);"
+    },
+    {
+      "line": 1414,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 61641,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1415,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "autoReconnectDisabled"
+      ],
+      "rhs": "true",
+      "offset": 61687,
+      "original": "doc[\"data\"][\"autoReconnectDisabled\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"autoReconnectDisabled\", true);"
+    },
+    {
+      "line": 1416,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"自动重连已关闭，请在协议配置中开启\"",
+      "offset": 61744,
+      "original": "doc[\"data\"][\"statusReason\"] = \"自动重连已关闭，请在协议配置中开启\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"自动重连已关闭，请在协议配置中开启\");"
+    },
+    {
+      "line": 1441,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 62552,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1442,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "rebooting"
+      ],
+      "rhs": "true",
+      "offset": 62594,
+      "original": "doc[\"data\"][\"rebooting\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"rebooting\", true);"
+    },
+    {
+      "line": 1443,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "message"
+      ],
+      "rhs": "\"Device will reboot to reconnect MQTTS cleanly\"",
+      "offset": 62635,
+      "original": "doc[\"data\"][\"message\"] = \"Device will reboot to reconnect MQTTS cleanly\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"message\", \"Device will reboot to reconnect MQTTS cleanly\");"
+    },
+    {
+      "line": 1444,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"设备将重启以重新连接 MQTTS\"",
+      "offset": 62717,
+      "original": "doc[\"data\"][\"statusReason\"] = \"设备将重启以重新连接 MQTTS\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"设备将重启以重新连接 MQTTS\");"
+    },
+    {
+      "line": 1467,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "connected"
+      ],
+      "rhs": "false",
+      "offset": 63800,
+      "original": "doc[\"data\"][\"connected\"] = false;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"connected\", false);"
+    },
+    {
+      "line": 1468,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "reconnecting"
+      ],
+      "rhs": "deferredOk",
+      "offset": 63838,
+      "original": "doc[\"data\"][\"reconnecting\"] = deferredOk;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"reconnecting\", deferredOk);"
+    },
+    {
+      "line": 1469,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecyclePending"
+      ],
+      "rhs": "pending",
+      "offset": 63884,
+      "original": "doc[\"data\"][\"lifecyclePending\"] = pending;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"lifecyclePending\", pending);"
+    },
+    {
+      "line": 1470,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "message"
+      ],
+      "rhs": "deferredOk\n        ? \"MQTT client rebuilt, reconnecting in background\"\n        : \"MQTT rebuild did not complete; check configuration, transport and resources\"",
+      "offset": 63931,
+      "original": "doc[\"data\"][\"message\"] = deferredOk\n        ? \"MQTT client rebuilt, reconnecting in background\"\n        : \"MQTT rebuild did not complete; check configuration, transport and resources\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"message\", deferredOk\n        ? \"MQTT client rebuilt, reconnecting in background\"\n        : \"MQTT rebuild did not complete; check configuration, transport and resources\");"
+    },
+    {
+      "line": 1474,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "message"
+      ],
+      "rhs": "\"MQTT rebuild queued; waiting for active operations\"",
+      "offset": 64143,
+      "original": "doc[\"data\"][\"message\"] = \"MQTT rebuild queued; waiting for active operations\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"message\", \"MQTT rebuild queued; waiting for active operations\");"
+    },
+    {
+      "line": 1475,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 重建已排队，等待在途操作结束\"",
+      "offset": 64230,
+      "original": "doc[\"data\"][\"statusReason\"] = \"MQTT 重建已排队，等待在途操作结束\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"MQTT 重建已排队，等待在途操作结束\");"
+    },
+    {
+      "line": 1477,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "failureKnown"
+      ],
+      "rhs": "true",
+      "offset": 64321,
+      "original": "doc[\"data\"][\"failureKnown\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"failureKnown\", true);"
+    },
+    {
+      "line": 1478,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "retryable"
+      ],
+      "rhs": "true",
+      "offset": 64365,
+      "original": "doc[\"data\"][\"retryable\"] = true;",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"retryable\", true);"
+    },
+    {
+      "line": 1482,
+      "method": "handleMqttReconnect",
+      "root": "doc",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "\"MQTT 客户端已重建，正在后台连接\"",
+      "offset": 64574,
+      "original": "doc[\"data\"][\"statusReason\"] = \"MQTT 客户端已重建，正在后台连接\";",
+      "replacement": "FastBee::setFixedJsonField(doc, \"data\", \"statusReason\", \"MQTT 客户端已重建，正在后台连接\");"
+    },
+    {
+      "line": 1514,
+      "method": "handleMqttDisconnect",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "disconnected"
+      ],
+      "rhs": "stopped",
+      "offset": 65615,
+      "original": "resp[\"data\"][\"disconnected\"] = stopped;",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"disconnected\", stopped);"
+    },
+    {
+      "line": 1515,
+      "method": "handleMqttDisconnect",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecyclePending"
+      ],
+      "rhs": "!stopped",
+      "offset": 65659,
+      "original": "resp[\"data\"][\"lifecyclePending\"] = !stopped;",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"lifecyclePending\", !stopped);"
+    },
+    {
+      "line": 1516,
+      "method": "handleMqttDisconnect",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "previousStateKnown"
+      ],
+      "rhs": "previousStateKnown",
+      "offset": 65708,
+      "original": "resp[\"data\"][\"previousStateKnown\"] = previousStateKnown;",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"previousStateKnown\", previousStateKnown);"
+    },
+    {
+      "line": 1517,
+      "method": "handleMqttDisconnect",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "wasConnected"
+      ],
+      "rhs": "wasConnected",
+      "offset": 65793,
+      "original": "resp[\"data\"][\"wasConnected\"] = wasConnected;",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"wasConnected\", wasConnected);"
+    },
+    {
+      "line": 1518,
+      "method": "handleMqttDisconnect",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "statusReason"
+      ],
+      "rhs": "stopped ? \"MQTT 已在本地停止\" : \"MQTT 停止已排队，等待在途操作结束\"",
+      "offset": 65842,
+      "original": "resp[\"data\"][\"statusReason\"] = stopped ? \"MQTT 已在本地停止\" : \"MQTT 停止已排队，等待在途操作结束\";",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"statusReason\", stopped ? \"MQTT 已在本地停止\" : \"MQTT 停止已排队，等待在途操作结束\");"
+    },
+    {
+      "line": 1547,
+      "method": "handleMqttNtpSync",
+      "root": "resp",
+      "rootType": "JsonDocument",
+      "keys": [
+        "data",
+        "lifecycleBusy"
+      ],
+      "rhs": "!mqtt && !absent",
+      "offset": 66850,
+      "original": "resp[\"data\"][\"lifecycleBusy\"] = !mqtt && !absent;",
+      "replacement": "FastBee::setFixedJsonField(resp, \"data\", \"lifecycleBusy\", !mqtt && !absent);"
+    }
+  ]
+}

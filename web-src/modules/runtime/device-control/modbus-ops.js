@@ -47,16 +47,23 @@
             var watch = function() {
                 if (!self._dcIsLifecycleActive(generation)) return;
                 var now = Date.now();
+                var sampleNow = self._dcSampleNow();
+                document.querySelectorAll('.dc-monitor-card[data-sample-expires-at]').forEach(function(card) {
+                    var expires = Number(card.dataset.sampleExpiresAt);
+                    if (!Number.isFinite(expires) || sampleNow >= expires) {
+                        self._dcUpdateMonitorCard(card, {value: null, valid: false, quality: 'stale'});
+                    }
+                });
                 var hasLocalSensors = document.querySelector('.dc-monitor-card[data-id^="ai_"]');
                 var hasModbus = self._modbusStatus && (self._modbusStatus.tasks || []).length;
                 if ((hasLocalSensors && now - self._dcLastSensorEventAt > 120000) ||
                     (hasModbus && now - self._dcLastModbusEventAt > 120000)) {
                     self._dcScheduleSnapshotRecovery('数据超过有效时限，正在恢复');
                 }
-                self._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 15000);
+                self._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 1000);
             };
             this._dcAutoRefreshTimers = this._dcAutoRefreshTimers || {};
-            this._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 15000);
+            this._dcAutoRefreshTimers.dataWatch = setTimeout(watch, 1000);
             AppState.connectSSE();
         },
 
@@ -91,18 +98,20 @@
         _handleSSESensorData: function(data) {
             if (!this._dcIsLifecycleActive(this._dcLifecycleGeneration)) return;
             if (!data || !data.key) return;
+            data = Object.assign({}, data, {_dcSampleReceivedAt: this._dcSampleNow()});
             // 查找对应的监测卡片并更新数值
             var card = document.querySelector('.dc-monitor-card[data-id="' + data.key + '"]');
             if (card) {
                 var unitEl = card.querySelector('.dc-monitor-unit');
                 this._dcUpdateMonitorCard(card, data);
-                if (unitEl && data.unit) unitEl.textContent = data.unit;
+                if (unitEl && typeof data.unit === 'string') unitEl.textContent = data.unit;
             }
             var rules = this._dcControlRules(this._controlData || {});
             for (var i = 0; i < rules.length; i++) {
                 var sensors = rules[i].sensors || [];
                 for (var j = 0; j < sensors.length; j++) if (sensors[j].key === data.key) {
-                    Object.assign(sensors[j], data, {valid: data.valid, valueValid: data.valueValid, quality: data.quality});
+                    Object.assign(sensors[j], data, {valid: data.valid, valueValid: data.valueValid, quality: data.quality,
+                        ageMs: data.ageMs, maxAgeMs: data.maxAgeMs});
                 }
             }
         },

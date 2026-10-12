@@ -1,8 +1,10 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
 #include <cassert>
 #include "protocols/FastBeeOTAProtocol.h"
 #include "network/OtaConfigStorage.h"
+#include "utils/PsramJsonDocument.h"
 
 struct Request { std::map<std::string, String> parameters; };
 struct Result { bool mqtt = false, modbus = false; int normalized = 0, error = 0; } result;

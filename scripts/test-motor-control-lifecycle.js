@@ -20,6 +20,7 @@ const ctx = vm.createContext({ AppState: app, document, AbortController, setTime
         return { success: true, data: { operationId: calls.length, pending: true } };
     }
 });
+vm.runInContext(fs.readFileSync(path.join(root, 'web-src/js/utils.js'), 'utf8'), ctx);
 for (const file of ['core.js', 'modbus-ctrl.js', 'modbus-ops.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'web-src/modules/runtime/device-control', file), 'utf8'), ctx);
 }
@@ -76,11 +77,15 @@ app._dcDelay = async () => true;
     app._dcUpdateMotorUIFromSSE(0, 'spd:10');
     assert.equal(nodes.get('dc-motor-dir-0').textContent, '反转应答', 'parameter reports do not erase acknowledged direction');
     const request = app._dcMotorRequest;
-    let parameterValue, resolveParameter, launchCalls = 0;
+    let parameterValue, resolveParameter, launchCalls = 0, readbacks = 0;
     app._dcMotorRequest = (devIdx, action, value) => {
         if (action === 'setSpeed') {
             parameterValue = value;
             return new Promise(resolve => { resolveParameter = resolve; });
+        }
+        if (action === 'readStatus') {
+            readbacks++;
+            return Promise.resolve({ success: true, data: { parametersKnown: true, speed: 29, pulse: 100 } });
         }
         launchCalls++;
         return Promise.resolve({ success: true, data: {} });
@@ -92,6 +97,7 @@ app._dcDelay = async () => true;
     assert.equal(parameterValue, 29, 'decimal scaling accepts floating point roundoff');
     speedInput.value = '0.30';
     resolveParameter({ success: true, data: {} }); await setting;
+    assert.equal(readbacks, 1, 'acknowledged parameter is read back through the shared service');
     assert.equal(speedInput.dataset.dirty, 'true', 'editing during a write retains the newer draft');
     await app._dcMotorAction(0, 'forward');
     assert.equal(launchCalls, 0, 'unsent parameter draft blocks launch');
@@ -103,6 +109,7 @@ app._dcDelay = async () => true;
     speedInput.value = '0.31';
     const nextSetting = app._dcMotorSet(0, 'speed');
     resolveParameter({ success: true, data: {} }); await nextSetting;
+    assert.equal(readbacks, 2);
     assert.equal(speedInput.dataset.dirty, 'false', 'unchanged acknowledged draft becomes clean');
     app._dcUpdateMotorRunUI(0, { speed: 55 }, 2);
     assert.equal(speedInput.value, '0.55', 'readback refreshes a clean inactive input');

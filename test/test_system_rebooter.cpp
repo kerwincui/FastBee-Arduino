@@ -449,7 +449,7 @@ static void test_source_mqtt_reconnect_uses_system_rebooter() {
         "MQTTS manual reconnect must use SystemRebooter::scheduleConfigReboot()");
     // 非 TLS 场景使用运行时重建，不重启设备
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("restartMQTTDeferred(true)") != std::string::npos,
+        content.find("pm->restartMQTTDeferred(true, &restartResult)") != std::string::npos,
         "Non-TLS manual reconnect must use restartMQTTDeferred(true) for runtime rebuild");
     // scheme 分级判断逻辑存在
     TEST_ASSERT_TRUE_MESSAGE(

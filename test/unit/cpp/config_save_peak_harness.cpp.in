@@ -1,0 +1,244 @@
+#include <ArduinoJson.h>
+#include "utils/SharedJsonSerializer.h"
+#include <cassert>
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <string>
+#include <cstring>
+#include <limits>
+
+@TRACKER@
+using String = std::string;
+constexpr int FILE_READ = 0, FILE_WRITE = 1;
+static size_t readLimit = 128, readFailureAt = SIZE_MAX;
+static bool invalidReadLength = false;
+static bool openReadFailure = false, openWriteFailure = false;
+static bool hideSuffixSize = false, flushCorruption = false;
+static size_t writeLimit = SIZE_MAX, advertisedSize = 0;
+static int closes = 0, flushes = 0, renames = 0, removes = 0;
+struct File {
+    std::string* text; size_t index = 0; bool writing = false;
+    explicit operator bool() const { return text; }
+    size_t size() const { return hideSuffixSize ? advertisedSize : text->size(); }
+    int read() {
+        if (!text || index >= text->size() || index >= readFailureAt) return -1;
+        return static_cast<unsigned char>((*text)[index++]);
+    }
+    size_t read(uint8_t* output, size_t count) {
+        if(invalidReadLength) return SIZE_MAX;
+        size_t n = 0;
+        count = std::min(count, readLimit);
+        for (; n < count; ++n) { int c=read(); if(c<0) break; output[n]=uint8_t(c); }
+        return n;
+    }
+    size_t readBytes(char* output, size_t count) { return read(reinterpret_cast<uint8_t*>(output),count); }
+    size_t write(uint8_t byte) {
+        if(!text || !writing || text->size() >= writeLimit) return 0;
+        text->push_back(char(byte)); return 1;
+    }
+    size_t write(const uint8_t* bytes, size_t count) {
+        size_t n=0; while(n<count && write(bytes[n])) ++n; return n;
+    }
+    void flush() { ++flushes; if(flushCorruption && text && !text->empty()) text->pop_back(); }
+    void close() { ++closes; }
+};
+struct Filesystem {
+    std::map<String,String> files;
+    String renameFailureFrom;
+    File open(const String& path, int mode) {
+        if(mode==FILE_WRITE) {
+            if(openWriteFailure) return {nullptr,0,true};
+            files[path].clear(); return {&files[path],0,true};
+        }
+        auto it=files.find(path);
+        return {openReadFailure || it==files.end()? nullptr:&it->second,0,false};
+    }
+    bool exists(const String& path) {return files.count(path)>0;}
+    bool remove(const String& path) {++removes; return files.erase(path)>0;}
+    bool rename(const String& from,const String& to) {
+        ++renames;
+        if(from==renameFailureFrom || !exists(from)) return false;
+        files[to]=files[from]; files.erase(from); return true;
+    }
+} LittleFS;
+#define LOG_ERROR(...) ((void)0)
+#define FASTBEE_ENABLE_STORAGE_CACHE 0
+struct ConfigStorage {
+    bool _initialized = true;
+    bool initializeInternal() {return true;}
+    bool saveJSONConfigImpl(const String&,const JsonDocument&,bool forceImmediate=false);
+    bool flushToDisk(const String&,const JsonDocument&);
+};
+@HELPERS@
+@SAVE@
+@FLUSH@
+
+static void reset() {
+    readLimit=128; readFailureAt=SIZE_MAX; openReadFailure=openWriteFailure=false;
+    invalidReadLength=false;
+    hideSuffixSize=flushCorruption=false; writeLimit=SIZE_MAX;
+    closes=flushes=renames=removes=0;
+    LittleFS.files.clear(); LittleFS.renameFailureFrom.clear();
+}
+static std::string legacyAuthJson() {
+    return R"({"admin":{"username":"admin","passwordHash":"$fb2$20000$0123456789abcdef0123456789abcdef$0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","salt":"0123456789abcdef01234567","lastLogin":1780000000,"lastModified":1780000001},"version":1,"security":{"maxLoginAttempts":5,"loginLockoutTime":300000,"minPasswordLength":6,"maxPasswordLength":32,"requireStrongPasswords":false,"allowMultipleSessions":true,"sessionTimeout":3600000,"sessionCleanupInterval":60000,"enableSessionPersistence":false,"cookieName":"sessionId","cookieMaxAge":3600,"cookieHttpOnly":true,"cookieSecure":false}})";
+}
+static std::string authJson() {
+    // Current released builds use FASTBEE_SINGLE_ADMIN_MODE=0.
+    JsonDocument legacy, current;
+    assert(!deserializeJson(legacy,legacyAuthJson()));
+    JsonObject user=current["users"].to<JsonArray>().add<JsonObject>();
+    user.set(legacy["admin"]);
+    user["enabled"]=true; user["description"]=""; user["createTime"]=1700000000;
+    current["version"]=1; current["security"].set(legacy["security"]);
+    std::string text; serializeJson(current,text); return text;
+}
+static size_t verifyPeak(const std::string& text,bool original) {
+    reset(); LittleFS.files["candidate"]=text;
+    assert(liveBytes==0); peakBytes=0; tracking=true;
+    {
+        JsonDocument source;
+        assert(!deserializeJson(source,text));
+        // Runtime-built document has an allocated pool rather than parse's
+        // auto-shrunk pool; force a complete allocation-equivalent copy.
+        JsonDocument built;
+        built.set(source);
+        source.clear(); source.shrinkToFit();
+        peakBytes=liveBytes;
+        assert(original?verifyJsonFile("candidate"):verifySerializedJsonFile("candidate",built));
+        assert(!built.overflowed());
+    }
+    tracking=false; assert(liveBytes==0); return peakBytes;
+}
+int main() {
+    JsonDocument source;
+    assert(!deserializeJson(source,authJson()));
+    std::string good; serializeJson(source,good);
+    int cases=0;
+    reset(); LittleFS.files["candidate"]=good;
+    assert(verifySerializedJsonFile("candidate",source)); assert(closes==1); ++cases;
+    for(size_t limit:{size_t(1),size_t(3),size_t(127),size_t(128)}) {
+        reset(); readLimit=limit; LittleFS.files["candidate"]=good;
+        assert(verifySerializedJsonFile("candidate",source)); ++cases;
+    }
+    reset(); assert(!verifySerializedJsonFile("absent",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good; openReadFailure=true;
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good.substr(0,good.size()-1);
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good+" ";
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good+"!"; hideSuffixSize=true; advertisedSize=good.size();
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good+"!"; hideSuffixSize=true; advertisedSize=good.size(); readLimit=1;
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["candidate"]=good;
+    LittleFS.files["candidate"][good.find("1780000000")]='9';
+    assert(verifyJsonFile("candidate")); // valid-but-corrupt JSON negative control
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    for(size_t failure:{size_t(0),size_t(1),size_t(127),good.size()-1}) {
+        reset(); LittleFS.files["candidate"]=good; readFailureAt=failure;
+        assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    }
+    reset(); LittleFS.files["candidate"]=good;
+    const size_t before=liveBytes; tracking=true; peakBytes=liveBytes;
+    assert(verifySerializedJsonFile("candidate",source));
+    tracking=false; assert(peakBytes==before && liveBytes==before); ++cases;
+    ConfigStorage storage;
+    reset(); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+    assert(storage.saveJSONConfigImpl("primary",source));
+    assert(LittleFS.files["primary"]==good && LittleFS.files["primary.bak"]=="old-primary");
+    assert(!LittleFS.exists("primary.tmp") && flushes==1 && renames==2); ++cases;
+    for(int fault=0;fault<4;++fault) {
+        reset(); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+        if(fault==0) openWriteFailure=true;
+        if(fault==1) writeLimit=7;
+        if(fault==2) flushCorruption=true;
+        if(fault==3) openReadFailure=true;
+        assert(!storage.saveJSONConfigImpl("primary",source));
+        assert(LittleFS.files["primary"]=="old-primary" && LittleFS.files["primary.bak"]=="old-backup");
+        assert(!renames); ++cases;
+    }
+    for(int fault=-1;fault<4;++fault) {
+        reset(); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+        if(fault==0) openWriteFailure=true;
+        if(fault==1) writeLimit=7;
+        if(fault==2) flushCorruption=true;
+        if(fault==3) openReadFailure=true;
+        const bool saved=storage.flushToDisk("primary",source);
+        assert(saved==(fault<0));
+        if(saved) assert(LittleFS.files["primary"]==good && flushes==1 && renames==2);
+        else assert(LittleFS.files["primary"]=="old-primary" && LittleFS.files["primary.bak"]=="old-backup" && !renames);
+        ++cases;
+    }
+    reset(); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+    LittleFS.files["primary.tmp"]=good; LittleFS.files["primary.tmp"][0]='!';
+    assert(!atomicReplaceFromTmp("primary.tmp","primary",&source));
+    assert(!removes && !renames && LittleFS.files["primary.bak"]=="old-backup"); ++cases;
+    reset(); LittleFS.files["primary"]="old-primary"; LittleFS.renameFailureFrom="primary.tmp";
+    assert(!storage.saveJSONConfigImpl("primary",source));
+    assert(LittleFS.files["primary"]=="old-primary" && !LittleFS.exists("primary.tmp")); ++cases;
+    reset(); LittleFS.files["primary"]="old-primary"; LittleFS.renameFailureFrom="primary";
+    assert(!storage.saveJSONConfigImpl("primary",source));
+    assert(LittleFS.files["primary"]=="old-primary"); ++cases;
+    reset(); CountingAllocator failing; failing.fail=true; JsonDocument oom(&failing); oom["key"]=123;
+    assert(oom.overflowed()); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+    assert(!storage.saveJSONConfigImpl("primary",oom));
+    assert(LittleFS.files["primary"]=="old-primary" && LittleFS.files["primary.bak"]=="old-backup" && !renames); ++cases;
+    assert(!flushes && !removes && !LittleFS.exists("primary.tmp"));
+    reset(); LittleFS.files["raw.tmp"]=R"({"unrelated":123})";
+    assert(atomicReplaceFromTmp("raw.tmp","raw")); ++cases;
+    reset(); LittleFS.files["raw.tmp"]="{broken";
+    assert(!atomicReplaceFromTmp("raw.tmp","raw") && !renames); ++cases;
+    reset(); JsonDocument legacy;
+    assert(!deserializeJson(legacy,legacyAuthJson()));
+    assert(storage.saveJSONConfigImpl("legacy",legacy));
+    JsonDocument legacyRead; assert(!deserializeJson(legacyRead,LittleFS.files["legacy"]));
+    assert(legacyRead["admin"]["username"]=="admin"); ++cases;
+    reset(); LittleFS.files["candidate"]=good; invalidReadLength=true;
+    assert(!verifySerializedJsonFile("candidate",source)); ++cases;
+    reset(); LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+    JsonDocument invalidRaw; invalidRaw["raw"]=serialized("{broken");
+    assert(requiresParsedJsonValidation(invalidRaw.as<JsonVariantConst>()));
+    assert(!storage.saveJSONConfigImpl("primary",invalidRaw));
+    assert(LittleFS.files["primary"]=="old-primary" && LittleFS.files["primary.bak"]=="old-backup" && !renames); ++cases;
+    reset(); JsonDocument validRaw; validRaw["raw"]=serialized("{\"valid\":123}");
+    assert(requiresParsedJsonValidation(validRaw.as<JsonVariantConst>()));
+    assert(storage.saveJSONConfigImpl("raw-valid",validRaw)); ++cases;
+    reset(); JsonDocument boundary,tooDeep;
+    JsonArray array=boundary.to<JsonArray>();
+    for(int i=1;i<ARDUINOJSON_DEFAULT_NESTING_LIMIT;++i) array=array.add<JsonArray>();
+    array.add(123);
+    assert(!requiresParsedJsonValidation(boundary.as<JsonVariantConst>()));
+    assert(storage.saveJSONConfigImpl("boundary",boundary)); ++cases;
+    reset(); tooDeep.set(boundary); JsonArray deeper=tooDeep.as<JsonArray>();
+    for(int i=1;i<ARDUINOJSON_DEFAULT_NESTING_LIMIT;++i) deeper=deeper[0].as<JsonArray>();
+    deeper.add<JsonArray>();
+    assert(requiresParsedJsonValidation(tooDeep.as<JsonVariantConst>()));
+    LittleFS.files["primary"]="old-primary"; LittleFS.files["primary.bak"]="old-backup";
+    assert(!storage.saveJSONConfigImpl("primary",tooDeep));
+    assert(LittleFS.files["primary"]=="old-primary" && LittleFS.files["primary.bak"]=="old-backup" && !renames); ++cases;
+    reset(); std::string nestedRaw(ARDUINOJSON_DEFAULT_NESTING_LIMIT+1,'[');
+    nestedRaw+='0'; nestedRaw+=std::string(ARDUINOJSON_DEFAULT_NESTING_LIMIT+1,']');
+    JsonDocument rawDeep; rawDeep["raw"]=serialized(nestedRaw);
+    assert(requiresParsedJsonValidation(rawDeep.as<JsonVariantConst>()));
+    assert(!storage.saveJSONConfigImpl("raw-deep",rawDeep)); ++cases;
+    reset(); JsonDocument rootRaw; rootRaw.set(serialized("this is invalid JSON"));
+    assert(requiresParsedJsonValidation(rootRaw.as<JsonVariantConst>()));
+    assert(!storage.saveJSONConfigImpl("raw-root",rootRaw)); ++cases;
+    reset(); JsonDocument types;
+    types["float"]=1.25;types["large"]=uint64_t(-1);types["negative"]=int64_t(-999999999999LL);
+    types["empty"]=nullptr;types["string"]="with newline\nand quote\"";types["bool"]=false;
+    assert(!requiresParsedJsonValidation(types.as<JsonVariantConst>()));
+    assert(storage.saveJSONConfigImpl("types",types)); ++cases;
+    std::string large="{\"rows\":[";
+    for(int i=0;i<240;++i) {if(i)large+=',';large+="{\"id\":"+std::to_string(i)+",\"label\":\"configuration-"+std::to_string(i)+"-abcdefghijklmnop\",\"enabled\":true}";}
+    large+="]}";
+    const size_t authOld=verifyPeak(good,true),authNew=verifyPeak(good,false);
+    const size_t largeOld=verifyPeak(large,true),largeNew=verifyPeak(large,false);
+    assert(authNew<authOld && largeNew<largeOld); ++cases;
+    std::cout << "{\"cases\":" << cases << ",\"authOldPeakBytes\":" << authOld
+              << ",\"authNewPeakBytes\":" << authNew << ",\"largeOldPeakBytes\":" << largeOld
+              << ",\"largeNewPeakBytes\":" << largeNew << ",\"verifyHeapBytes\":0}\n";
+}

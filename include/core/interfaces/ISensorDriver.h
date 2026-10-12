@@ -7,11 +7,35 @@
 /**
  * @brief 传感器读取结果（通用）
  */
+// Optional per-channel diagnostics for a bounded scan. Aggregate success is
+// still required: a sampled channel in a failed scan is never publishable.
+enum class SensorChannelError : uint8_t {
+    None, NotAttempted, Transport, Timeout, StartNotObserved, Configuration,
+    Range, Calibration, Cancelled
+};
+inline const char* sensorChannelErrorName(SensorChannelError value) {
+    switch (value) {
+    case SensorChannelError::None: return "";
+    case SensorChannelError::NotAttempted: return "not_attempted";
+    case SensorChannelError::Transport: return "transport";
+    case SensorChannelError::Timeout: return "timeout";
+    case SensorChannelError::StartNotObserved: return "start_not_observed";
+    case SensorChannelError::Configuration: return "configuration";
+    case SensorChannelError::Range: return "code_rail";
+    case SensorChannelError::Calibration: return "calibration";
+    case SensorChannelError::Cancelled: return "cancelled";
+    }
+    return "unknown";
+}
+enum class SensorReadStep : uint8_t { Continue, Pending, Complete, Failed };
 struct SensorReading {
     bool success = false;
     float values[4] = {0};   // 最多 4 通道（温度/湿度/气压/光照等）
     uint8_t channelCount = 0;
-    unsigned long timestamp = 0;
+    bool channelMetadata = false;
+    unsigned long timestamp = 0; // Earliest acquisition for a complete scan.
+    uint32_t channelTimestamps[4] = {};
+    SensorChannelError channelErrors[4] = {};
     
     float temperature() const { return channelCount > 0 ? values[0] : NAN; }
     float humidity()    const { return channelCount > 1 ? values[1] : NAN; }
@@ -67,6 +91,14 @@ public:
      * @return 是否读取成功
      */
     virtual bool read(SensorReading& reading) = 0;
+
+    // Opt-in cooperative conversion. Zero keeps every existing driver on its
+    // synchronous path. A step must not wait for conversion; Pending requests
+    // a lock-free yield, Continue requests immediate protocol progress.
+    virtual uint32_t cooperativeReadBudgetMs() const { return 0; }
+    virtual SensorReadStep readStep(SensorReading& reading) {
+        return read(reading) ? SensorReadStep::Complete : SensorReadStep::Failed;
+    }
 
     /**
      * @brief 释放传感器硬件资源

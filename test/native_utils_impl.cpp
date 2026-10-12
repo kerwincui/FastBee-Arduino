@@ -448,7 +448,7 @@ bool TimeUtils::initialize(const TimeZone& timezone, const String&) {
     return setTimeZone(timezone);
 }
 
-bool TimeUtils::syncNTP(unsigned long) {
+bool TimeUtils::syncNTP(unsigned long, uint32_t) {
     return true;
 }
 
@@ -465,8 +465,8 @@ time_t TimeUtils::getTimestamp() {
     return std::time(nullptr);
 }
 
-unsigned long TimeUtils::getTimestampMs() {
-    return getTimestamp() * 1000UL;
+uint64_t TimeUtils::getTimestampMs() {
+    return static_cast<uint64_t>(getTimestamp()) * 1000ULL;
 }
 
 unsigned long TimeUtils::getUptime() {

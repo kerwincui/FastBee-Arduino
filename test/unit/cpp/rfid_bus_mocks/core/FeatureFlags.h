@@ -1,0 +1,5 @@
+#pragma once
+#define FASTBEE_ENABLE_RFID 1
+#ifndef FASTBEE_ENABLE_PERIPH_EXEC
+#define FASTBEE_ENABLE_PERIPH_EXEC 1
+#endif

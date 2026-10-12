@@ -676,7 +676,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         userAdmin: 'users'                 // 用户管理
     },
 
-    // 最近一次 /api/features/status 的激活状态缓存（key → active）
+    // 最近一次功能菜单状态缓存（key → active）
     _featureActive: null,
     _featureStatusReady: false,
     _featureStatusPromise: null,
@@ -684,8 +684,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     /**
      * 登录后拉取功能状态，按启用情况显示/隐藏左侧菜单项
      * 完整功能状态在 C3/经典 ESP32 登录资源并发窗口内可能返回 501/503。
-     * 菜单只需要 active 状态，因此优先读取公开且轻量的 system/status；
-     * 仅在轻量端点不可用时回退完整接口，避免与首屏模块争用 DRAM。
+     * 菜单优先读取轻量 system/status 的运行态与屏幕用户启用意图；
+     * 仅在轻量端点不可用或旧固件缺少意图字段时回退完整接口。
      */
     applyFeatureMenuVisibility() {
         if (typeof apiGet !== 'function') return;
@@ -763,10 +763,17 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                     active[key] = false;
                 }
             });
-            // Only the full response exposes user intent for a degraded panel.
-            // Supplement that field once and retain the lightweight runtime
-            // status for the other features, including entries omitted here.
+            // Preserve the panel entry during runtime degradation without
+            // loading the full feature catalog on current firmware. Older or
+            // incomplete responses still use the bounded compatibility path.
             if (Object.prototype.hasOwnProperty.call(map, 'screenPanel')) {
+                const panelIntent = res.data.featureIntent && res.data.featureIntent.screenPanel;
+                if (panelIntent && typeof panelIntent.compiled === 'boolean' &&
+                    typeof panelIntent.userEnabled === 'boolean') {
+                    active.screenPanel = panelIntent.compiled && panelIntent.userEnabled;
+                    applyMenuState(active);
+                    return res;
+                }
                 return featureGetter('/api/features/status')
                     .then(function(fullResponse) {
                         const features = fullResponse && fullResponse.success &&

@@ -24,7 +24,9 @@ class PointHistoryPersistenceTests(unittest.TestCase):
             '-DFASTBEE_ENABLE_POINT_HISTORY=1', '-DARDUINOJSON_ENABLE_STD_STRING=1',
             '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0',
             *[f'-I{path}' for path in includes],
+            '-include', str(ROOT / 'test/unit/cpp/fixed_json_document_prelude.h'),
             str(ROOT / 'test/unit/cpp/point_history_persistence_harness.cpp'),
+            str(ROOT / 'src/network/FixedJsonField.cpp'),
             '-o', str(cls.binary)], capture_output=True, text=True, timeout=60)
         if result.returncode:
             cls.temp.cleanup()
@@ -70,6 +72,9 @@ class PointHistoryPersistenceTests(unittest.TestCase):
 
     def test_config_conflict_concurrent_writer_and_failed_save_preserve_state(self):
         self.scenario('config_transaction')
+
+    def test_config_rejects_valid_json_corruption_nul_suffix_and_revision_wrap(self):
+        self.scenario('config_integrity')
 
 
 if __name__ == '__main__':

@@ -19,10 +19,35 @@
 #include <WiFi.h>
 
 namespace {
+#if FASTBEE_ENABLE_LCD_GB2312
+const uint8_t* lcdChineseFont() {
+    // ScreenRuntime already links the full WQY font. Reuse it instead of
+    // linking a second 109KB subset; OLED-only builds keep the smaller font.
+#if FASTBEE_ENABLE_SCREEN_UI && defined(ARDUINO_ARCH_ESP32)
+    return u8g2_font_wqy12_t_gb2312;
+#else
+    return u8g2_font_wqy12_t_gb2312a;
+#endif
+}
+#endif
+
 const void* g_lcdI2cOwner = nullptr;
 bool g_lcdI2cTransferLocked = false;
+bool g_lcdI2cTransferFailed = false;
+bool g_lcdI2cOperationFailed = false;
+bool g_lcdI2cAttempted = false;
+bool g_lcdForegroundActive = false;
+unsigned long g_lcdForegroundStarted = 0;
+struct ManagedLcdFrameBudget {
+    ManagedLcdFrameBudget() {
+        g_lcdForegroundActive = true;
+        g_lcdForegroundStarted = millis();
+    }
+    ~ManagedLcdFrameBudget() { g_lcdForegroundActive = false; }
+};
 
 void abortManagedLcdTransfer() {
+    g_lcdI2cTransferFailed = false;
     if (!g_lcdI2cTransferLocked) return;
     FastBee::I2CBusManager::instance().unlock();
     g_lcdI2cTransferLocked = false;
@@ -31,41 +56,72 @@ void abortManagedLcdTransfer() {
 uint8_t managedU8g2I2cByte(u8x8_t* u8x8, uint8_t msg,
                            uint8_t argInt, void* argPtr) {
     auto& manager = FastBee::I2CBusManager::instance();
-    if (!g_lcdI2cOwner) return 0;
+    const auto fail = []() -> uint8_t { g_lcdI2cOperationFailed = true; return 0; };
+    if (!g_lcdI2cOwner) return fail();
 
     switch (msg) {
         case U8X8_MSG_BYTE_INIT:
-            return manager.isAcquired(g_lcdI2cOwner) ? 1 : 0;
+            return manager.ownsAddress(g_lcdI2cOwner, u8x8_GetI2CAddress(u8x8) >> 1) ? 1 : fail();
         case U8X8_MSG_BYTE_SET_DC:
             return 1;
         case U8X8_MSG_BYTE_START_TRANSFER: {
+            // Do not replay later U8g2 chunks after the first failed transaction.
+            // Bound a foreground frame while PM owns its config and grant.
+            if (g_lcdI2cOperationFailed || (g_lcdForegroundActive &&
+                millis() - g_lcdForegroundStarted >= 250UL)) return fail();
             // Recover defensively if a prior U8g2 transfer aborted before END.
+            if (g_lcdI2cTransferLocked) g_lcdI2cOperationFailed = true;
             abortManagedLcdTransfer();
-            if (!manager.lock(250)) return 0;
+            if (g_lcdI2cOperationFailed) return fail();
+            if (!manager.lock(250)) return fail();
             g_lcdI2cTransferLocked = true;
             TwoWire* wire = manager.wire(g_lcdI2cOwner);
-            if (!wire) {
+            if (!wire || !manager.ownsAddress(g_lcdI2cOwner, u8x8_GetI2CAddress(u8x8) >> 1)) {
                 abortManagedLcdTransfer();
-                return 0;
+                return fail();
             }
+            g_lcdI2cAttempted = true;
             wire->beginTransmission(u8x8_GetI2CAddress(u8x8) >> 1);
             return 1;
         }
         case U8X8_MSG_BYTE_SEND: {
-            if (!g_lcdI2cTransferLocked) return 0;
+            if (!g_lcdI2cTransferLocked) return fail();
             TwoWire* wire = manager.wire(g_lcdI2cOwner);
-            return wire && wire->write(static_cast<uint8_t*>(argPtr), argInt) == argInt;
+            if (g_lcdI2cTransferFailed || !wire || (argInt && !argPtr) ||
+                !manager.ownsAddress(g_lcdI2cOwner, u8x8_GetI2CAddress(u8x8) >> 1) ||
+                (argInt && wire->write(static_cast<uint8_t*>(argPtr), argInt) != argInt)) {
+                g_lcdI2cTransferFailed = true;
+                return fail();
+            }
+            return 1;
         }
         case U8X8_MSG_BYTE_END_TRANSFER: {
-            if (!g_lcdI2cTransferLocked) return 0;
+            if (!g_lcdI2cTransferLocked) return fail();
             TwoWire* wire = manager.wire(g_lcdI2cOwner);
-            const bool success = wire && wire->endTransmission() == 0;
+            // Finish our attempted transaction even after a short buffer write,
+            // but never turn that earlier error into a successful END callback.
+            const bool owned = wire && manager.ownsAddress(
+                g_lcdI2cOwner, u8x8_GetI2CAddress(u8x8) >> 1);
+            const bool acknowledged = owned && wire->endTransmission() == 0;
+            const bool success = acknowledged && !g_lcdI2cTransferFailed;
             abortManagedLcdTransfer();
-            return success ? 1 : 0;
+            return success ? 1 : fail();
         }
         default:
             return 0;
     }
+}
+// U8g2's high-level void methods may ignore a callback failure and send later
+// transactions. Keep the error across the complete manager operation.
+void beginManagedLcdOperation() {
+    abortManagedLcdTransfer();
+    g_lcdI2cOperationFailed = false;
+}
+
+bool finishManagedLcdOperation() {
+    if (g_lcdI2cTransferLocked) g_lcdI2cOperationFailed = true;
+    abortManagedLcdTransfer();
+    return !g_lcdI2cOperationFailed;
 }
 }  // namespace
 
@@ -73,7 +129,25 @@ uint8_t managedU8g2I2cByte(u8x8_t* u8x8, uint8_t msg,
 LCDManager& LCDManager::getInstance()
 {
     static LCDManager instance;
+    static const FastBee::FeatureInstanceObserver observer{"lcd", [](const void* context) {
+        return static_cast<const LCDManager*>(context)->observeFeatureInstance();
+    }, &instance};
+    FastBee::FeatureInstanceRegistry::instance().registerObserver(&observer);
     return instance;
+}
+
+FastBee::FeatureInstanceSnapshot LCDManager::observeFeatureInstance() const {
+    using namespace FastBee;
+    if (!_displayMutex) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::SynchronizationUnavailable, FeatureInstanceScope::ServiceLifecycle);
+    RecursiveMutexGuard lock(_displayMutex, 0);
+    if (!lock.isLocked()) return FeatureInstanceSnapshot::lifecycle(FeatureInstanceState::Busy);
+    if (_initialized && !_display) return FeatureInstanceSnapshot::unavailable(
+        FeatureInstanceReason::InvalidSnapshot, FeatureInstanceScope::ServiceLifecycle);
+    // Stopped means no active renderer, not that retained caches/deferred I2C
+    // leases or all heap storage have been released. Never drain the bus here.
+    return FeatureInstanceSnapshot::lifecycle(_initialized ? FeatureInstanceState::Running :
+        (_display || _busAcquired) ? FeatureInstanceState::Allocated : FeatureInstanceState::Stopped);
 }
 
 LCDManager::LCDManager()
@@ -126,14 +200,24 @@ bool LCDManager::initialize(const PeripheralConfig& config)
         return false;
     }
 
+    if (config.type != PeripheralType::LCD || config.id.isEmpty() || config.id.length() > 40 ||
+        config.pinCount != 2 || config.pins[0] == config.pins[1] ||
+        config.params.lcd.interface != 2) return false;
+    // A second named profile must never replace the singleton's first owner.
+    if (!_activeId.isEmpty() && _activeId != config.id) return false;
     LOG_INFO("LCD Manager: Initializing...");
     
     // 如果已初始化，先反初始化
     if (_initialized || _display || _busAcquired)
     {
-        deinitialize();
+        if (!deinitialize(config.id)) return false;
     }
-    
+    _activeId = config.id;
+    if (_activeId != config.id) return false;
+    _configuredWidth = config.params.lcd.width;
+    _configuredHeight = config.params.lcd.height;
+    _configuredContrast = config.params.lcd.contrast;
+
     // 提取配置参数
     _width = config.params.lcd.width;
     _height = config.params.lcd.height;
@@ -163,14 +247,20 @@ bool LCDManager::initialize(const PeripheralConfig& config)
                 _sdaPin = sda;
                 _sclPin = scl;
                 String busError;
-                if (!FastBee::I2CBusManager::instance().acquire(
-                        this, sda, scl, 100000, busError)) {
+                FastBee::I2CBusLock admission(100);
+                if (!admission.locked() || !FastBee::I2CBusManager::instance().acquire(
+                        this, sda, scl, 100000, busError, FastBee::ResourceConsumerRole::Display)) {
                     LOG_WARNINGF("LCD Manager: I2C lease failed: %s", busError.c_str());
                     _sdaPin = -1;
                     _sclPin = -1;
                     return false;
                 }
                 _busAcquired = true;
+                if (!FastBee::I2CBusManager::instance().claimAddress(this, _i2cAddress, busError)) {
+                    LOG_WARNINGF("LCD Manager: I2C address failed: %s", busError.c_str());
+                    deinitialize();
+                    return false;
+                }
                 g_lcdI2cOwner = this;
                 LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
                           sda, scl, _i2cAddress);
@@ -216,6 +306,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     }
     
     // 初始化显示屏
+    beginManagedLcdOperation();
     _display->begin();
 
     // 应用配置对比度（0 视为未配置，按最大亮度处理）
@@ -227,6 +318,12 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     // 确保退出省电模式（部分模块上电后处于 display off 状态）
     _display->setPowerSave(0);
 
+    if (!finishManagedLcdOperation()) {
+        LOG_WARNING("LCD Manager: Controller initialization transfer failed");
+        deinitialize();
+        return false;
+    }
+
     // 设置默认字体
     setDefaultFont();
     
@@ -234,6 +331,7 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     clear();
     
     _initialized = true;
+    _foregroundFailed = false;
     _lastUpdate = millis();
     _initTime = _lastUpdate;
     _lastReassert = _lastUpdate;
@@ -242,9 +340,10 @@ bool LCDManager::initialize(const PeripheralConfig& config)
     return true;
 }
 
-void LCDManager::deinitialize()
+bool LCDManager::deinitialize(const String& expectedId)
 {
-    LCD_GUARD_OR_RETURN_VOID();
+    LCD_GUARD_OR_RETURN(false);
+    if (!expectedId.isEmpty() && !_activeId.isEmpty() && expectedId != _activeId) return false;
     abortManagedLcdTransfer();
     if (_display)
     {
@@ -263,7 +362,10 @@ void LCDManager::deinitialize()
     _sdaPin = -1;
     _sclPin = -1;
     
+    _activeId = "";
+    _foregroundFailed = false;
     LOG_INFO("LCD Manager: Deinitialized");
+    return true;
 }
 
 bool LCDManager::createDisplay(const PeripheralConfig& config)
@@ -343,7 +445,7 @@ void LCDManager::setDefaultFont()
     if (FastBee::RuntimeFeatureManager::instance().shouldEnable("lcdGb2312")) {
         // 默认使用 WQY 12 像素中文字体，同时支持 ASCII，配合 drawUTF8 可显示中英文混排
         // 符号、单位（如 ℃）均包含在 GB2312 子集中
-        _display->setFont(u8g2_font_wqy12_t_gb2312a);
+        _display->setFont(lcdChineseFont());
         _currentFont = 1;
     } else {
         _display->setFont(u8g2_font_5x7_tf);
@@ -545,7 +647,7 @@ bool LCDManager::showSystemInfo()
     unsigned long uptime = millis() / 1000;
     int hours = uptime / 3600;
     int mins = (uptime % 3600) / 60;
-    char uptimeStr[16];
+    char uptimeStr[32];
     snprintf(uptimeStr, sizeof(uptimeStr), "Up: %dh %dm", hours, mins);
     lines[lineCount++] = String(uptimeStr);
     
@@ -788,7 +890,7 @@ bool LCDManager::setFont(uint8_t fontIndex)
         case 1:  // 中字体（默认，WQY 12像素 GB2312 中文 + ASCII）
 #if FASTBEE_ENABLE_LCD_GB2312
             if (FastBee::RuntimeFeatureManager::instance().shouldEnable("lcdGb2312")) {
-                _display->setFont(u8g2_font_wqy12_t_gb2312a);
+                _display->setFont(lcdChineseFont());
                 _currentFont = 1;
             } else {
                 _display->setFont(u8g2_font_5x7_tf);  // 运行时禁用中文字库时回退 ASCII
@@ -825,7 +927,10 @@ bool LCDManager::setContrast(uint8_t contrast)
     LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
+    beginManagedLcdOperation();
     _display->setContrast(contrast);
+    if (!finishManagedLcdOperation()) return false;
+    _contrast = contrast;
     return true;
 }
 
@@ -851,8 +956,9 @@ bool LCDManager::setDisplayOn(bool on)
     LCD_GUARD_OR_RETURN(false);
     if (!_display || !_initialized) return false;
     
+    beginManagedLcdOperation();
     _display->setPowerSave(!on);
-    return true;
+    return finishManagedLcdOperation();
 }
 
 bool LCDManager::probeI2cDisplay(bool logWarning)
@@ -861,9 +967,10 @@ bool LCDManager::probeI2cDisplay(bool logWarning)
     if (_sdaPin < 0 || _sclPin < 0) return false;
 
     FastBee::I2CBusLock busLock(100);
-    TwoWire* wire = busLock.locked()
+    TwoWire* wire = busLock.locked() && FastBee::I2CBusManager::instance().ownsAddress(this, _i2cAddress)
         ? FastBee::I2CBusManager::instance().wire(this) : nullptr;
     if (!wire) return false;
+    g_lcdI2cAttempted = true;
     wire->beginTransmission(_i2cAddress);
     const uint8_t wireStatus = wire->endTransmission();
     if (wireStatus == 0) return true;
@@ -883,27 +990,37 @@ bool LCDManager::refresh()
     if (!_display || !_initialized) return false;
     
     // 检查刷新间隔，避免频繁刷新
-    if (!shouldUpdate())
+    if (!_forceRefresh && !shouldUpdate())
     {
         return true;
     }
     
     if (!probeI2cDisplay(true)) return false;
 
+    beginManagedLcdOperation();
     _display->sendBuffer();
+    if (!finishManagedLcdOperation()) {
+        _contentChanged = true;
+        return false;
+    }
     _lastUpdate = millis();
     _contentChanged = false;
     
     return true;
 }
 
-void LCDManager::performMaintenance()
+void LCDManager::performMaintenance(const PeripheralConfig& config)
 {
     // Maintenance is opportunistic. Never block the framework task behind a
     // foreground rule/script display transfer.
     RecursiveMutexGuard lcdGuard(_displayMutex, 0);
     if (!lcdGuard.isLocked()) return;
-    if (!_display || !_initialized) return;
+    if (!_display || !_initialized || _foregroundFailed || !matchesConfig(config)) return;
+    // PM -> display -> shared I2C is the only order. Do not wait for a peer
+    // while holding the PM lock, including a multi-chunk recovery sequence.
+    FastBee::I2CBusLock busLock(0);
+    if (!busLock.locked()) return;
+    ManagedLcdFrameBudget frameBudget;
 
     unsigned long now = millis();
 
@@ -917,10 +1034,16 @@ void LCDManager::performMaintenance()
     if (now - _initTime <= REASSERT_WINDOW_MS) {
         if (now - _lastReassert >= REASSERT_INTERVAL_MS) {
             if (!probeI2cDisplay(true)) return;
+            _lastReassert = now; // Bound failed retries too; not a success timestamp.
+            beginManagedLcdOperation();
             _display->initDisplay();
             _display->setPowerSave(0);
             _display->setContrast(_contrast);
             _display->sendBuffer();
+            if (!finishManagedLcdOperation()) {
+                _contentChanged = true;
+                return;
+            }
             LOG_INFOF("[LCD] re-assert display (t=%lums, contrast=%d)",
                       now - _initTime, _contrast);
             _lastReassert = now;
@@ -947,11 +1070,16 @@ void LCDManager::performMaintenance()
                 _lastFullRecovery = now;
                 return;
             }
+            beginManagedLcdOperation();
             _display->initDisplay();
             _display->setPowerSave(0);
             _display->setContrast(_contrast);
             _display->sendBuffer();
             _lastFullRecovery = now;
+            if (!finishManagedLcdOperation()) {
+                _contentChanged = true;
+                return;
+            }
             _lastUpdate = now;
             LOG_INFOF("[LCD] periodic I2C recovery (SDA=%d SCL=%d, uptime=%lus)",
                       _sdaPin, _sclPin, now / 1000);
@@ -991,3 +1119,61 @@ bool LCDManager::shouldUpdate()
 #undef LCD_GUARD_OR_RETURN_VOID
 
 #endif // FASTBEE_ENABLE_LCD
+
+#if FASTBEE_ENABLE_LCD
+bool LCDManager::matchesConfig(const PeripheralConfig& config) const {
+    return _activeId == config.id && !_activeId.isEmpty() &&
+        config.type == PeripheralType::LCD && config.pinCount == 2 &&
+        config.pins[0] == _sdaPin && config.pins[1] == _sclPin &&
+        config.params.lcd.interface == 2 && config.params.lcd.width == _configuredWidth &&
+        config.params.lcd.height == _configuredHeight && config.params.lcd.contrast == _configuredContrast;
+}
+
+bool LCDManager::quiescent(const PeripheralConfig& config) const {
+    RecursiveMutexGuard lock(_displayMutex, 0);
+    return lock.isLocked() && matchesConfig(config) && !g_lcdForegroundActive;
+}
+
+FastBee::DisplayWriteResult LCDManager::write(const PeripheralConfig& config,
+    const FastBee::LcdOutputRequest& output) {
+    using Command = FastBee::LcdOutputCommand;
+    RecursiveMutexGuard lock(_displayMutex, 0);
+    if (!lock.isLocked()) return {false, false, "DISPLAY_BUSY"};
+    if (!_initialized || !_display || !matchesConfig(config))
+        return {false, false, "DISPLAY_IDENTITY_UNCONFIRMED"};
+    if (output.command == Command::Font)
+        return {false, setFont(static_cast<uint8_t>(output.value)), "DISPLAY_FONT_UNCONFIRMED"};
+    if (output.command == Command::TextLine &&
+        (output.value < 0 || output.value >= getMaxLines()))
+        return {false, false, "DISPLAY_LINE_INVALID"};
+    FastBee::I2CBusLock busLock(0);
+    if (!busLock.locked()) return {false, false, "DISPLAY_BUS_BUSY"};
+    g_lcdI2cAttempted = false;
+    ManagedLcdFrameBudget frameBudget;
+    _forceRefresh = true;
+    bool acknowledged = false;
+    switch (output.command) {
+        case Command::CustomText: acknowledged = showCustomText(output.text); break;
+        case Command::Clear: clear(); acknowledged = refresh(); break;
+        case Command::SensorPage: acknowledged = showSensorPage(static_cast<int8_t>(output.value)); break;
+        case Command::TextAt:
+            acknowledged = print(output.text, output.x, output.y, static_cast<TextAlign>(output.align)) && refresh();
+            break;
+        case Command::TextLine:
+            acknowledged = printLine(output.text, static_cast<uint8_t>(output.value)) && refresh();
+            break;
+        case Command::SystemInfo: acknowledged = showSystemInfo(); break;
+        default: break;
+    }
+    _forceRefresh = false;
+    // A NACK must not be retried later by maintenance under a different source.
+    _foregroundFailed = !acknowledged;
+    if (!acknowledged) {
+        // Do not let a later incremental TextAt action re-send the failed
+        // invocation's cached payload as part of its own full frame.
+        _display->clearBuffer();
+        _contentChanged = true;
+    }
+    return {g_lcdI2cAttempted, acknowledged, "DISPLAY_TRANSFER_UNCONFIRMED"};
+}
+#endif

@@ -1,0 +1,274 @@
+#include "core/ManagedPinIo.h"
+#include "core/RadarInputState.h"
+#include "core/ChipConfig.h"
+#include "core/PeripheralTypes.h"
+#include "network/FixedJsonField.h"
+#include "managed_pin_mock_state.h"
+#include <cstring>
+#include <future>
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <type_traits>
+using String = std::string;
+enum class GPIOState { STATE_LOW=0, STATE_HIGH=1, STATE_UNDEFINED=2 };
+static uint32_t nowMs=1000;
+static bool controlClaim=false, configuredConflict=false, adcBusy=false;
+static uint32_t millis() { return nowMs; }
+static int digitalRead(uint8_t pin) { return gpio_get_level(pin); }
+static constexpr int HIGH=1;
+struct MockLogger { template<class... Args> void warningf(const char*,Args...) {} };
+static MockLogger LOGGER;
+namespace FastBee { bool adcPinUnavailable(uint8_t) { return adcBusy; } }
+class RecursiveMutexGuard {
+public:
+    explicit RecursiveMutexGuard(std::recursive_mutex* value, int timeout=-1): mutex(value) {
+        if(timeout<0) { mutex->lock();held=true; } else { assert(timeout==0);held=mutex->try_lock(); }
+    }
+    ~RecursiveMutexGuard() { if(held)mutex->unlock(); }
+    bool isLocked() const { return held; }
+private:
+    std::recursive_mutex* mutex;bool held=false;
+};
+// @rf_mode@
+struct PeripheralConfig {
+    String id="radar";PeripheralType type=PeripheralType::RADAR_SENSOR;bool enabled=true;
+    uint8_t pinCount=1,pins[2]{4,255};
+    struct {
+        struct { uint8_t mode=0;bool activeHigh=true;uint16_t debounceMs=50,holdMs=200; } radar;
+        struct { bool passive=false; } gpio;
+        struct { uint8_t mode=RF_MODE_TX; } rf;
+    } params;
+    uint8_t getPrimaryPin() const { return pinCount?pins[0]:255; }
+    uint8_t configuredPinCount() const { return pinCount; }
+    uint8_t configuredPinAt(uint8_t index) const { return pins[index]; }
+};
+struct Runtime {
+    PeripheralStatus status=PeripheralStatus::PERIPHERAL_ENABLED;
+    bool memorySuspended=false,memoryCleanupPending=false;
+    String lastError;uint32_t lastActivity=0;
+    // @union@
+    Runtime() { std::memset(&state,0,sizeof(state)); }
+};
+struct OriginalRuntimeUnion {
+    // @old_union@
+};
+static_assert(sizeof(decltype(Runtime::state))==sizeof(decltype(OriginalRuntimeUnion::state)),"radar must not enlarge runtime union");
+static_assert(std::is_trivial<FastBee::RadarInputState>::value,"runtime union must remain trivial");
+struct PeripheralManager {
+    std::recursive_mutex mutex;std::recursive_mutex* _mutex=&mutex;
+    FastBee::ManagedPinIo _managedPinIo;
+    uint32_t _nextRadarGeneration=0;
+    std::map<String,PeripheralConfig> peripherals;
+    std::map<String,Runtime> runtimeStates;
+    bool isValidPin(uint8_t pin) const { return pin<=CHIP_MAX_GPIO; }
+    bool isReservedPin(uint8_t pin) const { return pin==6; }
+    bool controlOutputIsClaimed(const String&) const { return controlClaim; }
+    bool controlOutputPinIsClaimed(uint8_t) const { return controlClaim; }
+    bool checkPinConflict(uint8_t,const String&) const { return configuredConflict; }
+    PeripheralConfig* getPeripheral(const String& id) {
+        auto found=peripherals.find(id);return found==peripherals.end()?nullptr:&found->second;
+    }
+    bool managedPinConflict(const PeripheralConfig&) const;
+    bool setupRadarHardware(const PeripheralConfig&);
+    bool teardownRadarHardware(const PeripheralConfig&);
+    bool readRadarState(const String&,bool&);
+    bool legacyReadRadarState(const String&,bool&);
+    bool setupDispatch(const PeripheralConfig& config) {
+        // @setup@
+        return false;
+    }
+    bool teardownDispatch(const PeripheralConfig& config) {
+        // @teardown@
+        return false;
+    }
+    GPIOState readPinConsumer(const String& peripheralId) {
+        const auto* config=getPeripheral(peripheralId);assert(config);
+        // @read_pin@
+        return GPIOState::STATE_UNDEFINED;
+    }
+    bool readDataConsumer(const String& id,uint8_t* buffer,size_t& len) {
+        const auto* config=getPeripheral(id);assert(config);size_t maxLen=len;len=0;bool success=false;
+        switch(config->type) {
+            // @read_data@
+            default:break;
+        }
+        return success;
+    }
+};
+// @production@
+static JsonDocument readRoute(PeripheralManager& pm,const String& id) {
+    const auto& config=pm.peripherals.at(id);JsonDocument doc;auto data=doc.to<JsonObject>();
+    // @route@
+    return doc;
+}
+static bool readSensorConsumer(PeripheralManager& pm,float& rawValue) {
+    const char* category="radar";const char* periphId="radar";
+    // @sensor@
+    return true;
+}
+static bool read(PeripheralManager& pm,uint32_t at,bool* valid=nullptr) {
+    nowMs=at;bool result=false;const bool ok=pm.readRadarState("radar",result);
+    if(valid)*valid=ok;else assert(ok);
+    return result;
+}
+static void unavailable(PeripheralManager& pm) {
+    bool value=true;assert(!pm.readRadarState("radar",value));assert(value);
+}
+static void start(PeripheralManager& pm) {
+    auto& config=pm.peripherals.at("radar");assert(pm.setupDispatch(config));
+    pm.runtimeStates.at("radar").status=PeripheralStatus::PERIPHERAL_INITIALIZED;
+}
+static FastBee::GpioResourceSnapshot::Lease owner(PeripheralManager& pm,uint8_t pin=4) {
+    FastBee::GpioResourceSnapshot::Lease out;assert(pm._managedPinIo.observeGpio(pin,out));return out;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string scenario=argv[1];
+    PeripheralManager pm;pm.peripherals.emplace("radar",PeripheralConfig{});pm.runtimeStates.emplace("radar",Runtime{});
+    auto& config=pm.peripherals.at("radar");auto& runtime=pm.runtimeStates.at("radar");
+    if(scenario=="initial_low" || scenario=="initial_high" || scenario=="active_low") {
+        if(scenario=="initial_high")levels[4]=1;
+        if(scenario=="active_low")config.params.radar.activeHigh=false;
+        start(pm);assert(count(Op::Read)==0);unavailable(pm);assert(runtime.lastActivity==0);
+        nowMs=1049;unavailable(pm);assert(runtime.lastActivity==0);
+        assert(read(pm,1050)==(scenario!="initial_low"));assert(runtime.lastActivity==1050);
+        assert(owner(pm).mode==FastBee::ManagedGpioMode::Input && !owner(pm).fault);
+    } else if(scenario=="zero_intervals") {
+        config.params.radar.debounceMs=config.params.radar.holdMs=0;start(pm);
+        assert(!read(pm,1000));levels[4]=1;assert(read(pm,1000));levels[4]=0;assert(!read(pm,1000));
+    } else if(scenario=="both_edges" || scenario=="glitch") {
+        config.params.radar.holdMs=0;start(pm);unavailable(pm);assert(!read(pm,1050));
+        levels[4]=1;assert(!read(pm,1100));
+        if(scenario=="glitch") {
+            levels[4]=0;assert(!read(pm,1120));assert(!read(pm,1170));assert(!runtime.state.radar.stableHigh);
+        } else {
+            assert(!read(pm,1149));assert(read(pm,1150));levels[4]=0;assert(read(pm,1200));
+            assert(read(pm,1249));assert(!read(pm,1250));
+        }
+    } else if(scenario=="hold" || scenario=="hold_glitch" || scenario=="hold_retrigger" || scenario=="hold_boundary") {
+        levels[4]=1;start(pm);unavailable(pm);assert(read(pm,1050));
+        levels[4]=0;assert(read(pm,1100));assert(read(pm,1150));assert(runtime.state.radar.holdSince==1150);
+        if(scenario=="hold") { assert(read(pm,1349));assert(!read(pm,1350)); }
+        else if(scenario=="hold_glitch") {
+            levels[4]=1;assert(read(pm,1200));levels[4]=0;assert(read(pm,1220));
+            levels[4]=1;assert(read(pm,1340));assert(!read(pm,1350));assert(!read(pm,1389));assert(read(pm,1390));
+        } else if(scenario=="hold_retrigger") {
+            levels[4]=1;assert(read(pm,1200));assert(read(pm,1250));assert(!runtime.state.radar.holdPending);
+            levels[4]=0;assert(read(pm,1300));assert(read(pm,1350));assert(read(pm,1549));assert(!read(pm,1550));
+        } else {
+            levels[4]=1;assert(read(pm,1300));assert(read(pm,1350));assert(!runtime.state.radar.holdPending);
+            assert(read(pm,1550));
+        }
+    } else if(scenario=="wrap_debounce") {
+        nowMs=UINT32_MAX-25;levels[4]=1;start(pm);unavailable(pm);
+        nowMs=23;unavailable(pm);assert(read(pm,24));
+    } else if(scenario=="wrap_hold") {
+        levels[4]=1;start(pm);unavailable(pm);assert(read(pm,1050));levels[4]=0;
+        assert(read(pm,UINT32_MAX-100));assert(read(pm,UINT32_MAX-50));assert(read(pm,148));assert(!read(pm,149));
+    } else if(scenario=="bounds") {
+        config.params.radar.mode=1;assert(!pm.setupDispatch(config));config.params.radar.mode=0;
+        config.params.radar.debounceMs=5001;assert(!pm.setupDispatch(config));config.params.radar.debounceMs=5000;
+        config.params.radar.holdMs=60001;assert(!pm.setupDispatch(config));config.params.radar.holdMs=60000;
+        assert(allCalls()==0);levels[4]=1;start(pm);unavailable(pm);assert(read(pm,6000));
+        levels[4]=0;assert(read(pm,7000));assert(read(pm,12000));assert(read(pm,71999));assert(!read(pm,72000));
+    } else if(scenario=="admission") {
+        config.pinCount=0;assert(!pm.setupDispatch(config));config.pinCount=1;
+        config.pins[0]=6;assert(!pm.setupDispatch(config));config.pins[0]=255;assert(!pm.setupDispatch(config));config.pins[0]=4;
+        controlClaim=true;assert(!pm.setupDispatch(config));controlClaim=false;
+        configuredConflict=true;assert(!pm.setupDispatch(config));configuredConflict=false;
+        adcBusy=true;assert(!pm.setupDispatch(config));adcBusy=false;assert(allCalls()==0);
+        assert(pm._managedPinIo.configure("another",false,4,FastBee::ManagedGpioMode::Input,false));
+        assert(pm.managedPinConflict(config));assert(!pm.setupDispatch(config));assert(std::string(owner(pm).consumer.id)=="another");
+        assert(pm._managedPinIo.release("another",false,4));
+        // A same-ID GPIO input is not an initialized radar session. The
+        // coarse conflict classifier permits digital owners, but setup must
+        // reject adoption without a captured radar generation and filter.
+        assert(pm._managedPinIo.configure(config.id.c_str(),false,4,FastBee::ManagedGpioMode::Input,false));
+        const auto beforeAdoption=allCalls();assert(!pm.managedPinConflict(config));
+        assert(!pm.setupDispatch(config) && allCalls()==beforeAdoption);
+        assert(!runtime.state.radar.generation && !runtime.state.radar.initialized);
+        assert(std::string(owner(pm).consumer.id)==config.id && !owner(pm).fault);
+    } else if(scenario=="setup_failure") {
+        failure=Op::Config;assert(!pm.setupDispatch(config));assert(owner(pm).fault);assert(!runtime.state.radar.initialized);
+        runtime.status=PeripheralStatus::PERIPHERAL_INITIALIZED;unavailable(pm);
+        const auto before=allCalls();assert(!pm.setupDispatch(config) && allCalls()==before);
+        failure=Op::Count;assert(pm.teardownDispatch(config));assert(!pm._managedPinIo.hasGpio(4));start(pm);unavailable(pm);
+    } else if(scenario=="release_failure") {
+        levels[4]=1;start(pm);unavailable(pm);assert(read(pm,1050));failure=Op::Config;
+        assert(!pm.teardownDispatch(config));assert(owner(pm).fault && owner(pm).cleanupPending);
+        unavailable(pm);assert(!runtime.state.radar.stableKnown);assert(!pm.setupDispatch(config));
+        config.pins[0]=5;failure=Op::Count;assert(pm.teardownDispatch(config));assert(!pm._managedPinIo.hasGpio(4));
+        assert(!pm._managedPinIo.hasGpio(5));start(pm);unavailable(pm);assert(owner(pm,5).pin==5);
+    } else if(scenario=="owner_loss") {
+        start(pm);unavailable(pm);assert(!read(pm,1050));buses[4]=ESP32_BUS_TYPE_LEDC;
+        const auto reads=count(Op::Read);unavailable(pm);assert(count(Op::Read)==reads);assert(owner(pm).fault);
+        assert(!pm.teardownDispatch(config));assert(owner(pm).cleanupPending);buses[4]=ESP32_BUS_TYPE_INIT;
+        assert(pm.teardownDispatch(config));start(pm);unavailable(pm);
+    } else if(scenario=="config_drift") {
+        start(pm);unavailable(pm);assert(!read(pm,1050));const auto before=count(Op::Read);
+        config.params.radar.activeHigh=false;unavailable(pm);assert(!pm.setupDispatch(config));config.params.radar.activeHigh=true;
+        config.params.radar.debounceMs=51;unavailable(pm);config.params.radar.debounceMs=50;
+        config.params.radar.holdMs=201;unavailable(pm);config.params.radar.holdMs=200;
+        config.pins[0]=5;unavailable(pm);assert(!pm.setupDispatch(config));assert(count(Op::Read)==before);
+        assert(pm.teardownDispatch(config));assert(!pm._managedPinIo.hasGpio(4));start(pm);unavailable(pm);
+    } else if(scenario=="runtime_guards") {
+        unavailable(pm);start(pm);runtime.status=PeripheralStatus::PERIPHERAL_ENABLED;unavailable(pm);
+        runtime.status=PeripheralStatus::PERIPHERAL_ERROR;unavailable(pm);runtime.status=PeripheralStatus::PERIPHERAL_DISABLED;unavailable(pm);
+        runtime.status=PeripheralStatus::PERIPHERAL_RUNNING;runtime.memorySuspended=true;unavailable(pm);runtime.memorySuspended=false;
+        runtime.memoryCleanupPending=true;unavailable(pm);runtime.memoryCleanupPending=false;
+        config.enabled=false;unavailable(pm);config.enabled=true;config.type=PeripheralType::RF_MODULE;unavailable(pm);config.type=PeripheralType::RADAR_SENSOR;
+        const auto reads=count(Op::Read);pm.runtimeStates.erase("radar");unavailable(pm);assert(count(Op::Read)==reads);
+    } else if(scenario=="generation" || scenario=="rollback_snapshot") {
+        levels[4]=1;start(pm);unavailable(pm);assert(read(pm,1050));const auto prior=runtime;
+        assert(pm.teardownDispatch(config));assert(!runtime.state.radar.initialized);unavailable(pm);
+        if(scenario=="rollback_snapshot")runtime=prior;
+        start(pm);assert(runtime.state.radar.generation>prior.state.radar.generation);unavailable(pm);
+        assert(read(pm,1100));
+    } else if(scenario=="idempotent_setup") {
+        start(pm);unavailable(pm);const auto gen=runtime.state.radar.generation;nowMs=1040;
+        assert(!pm.managedPinConflict(config));assert(pm.setupDispatch(config));assert(runtime.state.radar.generation>gen);
+        nowMs=1050;unavailable(pm);assert(!read(pm,1100));
+        assert(runtime.state.radar.candidateSince==1050);assert(count(Op::Config)==1);
+    } else if(scenario=="generation_exhaustion") {
+        pm._nextRadarGeneration=UINT32_MAX;const auto before=allCalls();assert(!pm.setupDispatch(config));
+        assert(allCalls()==before && !pm._managedPinIo.hasGpio(4));
+    } else if(scenario=="busy") {
+        start(pm);std::promise<void> locked,done;auto finish=done.get_future();
+        std::thread ownerThread([&]{std::lock_guard<std::recursive_mutex> guard(pm.mutex);locked.set_value();finish.wait();});
+        locked.get_future().wait();const auto before=allCalls();unavailable(pm);assert(!pm.setupDispatch(config));assert(!pm.teardownDispatch(config));
+        assert(allCalls()==before);done.set_value();ownerThread.join();unavailable(pm);
+    } else if(scenario=="two_owners") {
+        start(pm);PeripheralConfig other=config;other.id="other";other.pins[0]=5;
+        pm.peripherals.emplace(other.id,other);pm.runtimeStates.emplace(other.id,Runtime{});assert(pm.setupDispatch(other));
+        pm.runtimeStates.at(other.id).status=PeripheralStatus::PERIPHERAL_INITIALIZED;
+        assert(owner(pm).consumer.id[0]=='r' && owner(pm,5).consumer.id[0]=='o');
+        unavailable(pm);bool otherValue=true;assert(!pm.readRadarState("other",otherValue));assert(otherValue);
+        assert(!read(pm,1050));levels[4]=1;assert(!read(pm,1100));nowMs=1100;
+        assert(pm.readRadarState("other",otherValue) && !otherValue);
+        assert(read(pm,1150));assert(pm.teardownDispatch(config));assert(pm._managedPinIo.hasGpio(5));
+    } else if(scenario=="read_consumers") {
+        levels[4]=1;start(pm);assert(pm.readPinConsumer("radar")==GPIOState::STATE_UNDEFINED);
+        uint8_t buffer=123;size_t length=1;assert(!pm.readDataConsumer("radar",&buffer,length));assert(buffer==123 && length==0);
+        auto before=readRoute(pm,"radar");assert(before["detected"].isNull() && before["value"].isNull());
+        float sensor=123;assert(!readSensorConsumer(pm,sensor) && sensor==123);
+        nowMs=1050;assert(pm.readPinConsumer("radar")==GPIOState::STATE_HIGH);
+        length=1;assert(pm.readDataConsumer("radar",&buffer,length) && buffer==1 && length==1);
+        auto after=readRoute(pm,"radar");assert(after["detected"].as<bool>() && after["value"].as<int>()==1);
+        assert(readSensorConsumer(pm,sensor) && sensor==1);
+        assert(pm.teardownDispatch(config));assert(pm.readPinConsumer("radar")==GPIOState::STATE_UNDEFINED);
+        auto retired=readRoute(pm,"radar");assert(retired["value"].isNull());
+    } else if(scenario=="legacy_negative") {
+        levels[4]=1;pm.runtimeStates.erase("radar");bool raw=false;
+        assert(pm.legacyReadRadarState("radar",raw) && raw);unavailable(pm);
+        pm.runtimeStates.emplace("radar",Runtime{});start(pm);unavailable(pm);
+        // The original returns HIGH immediately despite configured debounce.
+        PeripheralManager legacy;legacy.peripherals.emplace("radar",config);bool oldValue=false;
+        assert(legacy.legacyReadRadarState("radar",oldValue) && oldValue);
+    } else if(scenario=="union_size") {
+        std::cout<<"radar="<<sizeof(FastBee::RadarInputState)<<" union="<<sizeof(decltype(Runtime::state))
+                 <<" original="<<sizeof(decltype(OriginalRuntimeUnion::state))<<" manager_generation="<<sizeof(uint32_t)<<'\n';
+    } else { assert(false); }
+    return 0;
+}

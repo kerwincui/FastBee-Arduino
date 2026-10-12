@@ -1,0 +1,197 @@
+// Complete production SPI helper + initializer; real generic I/O branches injected.
+#include "core/PeripheralManager.h"
+#include "core/SpiBusInitializer.h"
+#include "systems/LoggerSystem.h"
+#include <freertos/semphr.h>
+#include <atomic>
+#include <cassert>
+#include <thread>
+// @writeData@
+// @readData@
+
+int main() {
+    auto& bus = FastBee::SpiBusInitializer::instance();
+    String error;
+    bool released = true;
+    // Invalid names never initialize hardware or consume a slot.
+    const String tooLong(std::string(41, 'x'));
+    const String fullName(std::string(40, 'x'));
+    const char nulBytes[] = {'a', 0, 'b'};
+    for (const auto& name : {String(), tooLong, String(nulBytes, 3)}) {
+        assert(!bus.acquireNamed(name, SCK, MISO, MOSI, 5, error));
+        assert(error.startsWith("SPI_OWNER_INVALID") && !SPI.active && SPI.begins == 0);
+    }
+    SPI.failAfterAllocation = true;
+    assert(!bus.acquireNamed("failed", SCK, MISO, MOSI, 5, error));
+    assert(!SPI.active && error.startsWith("SPI_INIT_FAILED"));
+    assert(bus.releaseNamed("failed", error, 5, &released) && !released);
+    SPI.failAfterAllocation = false;
+    assert(bus.acquireNamed(fullName, SCK, MISO, MOSI, 5, error));
+    String copy = fullName;
+    assert(bus.acquireNamed(copy, SCK, MISO, MOSI, 5, error));
+    copy = "mutated";
+    assert(bus.checkNamed(fullName, SCK, MISO, MOSI, 5, error));
+    assert(!bus.checkNamed(copy, SCK, MISO, MOSI, 5, error));
+    assert(error.startsWith("SPI_LEASE_MISSING"));
+    assert(!bus.acquireNamed(fullName, SCK, MISO, MOSI, 6, error));
+    assert(error.startsWith("SPI_OWNER_CHANGED"));
+    assert(!bus.acquireNamed(fullName, 17, MISO, MOSI, 5, error));
+    assert(error.startsWith("SPI_PINS_CONFLICT"));
+    assert(!bus.acquireNamed(fullName, SCK, -1, MOSI, 5, error));
+    assert(error.startsWith("SPI_OWNER_CHANGED"));
+    assert(!bus.checkNamed(fullName, SCK, -1, MOSI, 5, error));
+    assert(error.startsWith("SPI_CONFIG_CHANGED"));
+    // A separate write-only lease may reuse an already attached MISO line,
+    // but its requested pin tuple remains immutable until released.
+    assert(bus.acquireNamed("write-only", SCK, -1, MOSI, 6, error));
+    assert(bus.checkNamed("write-only", SCK, -1, MOSI, 6, error));
+    assert(!bus.checkNamed("write-only", SCK, MISO, MOSI, 6, error));
+    assert(bus.releaseNamed("write-only", error));
+    assert(!bus.releaseNamed(fullName, error, 6, &released) && !released);
+    assert(bus.checkNamed(fullName, SCK, MISO, MOSI, 5, error));
+    assert(!bus.acquireNamed("alias", SCK, MISO, MOSI, 5, error));
+    assert(error.startsWith("SPI_CS_CONFLICT"));
+    assert(bus.releaseNamed(fullName, error, 5, &released) && released);
+    assert(bus.end(error));
+
+    // Named keys and stable pointer clients share one fixed 16-slot table.
+    int peers[8]{};
+    for (int i = 0; i < 8; ++i) {
+        assert(bus.acquire(&peers[i], SCK, MISO, MOSI, 30 + i, error));
+        assert(bus.acquireNamed(String("client-") + String(i), SCK, MISO, MOSI, 40 + i, error));
+    }
+    const int fullBegins = SPI.begins;
+    assert(!bus.acquireNamed("overflow", SCK, MISO, MOSI, 7, error));
+    assert(error.startsWith("SPI_CLIENT_LIMIT") && SPI.begins == fullBegins);
+    assert(bus.acquireNamed("client-0", SCK, MISO, MOSI, 40, error));
+    assert(!bus.end(error) && error.startsWith("SPI_IN_USE"));
+    for (int i = 0; i < 8; ++i) {
+        assert(bus.release(&peers[i], error));
+        assert(bus.releaseNamed(String("client-") + String(i), error));
+    }
+    assert(bus.end(error));
+
+    PeripheralManager manager;
+    PeripheralConfig a;
+    PeripheralConfig b = a; b.id = "spi-b"; b.pins[3] = 6;
+    manager.peripherals[a.id] = a; manager.peripherals[b.id] = b;
+    manager.runtimeStates[a.id]; manager.runtimeStates[b.id];
+    // Real helper validates CS and ID before GPIO activation, no phantom state insert.
+    for (uint8_t cs : {uint8_t(255), uint8_t(80), uint8_t(63), uint8_t(62)}) {
+        PeripheralConfig invalid = a; invalid.pins[3] = cs;
+        assert(!manager.setupSpiHardware(invalid));
+        assert(spiTestPinModes == 0 && spiTestPinWrites == 0);
+    }
+    PeripheralConfig invalid = a; invalid.id = tooLong;
+    assert(!manager.setupSpiHardware(invalid) && manager.runtimeStates.size() == 2);
+    assert(spiTestPinModes == 0 && spiTestPinWrites == 0);
+    SPI.failBeforeAllocation = true;
+    assert(!manager.setupSpiHardware(a));
+    assert(spiTestPinModes == 0 && manager.runtimeStates[a.id].lastError.startsWith("SPI_INIT_FAILED"));
+    SPI.failBeforeAllocation = false;
+    assert(manager.setupSpiHardware(a) && manager.setupSpiHardware(b));
+    int pointerPeer = 0;
+    assert(bus.acquire(&pointerPeer, SCK, MISO, MOSI, 10, error));
+    assert(spiTestPinMode[5] == OUTPUT && spiTestPinMode[6] == OUTPUT);
+    uint8_t data[2] = {0x12, 0x34}, buffer[2]{};
+    spiIoEvents.clear(); SPI.sent.clear();
+    spiManagerLockAvailable = false;
+    assert(!manager.writeData(a.id, data, 2));
+    size_t deniedLen = 2;
+    assert(!manager.readData(a.id, buffer, deniedLen) && deniedLen == 0);
+    assert(spiIoEvents.empty() && SPI.sent.empty());
+    spiManagerLockAvailable = true;
+    assert(manager.writeData(a.id, data, 2));
+    assert((spiIoEvents == std::vector<std::string>{"begin", "low", "transfer", "transfer", "high", "end"}));
+    assert((SPI.sent == std::vector<uint8_t>{0x12, 0x34}));
+    assert(SPI.lastSettings.frequency == 1000000 && SPI.lastSettings.bitOrder == MSBFIRST);
+    manager.peripherals[a.id].params.spi.frequency = 4321000;
+    manager.peripherals[a.id].params.spi.mode = 3;
+    manager.peripherals[a.id].params.spi.msbFirst = false;
+    spiIoEvents.clear(); SPI.sent.clear();
+    size_t len = 2;
+    assert(manager.readData(a.id, buffer, len) && len == 2);
+    assert(buffer[0] == 0xa5 && buffer[1] == 0xa5);
+    assert((SPI.sent == std::vector<uint8_t>{0xff, 0xff}));
+    assert((spiIoEvents == std::vector<std::string>{"begin", "low", "transfer", "transfer", "high", "end"}));
+    assert(SPI.lastSettings.frequency == 4321000 && SPI.lastSettings.bitOrder == LSBFIRST && SPI.lastSettings.mode == 3);
+    spiIoEvents.clear();
+    assert(!manager.writeData(a.id, nullptr, 2));
+    assert(!manager.writeData(a.id, data, 0));
+    len = 2; assert(!manager.readData(a.id, nullptr, len) && len == 0);
+    assert(!manager.readData(a.id, buffer, len) && len == 0);
+    assert(spiIoEvents.empty());
+
+    manager.peripherals[a.id].pins[3] = 7;
+    len = 2; assert(!manager.readData(a.id, buffer, len) && len == 0);
+    assert(manager.runtimeStates[a.id].lastError.startsWith("SPI_CONFIG_CHANGED"));
+    assert(!manager.teardownSpiHardware(manager.peripherals[a.id]));
+    assert(spiIoEvents.empty() && bus.checkNamed(a.id, SCK, MISO, MOSI, 5, error));
+    manager.peripherals[a.id] = a;
+    spiMutexFailTake = true;
+    assert(!manager.writeData(a.id, data, 2));
+    assert(spiMutexLastRequest == 20);
+    assert(manager.runtimeStates[a.id].lastError.startsWith("SPI_BUSY"));
+    len = 2; assert(!manager.readData(a.id, buffer, len) && len == 0);
+    assert(spiMutexLastRequest == 20);
+    assert(!manager.teardownSpiHardware(a));
+    assert(bus.isChipSelectAcquired(5)); // fail closed while busy
+    spiMutexFailTake = false;
+    assert(spiIoEvents.empty() && bus.checkNamed(a.id, SCK, MISO, MOSI, 5, error));
+
+    // A transfer holds the shared lock until CS is high and transaction ended.
+    std::atomic<bool> entered{false}, finish{false};
+    SPI.onTransfer = [&] { entered = true; while (!finish.load()) std::this_thread::yield(); };
+    std::thread worker([&] { assert(manager.writeData(a.id, data, 1)); });
+    while (!entered.load()) std::this_thread::yield();
+    const int activeModes = spiTestPinModes;
+    assert(!manager.teardownSpiHardware(a)); // direct helper isolates shared bus lock
+    assert(spiTestPinModes == activeModes && error.isEmpty());
+    assert(!bus.end(error) && error.startsWith("SPI_BUSY"));
+    finish = true; worker.join(); SPI.onTransfer = nullptr;
+    assert((spiIoEvents == std::vector<std::string>{"begin", "low", "transfer", "high", "end"}));
+    assert(bus.checkNamed(a.id, SCK, MISO, MOSI, 5, error));
+
+    // Config-only alias conservatively retains CS, but only A's lease is removed.
+    PeripheralConfig alias = a; alias.id = "legacy-display";
+    alias.type = PeripheralType::SCREEN_DISPLAY; alias.params.display.cs = 5;
+    manager.peripherals[alias.id] = alias;
+    const int beforeAliasModes = spiTestPinModes, beforeStops = SPI.ends;
+    assert(manager.teardownSpiHardware(a));
+    assert(spiTestPinModes == beforeAliasModes && SPI.ends == beforeStops && SPI.active);
+    assert(bus.isAcquired(&pointerPeer) && bus.checkNamed(b.id, SCK, MISO, MOSI, 6, error));
+    manager.peripherals.erase(alias.id);
+    spiIoEvents.clear();
+    assert(!manager.writeData(a.id, data, 2));
+    assert(manager.runtimeStates[a.id].lastError.startsWith("SPI_LEASE_MISSING"));
+    len = 2; assert(!manager.readData(a.id, buffer, len) && len == 0);
+    assert(spiIoEvents.empty());
+    // Absent/failed config teardown must not touch runtime-only peer CS.
+    PeripheralConfig absent = a; absent.id = "absent"; absent.pins[3] = 10;
+    assert(manager.teardownSpiHardware(absent));
+    assert(spiIoEvents.empty() && bus.isChipSelectAcquired(10));
+    assert(manager.teardownSpiHardware(b));
+    assert(spiTestPinMode[6] == INPUT && bus.isAcquired(&pointerPeer) && SPI.active);
+    assert(bus.release(&pointerPeer, error) && bus.end(error));
+
+    // Lost handle never silently reinitializes or transfers with stale owners.
+    assert(manager.setupSpiHardware(a));
+    SPI.active = false; spiIoEvents.clear();
+    const int lostBegins = SPI.begins;
+    len = 2; assert(!manager.readData(a.id, buffer, len) && len == 0);
+    assert(manager.runtimeStates[a.id].lastError.startsWith("SPI_BUS_LOST"));
+    assert(!manager.setupSpiHardware(a) && SPI.begins == lostBegins && spiIoEvents.empty());
+    assert(manager.teardownSpiHardware(a) && bus.end(error));
+
+    const int mutexes = spiMutexCreates - spiMutexDeletes;
+    for (int i = 0; i < 1000; ++i) {
+        { PeripheralConfig temporary = a; assert(manager.setupSpiHardware(temporary)); }
+        assert(bus.checkNamed(a.id, SCK, MISO, MOSI, 5, error));
+        assert(manager.writeData(a.id, data, 1));
+        assert(manager.teardownSpiHardware(a));
+        assert(spiTestPinMode[5] == INPUT && SPI.active);
+        assert(bus.end(error)); // explicit only in the known-safe mock test cleanup
+        spiIoEvents.clear(); SPI.sent.clear();
+    }
+    assert(spiMutexCreates - spiMutexDeletes == mutexes && manager.runtimeStates.size() == 2);
+}

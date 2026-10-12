@@ -8,6 +8,8 @@
 #include <cstring>
 
 #include "systems/LoggerSystem.h"
+#include "utils/CheckedText.h"
+#include "network/FixedJsonField.h"
 
 namespace FastBee {
 namespace {
@@ -124,7 +126,15 @@ bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllo
 
     // Prepare allocations before committing bytes. Publishing the persisted
     // allowlist must not allocate and fail halfway through a revision change.
-    std::vector<String> preparedAllowlist(sourceAllowlist);
+    std::vector<String> preparedAllowlist;
+    preparedAllowlist.reserve(sourceAllowlist.size());
+    for (const auto& source : sourceAllowlist) {
+        preparedAllowlist.emplace_back();
+        if (!copyCheckedText(preparedAllowlist.back(), source.c_str(), source.length(), MAX_SOURCE_REF_LENGTH)) {
+            error = "Unable to prepare history sourceRef";
+            return false;
+        }
+    }
     uint32_t nextRevision;
     {
         HistoryLock lock(_mutex);
@@ -134,6 +144,10 @@ bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllo
         }
         if (expectedRevision && *expectedRevision != _configRevision) {
             error = "History configuration revision conflict";
+            return false;
+        }
+        if (_configRevision == UINT32_MAX) {
+            error = "History configuration revision exhausted";
             return false;
         }
         nextRevision = _configRevision + 1;
@@ -149,9 +163,9 @@ bool PointHistory::configure(bool enabled, const std::vector<String>& sourceAllo
     if (!success) error = "Unable to flush point history before disabling";
     if (success && persist) {
         JsonDocument doc;
-        doc["schemaVersion"] = 1;
-        doc["revision"] = nextRevision;
-        doc["enabled"] = enabled;
+        FastBee::setFixedJsonField(doc, "schemaVersion", 1);
+        FastBee::setFixedJsonField(doc, "revision", nextRevision);
+        FastBee::setFixedJsonField(doc, "enabled", enabled);
         JsonArray sources = doc["sourceAllowlist"].to<JsonArray>();
         for (const auto& source : sourceAllowlist) sources.add(source);
         success = atomicWriteJsonWithBackup(CONFIG_FILE, doc);
@@ -320,42 +334,42 @@ bool PointHistory::getSeries(const String& sourceRef,
 
 void PointHistory::appendSeriesJson(const String& sourceRef, JsonObject out) const {
     PointHistorySeriesSnapshot snapshot;
-    out["sourceRef"] = sourceRef;
+    FastBee::setFixedJsonField(out, "sourceRef", sourceRef);
     JsonArray points = out["points"].to<JsonArray>();
     if (!getSeries(sourceRef, snapshot)) {
-        out["found"] = false;
-        out["count"] = 0;
+        FastBee::setFixedJsonField(out, "found", false);
+        FastBee::setFixedJsonField(out, "count", 0);
         return;
     }
-    out["found"] = true;
-    out["sourceRevision"] = snapshot.sourceRevision;
-    out["unit"] = snapshot.unit;
-    out["count"] = snapshot.count;
-    out["containsRestoredSamples"] = snapshot.containsRestoredSamples;
-    out["stale"] = snapshot.stale;
-    if (!snapshot.staleReason.isEmpty()) out["staleReason"] = snapshot.staleReason;
+    FastBee::setFixedJsonField(out, "found", true);
+    FastBee::setFixedJsonField(out, "sourceRevision", snapshot.sourceRevision);
+    FastBee::setFixedJsonField(out, "unit", snapshot.unit);
+    FastBee::setFixedJsonField(out, "count", snapshot.count);
+    FastBee::setFixedJsonField(out, "containsRestoredSamples", snapshot.containsRestoredSamples);
+    FastBee::setFixedJsonField(out, "stale", snapshot.stale);
+    if (!snapshot.staleReason.isEmpty()) FastBee::setFixedJsonField(out, "staleReason", snapshot.staleReason);
     for (uint8_t i = 0; i < snapshot.count; ++i) {
         const auto& sample = snapshot.samples[i];
         JsonObject item = points.add<JsonObject>();
-        item["value"] = sample.value;
-        item["seq"] = sample.sequence;
-        item["sampleIdentity"] = sample.sampleIdentity;
-        item["bootId"] = sample.bootId;
-        item["uptimeMs"] = sample.uptimeMs;
-        if (sample.epochMs) item["epochMs"] = sample.epochMs;
-        else item["epochMs"] = nullptr;
-        item["restored"] = sample.restored;
+        FastBee::setFixedJsonField(item, "value", sample.value);
+        FastBee::setFixedJsonField(item, "seq", sample.sequence);
+        FastBee::setFixedJsonField(item, "sampleIdentity", sample.sampleIdentity);
+        FastBee::setFixedJsonField(item, "bootId", sample.bootId);
+        FastBee::setFixedJsonField(item, "uptimeMs", sample.uptimeMs);
+        if (sample.epochMs) FastBee::setFixedJsonField(item, "epochMs", sample.epochMs);
+        else FastBee::setFixedJsonField(item, "epochMs", nullptr);
+        FastBee::setFixedJsonField(item, "restored", sample.restored);
     }
 }
 
 void PointHistory::appendConfigJson(JsonObject out) const {
     HistoryLock lock(_mutex);
     if (!lock.locked()) return;
-    out["enabled"] = _enabled;
-    out["revision"] = _configRevision;
-    out["writesPaused"] = _writesPaused;
-    out["maxSources"] = MAX_SOURCES;
-    out["maxSamplesPerSource"] = MAX_SAMPLES_PER_SOURCE;
+    FastBee::setFixedJsonField(out, "enabled", _enabled);
+    FastBee::setFixedJsonField(out, "revision", _configRevision);
+    FastBee::setFixedJsonField(out, "writesPaused", _writesPaused);
+    FastBee::setFixedJsonField(out, "maxSources", MAX_SOURCES);
+    FastBee::setFixedJsonField(out, "maxSamplesPerSource", MAX_SAMPLES_PER_SOURCE);
     JsonArray allowlist = out["sourceAllowlist"].to<JsonArray>();
     for (const auto& source : _sourceAllowlist) allowlist.add(source);
 }
@@ -363,14 +377,14 @@ void PointHistory::appendConfigJson(JsonObject out) const {
 void PointHistory::appendStatusJson(JsonObject out) const {
     HistoryLock lock(_mutex);
     if (!lock.locked()) return;
-    out["enabled"] = _enabled;
-    out["dirty"] = _dirty;
-    out["restored"] = _restored;
-    out["persisted"] = !_dirty && _lastFlushSucceeded;
-    out["lastFlushSucceeded"] = _lastFlushSucceeded;
-    out["sourceCount"] = _series.size();
-    out["firstDirtyAt"] = _firstDirtyAt;
-    out["flushDeadlineMs"] = FLUSH_DEADLINE_MS;
+    FastBee::setFixedJsonField(out, "enabled", _enabled);
+    FastBee::setFixedJsonField(out, "dirty", _dirty);
+    FastBee::setFixedJsonField(out, "restored", _restored);
+    FastBee::setFixedJsonField(out, "persisted", !_dirty && _lastFlushSucceeded);
+    FastBee::setFixedJsonField(out, "lastFlushSucceeded", _lastFlushSucceeded);
+    FastBee::setFixedJsonField(out, "sourceCount", _series.size());
+    FastBee::setFixedJsonField(out, "firstDirtyAt", _firstDirtyAt);
+    FastBee::setFixedJsonField(out, "flushDeadlineMs", FLUSH_DEADLINE_MS);
 }
 
 size_t PointHistory::sourceCount() const {
@@ -506,10 +520,12 @@ bool PointHistory::loadConfigFile(const String& path) {
     allowlist.reserve(sources.size());
     for (JsonVariantConst item : sources) {
         if (!item.is<const char*>()) return false;
-        String source = item.as<const char*>();
-        if (!validSourceRef(source)) return false;
+        const JsonString text = item.as<JsonString>();
+        String source;
+        if (!copyCheckedText(source, text.c_str(), text.size(), MAX_SOURCE_REF_LENGTH) ||
+            !validSourceRef(source)) return false;
         for (const auto& existing : allowlist) if (existing == source) return false;
-        allowlist.push_back(source);
+        allowlist.push_back(std::move(source));
     }
     _enabled = doc["enabled"].as<bool>();
     _configRevision = doc["revision"] | 0U;
@@ -606,29 +622,29 @@ bool PointHistory::loadHistory() {
 bool PointHistory::writeHistorySnapshot(const std::vector<Series>& snapshot,
                                         uint32_t sequence) const {
     JsonDocument doc;
-    doc["schemaVersion"] = 1;
-    doc["sequence"] = sequence;
+    FastBee::setFixedJsonField(doc, "schemaVersion", 1);
+    FastBee::setFixedJsonField(doc, "sequence", sequence);
     JsonArray allSeries = doc["series"].to<JsonArray>();
     for (const auto& series : snapshot) {
         JsonObject source = allSeries.add<JsonObject>();
-        source["sourceRef"] = series.sourceRef;
-        source["sourceRevision"] = series.sourceRevision;
-        source["unit"] = series.unit;
-        source["stale"] = series.stale;
+        FastBee::setFixedJsonField(source, "sourceRef", series.sourceRef);
+        FastBee::setFixedJsonField(source, "sourceRevision", series.sourceRevision);
+        FastBee::setFixedJsonField(source, "unit", series.unit);
+        FastBee::setFixedJsonField(source, "stale", series.stale);
         if (!series.staleReason.isEmpty()) {
-            source["staleReason"] = series.staleReason;
+            FastBee::setFixedJsonField(source, "staleReason", series.staleReason);
         }
         JsonArray samples = source["samples"].to<JsonArray>();
         for (uint8_t i = 0; i < series.count; ++i) {
             const auto& sample = series.samples[(series.head + i) % MAX_SAMPLES_PER_SOURCE];
             JsonObject item = samples.add<JsonObject>();
-            item["value"] = sample.value;
-            item["seq"] = sample.sequence;
-            item["sampleIdentity"] = sample.sampleIdentity;
-            item["bootId"] = sample.bootId;
-            item["uptimeMs"] = sample.uptimeMs;
-            if (sample.epochMs) item["epochMs"] = sample.epochMs;
-            else item["epochMs"] = nullptr;
+            FastBee::setFixedJsonField(item, "value", sample.value);
+            FastBee::setFixedJsonField(item, "seq", sample.sequence);
+            FastBee::setFixedJsonField(item, "sampleIdentity", sample.sampleIdentity);
+            FastBee::setFixedJsonField(item, "bootId", sample.bootId);
+            FastBee::setFixedJsonField(item, "uptimeMs", sample.uptimeMs);
+            if (sample.epochMs) FastBee::setFixedJsonField(item, "epochMs", sample.epochMs);
+            else FastBee::setFixedJsonField(item, "epochMs", nullptr);
         }
     }
     if (doc.overflowed() || measureJson(doc) > MAX_FILE_BYTES) return false;
@@ -660,7 +676,8 @@ bool PointHistory::atomicWriteJsonWithBackup(const String& path, JsonDocument& d
     }
     File verify = LittleFS.open(tmp, FILE_READ);
     JsonDocument parsed;
-    const bool valid = verify && !deserializeJson(parsed, verify);
+    const bool valid = verify && verify.size() == expected && !deserializeJson(parsed, verify) &&
+                       parsed.as<JsonVariantConst>() == doc.as<JsonVariantConst>();
     if (verify) verify.close();
     if (!valid) {
         LittleFS.remove(tmp);

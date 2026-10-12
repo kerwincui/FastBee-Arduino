@@ -1,0 +1,481 @@
+#include "./network/handlers/BatchRouteHandler.h"
+#include "core/MemoryBudget.h"
+#include "./network/handlers/HandlerUtils.h"
+#include "./network/WebHandlerContext.h"
+#include "./network/NetworkManager.h"
+#include "core/FastBeeFramework.h"
+#include "core/FeatureFlags.h"
+#include "core/SystemConstants.h"
+#include "systems/HealthMonitor.h"
+#include "utils/NetworkUtils.h"
+#include "utils/PsramJsonDocument.h"
+#include "utils/TimeUtils.h"
+#include "network/SystemTimeStatus.h"
+#include "network/FixedJsonField.h"
+#include <ArduinoJson.h>
+#include <LittleFS.h>
+#include <WiFi.h>
+
+namespace {
+constexpr const char* DEVICE_CONFIG_FILE = "/config/device.json";
+
+bool isBatchMemoryCriticallyLow() {
+    if (FastBee::psramAvailableForJson(32768)) {
+        return FastBee::MemoryBudget::dramFree() < 2048 || FastBee::MemoryBudget::dramLargest() < 1024;
+    }
+    return FastBee::MemoryBudget::dramFree() < 4096 || FastBee::MemoryBudget::dramLargest() < 1536;
+}
+
+bool shouldUseCompactSystemInfo() {
+    return FastBee::MemoryBudget::dramFree() < 12288 || FastBee::MemoryBudget::dramLargest() < 6144;
+}
+
+void fillMemorySummary(JsonObject memory) {
+    size_t heapSize = ESP.getHeapSize();
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t heapUsed = heapSize > freeHeap ? heapSize - freeHeap : 0;
+
+    FastBee::setFixedJsonField(memory, "heapTotal", heapSize);
+    FastBee::setFixedJsonField(memory, "heapFree", freeHeap);
+    FastBee::setFixedJsonField(memory, "heapUsed", heapUsed);
+    FastBee::setFixedJsonField(memory, "heapMinFree", ESP.getMinFreeHeap());
+    FastBee::setFixedJsonField(memory, "heapMaxAlloc", ESP.getMaxAllocHeap());
+    FastBee::setFixedJsonField(memory, "heapUsagePercent", heapSize > 0 ? (int)((heapUsed * 100) / heapSize) : 0);
+
+    size_t psramSize = ESP.getPsramSize();
+    size_t psramFree = psramSize > 0 ? ESP.getFreePsram() : 0;
+    size_t psramUsed = psramSize > psramFree ? psramSize - psramFree : 0;
+    if (psramSize > 0) {
+        FastBee::setFixedJsonField(memory, "psramTotal", psramSize);
+        FastBee::setFixedJsonField(memory, "psramFree", psramFree);
+        FastBee::setFixedJsonField(memory, "psramUsed", psramUsed);
+        FastBee::setFixedJsonField(memory, "psramMinFree", ESP.getMinFreePsram());
+        FastBee::setFixedJsonField(memory, "psramUsagePercent", (int)((psramUsed * 100) / psramSize));
+    }
+
+    size_t total = heapSize + psramSize;
+    size_t free = freeHeap + psramFree;
+    size_t used = total > free ? total - free : 0;
+    FastBee::setFixedJsonField(memory, "total", total);
+    FastBee::setFixedJsonField(memory, "free", free);
+    FastBee::setFixedJsonField(memory, "used", used);
+    FastBee::setFixedJsonField(memory, "usagePercent", total > 0 ? (int)((used * 100) / total) : 0);
+}
+
+void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degraded) {
+    JsonObject device = data["device"].to<JsonObject>();
+    FastBee::setFixedJsonField(device, "id", String((uint32_t)ESP.getEfuseMac(), HEX));
+    FastBee::setFixedJsonField(device, "chipModel", ESP.getChipModel());
+    FastBee::setFixedJsonField(device, "chipRevision", ESP.getChipRevision());
+    FastBee::setFixedJsonField(device, "cpuFreqMHz", ESP.getCpuFreqMHz());
+    FastBee::setFixedJsonField(device, "sdkVersion", ESP.getSdkVersion());
+    FastBee::setFixedJsonField(device, "freeHeap", ESP.getFreeHeap());
+    FastBee::setFixedJsonField(device, "flashSize", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(device, "firmwareVersion", SystemInfo::VERSION);
+
+    size_t sketchSize = ESP.getSketchSize();
+    size_t freeSketchSpace = ESP.getFreeSketchSpace();
+    JsonObject flash = data["flash"].to<JsonObject>();
+    FastBee::setFixedJsonField(flash, "total", ESP.getFlashChipSize());
+    FastBee::setFixedJsonField(flash, "sketchSize", sketchSize);
+    FastBee::setFixedJsonField(flash, "freeSketchSpace", freeSketchSpace);
+    FastBee::setFixedJsonField(flash, "used", sketchSize);
+    FastBee::setFixedJsonField(flash, "free", freeSketchSpace);
+    FastBee::setFixedJsonField(flash, "usagePercent", (int)((sketchSize * 100) / (sketchSize + freeSketchSpace)));
+
+    JsonObject memory = data["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
+
+    // Keep the compact /api/batch representation pressure-aware. Dashboard
+    // polling intentionally uses this lightweight path on no-PSRAM targets;
+    // exposing the guard level here lets the browser slow its own refresh rate
+    // before a heavy request is rejected with HTTP 503.
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor) {
+        FastBee::setFixedJsonField(memory, "guardLevel", HandlerUtils::memoryGuardLevelName(monitor->getMemoryGuardLevel()));
+        FastBee::setFixedJsonField(memory, "critical", monitor->isMemoryCritical());
+    }
+
+    size_t fsTotal = LittleFS.totalBytes();
+    size_t fsUsed = LittleFS.usedBytes();
+    JsonObject filesystem = data["filesystem"].to<JsonObject>();
+    FastBee::setFixedJsonField(filesystem, "total", fsTotal);
+    FastBee::setFixedJsonField(filesystem, "used", fsUsed);
+    FastBee::setFixedJsonField(filesystem, "free", fsTotal - fsUsed);
+    FastBee::setFixedJsonField(filesystem, "usagePercent", fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0);
+
+    unsigned long uptime = millis();
+    JsonObject uptimeObj = data["uptime"].to<JsonObject>();
+    FastBee::setFixedJsonField(uptimeObj, "ms", uptime);
+    FastBee::setFixedJsonField(uptimeObj, "seconds", uptime / 1000);
+    FastBee::setFixedJsonField(uptimeObj, "formatted", ctx ? ctx->formatUptime(uptime) : String(uptime / 1000) + "s");
+
+    if (ctx && ctx->networkManager) {
+        NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+        JsonObject network = data["network"].to<JsonObject>();
+        FastBee::setFixedJsonField(network, "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(network, "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(network, "ssid", info.ssid);
+        FastBee::setFixedJsonField(network, "rssi", info.rssi);
+        FastBee::setFixedJsonField(network, "macAddress", WiFi.macAddress());
+    }
+
+    FastBee::setFixedJsonField(data, "brief", true);
+    FastBee::setFixedJsonField(data, "degraded", degraded);
+}
+}
+
+BatchRouteHandler::BatchRouteHandler(WebHandlerContext* ctx)
+    : ctx(ctx) {
+    _batchJsonHandler = new AsyncCallbackJsonWebHandler("/api/batch",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            handleBatchRequest(request, json);
+        });
+    _batchJsonHandler->setMaxContentLength(1024);
+}
+
+BatchRouteHandler::~BatchRouteHandler() {
+    // Handler lifetime is owned by AsyncWebServer.
+}
+
+void BatchRouteHandler::setupRoutes(AsyncWebServer* server) {
+    server->addHandler(_batchJsonHandler);
+}
+
+void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonVariant& json) {
+    if (isBatchMemoryCriticallyLow()) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu",
+                 (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+        HandlerUtils::sendJsonError(request, 503, msg, 5);
+        return;
+    }
+
+    JsonObject body = json.as<JsonObject>();
+    JsonArray requests = body["requests"].as<JsonArray>();
+    if (requests.isNull() || requests.size() == 0) {
+        HandlerUtils::sendJsonError(request, 400, "Missing or empty 'requests' array");
+        return;
+    }
+    if (requests.size() > 5) {
+        HandlerUtils::sendJsonError(request, 400, "Max 5 sub-requests per batch");
+        return;
+    }
+
+    auto respDoc = FastBee::makeJsonDocument();
+    respDoc["success"] = true;
+    JsonArray results = respDoc["results"].to<JsonArray>();
+
+    for (JsonVariant req : requests) {
+        String url = req["url"].as<String>();
+        JsonObject item = results.add<JsonObject>();
+        if (url.isEmpty()) {
+            FastBee::setFixedJsonField(item, "success", false);
+            FastBee::setFixedJsonField(item, "error", "Missing url");
+            continue;
+        }
+        if (!buildSubResponse(request, url, item)) {
+            FastBee::setFixedJsonField(item, "success", false);
+            FastBee::setFixedJsonField(item, "error", "Unsupported endpoint");
+        }
+    }
+
+    size_t jsonSize = measureJson(respDoc);
+    if (jsonSize > 8192) {
+        HandlerUtils::sendJsonError(request, 413, "Batch response too large");
+        return;
+    }
+
+    HandlerUtils::sendJsonStream(request, respDoc);
+}
+
+bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const String& url, JsonObject out) {
+    if (url == "/api/system/info") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+
+        fillCompactSystemInfo(data, ctx, shouldUseCompactSystemInfo());
+        return true;
+    }
+
+    if (url == "/api/system/status") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+        FastBee::setFixedJsonField(data, "status", "running");
+        FastBee::setFixedJsonField(data, "timestamp", millis());
+        FastBee::setFixedJsonField(data, "freeHeap", ESP.getFreeHeap());
+        FastBee::setFixedJsonField(data, "uptime", millis());
+        if (ctx->networkManager) {
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+            netMgr->updateStatusInfo();
+            NetworkStatusInfo info = netMgr->getStatusInfo();
+            WiFiConfig cfg = netMgr->getConfig();
+            if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+                info.status = NetworkStatus::CONNECTED;
+                if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+                if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+                info.rssi = WiFi.RSSI();
+                if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+            }
+            const char* statusText = "unknown";
+            switch (info.status) {
+                case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+                case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+                case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+                case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+                case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
+                default: break;
+            }
+            FastBee::setFixedJsonField(data, "networkStatus", statusText);
+            FastBee::setFixedJsonField(data, "networkStatusCode", static_cast<uint8_t>(info.status));
+            FastBee::setFixedJsonField(data, "networkConnected", (info.status == NetworkStatus::CONNECTED));
+            FastBee::setFixedJsonField(data, "connected", (info.status == NetworkStatus::CONNECTED));
+            FastBee::setFixedJsonField(data, "deviceNetworkType", static_cast<uint8_t>(cfg.networkType));
+            FastBee::setFixedJsonField(data, "ipAddress", info.ipAddress);
+            FastBee::setFixedJsonField(data, "ssid", info.ssid);
+            FastBee::setFixedJsonField(data, "rssi", info.rssi);
+            FastBee::setFixedJsonField(data, "macAddress", info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress);
+            FastBee::setFixedJsonField(data, "internetAvailable", info.internetAvailable);
+        }
+        return true;
+    }
+
+    if (url == "/api/network/status") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+        if (!ctx->networkManager) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Network service unavailable");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+        netMgr->updateStatusInfo();
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+        WiFiConfig cfg = netMgr->getConfig();
+        if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+            info.status = NetworkStatus::CONNECTED;
+            if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+            if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+            info.rssi = WiFi.RSSI();
+            if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+        }
+
+        const char* statusText = "unknown";
+        switch (info.status) {
+            case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+            case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+            case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+            case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
+            default: break;
+        }
+        FastBee::setFixedJsonField(data, "status", statusText);
+        FastBee::setFixedJsonField(data, "statusCode", static_cast<uint8_t>(info.status));
+        FastBee::setFixedJsonField(data, "connected", (info.status == NetworkStatus::CONNECTED));
+        FastBee::setFixedJsonField(data, "deviceNetworkType", static_cast<uint8_t>(cfg.networkType));
+        FastBee::setFixedJsonField(data, "ssid", info.ssid.isEmpty() ? cfg.staSSID : info.ssid);
+        FastBee::setFixedJsonField(data, "ipAddress", info.ipAddress);
+        FastBee::setFixedJsonField(data, "macAddress", info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress);
+        FastBee::setFixedJsonField(data, "rssi", info.rssi);
+        FastBee::setFixedJsonField(data, "signalStrength", NetworkUtils::rssiToPercentage(info.rssi));
+        FastBee::setFixedJsonField(data, "gateway", info.currentGateway);
+        FastBee::setFixedJsonField(data, "subnet", info.currentSubnet);
+        FastBee::setFixedJsonField(data, "dnsServer", info.dnsServer);
+        FastBee::setFixedJsonField(data, "dnsServer2", WiFi.status() == WL_CONNECTED ? WiFi.dnsIP(1).toString() : String(""));
+        FastBee::setFixedJsonField(data, "connectedTime", info.lastConnectionTime > 0 ? (millis() - info.lastConnectionTime) / 1000 : 0);
+        FastBee::setFixedJsonField(data, "apIPAddress", info.apIPAddress);
+        FastBee::setFixedJsonField(data, "apClientCount", info.apClientCount);
+        FastBee::setFixedJsonField(data, "apSSID", cfg.apSSID);
+        FastBee::setFixedJsonField(data, "apChannel", cfg.apChannel);
+        FastBee::setFixedJsonField(data, "reconnectAttempts", info.reconnectAttempts);
+        FastBee::setFixedJsonField(data, "uptime", info.uptime);
+        FastBee::setFixedJsonField(data, "internetAvailable", info.internetAvailable);
+        FastBee::setFixedJsonField(data, "conflictDetected", info.conflictDetected);
+        FastBee::setFixedJsonField(data, "failoverCount", info.failoverCount);
+        FastBee::setFixedJsonField(data, "activeIPType", info.activeIPType);
+        FastBee::setFixedJsonField(data, "txCount", info.txCount);
+        FastBee::setFixedJsonField(data, "rxCount", info.rxCount);
+        const char* modeText = "unknown";
+        switch (cfg.mode) {
+            case NetworkMode::NETWORK_STA: modeText = "STA"; break;
+            case NetworkMode::NETWORK_AP:  modeText = "AP"; break;
+            default: break;
+        }
+        FastBee::setFixedJsonField(data, "mode", modeText);
+        FastBee::setFixedJsonField(data, "modeCode", static_cast<uint8_t>(cfg.mode));
+        FastBee::setFixedJsonField(data, "enableMDNS", cfg.enableMDNS);
+        FastBee::setFixedJsonField(data, "customDomain", cfg.customDomain);
+        DNSManager* dns = netMgr->getDNSManager();
+        if (dns) data["mdnsDomain"] = dns->getActualHostname();
+        unsigned long uptimeSec = millis() / 1000;
+        char uptimeBuf[32];
+        snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu",
+            uptimeSec / 86400, (uptimeSec % 86400) / 3600,
+            (uptimeSec % 3600) / 60, uptimeSec % 60);
+        FastBee::setFixedJsonField(data, "uptimeFormatted", uptimeBuf);
+        return true;
+    }
+
+    if (url == "/api/network/config") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+        if (!ctx->networkManager) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Network service unavailable");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+        WiFiConfig cfg = netMgr->getConfig();
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+
+        data["device"]["macAddress"] = WiFi.macAddress();
+        data["network"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
+        data["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
+        data["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
+        data["network"]["enableMDNS"] = cfg.enableMDNS;
+        data["network"]["customDomain"] = cfg.customDomain;
+
+        data["sta"]["ssid"] = cfg.staSSID;
+        data["sta"]["password"] = cfg.staPassword.length() > 0 ? "********" : "";
+        data["sta"]["hasPassword"] = cfg.staPassword.length() > 0;
+        data["sta"]["staticIP"] = cfg.staticIP;
+        data["sta"]["gateway"] = cfg.gateway;
+        data["sta"]["subnet"] = cfg.subnet;
+        data["sta"]["dns1"] = cfg.dns1;
+        data["sta"]["dns2"] = cfg.dns2;
+
+        data["ap"]["ssid"] = cfg.apSSID;
+        data["ap"]["password"] = cfg.apPassword.length() > 0 ? "********" : "";
+        data["ap"]["hasPassword"] = cfg.apPassword.length() > 0;
+        data["ap"]["channel"] = cfg.apChannel;
+        data["ap"]["hidden"] = cfg.apHidden;
+        data["ap"]["maxConnections"] = cfg.apMaxConnections;
+
+        data["advanced"]["connectTimeout"] = cfg.connectTimeout;
+        data["advanced"]["reconnectInterval"] = cfg.reconnectInterval;
+        data["advanced"]["maxReconnectAttempts"] = cfg.maxReconnectAttempts;
+        data["advanced"]["conflictDetection"] = static_cast<uint8_t>(cfg.conflictDetection);
+        data["advanced"]["failoverStrategy"] = static_cast<uint8_t>(cfg.failoverStrategy);
+        data["advanced"]["autoFailover"] = cfg.autoFailover;
+        data["advanced"]["conflictCheckInterval"] = cfg.conflictCheckInterval;
+        data["advanced"]["maxFailoverAttempts"] = cfg.maxFailoverAttempts;
+        data["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
+        data["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
+
+        data["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+        data["status"]["ipAddress"] = info.ipAddress;
+        data["status"]["rssi"] = info.rssi;
+        data["status"]["ssid"] = info.ssid;
+        return true;
+    }
+
+    if (url == "/api/device/config") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+
+        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+            if (f) {
+                JsonDocument fileCfg;
+                DeserializationError err = deserializeJson(fileCfg, f);
+                f.close();
+                if (!err) {
+                    FastBee::setFixedJsonField(out, "success", true);
+                    out["data"] = fileCfg;
+                    return true;
+                }
+            }
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        out["data"]["deviceName"] = "FastBee-ESP32";
+        out["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+        return true;
+    }
+
+    if (url == "/api/device/time") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+        bool internetAvailable = false;
+
+        if (ctx->networkManager) {
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
+            internetAvailable = netInfo.internetAvailable;
+        }
+
+        FastBee::appendSystemTimeStatus(data);
+        FastBee::setFixedJsonField(data, "internetAvailable", internetAvailable);
+        FastBee::setFixedJsonField(data, "uptime", millis());
+        FastBee::setFixedJsonField(data, "timezone", "CST-8");
+
+        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+            if (f) {
+                JsonDocument cfg;
+                if (deserializeJson(cfg, f) == DeserializationError::Ok) {
+                    if (cfg["timezone"].is<String>()) data["timezone"] = cfg["timezone"].as<String>();
+                }
+                f.close();
+            }
+        }
+        return true;
+    }
+
+    if (url == "/api/protocol/config") {
+        FastBee::setFixedJsonField(out, "success", false);
+        FastBee::setFixedJsonField(out, "error", "Protocol config is too large for batch");
+        return true;
+    }
+
+    if (url == "/api/system/health") {
+        if (!ctx->requiresAuth(request)) {
+            FastBee::setFixedJsonField(out, "success", false);
+            FastBee::setFixedJsonField(out, "error", "Unauthorized");
+            return true;
+        }
+
+        FastBee::setFixedJsonField(out, "success", true);
+        JsonObject data = out["data"].to<JsonObject>();
+        FastBee::setFixedJsonField(data, "status", "ok");
+        FastBee::setFixedJsonField(data, "freeHeap", ESP.getFreeHeap());
+        FastBee::setFixedJsonField(data, "uptime", millis() / 1000);
+        return true;
+    }
+
+    return false;
+}

@@ -1,0 +1,38 @@
+{
+  "peripherals": [
+    {
+      "id": "ads1115_voltage",
+      "name": "ADS1115 - review board pins and electrical limits",
+      "type": 38,
+      "enabled": false,
+      "pins": [4, 5],
+      "params": {
+        "sensorType": 0,
+        "sampleInterval": 1000,
+        "driver": "ADS1115",
+        "address": 72,
+        "mode": 0,
+        "frequency": 100000,
+        "busPeripheralId": "",
+        "mux": 4,
+        "fullScaleMv": 4096,
+        "dataRate": 128,
+        "calibrationGain": 1,
+        "calibrationOffset": 0
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "ads1115_read_voltage",
+      "name": "Read configured ADS1115 input each second",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [{"triggerType": 1, "triggerPeriphId": "", "operatorType": 0, "compareValue": "", "timerMode": 0, "intervalSec": 1, "timePoint": "", "eventId": "", "pollResponseTimeout": 1000, "pollMaxRetries": 2, "pollInterPollDelay": 100}],
+      "actions": [{"targetPeriphId": "ads1115_voltage", "actionType": 19, "actionValue": "{\"periphId\":\"ads1115_voltage\",\"sensorCategory\":\"ADS1115\",\"channelField\":\"voltage\",\"dataField\":\"adc_voltage\",\"scaleFactor\":1,\"offset\":0,\"decimalPlaces\":4,\"sensorLabel\":\"ADC voltage\",\"unit\":\"V\"}", "useReceivedValue": false, "syncDelayMs": 0, "execMode": 0}],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    }
+  ]
+}

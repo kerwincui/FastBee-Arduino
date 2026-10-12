@@ -1,213 +1,170 @@
-/**
- * @description: PeripheralManager Modbus delegation implementation
- */
-
+/** Source-bound virtual Modbus peripheral dispatch. */
 #include "core/PeripheralManager.h"
 #include "core/AsyncExecTypes.h"
+#include "core/MotorControlService.h"
 #include "systems/LoggerSystem.h"
 
 namespace {
-struct ModbusMotorLimitResult {
-    bool enabled = false;
-    bool allowed = true;
-    bool isMove = false;
-    uint16_t pulse = 0;
-    int32_t nextPosition = 0;
-};
-
-ModbusMotorLimitResult evaluateModbusMotorLimit(const PeripheralConfig& config,
-                                                 uint16_t regAddr,
-                                                 uint16_t value) {
-    ModbusMotorLimitResult result;
-    result.nextPosition = config.params.modbus.motorCurrentPosition;
-    if (config.params.modbus.deviceType != 3 ||
-        config.params.modbus.motorMaxPosition <= config.params.modbus.motorMinPosition) {
-        return result;
+using ModbusContext=FastBee::OrdinaryControlContext;
+using ModbusResult=FastBee::OrdinaryControlResult;
+bool modbusRefuse(ModbusResult& result,const char* reason) {
+    result.accepted=false;result.evaluated=true;result.reason=reason;return false;
+}
+bool modbusContextValid(const ModbusContext& context) {
+    return context.request.operation && context.request.actor.identity && !context.modbusMaintenance &&
+        FastBee::SensorConfigEpoch::matches(context.configEpoch) &&
+        (!context.ruleBound || FastBee::RuleOutputIdentity::matches(context.ruleEpoch)) &&
+        (context.request.actor.source!=FastBee::OrdinaryControl::Source::Screen ||
+            FastBee::ScreenOutputIdentity::matches(context.request.actor.identity)) &&
+        (!context.operationDeadlineAt || static_cast<int32_t>(
+            static_cast<uint32_t>(millis())-context.operationDeadlineAt)<0);
+}
+bool executeVirtualMotorRegister(const PeripheralConfig& config,uint16_t address,uint16_t value,
+    const ModbusContext& context,ModbusResult& result) {
+    auto& motors=MotorControlService::instance();
+    const String ref=motors.referenceForSlave(config.params.modbus.slaveAddress);
+    FastBee::ModbusControlTarget target;
+    if(ref.isEmpty() || !motors.snapshotTarget(ref,target) ||
+        target.kind!=FastBee::ModbusControlTarget::Kind::Motor ||
+        target.slave!=config.params.modbus.slaveAddress ||
+        std::memcmp(target.motorRegisters,config.params.modbus.motorRegs,sizeof(target.motorRegisters)))
+        return modbusRefuse(result,"CONTROL_MOTOR_MAPPING_UNCONFIRMED");
+    int matched=-1;
+    for(int i=0;i<5;++i)if(target.motorRegisters[i]==address) {
+        if(matched>=0)return modbusRefuse(result,"CONTROL_MOTOR_ENDPOINT_AMBIGUOUS");
+        matched=i;
     }
-
-    const bool forward = regAddr == config.params.modbus.motorRegs[0];
-    const bool reverse = regAddr == config.params.modbus.motorRegs[1];
-    if (!forward && !reverse) return result;
-
-    result.enabled = true;
-    result.isMove = true;
-    int32_t desiredPulse = value > 1 ? value : 0;
-    if (desiredPulse <= 0 && config.params.modbus.motorLastPulse > 0) {
-        desiredPulse = config.params.modbus.motorLastPulse;
+    if(matched<0 || (matched==2 && value!=target.stopValue))
+        return modbusRefuse(result,"CONTROL_MOTOR_ENDPOINT_UNCONFIRMED");
+    static const char* const actions[]={"forward","reverse","stop","setSpeed","setPulse"};
+    uint32_t budget=30000,started=static_cast<uint32_t>(millis());
+    if(context.operationDeadlineAt) {
+        const int32_t remaining=static_cast<int32_t>(context.operationDeadlineAt-started);
+        if(remaining<=0)return modbusRefuse(result,"CONTROL_SOURCE_STALE");
+        if(static_cast<uint32_t>(remaining)<budget)budget=static_cast<uint32_t>(remaining);
     }
-    if (desiredPulse <= 0 && config.params.modbus.motorMoveStep > 0) {
-        desiredPulse = config.params.modbus.motorMoveStep;
+    char requestId[80];
+    std::snprintf(requestId,sizeof(requestId),"pm-%llu-%u-%u",
+        static_cast<unsigned long long>(context.request.operation),address,value);
+    uint32_t operation=0;String error;
+    const bool accepted=motors.submitRule(ref,String(actions[matched]),value,String(requestId),
+        budget,1000,operation,error,context.uartOrigin,&context);
+    result.backendOperationId=operation;result.attemptKnown=!accepted;
+    target.key(result.targetId);
+    result.actor=context.request.actor;result.operation=context.request.operation;
+    if(!accepted)return modbusRefuse(result,"CONTROL_MOTOR_ADMISSION_REJECTED");
+    bool terminal=false,success=false;
+    auto observe=[&]() {
+        JsonDocument record;
+        if(!motors.operation(operation,record.to<JsonObject>()))return false;
+        uint16_t acknowledged=0;size_t count=0;
+        for(JsonObjectConst step:record["outputSteps"].as<JsonArrayConst>()) {
+            if(++count>8)break;
+            result.attempted |= step["attempted"] | false;
+            if(step["commandAcknowledged"] | false)++acknowledged;
+        }
+        if(acknowledged>result.acknowledgedSteps)result.acknowledgedSteps=acknowledged;
+        if(record["pending"] | true)return false;
+        terminal=true;success=record["success"] | false;return true;
+    };
+    while(static_cast<uint32_t>(millis())-started<budget) {
+        if(observe())break;
+        if(!modbusContextValid(context))break;
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (desiredPulse <= 0) {
-        result.allowed = false;
-        return result;
-    }
-
-    int32_t room = forward
-        ? config.params.modbus.motorMaxPosition - config.params.modbus.motorCurrentPosition
-        : config.params.modbus.motorCurrentPosition - config.params.modbus.motorMinPosition;
-    if (room <= 0) {
-        result.allowed = false;
-        return result;
-    }
-
-    if (desiredPulse > room) desiredPulse = room;
-    if (desiredPulse > 65535) desiredPulse = 65535;
-    result.pulse = static_cast<uint16_t>(desiredPulse);
-    result.nextPosition = forward
-        ? config.params.modbus.motorCurrentPosition + desiredPulse
-        : config.params.modbus.motorCurrentPosition - desiredPulse;
-    return result;
+    if(!terminal)observe();
+    result.evaluated=true;result.accepted=success;result.attemptKnown=terminal;
+    result.phase=terminal?FastBee::OrdinaryControl::Phase::Idle:FastBee::OrdinaryControl::Phase::Executing;
+    result.reason=success?"CONTROL_ACKNOWLEDGED_TRANSPORT_ONLY":
+        terminal?"CONTROL_MOTOR_FAILED":"CONTROL_MOTOR_RESULT_UNCONFIRMED";
+    // The real worker retains ownership if the caller runs out of budget.
+    // Never infer pulse/position from ACKs or cancel an unknown physical move.
+    return success;
 }
 }
 
-void PeripheralManager::setModbusCallbacks(ModbusCoilWriteFunc coilWrite,
-                                            ModbusRegWriteFunc regWrite) {
+void PeripheralManager::setModbusCallbacks(ModbusCoilWriteFunc coilWrite,ModbusRegWriteFunc regWrite) {
     RecursiveMutexGuard lock(_mutex);
-    _modbusCoilWrite = coilWrite;
-    _modbusRegWrite = regWrite;
-    LOG_INFO("Peripheral Manager: Modbus write callbacks registered");
+    if(!lock.isLocked())return;
+    _modbusCoilWrite=std::move(coilWrite);_modbusRegWrite=std::move(regWrite);
 }
-
 void PeripheralManager::clearModbusCallbacks() {
     RecursiveMutexGuard lock(_mutex);
-    _modbusCoilWrite = nullptr;
-    _modbusRegWrite = nullptr;
-    LOG_INFO("Peripheral Manager: Modbus write callbacks cleared");
+    if(!lock.isLocked())return;
+    _modbusCoilWrite=nullptr;_modbusRegWrite=nullptr;
 }
 
-bool PeripheralManager::writeModbusPin(const String& id,
-                                       const PeripheralConfig& config,
-                                       GPIOState state) {
-    if (!_modbusCoilWrite && !_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus write callbacks not set");
-        return false;
+// Contextless legacy entry points cannot invent a caller, deadline or takeover.
+bool PeripheralManager::writeModbusPin(const String&,const PeripheralConfig&,GPIOState) { return false; }
+bool PeripheralManager::writeModbusPWM(const String&,const PeripheralConfig&,uint32_t) { return false; }
+bool PeripheralManager::writeModbusCoil(const String&,uint16_t,bool) { return false; }
+bool PeripheralManager::writeModbusReg(const String&,uint16_t,uint16_t) { return false; }
+
+bool PeripheralManager::writeModbusCoil(const String& id,uint16_t address,bool value,
+    const ModbusContext& context,ModbusResult& result) {
+    result={};result.evaluated=true;
+    ModbusCoilWriteFunc callback;
+    PeripheralConfig config;
+    {
+        RecursiveMutexGuard lock(_mutex,0);
+        if(!lock.isLocked())return modbusRefuse(result,"CONTROL_BUSY");
+        if(!modbusContextValid(context) || !isUartEventOriginCurrent(context.uartOrigin))
+            return modbusRefuse(result,"CONTROL_SOURCE_STALE");
+        auto found=peripherals.find(id);
+        if(found==peripherals.end() || !found->second.enabled || !found->second.isModbusPeripheral() ||
+            found->second.params.modbus.deviceType!=0 || found->second.params.modbus.controlProtocol!=0)
+            return modbusRefuse(result,"CONTROL_MAPPING_UNCONFIRMED");
+        config=found->second;
+        try {callback=_modbusCoilWrite;}catch(...){return modbusRefuse(result,"CONTROL_ALLOCATION_FAILED");}
     }
-
-    bool value = state == GPIOState::STATE_HIGH;
-    if (config.params.modbus.ncMode) value = !value;
-
-    const uint16_t addr = config.params.modbus.coilBase;
-    bool success = false;
-    if (config.params.modbus.controlProtocol == 0) {
-        if (_modbusCoilWrite) {
-            success = _modbusCoilWrite(config.params.modbus.slaveAddress, addr, value);
-        }
-    } else if (_modbusRegWrite) {
-        const uint16_t regVal = value ? 0xFF00 : 0x0000;
-        success = _modbusRegWrite(config.params.modbus.slaveAddress, addr, regVal);
-    }
-
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].state.gpio.currentState = state;
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writePin '%s' slave=%d addr=%d state=%s %s",
-              id.c_str(), config.params.modbus.slaveAddress, addr,
-              state == GPIOState::STATE_HIGH ? "HIGH" : "LOW",
-              success ? "OK" : "FAIL");
-    return success;
+    if(!callback)return modbusRefuse(result,"CONTROL_BACKEND_UNAVAILABLE");
+    // The callback pins the handler and PM reserves the actual saved mapping.
+    // Do not hold PM while acquiring protocol lifetime/bus/response locks.
+    return callback(config.params.modbus.slaveAddress,address,value,context,result);
 }
-
-bool PeripheralManager::writeModbusPWM(const String& id,
-                                       const PeripheralConfig& config,
-                                       uint32_t dutyCycle) {
-    if (!_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
-        return false;
+bool PeripheralManager::writeModbusReg(const String& id,uint16_t address,uint16_t value,
+    const ModbusContext& context,ModbusResult& result) {
+    result={};result.evaluated=true;
+    ModbusRegWriteFunc callback;
+    PeripheralConfig config;
+    {
+        RecursiveMutexGuard lock(_mutex,0);
+        if(!lock.isLocked())return modbusRefuse(result,"CONTROL_BUSY");
+        if(!modbusContextValid(context) || !isUartEventOriginCurrent(context.uartOrigin))
+            return modbusRefuse(result,"CONTROL_SOURCE_STALE");
+        auto found=peripherals.find(id);
+        if(found==peripherals.end() || !found->second.enabled || !found->second.isModbusPeripheral())
+            return modbusRefuse(result,"CONTROL_MAPPING_UNCONFIRMED");
+        config=found->second;
+        if(config.params.modbus.deviceType!=3)
+            try {callback=_modbusRegWrite;}catch(...){return modbusRefuse(result,"CONTROL_ALLOCATION_FAILED");}
     }
-    if (config.params.modbus.deviceType != 1) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a PWM Modbus device", id.c_str());
-        return false;
-    }
-
-    const uint16_t regAddr = config.params.modbus.pwmRegBase;
-    const uint16_t regVal = static_cast<uint16_t>(dutyCycle);
-    const bool success = _modbusRegWrite(config.params.modbus.slaveAddress, regAddr, regVal);
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writePWM '%s' slave=%d reg=%d duty=%d %s",
-              id.c_str(), config.params.modbus.slaveAddress, regAddr,
-              static_cast<int>(dutyCycle), success ? "OK" : "FAIL");
-    return success;
+    if(config.params.modbus.deviceType==3)
+        return executeVirtualMotorRegister(config,address,value,context,result);
+    if(!callback)return modbusRefuse(result,"CONTROL_BACKEND_UNAVAILABLE");
+    return callback(config.params.modbus.slaveAddress,address,value,context,result);
 }
-
-bool PeripheralManager::writeModbusCoil(const String& id, uint16_t coilAddr, bool value) {
-    RecursiveMutexGuard lock(_mutex);
-    if (!_modbusCoilWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus coil write callback not set");
-        return false;
-    }
-
-    auto config = getPeripheral(id);
-    if (!config || !config->isModbusPeripheral()) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
-        return false;
-    }
-
-    const bool success = _modbusCoilWrite(config->params.modbus.slaveAddress, coilAddr, value);
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writeCoil '%s' slave=%d coil=%d val=%d %s",
-              id.c_str(), config->params.modbus.slaveAddress, coilAddr, value,
-              success ? "OK" : "FAIL");
-    return success;
+bool PeripheralManager::writeModbusPin(const String& id,GPIOState state,
+    const ModbusContext& context,ModbusResult& result) {
+    result={};result.evaluated=true;
+    PeripheralConfig config;
+    if(!getPeripheralSnapshot(id,config) || !config.enabled || !config.isModbusPeripheral() ||
+        config.params.modbus.deviceType!=0 || config.params.modbus.controlProtocol>1 ||
+        (state!=GPIOState::STATE_HIGH && state!=GPIOState::STATE_LOW))
+        return modbusRefuse(result,"CONTROL_PARAMETER_INVALID");
+    bool value=state==GPIOState::STATE_HIGH;
+    if(config.params.modbus.ncMode)value=!value;
+    return config.params.modbus.controlProtocol==0?
+        writeModbusCoil(id,config.params.modbus.coilBase,value,context,result):
+        writeModbusReg(id,config.params.modbus.coilBase,value?1:0,context,result);
 }
-
-bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint16_t value) {
-    RecursiveMutexGuard lock(_mutex);
-    if (!_modbusRegWrite) {
-        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
-        return false;
-    }
-
-    auto config = getPeripheral(id);
-    if (!config || !config->isModbusPeripheral()) {
-        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
-        return false;
-    }
-
-    ModbusMotorLimitResult motorLimit = evaluateModbusMotorLimit(*config, regAddr, value);
-    if (motorLimit.enabled && !motorLimit.allowed) {
-        LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' blocked by soft limit (pos=%ld min=%ld max=%ld reg=%u)",
-                     id.c_str(),
-                     static_cast<long>(config->params.modbus.motorCurrentPosition),
-                     static_cast<long>(config->params.modbus.motorMinPosition),
-                     static_cast<long>(config->params.modbus.motorMaxPosition),
-                     static_cast<unsigned int>(regAddr));
-        return false;
-    }
-    if (motorLimit.enabled && motorLimit.isMove && config->params.modbus.motorRegs[4] != 0) {
-        const bool pulseOk = _modbusRegWrite(config->params.modbus.slaveAddress,
-                                             config->params.modbus.motorRegs[4],
-                                             motorLimit.pulse);
-        if (!pulseOk) {
-            LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' failed to write bounded pulse=%u",
-                         id.c_str(), static_cast<unsigned int>(motorLimit.pulse));
-            return false;
-        }
-    }
-
-    const bool success = _modbusRegWrite(config->params.modbus.slaveAddress, regAddr, value);
-    if (success && runtimeStates.find(id) != runtimeStates.end()) {
-        runtimeStates[id].lastActivity = millis();
-    }
-    if (success && config->params.modbus.deviceType == 3) {
-        if (regAddr == config->params.modbus.motorRegs[4]) {
-            config->params.modbus.motorLastPulse = value;
-        } else if (motorLimit.enabled && motorLimit.isMove) {
-            config->params.modbus.motorCurrentPosition = motorLimit.nextPosition;
-            config->params.modbus.motorLastPulse = motorLimit.pulse;
-        }
-    }
-
-    LOG_INFOF("Peripheral Manager: Modbus writeReg '%s' slave=%d reg=%d val=%d %s",
-              id.c_str(), config->params.modbus.slaveAddress, regAddr, value,
-              success ? "OK" : "FAIL");
-    return success;
+bool PeripheralManager::writeModbusPWM(const String& id,uint32_t value,
+    const ModbusContext& context,ModbusResult& result) {
+    result={};result.evaluated=true;
+    PeripheralConfig config;
+    if(!getPeripheralSnapshot(id,config) || !config.enabled || !config.isModbusPeripheral() ||
+        config.params.modbus.deviceType!=1 || !config.params.modbus.pwmResolution ||
+        config.params.modbus.pwmResolution>16 || value>((1UL<<config.params.modbus.pwmResolution)-1UL))
+        return modbusRefuse(result,"CONTROL_PARAMETER_INVALID");
+    return writeModbusReg(id,config.params.modbus.pwmRegBase,static_cast<uint16_t>(value),context,result);
 }

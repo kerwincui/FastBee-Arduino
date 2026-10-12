@@ -1,0 +1,249 @@
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <string>
+#include <vector>
+#include <memory>
+#include <cerrno>
+uint32_t clockMs=0;
+uint32_t millis(){return clockMs;}
+namespace FastBee {
+bool psram=true;
+bool psramAvailableForJson(uint32_t){return psram;}
+namespace MemoryBudget {
+uint32_t freeBytes=64000, largest=50000;
+uint32_t dram8Free(){return freeBytes;}
+uint32_t dram8Largest(){return largest;}
+}}
+bool clientConnected=true;
+int yieldCount=0,disconnectYield=-1,pressureYield=-1;
+uint32_t yieldElapsedMs=1;
+void vTaskDelay(uint32_t ticks){
+    assert(ticks==1);++yieldCount;clockMs+=yieldElapsedMs;
+    if(yieldCount==disconnectYield)clientConnected=false;
+    if(yieldCount==pressureYield)FastBee::MemoryBudget::freeBytes=32000;
+}
+struct Client {uint32_t rxTimeout=3;bool connected(){return clientConnected;}void setRxTimeout(uint32_t seconds){rxTimeout=seconds;}};
+struct AsyncWebServerRequest {
+    Client held;int status=0;std::string error;
+    Client* client(){return &held;}
+};
+struct WebHandlerContext {
+    bool requireAuth(AsyncWebServerRequest*){return true;}
+    void sendError(AsyncWebServerRequest* request,int status,const char* message){
+        request->status=status;request->error=message;
+    }
+};
+bool requireDeviceLogs(WebHandlerContext*,AsyncWebServerRequest*){return true;}
+int ets_printf(const char*,...){return 0;}
+namespace HandlerUtils {
+void sendJsonError(AsyncWebServerRequest* request,int status,const char* message,int){
+    request->status=status;request->error=message;
+}}
+std::vector<std::string> filenames,returnedNames;
+uint32_t fileOpenElapsedMs=0,rootOpenElapsedMs=0;
+int metadataElapsedMs=0,nativeReadElapsedMs=-1,metadataCalls=0;
+bool missingDirectory=false,unavailableMount=false,oversizedMount=false;
+int directoryError=0,metadataFailureCall=-1,metadataBadTypeCall=-1,metadataNegativeSizeCall=-1;
+int openNextCalls=0,closedFiles=0,closedRoots=0,pressureCall=-1,added=0;
+int pressureKind=0;bool fileLock=true;
+struct JsonArray;struct JsonObject;
+struct Slot {
+    std::string key;
+    template<typename T> T to(){return {};}
+    Slot& operator=(const char* value){if(key=="name")returnedNames.push_back(value);return *this;}
+    template<typename T> Slot& operator=(T){return *this;}
+};
+struct JsonObject {Slot operator[](const char* key){return {key};}};
+struct JsonArray {template<typename T>T add(){++added;return {};}};
+struct JsonDocument {Slot operator[](const char* key){return {key};}};
+namespace FastBee {JsonDocument makeJsonDocument(){return {};}}
+void sendLogJson(WebHandlerContext*,AsyncWebServerRequest* request,JsonDocument&){request->status=200;}
+struct File {
+    bool valid=false,directory=false;size_t index=0,next=0;
+    explicit operator bool()const{return valid;}
+    bool isDirectory()const{return directory;}
+    const char* name()const{return filenames[index].c_str();}
+    size_t size()const{return 123;}
+    void close(){if(valid){if(directory)++closedRoots;else ++closedFiles;valid=false;}}
+    File openNextFile(){
+        ++openNextCalls;clockMs+=fileOpenElapsedMs;
+        if(openNextCalls==pressureCall){
+            if(pressureKind==0)FastBee::MemoryBudget::freeBytes=32000;
+            if(pressureKind==1)FastBee::MemoryBudget::largest=11999;
+            if(pressureKind==2){FastBee::psram=false;FastBee::MemoryBudget::freeBytes=37000;}
+        }
+        size_t selected=next++;return {selected<filenames.size(),false,selected,0};
+    }
+};
+struct FileSystem {
+    File open(const char*){clockMs+=rootOpenElapsedMs;return {true,true,0,0};}
+    const char* mountpoint(){return unavailableMount?nullptr:oversizedMount?"/lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll":"/littlefs";}
+}LittleFS;
+// Real Arduino VFS opens every File wrapper with stat + fopen. The metadata
+// path does not open contents; these separate costs are deterministic mocks.
+struct stat {unsigned int st_mode=1;long st_size=123;};
+bool S_ISREG(unsigned int value){return value==1;}
+struct dirent {char d_name[256]{};};
+struct DIR {size_t next=0;dirent entry;};
+DIR fakeDirectory;
+DIR* opendir(const char*){
+    clockMs+=rootOpenElapsedMs;fakeDirectory.next=0;
+    if(missingDirectory){errno=ENOENT;return nullptr;}
+    return &fakeDirectory;
+}
+int closedir(DIR*){++closedRoots;return 0;}
+dirent* readdir(DIR* directory){
+    ++openNextCalls;clockMs+=nativeReadElapsedMs>=0?static_cast<uint32_t>(nativeReadElapsedMs):fileOpenElapsedMs;
+    if(openNextCalls==pressureCall){
+        if(pressureKind==0)FastBee::MemoryBudget::freeBytes=32000;
+        if(pressureKind==1)FastBee::MemoryBudget::largest=11999;
+        if(pressureKind==2){FastBee::psram=false;FastBee::MemoryBudget::freeBytes=37000;}
+    }
+    if(directory->next>=filenames.size()){errno=directoryError;return nullptr;}
+    const auto& name=filenames[directory->next++];
+    assert(name.size()<sizeof(directory->entry.d_name));
+    std::snprintf(directory->entry.d_name,sizeof(directory->entry.d_name),"%s",name.c_str());
+    return &directory->entry;
+}
+int stat(const char*,struct stat* output){
+    ++metadataCalls;clockMs+=static_cast<uint32_t>(metadataElapsedMs);
+    if(metadataCalls==metadataFailureCall){errno=ENOENT;return -1;}
+    *output={metadataCalls==metadataBadTypeCall?2U:1U,metadataCalls==metadataNegativeSizeCall?-1L:123L};return 0;
+}
+struct ScopedLogFileAccess {bool locked()const{return fileLock;}};
+constexpr const char* LOG_DIR="/logs";
+constexpr const char* DEFAULT_LOG_FILE="system.log";
+@KIND@
+@CONSTANTS@
+@SCAN@
+@PEAK@
+@LIVE@
+@ERROR@
+@BUDGET@
+@ACCESS@
+@READER@
+void reset(size_t count){
+    clockMs=0;fileOpenElapsedMs=0;rootOpenElapsedMs=0;fileLock=true;
+    openNextCalls=closedFiles=closedRoots=added=0;pressureCall=-1;pressureKind=0;
+    FastBee::MemoryBudget::freeBytes=64000;FastBee::MemoryBudget::largest=50000;FastBee::psram=true;
+    filenames.clear();returnedNames.clear();
+    metadataElapsedMs=0;nativeReadElapsedMs=-1;metadataCalls=0;missingDirectory=unavailableMount=oversizedMount=false;
+    directoryError=0;metadataFailureCall=metadataBadTypeCall=metadataNegativeSizeCall=-1;
+    clientConnected=true;yieldCount=0;disconnectYield=pressureYield=-1;yieldElapsedMs=1;
+    for(size_t i=0;i<count;++i)filenames.push_back(i==0?"system.log":"system-"+std::to_string(i)+".log");
+}
+int main(){
+    WebHandlerContext ctx;AsyncWebServerRequest request;
+#ifdef FASTBEE_LOG_OPERATION_REGRESSION_ONLY
+    // Each VFS call is below 120ms, but the original R6 batch rejects their sum.
+    // Freeze the old reader and its class together for the negative control.
+    reset(21);nativeReadElapsedMs=29;metadataElapsedMs=100;
+    readLogList(&ctx,&request);
+    std::fprintf(stderr,"ACTUAL status=%d entries=%d readdir=%d stat=%d clock=%u yields=%d rootsClosed=%d\n",
+                 request.status,added,openNextCalls,metadataCalls,clockMs,yieldCount,closedRoots);
+    assert(request.status==200&&added==21&&returnedNames==filenames&&closedRoots==1);
+    assert(clockMs==2738+static_cast<uint32_t>(yieldCount)&&yieldCount>=5);
+    reset(21);clockMs=UINT32_MAX-60;nativeReadElapsedMs=29;metadataElapsedMs=100;request={};
+    readLogList(&ctx,&request);
+    assert(request.status==200&&added==21&&returnedNames==filenames&&closedRoots==1);
+    assert(clockMs==static_cast<uint32_t>(UINT32_MAX-60U+2738U+yieldCount)&&yieldCount>=5);
+    puts("PASS independent VFS deadlines retain complete 21-file results across millis wrap");
+    return 0;
+#endif
+#ifdef FASTBEE_LOG_SEGMENTED_REGRESSION_ONLY
+    // The real R5 scanner rejects this complete collection because its total
+    // elapsed time exceeds 120 ms. Each individual VFS operation is bounded.
+    // These costs are mocks, not a physical measurement of the 172 ms failure.
+    reset(21);nativeReadElapsedMs=6;metadataElapsedMs=2;
+    readLogList(&ctx,&request);
+    assert(request.status==200&&added==21&&returnedNames==filenames&&closedRoots==1);
+    assert(yieldCount>=5&&clockMs==174+static_cast<uint32_t>(yieldCount));
+    puts("PASS complete slow 21-file collection across bounded worker yields");
+    return 0;
+#endif
+    // Actual retained device collection has 21 logs. Simulate the old VFS
+    // stat/fopen cost separately; these are not physical latency measurements.
+    reset(21);fileOpenElapsedMs=6;nativeReadElapsedMs=1;metadataElapsedMs=2;
+    readLogList(&ctx,&request);
+    assert(request.status==200&&added==21&&returnedNames==filenames&&clockMs==64+static_cast<uint32_t>(yieldCount));
+#ifdef FASTBEE_LOG_METADATA_REGRESSION_ONLY
+    puts("PASS actual reader returns all 21 files without content opens");
+    return 0;
+#endif
+    // Exact normal rotation collection retains every file and its response.
+    reset(3);readLogList(&ctx,&request);
+    assert(request.status==200&&added==3&&returnedNames==filenames&&closedFiles==0&&closedRoots==1);
+    // Exact cap remains accepted. The extra enumeration only proves EOF.
+    reset(64);request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==64&&openNextCalls==65&&closedFiles==0&&closedRoots==1);
+    // One excess entry fails honestly. Never send partially enumerated success.
+    reset(65);request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==64&&openNextCalls==65&&closedFiles==0&&closedRoots==1);
+    assert(request.error.find("phase=admit-entry reason=entry-limit")!=std::string::npos);
+    // Count all scanned files, including names not selected into the log JSON.
+    reset(500);for(auto& name:filenames)name="unrelated.txt";request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==0&&openNextCalls==65&&closedFiles==0&&closedRoots==1);
+    // Each individual batch is inclusive; a slow EOF still cannot succeed.
+    reset(0);fileOpenElapsedMs=120;request={};readLogList(&ctx,&request);assert(request.status==200);
+    reset(0);fileOpenElapsedMs=121;request={};readLogList(&ctx,&request);assert(request.status==503);
+    assert(request.error.find("phase=after-readdir reason=operation-deadline")!=std::string::npos);
+    assert(request.error.find("operationMs=121")!=std::string::npos);
+    reset(1);fileOpenElapsedMs=61;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==1&&openNextCalls==2&&closedRoots==1&&yieldCount==1);
+    reset(1);rootOpenElapsedMs=121;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==0&&closedRoots==1&&openNextCalls==0);
+    assert(request.error.find("phase=after-opendir reason=operation-deadline")!=std::string::npos);
+    assert(request.error.find("operationMs=121")!=std::string::npos);
+    reset(1);rootOpenElapsedMs=120;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==1&&closedRoots==1);
+    reset(1);clockMs=UINT32_MAX-60;fileOpenElapsedMs=60;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==1); // Exactly 120ms across millis wrap.
+    reset(1);clockMs=UINT32_MAX-60;fileOpenElapsedMs=61;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&yieldCount==1);
+    // Headroom lost inside openNextFile is rechecked before JSON allocation.
+    for(int kind=0;kind<3;++kind){
+        reset(3);pressureCall=2;pressureKind=kind;request={};readLogList(&ctx,&request);
+        assert(request.status==503&&added==1&&closedFiles==0&&closedRoots==1);
+    }
+    // A disappeared file during enumeration or a failed EOF cannot be sent as
+    // a successful partial list. Every opened DIR closes on all return paths.
+    reset(3);metadataFailureCall=2;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==1&&closedRoots==1);
+    reset(3);directoryError=EIO;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==3&&closedRoots==1);
+    reset(0);missingDirectory=true;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==0&&closedRoots==0);
+    reset(0);unavailableMount=true;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&openNextCalls==0&&closedRoots==0);
+    reset(0);oversizedMount=true;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&openNextCalls==0&&closedRoots==0);
+    reset(1);metadataBadTypeCall=1;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==0&&closedRoots==1);
+    reset(1);metadataNegativeSizeCall=1;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==0&&closedRoots==1);
+    reset(1);metadataElapsedMs=121;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==0&&closedRoots==1);
+    assert(request.error.find("phase=after-stat reason=operation-deadline")!=std::string::npos);
+    assert(request.error.find("operationMs=121")!=std::string::npos);
+    reset(1);metadataElapsedMs=120;request={};readLogList(&ctx,&request);
+    assert(request.status==200&&added==1&&closedRoots==1);
+    // Cancellation and pressure after a yield release the same DIR, with no
+    // partial successful response and no second task or content file open.
+    reset(21);disconnectYield=1;request={};readLogList(&ctx,&request);
+    assert(request.status==0&&added==4&&closedRoots==1&&openNextCalls==4);
+    reset(21);pressureYield=1;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==4&&closedRoots==1&&openNextCalls==4);
+    // Scheduler starvation cannot keep ownership indefinitely even when each
+    // batch completes within 120 ms. The total ownership deadline is distinct.
+    reset(21);yieldElapsedMs=2001;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==8&&closedRoots==1&&yieldCount==2);
+    assert(request.error.find("phase=complete-entry reason=total-deadline")!=std::string::npos);
+    assert(request.error.find("totalMs=4002")!=std::string::npos);
+    reset(21);clockMs=UINT32_MAX-10;yieldElapsedMs=2001;request={};readLogList(&ctx,&request);
+    assert(request.status==503&&added==8&&closedRoots==1&&yieldCount==2);
+    assert(request.error.find("phase=complete-entry reason=total-deadline")!=std::string::npos);
+    assert(request.error.find("totalMs=4002")!=std::string::npos);
+    puts("PASS production log directory cap, batch/total deadlines, yields, wrap and resource rechecks");
+}

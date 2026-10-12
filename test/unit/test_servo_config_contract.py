@@ -12,12 +12,15 @@ MANAGER_CPP = "\n".join(
     (ROOT / path).read_text(encoding="utf-8")
     for path in (
         "src/core/PeripheralManager.cpp",
+        "src/core/PeripheralManagerServoControl.cpp",
         "src/core/PeripheralManagerPersistence.cpp",
+        "src/core/PeripheralManagerValidation.cpp",
     )
 )
-ROUTE_CPP = (
-    ROOT / "src/network/handlers/PeripheralRouteHandler.cpp"
-).read_text(encoding="utf-8")
+ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/network/handlers/PeripheralRouteHandler.cpp",
+    "src/network/handlers/PeripheralReadRoutes.cpp",
+))
 
 
 SERVO_FIELDS = (
@@ -171,7 +174,7 @@ class ServoConfigContractTests(unittest.TestCase):
         self.assertRegex(duty_mapper, r"\bresolution\b")
 
         writer = function_body(
-            MANAGER_CPP, r"\bPeripheralManager::writeServoAngle\s*\("
+            MANAGER_CPP, r"\bPeripheralManager::submitOrdinaryServo\s*\("
         )
         self.assertIn("servoAngleToPulseUs", writer)
         self.assertIn(duty_match.group(1), writer)
@@ -191,20 +194,24 @@ class ServoConfigContractTests(unittest.TestCase):
         load = function_body(
             MANAGER_CPP, r"\bPeripheralManager::loadConfiguration\s*\("
         )
-        self.assertIn("PeripheralType::PWM_SERVO", save)
-        self.assertIn("PeripheralType::PWM_SERVO", load)
-        self.assertIn("initializeServoDefaults", load)
+        self.assertIn("serializePersistedPeripheral(obj, config)", save)
+        self.assertIn("parsePersistedPeripheral(obj, config, parseError)", load)
+        serializer = function_body(MANAGER_CPP, r"\bserializePersistedPeripheral\s*\(")
+        parser = function_body(MANAGER_CPP, r"\bparsePersistedPeripheral\s*\(")
+        self.assertIn("PeripheralType::PWM_SERVO", serializer)
+        self.assertIn("PeripheralType::PWM_SERVO", parser)
+        self.assertIn("initializeServoDefaults", parser)
         for field in SERVO_FIELDS:
-            self.assertIn(f'params["{field}"]', save)
-            self.assertIn(f'params["{field}"]', load)
-            self.assertIn(f"config.params.servo.{field}", save)
-            self.assertIn(f"config.params.servo.{field}", load)
+            self.assertIn(f'FastBee::setFixedJsonField(params, "{field}",', serializer)
+            self.assertIn(f'params["{field}"]', parser)
+            self.assertIn(f"config.params.servo.{field}", serializer)
+            self.assertIn(f"config.params.servo.{field}", parser)
 
     def test_add_and_update_routes_round_trip_all_servo_fields(self):
         serializer = function_body(ROUTE_CPP, r"\baddServoParams\s*\(")
         parser = function_body(ROUTE_CPP, r"\bapplyServoParams\s*\(")
         for field in SERVO_FIELDS:
-            self.assertIn(f'params["{field}"]', serializer)
+            self.assertIn(f'FastBee::setFixedJsonField(params, "{field}",', serializer)
             self.assertIn(f'"{field}"', parser)
             self.assertIn(f"config.params.servo.{field}", serializer)
 
@@ -245,13 +252,18 @@ class ServoConfigContractTests(unittest.TestCase):
         )
         for body in (status, read):
             self.assertIn("PeripheralType::PWM_SERVO", body)
-            self.assertIn('data["angle"]', body)
-            self.assertIn('data["pulseUs"]', body)
-        self.assertIn('data["value"]', read)
-        self.assertIn('data["unit"] = "deg"', read)
+        self.assertIn('FastBee::setFixedJsonField(data, "angle",', status)
+        self.assertIn('FastBee::setFixedJsonField(data, "pulseUs",', status)
+        self.assertIn('FastBee::setFixedJsonField(data, "angle", runtimeState.state.servo.currentAngle)', read)
+        self.assertIn('FastBee::setFixedJsonField(data, "pulseUs", runtimeState.state.servo.currentPulseUs)', read)
+        self.assertIn('FastBee::setFixedJsonField(data, "value", runtimeState.state.servo.currentAngle)', read)
+        self.assertIn('FastBee::setFixedJsonField(data, "unit", "deg")', read)
         self.assertIn("PeripheralType::PWM_SERVO", write)
-        self.assertIn('hasParam("angle", true)', write)
-        self.assertIn("writeServoAngle", write)
+        self.assertIn("handleHttpServoOutput", write)
+        boundary = (ROOT / "src/network/HttpOutputControl.cpp").read_text(encoding="utf-8")
+        servo = function_body(boundary, r"\bhandleHttpServoOutput\s*\(")
+        self.assertIn('hasParam("angle", true)', servo)
+        self.assertIn("submitOrdinaryServo", servo)
 
     def test_new_peripherals_and_servos_are_disabled_by_default(self):
         add = function_body(

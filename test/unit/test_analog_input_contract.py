@@ -15,14 +15,20 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 STATE = (ROOT / "web-src/js/state.js").read_text(encoding="utf-8")
 PERIPHERALS_JS = (ROOT / "web-src/modules/runtime/peripherals.js").read_text(encoding="utf-8")
 PERIPHERAL_SAVE_JS = (ROOT / "web-src/modules/runtime/peripheral-save.js").read_text(encoding="utf-8")
-ROUTE_CPP = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(encoding="utf-8")
+ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/network/handlers/PeripheralRouteHandler.cpp",
+    "src/network/handlers/PeripheralReadRoutes.cpp",
+    "src/network/handlers/PeripheralRouteReadSupport.h",
+))
 MANAGER_CPP = "\n".join(
     (ROOT / path).read_text(encoding="utf-8")
     for path in (
         "src/core/PeripheralManager.cpp",
+        "src/core/PeripheralManagerAnalog.cpp",
         "src/core/PeripheralManagerDiagnostics.cpp",
         "src/core/PeripheralManagerIo.cpp",
         "src/core/PeripheralManagerPersistence.cpp",
+        "src/core/PeripheralManagerValidation.cpp",
     )
 )
 MANAGER_H = (ROOT / "include/core/PeripheralManager.h").read_text(encoding="utf-8")
@@ -49,8 +55,8 @@ class AnalogInputContractTests(unittest.TestCase):
 
     def test_adc_filter_fields_round_trip_through_api(self):
         self.assertRegex(ROUTE_CPP, r"isAnalogInput(?:Config|Peripheral)Type\(config(?:->|\.)type\)")
-        self.assertIn('params["sampleCount"]', ROUTE_CPP)
-        self.assertIn('params["filterMode"]', ROUTE_CPP)
+        self.assertIn('FastBee::setFixedJsonField(params, "sampleCount",', ROUTE_CPP)
+        self.assertIn('FastBee::setFixedJsonField(params, "filterMode",', ROUTE_CPP)
         self.assertIn('getParamInt(request, "sampleCount"', ROUTE_CPP)
         self.assertIn('getParamInt(request, "filterMode"', ROUTE_CPP)
         self.assertIn("isAdcInputType(config.type)", MANAGER_CPP)
@@ -98,7 +104,7 @@ class AnalogInputContractTests(unittest.TestCase):
             "rawMax",
         ):
             self.assertIn(field, PERIPHERALS_JS)
-            self.assertIn('params["' + field + '"]', ROUTE_CPP)
+            self.assertIn('FastBee::setFixedJsonField(params, "' + field + '",', ROUTE_CPP)
 
         defaults_body = re.search(
             r"_applyAnalogSignalDefaults\(modeValue\)\s*\{(.*?)\n\s*\},",
@@ -141,8 +147,8 @@ class AnalogInputContractTests(unittest.TestCase):
         self.assertIn("inputMin - 1.0f", CONFIG_H)
         self.assertIn("inputMax + 1.0f", CONFIG_H)
         self.assertIn("AnalogInputQuality* quality", MANAGER_H)
-        self.assertIn('data["quality"]', ROUTE_CPP)
-        self.assertIn('data["qualityCode"]', ROUTE_CPP)
+        self.assertIn('FastBee::setFixedJsonField(data, "quality", analogInputQualityName(quality))', ROUTE_CPP)
+        self.assertIn('FastBee::setFixedJsonField(data, "qualityCode", static_cast<uint8_t>(quality))', ROUTE_CPP)
         self.assertIn('json += "_quality', PROTOCOL_CPP)
         self.assertIn('remark\\\":\\\"quality', PROTOCOL_CPP)
 
@@ -157,7 +163,7 @@ class AnalogInputContractTests(unittest.TestCase):
             self.assertIn('id="' + element_id + '"', modal)
         for field in ("inputMode", "invertLogic", "debounceMs", "reportMode"):
             self.assertIn(field, PERIPHERALS_JS)
-            self.assertIn('params["' + field + '"]', ROUTE_CPP)
+            self.assertIn('FastBee::setFixedJsonField(params, "' + field + '",', ROUTE_CPP)
         self.assertRegex(CONFIG_H, r"enum class DigitalInputMode\s*:\s*uint8_t")
         self.assertRegex(CONFIG_H, r"\bAUTO\s*=\s*0")
         self.assertRegex(CONFIG_H, r"\bPULL_UP\s*=\s*2")
@@ -169,7 +175,7 @@ class AnalogInputContractTests(unittest.TestCase):
 
     def test_s3_f16r8_ai_bundle_enables_engineering_conversion(self):
         bundle = json.loads(
-            (ROOT / "docs/ecm50a-s3-f16r8/peripherals.json").read_text(encoding="utf-8")
+            (ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config/peripherals.json").read_text(encoding="utf-8")
         )
         peripherals = {item["id"]: item for item in bundle["peripherals"]}
         expected_ranges = {
@@ -195,12 +201,18 @@ class AnalogInputContractTests(unittest.TestCase):
         for peripheral_id in ("di1", "di2"):
             params = peripherals[peripheral_id]["params"]
             self.assertEqual(params["inputMode"], 2)
-            self.assertFalse(params["invertLogic"])
+            self.assertFalse(params.get("invertLogic", False))
             self.assertEqual(params["debounceMs"], 50)
-            self.assertEqual(params["reportMode"], 0)
+            self.assertEqual(params.get("reportMode", 0), 0)
+
+        self.assertIn('config.params.gpio.invertLogic = params["invertLogic"] | false;', MANAGER_CPP)
+        self.assertIn(
+            'config.params.gpio.reportMode = params["reportMode"] | static_cast<uint8_t>(DigitalReportMode::ON_CHANGE);',
+            MANAGER_CPP,
+        )
 
         exec_bundle = json.loads(
-            (ROOT / "docs/ecm50a-s3-f16r8/periph_exec.json").read_text(encoding="utf-8")
+            (ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config/periph_exec.json").read_text(encoding="utf-8")
         )
         collect_rule = next(rule for rule in exec_bundle["rules"] if rule["id"] == "s3_collect_inputs")
         ai_actions = [
@@ -219,7 +231,7 @@ class AnalogInputContractTests(unittest.TestCase):
 
     def test_s3_f16r8_sensor_report_ids_are_unique_and_channels_stay_correct(self):
         exec_bundle = json.loads(
-            (ROOT / "docs/ecm50a-s3-f16r8/periph_exec.json").read_text(encoding="utf-8")
+            (ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config/periph_exec.json").read_text(encoding="utf-8")
         )
         collect_rule = next(rule for rule in exec_bundle["rules"] if rule["id"] == "s3_collect_inputs")
         self.assertNotIn("s3_optional_sht30", {rule["id"] for rule in exec_bundle["rules"]})
@@ -290,10 +302,10 @@ class AnalogInputContractTests(unittest.TestCase):
 
     def test_s3_f16r8_modbus_templates_match_executor_indices(self):
         protocol = json.loads(
-            (ROOT / "docs/ecm50a-s3-f16r8/protocol.json").read_text(encoding="utf-8")
+            (ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config/protocol.json").read_text(encoding="utf-8")
         )
         exec_bundle = json.loads(
-            (ROOT / "docs/ecm50a-s3-f16r8/periph_exec.json").read_text(encoding="utf-8")
+            (ROOT / "docs/device-test-configs/com15-esp32s3-f16r8/config/periph_exec.json").read_text(encoding="utf-8")
         )
         master = protocol["modbusRtu"]["master"]
         rules = {rule["id"]: rule for rule in exec_bundle["rules"]}

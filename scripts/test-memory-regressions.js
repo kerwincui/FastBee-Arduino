@@ -57,7 +57,7 @@ const runtimeFeatureSource = read('src/core/RuntimeFeatureManager.cpp');
 const protocolManagerSource = read('src/protocols/ProtocolManager.cpp');
 const protocolManagerHeader = read('include/protocols/ProtocolManager.h');
 const protocolRouteSource = read('src/network/handlers/ProtocolRouteHandler.cpp');
-const periphExecManagerSource = read('src/core/PeriphExecManager.cpp');
+const periphExecManagerSource = read('src/core/PeriphExecManager.cpp') + '\n' + read('src/core/PeriphExecWorkers.cpp');
 const deployConfigBundle = read('scripts/deploy-config-bundle.ps1');
 const healthMonitorHeader = read('include/systems/HealthMonitor.h');
 const healthMonitorSource = read('src/systems/HealthMonitor.cpp');
@@ -111,7 +111,9 @@ if (!protocolManagerHeader.includes('isModbusRestartPending') ||
     failures.push('Modbus memory recovery must wait for confirmed handler startup');
 }
 if (!periphExecManagerSource.includes('Skip heavy rule during memory pressure') ||
-    !periphExecManagerSource.includes('monitor->isMemorySevere() && shouldAvoidSyncFallback(rule)')) {
+    !periphExecManagerSource.includes('const bool requiresWorker = ruleRequiresWorkerPool(rule)') ||
+    !periphExecManagerSource.includes('monitor->isMemorySevere() && requiresWorker') ||
+    !periphExecManagerSource.includes('if (shouldAvoidSyncFallback(rule)) return true;')) {
     failures.push('PeriphExec must reject heavy event rules during severe memory pressure');
 }
 if (!/bool\s+shutdown\(uint32_t\s+timeoutMs\s*=\s*10000\)/.test(workerPoolHeader) ||
@@ -136,9 +138,10 @@ const workerResumeBlock = workerResumeStart >= 0 && workerResumeEnd > workerResu
 if (workerAdmissionStart < 0 ||
     !periphExecManagerSource.includes('MemoryBudget::dram8Free()') ||
     !periphExecManagerSource.includes('MemoryBudget::dram8Largest()') ||
-    !periphExecManagerSource.includes('MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE') ||
-    !workerResumeBlock.includes('hasWorkerPoolMemoryHeadroom(true)') ||
-    workerResumeBlock.indexOf('hasWorkerPoolMemoryHeadroom(true)') >
+    !/webReserveAfterWorker\s*=\s*\(CHIP_IS_CLASSIC_ESP32\s*&&\s*FASTBEE_USE_PSRAM\s*==\s*0\)\s*\?\s*25600U/.test(periphExecManagerSource) ||
+    !periphExecManagerSource.includes('WiFi.status() != WL_CONNECTED') ||
+    !workerResumeBlock.includes('hasWorkerPoolMemoryHeadroom(true') ||
+    workerResumeBlock.indexOf('hasWorkerPoolMemoryHeadroom(true') >
         workerResumeBlock.indexOf('new (std::nothrow) PeriphExecWorkerPool')) {
     failures.push('PeriphExec worker recovery must pass the startup 8-bit DRAM/Web-reserve admission check before allocation');
 }
@@ -161,9 +164,9 @@ if (!healthMonitorSource.includes('PeriphExec workers fully suspended after retr
     !healthMonitorSource.includes('workerSuspended')) {
     failures.push('Memory recovery must retry and expose pending PeriphExec worker shutdown');
 }
-if (!healthMonitorSource.includes('restored persisted MQTTS downgrade') ||
-    !healthMonitorSource.includes('setRuntimeDisabled(\n        "mqtts"')) {
-    failures.push('Persisted MQTTS downgrade must be visible in runtime feature status after reboot');
+if (!healthMonitorSource.includes('historical plaintext downgrade blocked') ||
+    !/setRuntimeDisabled\(\s*"mqtts"/.test(healthMonitorSource)) {
+    failures.push('Historical plaintext downgrade must be blocked and visible after reboot');
 }
 if (!healthMonitorSource.includes('disabled_by_memory') ||
     !healthMonitorSource.includes('restored persisted MQTT disable') ||
@@ -180,10 +183,11 @@ if (!healthMonitorHeaderSource.includes('_mqttRestorePendingForMemory') ||
 if ((healthMonitorSource.match(/restartQueued && restored && !restored->isStopped\(\)/g) || []).length < 2) {
     failures.push('MQTT recovery must verify a ready client in both retry and NORMAL restore paths');
 }
-if (!healthMonitorSource.includes('MQTTS client not ready after deferred restart; reverted to plain MQTT') ||
-    !healthMonitorSource.includes('MQTTS deferred restart rejected; reverted to plain MQTT') ||
-    !healthMonitorSource.includes('downgradeMqttsToMqtt();')) {
-    failures.push('MQTTS recovery must fall back to persisted plain MQTT when TLS rebuild is rejected');
+if (!healthMonitorSource.includes('configuration preserved, no plaintext fallback') ||
+    !healthMonitorSource.includes('restoreMqttsAfterMemory()') ||
+    healthMonitorSource.includes('doc["mqtt"]["scheme"] = "mqtt"') ||
+    healthMonitorSource.includes('doc["mqtt"]["enabled"] = false')) {
+    failures.push('Memory protection must pause/retry TLS without rewriting user scheme/port/enabled or permitting plaintext fallback');
 }
 if (!protocolRouteSource.includes('remove("disabled_by_memory")') ||
     !protocolRouteSource.includes('remove("downgraded_by_memory")') ||

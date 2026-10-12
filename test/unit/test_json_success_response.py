@@ -40,7 +40,8 @@ public:
             built=subprocess.run([compiler,"-std=c++17","-Wall","-Wextra","-Werror",
                 "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0","-DARDUINOJSON_ENABLE_STD_STRING=1",
                 f"-I{temp}",f"-I{ROOT/'include'}",f"-I{json.parent}",
-                str(ROOT/"test/unit/cpp/json_success_harness.cpp"),"-o",str(exe)],
+                str(ROOT/"test/unit/cpp/json_success_harness.cpp"),
+                str(ROOT/"src/utils/SharedJsonSerializer.cpp"),"-o",str(exe)],
                 capture_output=True,text=True,env=environment,timeout=60)
             self.assertEqual(built.returncode,0,built.stdout+built.stderr)
             result=subprocess.run([str(exe)],capture_output=True,text=True,env=environment,timeout=15)

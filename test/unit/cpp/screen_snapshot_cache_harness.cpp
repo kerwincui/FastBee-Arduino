@@ -267,6 +267,13 @@ static void operations() {
     assert(!f.out->cards[4].pending && strcmp(f.out->cards[4].error, "action_failed") == 0);
     const auto readCount = exec.resultReads; exec.results.clear(); f.refresh();
     assert(exec.resultReads == readCount && strcmp(f.out->cards[4].error, "action_failed") == 0);
+    // A native arbitration rejection survives the terminal cache unchanged.
+    f.manager._operationIds[0] = 44;result.operationId=44;result.status=AsyncExecStatus::FAILED;
+    result.ordinaryControlResult.evaluated=true;result.ordinaryControlResult.reason="CONTROL_CONFLICT";
+    exec.results.push_back(result);f.refresh();
+    assert(strcmp(f.out->cards[4].error,"CONTROL_CONFLICT")==0);
+    const auto conflictReads=exec.resultReads;exec.results.clear();f.refresh();
+    assert(exec.resultReads==conflictReads && strcmp(f.out->cards[4].error,"CONTROL_CONFLICT")==0);
     f.manager._operationIds[0] = 43; f.refresh(); assert(f.out->cards[4].pending && !f.out->cards[4].error[0]);
     f.manager._operationIds[0] = 0;
     f.manager._operationIds[1] = 0x80000001UL; f.manager._operationCardIds[1] = "restart";
@@ -309,6 +316,16 @@ static void motor() {
     assert(f.cache.rebuildCount() == 1);
     service.available = false; f.refresh();
     assert(!out.operationId && !out.motorCommandKnown && !out.motorReadError[0]);
+    auto& local = f.out->cards[0];
+    strcpy(local.error, "TRAVEL_CALIBRATION_REQUIRED");
+    strcpy(local.motorUiFeedback, local.error); local.motorUiFeedbackAt = 123;
+    f.refresh();
+    assert(!out.error[0] && !strcmp(out.motorUiFeedback, "TRAVEL_CALIBRATION_REQUIRED"));
+    assert(out.motorUiFeedbackAt == 123);
+    assert(f.manager.getSnapshot(*full) && !full->cards[0].motorUiFeedback[0]);
+    f.layout["pages"][0]["cards"][0]["controlRef"] = "motor.19.changed";
+    f.publish(); f.refresh();
+    assert(!out.motorUiFeedback[0] && out.motorUiFeedbackAt == 0);
 }
 
 static void revision() {

@@ -4,6 +4,7 @@ No serial access, relay switching, configuration changes, or automatic resets.
 Credentials remain in process environment. A RUNNING result is never a pass.
 """
 import argparse
+import hashlib
 from datetime import datetime, timezone, timedelta
 import importlib.util
 import json
@@ -11,12 +12,123 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
+import threading
 import time
 from requests.exceptions import ChunkedEncodingError, ContentDecodingError
 
 STABILITY_COUNTERS = ['transportErrors', 'httpErrorCount', 'http429Count', 'restarts',
                       'invalidModbusSamples', 'relayReadErrors', 'onboardRelayReadErrors', 'digitalReadErrors',
-                      'pollCounterResets', 'pollStalls', 'severeMemorySamples', 'samplingGaps']
+                      'pollCounterResets', 'pollStalls', 'severeMemorySamples', 'degradedMemorySamples', 'memoryMetricErrors', 'samplingGaps',
+                      'deploymentChanges', 'configChanges']
+DAY_SECONDS = 86400
+MAX_SOAK_SECONDS = 7 * DAY_SECONDS
+REPORT_REPLACE_DELAYS = (.025, .05, .075)
+# Separate from the sampling clock: virtual soak tests patch time.sleep.
+_report_publish_wait = threading.Event().wait
+
+
+def save_report_atomic(output, report):
+    """Retry only Windows sharing/access contention, keeping atomic replacement."""
+    pending, target = output / 'report.pending', output / 'report.json'
+    report.setdefault('reportPublishRetries', 0)
+    report.setdefault('reportPublishFailures', 0)
+    counts = report.setdefault('reportPublishErrorCounts', {})
+    def write_pending():
+        pending.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf8')
+    write_pending()
+    for attempt in range(len(REPORT_REPLACE_DELAYS) + 1):
+        try:
+            pending.replace(target)
+            return
+        except OSError as error:
+            winerror = getattr(error, 'winerror', None)
+            kind = ('WINERROR_' + str(winerror) if sys.platform == 'win32' and winerror is not None
+                    else type(error).__name__)
+            counts[kind] = counts.get(kind, 0) + 1
+            retry = (sys.platform == 'win32' and winerror in (5, 32, 33) and
+                     attempt < len(REPORT_REPLACE_DELAYS))
+            if retry:
+                report['reportPublishRetries'] += 1
+            else:
+                report['reportPublishFailures'] += 1
+                report['status'] = 'FAIL'
+            # Preserve the final failure in pending even when target stays locked.
+            write_pending()
+            if not retry:
+                raise
+            _report_publish_wait(REPORT_REPLACE_DELAYS[attempt])
+
+
+def validate_timing(seconds, interval):
+    if (type(seconds) is not int or not 30 <= seconds <= MAX_SOAK_SECONDS or
+            type(interval) is not int or not 10 <= interval <= 300):
+        raise ValueError('Invalid soak bounds: 30..604800 seconds, 10..300 interval')
+
+
+def continuous_window_status(report, threshold):
+    if report['requestedSeconds'] < threshold:
+        return 'NOT_RUN'
+    if report['status'] == 'RUNNING':
+        return 'RUNNING'
+    if (report.get('stabilityStatus') == 'FAIL' or report.get('measurementStatus') == 'FAIL' or
+            report['status'] == 'FAIL'):
+        return 'FAIL'
+    if (report['status'] == 'PASS' and report.get('coveragePassed') and
+            report.get('actualSampleSpanSeconds', 0) >= threshold):
+        return 'PASS'
+    return 'INCOMPLETE'
+
+
+class ObservationChanged(RuntimeError):
+    def __init__(self, counter, message):
+        super().__init__(message)
+        self.counter = counter
+
+
+class DeploymentBinding:
+    """Pin the existing deployment evidence without exposing private config."""
+    def __init__(self, filename):
+        self.path = Path(filename)
+        contents = self.path.read_bytes()
+        self.digest = hashlib.sha256(contents).hexdigest()
+        self.deployment = json.loads(contents)
+        if not isinstance(self.deployment, dict):
+            raise ValueError('Deployment report must be an object')
+        if (any(self.deployment.get(key) is not True for key in
+                ('written', 'verified', 'applicationWritten')) or
+                re.fullmatch('[0-9a-fA-F]{64}', str(self.deployment.get('firmwareSha256', ''))) is None):
+            raise ValueError('Verified application deployment with firmware SHA256 required')
+
+    def check(self):
+        try:
+            unchanged = hashlib.sha256(self.path.read_bytes()).hexdigest() == self.digest
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            raise ObservationChanged('deploymentChanges', 'Deployment report changed or unavailable during observation')
+
+
+def config_digest(configs, master):
+    return hashlib.sha256(json.dumps(dict(peripherals=configs, master=master),
+        sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')).hexdigest()
+
+
+class MemoryMetricError(ValueError):
+    """Successful HTTP response lacked valid internal-memory measurements."""
+
+
+def internal_dram_sample(memory):
+    """Require measured internal DRAM; total heap/PSRAM is not a substitute."""
+    if not isinstance(memory, dict):
+        raise MemoryMetricError('Missing internal DRAM metrics')
+    result = {}
+    for field in ('dram8Free', 'dram8Largest'):
+        value = memory.get(field)
+        if type(value) is not int or value < 0:
+            raise MemoryMetricError('Missing or invalid internal DRAM metrics: ' + field)
+        result[field] = value
+    return result
 
 def minimum_samples(seconds, interval):
     return max(2, math.ceil(seconds / interval * .9))
@@ -28,9 +140,10 @@ class CoverageTracker:
         self.report, self.started = report, started
         self.limit = max(90, interval * 3)
         self.last_success = self.previous_attempt = None
+        self.first_success = None
         self.gap_open = False
         report.update(durationComplete=False, coveragePassed=False,
-                      lastSuccessfulSampleAt=None, measurementUnavailableSamples=0)
+                      lastSuccessfulSampleAt=None, measurementUnavailableSamples=0, actualSampleSpanSeconds=0)
 
     def update(self, now):
         r = self.report
@@ -45,6 +158,7 @@ class CoverageTracker:
             self.gap_open = True
         r['durationComplete'] = elapsed >= r['requestedSeconds']
         r['coveragePassed'] = bool(r['durationComplete'] and
+            r['actualSampleSpanSeconds'] >= r['requestedSeconds'] and
             r['samples'] >= r['minimumRequiredSamples'] and not r.get('samplingGaps'))
         if r.get('samplingGaps'):
             r['stabilityStatus'] = 'FAIL'
@@ -62,6 +176,10 @@ class CoverageTracker:
         self.update(now)
         if complete:
             self.report['samples'] += 1
+            if self.first_success is None:
+                self.first_success = now
+                self.report['firstSuccessfulSampleAt'] = at
+            self.report['actualSampleSpanSeconds'] = max(0, now - self.first_success)
             self.last_success = now
             self.report['lastSuccessfulSampleAt'] = at
             self.gap_open = False
@@ -106,7 +224,8 @@ def record_error(report, kind, error, at):
 
 
 def finish_report(report, completed=False, interrupted=False):
-    failed = report.get('stabilityStatus') == 'FAIL' or any(report.get(k, 0) for k in STABILITY_COUNTERS)
+    failed = (report.get('stabilityStatus') == 'FAIL' or report.get('reportPublishFailures', 0) or
+              any(report.get(k, 0) for k in STABILITY_COUNTERS))
     measured_failed = report.get('measurementStatus') == 'FAIL' or any(
         report.get(k, 0) for k in ['invalidSoilSamples', 'invalidModbusSamples', 'measurementUnavailableSamples'])
     covered = report.get('durationComplete') and report.get('coveragePassed')
@@ -116,6 +235,8 @@ def finish_report(report, completed=False, interrupted=False):
         ('PASS' if completed and covered and report.get('samples') else 'INCOMPLETE'))
     report['status'] = ('INTERRUPTED' if interrupted else
         ('PASS' if stable and report['measurementStatus'] == 'PASS' else 'FAIL'))
+    report['continuous24hStatus'] = continuous_window_status(report, DAY_SECONDS)
+    report['continuous7dStatus'] = continuous_window_status(report, MAX_SOAK_SECONDS)
 
 
 def validate_onboard_config(config, relay_id, gpio):
@@ -227,13 +348,17 @@ def main():
     parser.add_argument('--seconds',type=int,default=28800)
     parser.add_argument('--interval',type=int,default=30)
     parser.add_argument('--out',required=True)
+    parser.add_argument('--deployment',help='Existing verified application deployment report; required for >=24h')
     parser.add_argument('--onboard-relay-id')
     parser.add_argument('--onboard-rule-id')
     parser.add_argument('--onboard-gpio',type=int,default=15)
     args=parser.parse_args()
     if bool(args.onboard_relay_id) != bool(args.onboard_rule_id):
         raise ValueError('Specify both onboard relay and photoelectric rule identifiers')
-    if not 30<=args.seconds<=172800 or not 10<=args.interval<=300:raise ValueError('Invalid soak bounds')
+    validate_timing(args.seconds,args.interval)
+    if args.seconds >= DAY_SECONDS and not args.deployment:
+        raise ValueError('A fixed --deployment report is required for 24h/7d observation')
+    binding=DeploymentBinding(args.deployment) if args.deployment else None
     if not 0<=args.onboard_gpio<=48:raise ValueError('Invalid onboard GPIO')
     out=Path(args.out);out.mkdir(parents=True,exist_ok=False)
     now=datetime.now(timezone.utc)
@@ -242,18 +367,24 @@ def main():
                 stabilityStatus='RUNNING',measurementStatus='RUNNING',transportErrors=0,http429Count=0,
                 httpErrorCount=0,httpStatusCounts={},
                 restarts=0,invalidSoilSamples=0,invalidSoilById={},invalidModbusSamples=0,relayReadErrors=0,
-                onboardRelayReadErrors=0,digitalReadErrors=0,pollCounterResets=0,pollStalls=0,severeMemorySamples=0,samplingGaps=0,
+                onboardRelayReadErrors=0,digitalReadErrors=0,pollCounterResets=0,pollStalls=0,severeMemorySamples=0,degradedMemorySamples=0,memoryMetricErrors=0,samplingGaps=0,
+                deploymentChanges=0,configChanges=0,
                 minimumRequiredSamples=minimum_samples(args.seconds,args.interval),attempts=0,errorExamples=[],
                 unverified=['traceable-sensor-accuracy','physical-edge-latency'])
-    report.update(schemaVersion=2,observedSeconds=0,durationComplete=False,coveragePassed=False,measurementUnavailableSamples=0)
+    report.update(schemaVersion=3,observedSeconds=0,durationComplete=False,coveragePassed=False,measurementUnavailableSamples=0,
+                  acceptanceStatus='INCOMPLETE',observerSha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  expectedMac=args.expected_mac,continuous24hStatus='RUNNING' if args.seconds>=DAY_SECONDS else 'NOT_RUN',
+                  continuous7dStatus='RUNNING' if args.seconds>=MAX_SOAK_SECONDS else 'NOT_RUN')
+    if binding:
+        report.update(deploymentReportSha256=binding.digest,firmwareSha256=binding.deployment['firmwareSha256'],
+                      webSha256=binding.deployment.get('webSha256'))
     started=time.monotonic();deadline=started+args.seconds;previous=None;first_polls=None;last_polls=None
     coverage=None;session=None
     def save():
         if coverage is not None:coverage.update(time.monotonic())
         report['updatedAt']=datetime.now(timezone.utc).isoformat()
         report['elapsedSeconds']=round(time.monotonic()-started,1)
-        temp=out/'report.pending';temp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
-        temp.replace(out/'report.json')
+        save_report_atomic(out, report)
     def example(kind,message):
         event=record_error(report,kind,message,datetime.now(timezone.utc).isoformat())
         with (out/'events.jsonl').open('a',encoding='utf8') as events:
@@ -283,6 +414,15 @@ def main():
         for ident,config in configs.items():soil.validate_config(ident,config)
         report['soilConfigs']=configs
         master=api('/api/protocol/config',{'section':'modbusRtu'})['modbusRtu']['master']
+        baseline_config_digest=config_digest(configs,master)
+        report['configSha256']=baseline_config_digest
+        def verify_bound_configuration():
+            if not binding:return
+            binding.check()
+            current_configs={ident:api('/api/peripherals/',{'id':ident}) for ident in configs}
+            current_master=api('/api/protocol/config',{'section':'modbusRtu'})['modbusRtu']['master']
+            if config_digest(current_configs,current_master)!=baseline_config_digest:
+                raise ObservationChanged('configChanges','Observed configuration changed; start a new window')
         devices=master['devices']
         relays=[d for d in devices if d.get('enabled') and d.get('deviceType')=='relay' and d.get('slaveAddress')==6]
         if len(relays)!=1:raise ValueError('Expected one address-6 relay')
@@ -305,6 +445,10 @@ def main():
                 coverage.attempt(tick);fatal=None;row['complete']=False
                 failures_before=sum(report[k] for k in ['invalidModbusSamples','relayReadErrors','onboardRelayReadErrors','digitalReadErrors'])
                 try:
+                    if binding:
+                        binding.check()
+                        if (report['attempts']-1)%5==0:
+                            verify_bound_configuration()
                     info=api('/api/system/info')
                     if norm(info.get('network',{}).get('macAddress',''))!=norm(args.expected_mac):
                         raise RuntimeError('Device identity changed; stopping all reads')
@@ -312,10 +456,24 @@ def main():
                     if type(uptime) not in (int,float) or not math.isfinite(uptime) or uptime<0:raise ValueError('Missing or invalid uptime')
                     if previous is not None and uptime<previous:report['restarts']+=1
                     previous=uptime;report.setdefault('initialUptime',uptime);report['finalUptime']=uptime
-                    row['uptime']=uptime;row['memory']=info.get('memory',{})
-                    for field,fallback,target in [('dramFree','heapFree','minimumDramFree'),('dramLargestBlock','heapMaxAlloc','minimumDramLargestBlock')]:
-                        value=row['memory'].get(field,row['memory'].get(fallback))
-                        if type(value) in (int,float):report[target]=min(report.get(target,value),value)
+                    row['uptime']=uptime
+                    health=api('/api/health')
+                    row['memory']=health.get('memory',{})
+                    row['memoryDegradation']=health.get('memoryDegradation',{})
+                    # NORMAL is the current pressure level, not proof that all
+                    # previously suspended services have actually recovered.
+                    if (health.get('degraded') is True or row['memory'].get('degraded') is True or
+                            row['memory'].get('critical') is True or row['memoryDegradation'].get('active') is True):
+                        report['degradedMemorySamples']+=1
+                        example('memoryDegradation',row['memoryDegradation'] or row['memory'])
+                    system_status=api('/api/system/status')
+                    if norm(system_status.get('macAddress',''))!=norm(args.expected_mac):
+                        raise RuntimeError('Device identity changed during memory sampling')
+                    row['internalMemory']=internal_dram_sample(system_status.get('memory',{}))
+                    report['memoryMetricsSource']='/api/system/status:memory.dram8Free,dram8Largest'
+                    for field,target in [('dram8Free','minimumDramFree'),('dram8Largest','minimumDramLargestBlock')]:
+                        value=row['internalMemory'][field]
+                        report[target]=min(report.get(target,value),value)
                     if row['memory'].get('guardLevel') in ('SEVERE','CRITICAL'):
                         report['severeMemorySamples']+=1;example('memory',row['memory'].get('guardLevel'))
                     status=api('/api/modbus/status',{'full':1})
@@ -359,7 +517,9 @@ def main():
                         except (ValueError,requests.RequestException) as error:report['relayReadErrors']+=1;example('relay',error)
                     row['complete']=sum(report[k] for k in ['invalidModbusSamples','relayReadErrors','onboardRelayReadErrors','digitalReadErrors'])==failures_before
                 except (requests.RequestException,ValueError,KeyError,RuntimeError) as error:
-                    report['transportErrors']+=1;row['error']=str(error);example('sampling',error)
+                    counter=(error.counter if isinstance(error,ObservationChanged) else
+                             'memoryMetricErrors' if isinstance(error,MemoryMetricError) else 'transportErrors')
+                    report[counter]+=1;row['error']=str(error);example('sampling',error)
                     row['errorType']=classify_error(error)
                     if isinstance(error,RuntimeError):fatal=error
                 except KeyboardInterrupt as error:
@@ -367,6 +527,11 @@ def main():
                 row['lastRequestDiagnostic']=report.get('lastRequestDiagnostic')
                 row['completedAt']=datetime.now(timezone.utc).isoformat()
                 coverage.complete(time.monotonic(),row['completedAt'],row['complete'])
+                if row['complete'] and report['samples']==1:
+                    # Initialization and the first HTTP batch do not count as a
+                    # successful observation span. Never shorten the endpoint.
+                    deadline=coverage.first_success+args.seconds
+                    report['plannedEndAt']=(datetime.now(timezone.utc)+timedelta(seconds=args.seconds)).isoformat()
                 if report['invalidSoilSamples'] or report['invalidModbusSamples']:
                     report['measurementStatus']='FAIL'
                 if any(report[k] for k in STABILITY_COUNTERS):
@@ -375,6 +540,7 @@ def main():
                 if fatal is not None:raise fatal
                 if tick>=deadline:break
                 time.sleep(min(max(0,args.interval-(time.monotonic()-tick)),max(0,deadline-time.monotonic())))
+        verify_bound_configuration()
         report['pollsAdvanced']=type(last_polls) is int and type(first_polls) is int and last_polls>first_polls
         coverage.update(time.monotonic());finish_report(report,completed=True)
         report['completedAt']=datetime.now(timezone.utc).isoformat()

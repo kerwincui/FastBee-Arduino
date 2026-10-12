@@ -12,6 +12,16 @@
  */
 
 #include "protocols/MQTTClient.h"
+#include "protocols/MqttDiagnosticJson.h"
+#include "protocols/MqttReportQueueStatus.h"
+#include "protocols/MqttTopicPath.h"
+#include "network/FixedJsonField.h"
+#include "protocols/MqttSecureIntent.h"
+
+namespace {
+portMUX_TYPE g_mqttRetirementMux = portMUX_INITIALIZER_UNLOCKED;
+FastBee::MqttReportRetirement g_mqttReportRetirement;
+}
 #include "protocols/ProtocolManager.h"
 #include "protocols/ModbusHandler.h"
 #include "systems/LoggerSystem.h"
@@ -21,6 +31,8 @@
 #include "network/TlsMemory.h"
 #include "core/FastBeeFramework.h"
 #include "network/WebConfigManager.h"
+#include "utils/SystemTimeQuality.h"
+#include "utils/TimeSyncValidation.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
 #endif
@@ -32,6 +44,7 @@
 #include "protocols/RemoteResourceModel.h"
 #endif
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/platform.h>
 #include "network/NetworkManager.h"
@@ -50,6 +63,22 @@
 #if FASTBEE_ENABLE_MQTT
 
 namespace {
+
+class MqttNtpGuard {
+public:
+    explicit MqttNtpGuard(std::atomic_flag& value)
+        : flag(value), held(!flag.test_and_set(std::memory_order_acquire)) {}
+    ~MqttNtpGuard() { if (held) flag.clear(std::memory_order_release); }
+    std::atomic_flag& flag;
+    const bool held;
+};
+
+bool readMqttTimeNumber(JsonVariantConst value, double& result) {
+    if (value.is<double>()) { result = value.as<double>(); return std::isfinite(result); }
+    if (!value.is<const char*>()) return false;
+    const JsonString text = value.as<JsonString>();
+    return FastBee::parseTimeMilliseconds(text.c_str(), text.size(), result);
+}
 
 extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
@@ -272,7 +301,7 @@ static bool mqttPayloadIsStructuredJson(const uint8_t* payload, size_t length) {
     }
 
     JsonDocument probe;
-    DeserializationError error = deserializeJson(probe, payload, length);
+    DeserializationError error = deserializeJson(probe, reinterpret_cast<const char*>(payload), length);
     return !error && (probe.is<JsonArray>() || probe.is<JsonObject>());
 }
 
@@ -398,10 +427,10 @@ static bool mqttHasInternalDram(uint32_t minFree, uint32_t minLargest, const cha
 }
 
 MQTTClient::MQTTClient()
-    : isConnected(false), stopped(false), lastReconnectAttempt(0),
+    : isConnected(false), stopped(true), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
       reconnectInterval(5000), consecutiveTimeouts(0), lastLoopTime(0),
-      _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr),
+      _reconnectPending(false), _reconnectRunning(false),
       _taskStartupDelayMs(3000),
       _slotWriteIndex(0), _slotReadIndex(0), _slotCount(0) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
@@ -411,7 +440,13 @@ MQTTClient::MQTTClient()
 MQTTClient::~MQTTClient() {
     // 先关闭后台任务，避免 disconnect 后任务仍在尝试重连
     shutdown();
-    disconnect();
+    {
+        // Manager lifetime admission excludes new callers. Drain transport
+        // scopes AFTER the worker's last-access acknowledgement, never before.
+        RecursiveMutexGuard lock(_publishMutex);
+        if (lock.isLocked()) { disconnect(); resumeWebServices(); }
+    }
+    recordReportQueueRetirement(); // Preserve loss evidence before slots/statistics disappear.
     if (_publishMutex) {
         vSemaphoreDelete(_publishMutex);
         _publishMutex = nullptr;
@@ -476,6 +511,12 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     bool nested = !mqttObj.isNull() && mqttObj.is<JsonObject>();
     JsonVariant cfg = nested ? mqttObj : doc.as<JsonVariant>();
 
+    if (!cfg["connectionTestOnly"].isNull() && !cfg["connectionTestOnly"].is<bool>())
+        return false;
+    _connectionTestOnly = cfg["connectionTestOnly"] | false;
+    _connectionTestId = cfg["connectionTestId"] | "";
+    if (_connectionTestOnly && _connectionTestId.isEmpty()) return false;
+
     config.scheme      = cfg["scheme"]      | "mqtt";
     config.server      = cfg["server"]      | "";
     config.port        = cfg["port"]        | 1883;
@@ -489,6 +530,16 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     if (!cfg["scheme"].is<const char*>() && config.port == 8883) {
         config.scheme = "mqtts";
         LOG_INFO("MQTT: Auto-detected mqtts from port 8883");
+    }
+    if (cfg["downgraded_by_memory"] | false) {
+        const auto originalPort = FastBee::mqttLegacySecurePort(cfg);
+        if (!originalPort) {
+            LOG_WARNING("MQTT: historical TLS downgrade metadata incomplete; explicit configuration required");
+            return false;
+        }
+        config.scheme = "mqtts";
+        config.port = originalPort;
+        LOG_WARNING("MQTT: historical plaintext downgrade blocked; retaining on-disk evidence");
     }
     config.username    = cfg["username"]    | "";
     config.password    = cfg["password"]    | "";
@@ -646,9 +697,13 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
 }
 
 bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
-    stopped = false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return false;
+    // Reconfiguration requires a new object/queue identity, never a live reload.
+    if (_beginAttempted.exchange(true, std::memory_order_acq_rel)) return false;
+    if (!loadMqttConfig()) return false;
+    if (!validateTransportSecurity()) return false;
     _taskStartupDelayMs = taskStartupDelayMs;
-    loadMqttConfig();
 
     // 运行时 PSRAM 检测：无 PSRAM 时 mqtts 可能因内存不足失败
     if (config.scheme == "mqtts" && !psramFound()) {
@@ -716,37 +771,26 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
     }
 #endif
 
+    // Publish readiness only after every fallible initialization step. A
+    // packet-buffer OOM must remain stopped until its owner discards it.
+    stopped = false;
     LOG_INFO("MQTT: Client initialized");
     return true;
 }
 
 void MQTTClient::shutdown() {
+    stopped = true;
     _reconnectPending = false;
-    TaskHandle_t reconnectTask = _reconnectTaskHandle;
-    if (reconnectTask) {
-        if (xTaskGetCurrentTaskHandle() == reconnectTask) {
-            return;
-        }
-
-        unsigned long waitStart = millis();
-        while (_reconnectRunning && (millis() - waitStart) < 1500UL) {
-            delay(10);
-        }
-
-        reconnectTask = _reconnectTaskHandle;
-        if (reconnectTask) {
-            vTaskDelete(reconnectTask);
-            _reconnectTaskHandle = nullptr;
-            _reconnectRunning = false;
-            LOG_INFO("[MQTT] Background reconnect task stopped");
-        }
-    }
+    // Terminal destruction must not free this object, its mutex or transport
+    // while a worker can still touch them. No timeout can prove it has exited.
+    // Normal manager stop/rebuild paths use nonblocking stop() first.
+    while (!_reconnectLifetime.requestStop()) delay(10);
 }
 
 bool MQTTClient::ensureReconnectTask() {
-    if (_reconnectTaskHandle) {
-        return true;
-    }
+    if (stopped || !_reconnectLifetime.reserve()) return false;
+    // Reserve before xTaskCreate: the task can run before xTaskCreate returns.
+    if (stopped) { _reconnectLifetime.finish(); return false; }
 
     const uint32_t reconnStackSize = (config.scheme == "mqtts")
         ? FastBee::MemoryBudget::MQTTS_RECONNECT_TASK_STACK
@@ -757,11 +801,11 @@ bool MQTTClient::ensureReconnectTask() {
         reconnStackSize,
         this,
         1,
-        &_reconnectTaskHandle
+        nullptr
     );
     if (ret != pdPASS) {
         LOG_WARNING("[MQTT] Failed to create on-demand reconnect task");
-        _reconnectTaskHandle = nullptr;
+        _reconnectLifetime.finish();
         return false;
     }
 
@@ -770,6 +814,10 @@ bool MQTTClient::ensureReconnectTask() {
 }
 
 bool MQTTClient::connect() {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return false;
+    if (!_reconnectLifetime.reopen()) return false;
+    _stopCompleted = false;
     // 最后一道防线：空 server 直接拒绝，避免空 host 反复 DNS 重连锁死堆内存
     if (config.server.length() == 0) {
         LOG_WARNING("MQTT: connect refused, server is empty");
@@ -780,7 +828,10 @@ bool MQTTClient::connect() {
     return reconnect();
 }
 
-void MQTTClient::disconnect() {
+bool MQTTClient::disconnect() {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return false;
+    ntpConnectionEpoch.fetch_add(1, std::memory_order_acq_rel);
     _reconnectPending = false;
     if (mqttClient.connected()) {
         mqttClient.disconnect();
@@ -807,53 +858,55 @@ void MQTTClient::disconnect() {
     _lastMqttsTlsMemoryFailure = false;
     _mqttsMemoryBackoffActive = false;
     LOG_INFO("MQTT: Disconnected");
+    return true;
 }
 
-void MQTTClient::stop() {
+bool MQTTClient::stop() {
     stopped = true;
-    shutdown();
-    disconnect();
+    _reconnectPending = false;
+    if (!_reconnectLifetime.requestStop()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return false;
+    if (_stopCompleted) return true;
+    if (!disconnect()) return false;
+    resumeWebServices();
+    _stopCompleted = true;
     _notifyStatusChange();  // 通知状态变化：主动停止
     LOG_INFO("MQTT: Stopped (auto-reconnect disabled)");
+    return true;
 }
 
 // 重置错误计数器：网络恢复或切换后调用，立即触发重连
 void MQTTClient::resetErrorCounters() {
+    // Network recovery cannot mutate counters/transport policy under a worker.
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return;
+    if (_reconnectLifetime.active()) return;
     consecutiveTimeouts = 0;
     reconnectInterval = 5000;   // 重置为初始退避值
     lastReconnectAttempt = 0;   // 强制下次 handle() 立即尝试重连
     lastErrorCode = 0;
     _mqttsMemoryBackoffActive = false;
-    // 清除可能卡死的重连调度标志，使网络恢复后能立即重新调度。
-    // 注意：不在此处删除任务/清 _reconnectRunning，避免跨任务竞态；
-    // 若 _reconnectRunning 卡死，由 handle() 看门狗兑底回收。
+    // Only reset inactive scheduling; watchdog cancellation needs explicit
+    // reconnect/rebuild after acknowledgement, not an automatic gate reopen.
     _reconnectPending = false;
     _reconnectScheduledMs = 0;
     LOG_INFO("[MQTT] Error counters reset — immediate reconnect on next handle()");
 }
 
-// 自愈：强制重置卡死的重连标志与僵死任务。
-// 触发场景：一次性重连任务异常终止（如栈溢出）后遗留 _reconnectPending/_reconnectRunning，
-// 使 handle() 调度门控（!_reconnectPending && !_reconnectRunning）永远不满足、自动重连永久停摆。
+// A timeout is not evidence that task code has stopped accessing the object.
 void MQTTClient::recoverStuckReconnect(const char* reason) {
-    LOG_WARNINGF("[MQTT] Reconnect stuck detected (%s), forcing reset (pending=%d running=%d)",
-                 reason ? reason : "unknown", (int)_reconnectPending, (int)_reconnectRunning);
+    LOG_WARNINGF("[MQTT] Reconnect timeout (%s), cancellation requested; retaining worker/transport",
+                 reason ? reason : "unknown");
+    stopped = true;
     _reconnectPending = false;
-    _reconnectRunning = false;
-    _reconnectScheduledMs = 0;
-    TaskHandle_t stuck = _reconnectTaskHandle;
-    _reconnectTaskHandle = nullptr;
-    // 回收僵死任务（避免与本任务同一时删除）
-    if (stuck && stuck != xTaskGetCurrentTaskHandle()) {
-        vTaskDelete(stuck);
-    }
-    // 重置退避计数：卡死前的连续超时不应延续到恢复后，避免一恢复就陷入慢模式
-    consecutiveTimeouts = 0;
+    _reconnectLifetime.requestStop();
 }
 
 bool MQTTClient::publish(const String& topic, const String& message) {
-    RecursiveMutexGuard lock(_publishMutex);
-    if (!isConnected) {
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected) {
         return false;
     }
 
@@ -898,7 +951,8 @@ bool MQTTClient::publish(const String& topic, const String& message) {
     }
     
     String fullTopic = buildFullTopicWithType(topic, topicAutoPrefix, topicType);
-    
+    if (!FastBee::validMqttTopicText(fullTopic, true)) return false;
+
     bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), retain);
 
     if (!ok) {
@@ -914,8 +968,58 @@ bool MQTTClient::publish(const String& topic, const String& message) {
 }
 
 bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
-    RecursiveMutexGuard lock(_publishMutex);
-    if (!isConnected || topicIndex >= config.publishTopics.size()) {
+    return publishToTopicImpl(topicIndex, message, false);
+}
+
+bool MQTTClient::publishPreparedTopic(size_t topicIndex, const String& message) {
+    return publishToTopicImpl(topicIndex, message, true);
+}
+
+bool MQTTClient::queueTopicMessage(size_t topicIndex, const String& message) {
+    if (isConnectionTestOnly()) {
+        portENTER_CRITICAL(&_slotMux);
+        incrementQueueCounter(_queueStats.testModeRejected);
+        portEXIT_CRITICAL(&_slotMux);
+        return false;
+    }
+    // begin() is one-shot and configuration private. The original instance
+    // owns both the retained bytes and this row; rebuilding retires its queue.
+    // Freeze the report transform once, BEFORE admission, not on each retry.
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped) return false;
+    if (topicIndex >= config.publishTopics.size() || topicIndex >= UINT16_MAX ||
+        message.isEmpty() || message.length() > MQTT_SLOT_MAX_PAYLOAD ||
+        strlen(message.c_str()) != message.length()) return rejectInvalidReport();
+    const auto& topic = config.publishTopics[topicIndex];
+    // Handshake/firmware lifecycle traffic must not be delayed and replayed by
+    // an ordinary script queue. Their dedicated publication paths stay direct.
+    if (!topic.enabled || topic.topicType == MqttTopicType::OTA_BINARY ||
+        topic.topicType == MqttTopicType::OTA_UPGRADE || topic.topicType == MqttTopicType::NTP_SYNC)
+        return rejectInvalidReport();
+    const String fullTopic = buildFullTopicWithType(topic.topic, topic.autoPrefix, topic.topicType);
+    if (!FastBee::validMqttTopicText(fullTopic, true)) return rejectInvalidReport();
+    String payload;
+#if FASTBEE_ENABLE_RULE_SCRIPT
+    if (FastBee::RuntimeFeatureManager::instance().isUserEnabled("ruleScript")) {
+        if (!RuleScriptManager::getInstance().tryApplyReportTransform(0, message, payload, MQTT_SLOT_MAX_PAYLOAD))
+            return rejectInvalidReport();
+    } else if (!FastBee::copyCheckedText(payload, message.c_str(), message.length(), MQTT_SLOT_MAX_PAYLOAD)) {
+        return rejectInvalidReport();
+    }
+#else
+    if (!FastBee::copyCheckedText(payload, message.c_str(), message.length(), MQTT_SLOT_MAX_PAYLOAD))
+        return rejectInvalidReport();
+#endif
+    if (payload.isEmpty() || payload.length() > MQTT_SLOT_MAX_PAYLOAD || fullTopic.length() > UINT16_MAX ||
+        fullTopic.length() + payload.length() + MQTT_MAX_HEADER_SIZE + 2U > mqttClient.getBufferSize()) return rejectInvalidReport();
+    return queueReportDataEncoded(payload.c_str(), static_cast<uint16_t>(payload.length()),
+                                 MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT, static_cast<uint16_t>(topicIndex));
+}
+
+bool MQTTClient::publishToTopicImpl(size_t topicIndex, const String& message, bool prepared) {
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || !isConnected || stopped || topicIndex >= config.publishTopics.size()) {
         return false;
     }
 
@@ -945,19 +1049,27 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
         return false;
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+    if (!FastBee::validMqttTopicText(fullTopic, true)) return false;
+    if (prepared && (pt.topicType == MqttTopicType::OTA_UPGRADE || pt.topicType == MqttTopicType::NTP_SYNC ||
+        message.isEmpty() || message.length() > MQTT_SLOT_MAX_PAYLOAD ||
+        std::memchr(message.c_str(), '\0', message.length()))) return false;
     const String fastBeeOtaReplyPath =
         "/" + config.deviceNum + "/http/upgrade/reply";
     // OTA acknowledgements are a fixed FastBee protocol contract and must not
     // be rewritten by user report scripts.
 #if FASTBEE_ENABLE_RULE_SCRIPT
-    String payload = (fullTopic == fastBeeOtaReplyPath ||
+    String payload = (prepared || !FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript") ||
+                      fullTopic == fastBeeOtaReplyPath ||
                       pt.topicType == MqttTopicType::OTA_UPGRADE ||
                       pt.topicType == MqttTopicType::OTA_BINARY)
         ? message
         : RuleScriptManager::getInstance().applyReportTransform(0, message);
 #else
+    (void)prepared;
     String payload = message;
 #endif
+    if (prepared && (payload.length() != message.length() ||
+        memcmp(payload.c_str(), message.c_str(), message.length()) != 0)) return false;
     bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
 
     // 统一打印 MQTT 上报日志（Serial.printf 避免 LoggerSystem 文件 I/O 在发布路径中加剧栈压力）
@@ -1007,10 +1119,12 @@ int MQTTClient::findFastBeeOtaReplyTopicIndex() const {
 }
 
 bool MQTTClient::hasUsableFastBeeOtaReplyTopic() const {
+    if (isConnectionTestOnly()) return false;
     return findFastBeeOtaReplyTopicIndex() >= 0;
 }
 
 bool MQTTClient::publishDeviceInfo() {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) {
         return false;
     }
@@ -1029,42 +1143,42 @@ bool MQTTClient::publishDeviceInfo() {
 
     // 构建设备信息 JSON
     JsonDocument doc;
-    doc["rssi"] = WiFi.RSSI();
-    doc["firmwareVersion"] = SystemInfo::VERSION;
-    doc["status"] = 3;  // 在线
+    FastBee::setFixedJsonField(doc, "rssi", WiFi.RSSI());
+    FastBee::setFixedJsonField(doc, "firmwareVersion", SystemInfo::VERSION);
+    FastBee::setFixedJsonField(doc, "status", 3);  // 在线
 
     // userId: 优先使用配置值，默认为 1
     if (!config.userId.isEmpty()) {
         long uid = config.userId.toInt();
-        doc["userId"] = (uid > 0) ? uid : 1;
+        FastBee::setFixedJsonField(doc, "userId", (uid > 0) ? uid : 1);
     } else {
-        doc["userId"] = 1;
+        FastBee::setFixedJsonField(doc, "userId", 1);
     }
 
     // 经纬度
-    doc["longitude"] = config.longitude;
-    doc["latitude"]  = config.latitude;
+    FastBee::setFixedJsonField(doc, "longitude", config.longitude);
+    FastBee::setFixedJsonField(doc, "latitude", config.latitude);
 
     // 可选字段：非空/非零时才包含
     if (!config.iccid.isEmpty()) {
-        doc["iccid"] = config.iccid;
+        FastBee::setFixedJsonField(doc, "iccid", config.iccid);
     }
     if (config.cardPlatformId != 0) {
-        doc["cardPlatformId"] = config.cardPlatformId;
+        FastBee::setFixedJsonField(doc, "cardPlatformId", config.cardPlatformId);
     }
 
     // summary: 解析配置的 JSON 字符串，为空时自动生成默认值
     if (!config.summary.isEmpty()) {
         JsonDocument summaryDoc;
-        DeserializationError err = deserializeJson(summaryDoc, config.summary);
+        DeserializationError err = deserializeJson(summaryDoc, config.summary.c_str(), config.summary.length());
         if (!err) {
-            doc["summary"] = summaryDoc.as<JsonObject>();
+            FastBee::setFixedJsonField(doc, "summary", summaryDoc.as<JsonObject>());
         }
     } else {
         // 自动生成默认 summary
         JsonObject summary = doc["summary"].to<JsonObject>();
-        summary["name"] = "FastBee";
-        summary["chip"] = ESP.getChipModel();
+        FastBee::setFixedJsonField(summary, "name", "FastBee");
+        FastBee::setFixedJsonField(summary, "chip", ESP.getChipModel());
     }
 
     String payload;
@@ -1082,7 +1196,9 @@ bool MQTTClient::publishDeviceInfo() {
 }
 
 bool MQTTClient::publishMonitorData() {
-    if (!isConnected) {
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected) {
         return false;
     }
     // 内存保护：serializeJson 到 String 需要可用内部 DRAM。
@@ -1108,37 +1224,10 @@ bool MQTTClient::publishMonitorData() {
             return false;
         }
     } else {
-        // 降级兜底：未注册数据提供者时使用模拟数据
-        LOG_DEBUG("MQTT: Monitor using fallback random data");
-        float temperature = 20.0 + (float)(esp_random() % 1500) / 100.0;
-        float humidity    = 30.0 + (float)(esp_random() % 5000) / 100.0;
-
-        String remark = "";
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 0) && timeinfo.tm_year >= 100) {
-            char timeBuf[24];
-            strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-            remark = timeBuf;
-        }
-
-        JsonDocument doc;
-        JsonArray arr = doc.to<JsonArray>();
-
-        JsonObject tempObj = arr.add<JsonObject>();
-        tempObj["id"] = "temperature";
-        char tempVal[8];
-        snprintf(tempVal, sizeof(tempVal), "%.2f", temperature);
-        tempObj["value"] = tempVal;
-        tempObj["remark"] = remark;
-
-        JsonObject humiObj = arr.add<JsonObject>();
-        humiObj["id"] = "humidity";
-        char humiVal[8];
-        snprintf(humiVal, sizeof(humiVal), "%.2f", humidity);
-        humiObj["value"] = humiVal;
-        humiObj["remark"] = remark;
-
-        serializeJson(doc, payload);
+        // No sample provider means no measurement. Random fallback values
+        // would be indistinguishable from physical temperature/humidity.
+        LOG_WARNING("MQTT: Monitor unavailable: no sample provider");
+        return false;
     }
 
     bool ok = publishToTopic((size_t)monTopicIdx, payload);
@@ -1149,6 +1238,7 @@ bool MQTTClient::publishMonitorData() {
 }
 
 bool MQTTClient::publishReportData(const String& payload) {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) {
         return false;
     }
@@ -1162,6 +1252,7 @@ bool MQTTClient::publishReportData(const String& payload) {
 
     const MqttPublishTopic& pt = config.publishTopics[reportTopicIdx];
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+    if (!FastBee::validMqttTopicText(fullTopic, true)) return false;
 
     // 透传HEX模式：当 Modbus transferType==1 且 payload 是纯 HEX ASCII 字符串时，
     // 将 payload 解码为二进制字节帧后发送（平台直接按 Modbus 帧解析）
@@ -1235,7 +1326,8 @@ bool MQTTClient::publishReportData(const String& payload) {
 
         // 以二进制方式发布（PubSubClient 接受 const uint8_t*+length）
         {
-            RecursiveMutexGuard lock(_publishMutex);
+            RecursiveMutexGuard lock(_publishMutex, 0);
+            if (!lock.isLocked() || stopped || !isConnected) return false;
             ok = mqttClient.publish(fullTopic.c_str(), buf, byteLen, pt.retain);
         }
         sentAsBinary = true;
@@ -1258,6 +1350,7 @@ bool MQTTClient::publishReportData(const String& payload) {
 }
 
 bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) return false;
 
     const int reportTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::DATA_REPORT);
@@ -1278,9 +1371,11 @@ bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
     const MqttPublishTopic& topic = config.publishTopics[reportTopicIdx];
     const String fullTopic = buildFullTopicWithType(
         topic.topic, topic.autoPrefix, topic.topicType);
+    if (!FastBee::validMqttTopicText(fullTopic, true)) return false;
     bool ok = false;
     {
-        RecursiveMutexGuard lock(_publishMutex);
+        RecursiveMutexGuard lock(_publishMutex, 0);
+        if (!lock.isLocked() || stopped || !isConnected) return false;
         ok = mqttClient.publish(fullTopic.c_str(), frame, frameLength, topic.retain);
     }
     Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u result=%s\n",
@@ -1290,6 +1385,7 @@ bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
 }
 
 bool MQTTClient::publishOtaReply(const String& payload) {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) return false;
 
     int otaTopicIdx = findFastBeeOtaReplyTopicIndex();
@@ -1301,6 +1397,7 @@ bool MQTTClient::publishOtaReply(const String& payload) {
 }
 
 bool MQTTClient::publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData) {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) {
         return false;
     }
@@ -1364,9 +1461,16 @@ bool MQTTClient::publishDeviceEvent(const String& eventId, const String& eventNa
 }
 
 bool MQTTClient::publishNtpSync() {
+    if (isConnectionTestOnly()) return false;
     if (!isConnected) {
         return false;
     }
+    MqttNtpGuard requestGuard(ntpRequestBusy);
+    if (!requestGuard.held) return false;
+    const uint64_t sentAt = static_cast<uint64_t>(esp_timer_get_time()) / 1000;
+    if (ntpRequestConnection != ntpConnectionEpoch.load(std::memory_order_acquire)) ntpRequestPending = false;
+    if (ntpRequestPending && sentAt >= ntpDeviceSendTime && sentAt - ntpDeviceSendTime <= 10000U) return false;
+    ntpRequestPending = false;
 
     // 查找 topicType==NTP_SYNC 的发布主题
     int ntpTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::NTP_SYNC);
@@ -1376,7 +1480,10 @@ bool MQTTClient::publishNtpSync() {
     }
 
     // 记录设备发送时间（millis）
-    ntpDeviceSendTime = (unsigned long long)millis();
+    ntpDeviceSendTime = sentAt;
+    ntpTimeSequence = FastBee::SystemTimeQuality::sequence();
+    ntpRequestConnection = ntpConnectionEpoch.load(std::memory_order_acquire);
+    ntpRequestPending = true;
 
     // 构建 NTP 请求 JSON: {"deviceSendTime": "1592361428000"}
     JsonDocument doc;
@@ -1389,6 +1496,7 @@ bool MQTTClient::publishNtpSync() {
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
 
     bool ok = publishToTopic((size_t)ntpTopicIdx, payload);
+    if (!ok) ntpRequestPending = false;
 
     char logBuf[128];
     snprintf(logBuf, sizeof(logBuf), "MQTT: %s NTP_SYNC topic=%s",
@@ -1399,7 +1507,9 @@ bool MQTTClient::publishNtpSync() {
 }
 
 bool MQTTClient::subscribe(const String& topic) {
-    if (!isConnected) {
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected) {
         return false;
     }
 
@@ -1426,6 +1536,7 @@ bool MQTTClient::subscribe(const String& topic) {
         return false;
     }
     String fullTopic = buildFullTopicWithType(topic, topicAutoPrefix, topicType);
+    if (!FastBee::validMqttTopicText(fullTopic, false)) return false;
     bool ok = mqttClient.subscribe(fullTopic.c_str());
 
     char buf[80];
@@ -1436,8 +1547,9 @@ bool MQTTClient::subscribe(const String& topic) {
 }
 
 bool MQTTClient::subscribeExact(const String& topic) {
-    RecursiveMutexGuard lock(_publishMutex);
-    if (!lock.isLocked() || !isConnected || topic.isEmpty() || topic.length()>160 ||
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected || topic.isEmpty() || topic.length()>160 ||
         topic.indexOf('#')>=0 || topic.indexOf('+')>=0) return false;
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
     for (const auto& subscription : config.subscribeTopics) {
@@ -1450,8 +1562,9 @@ bool MQTTClient::subscribeExact(const String& topic) {
 }
 
 bool MQTTClient::publishExact(const String& topic,const String& message) {
-    RecursiveMutexGuard lock(_publishMutex);
-    if (!lock.isLocked() || !isConnected || topic.isEmpty() || topic.length()>160 || message.length()>256 ||
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected || topic.isEmpty() || topic.length()>160 || message.length()>256 ||
         topic.indexOf('#')>=0 || topic.indexOf('+')>=0 ||
         heap_caps_get_free_size(MALLOC_CAP_8BIT)<12288U) return false;
     auto* fw=FastBeeFramework::getInstance();
@@ -1461,12 +1574,15 @@ bool MQTTClient::publishExact(const String& topic,const String& message) {
 }
 
 bool MQTTClient::unsubscribeExact(const String& topic) {
-    RecursiveMutexGuard lock(_publishMutex);
-    return lock.isLocked() && isConnected && mqttClient.unsubscribe(topic.c_str());
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    return lock.isLocked() && !stopped && isConnected && mqttClient.unsubscribe(topic.c_str());
 }
 
 bool MQTTClient::subscribeAll() {
-    if (!isConnected) {
+    if (isConnectionTestOnly()) return false;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || !isConnected) {
         ets_printf("[MQTT] subscribeAll: not connected\n");
         return false;
     }
@@ -1483,7 +1599,8 @@ bool MQTTClient::subscribeAll() {
         }
         if (!st.topic.isEmpty() && st.enabled) {
             String fullTopic = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
-            bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
+            bool ok = FastBee::validMqttTopicText(fullTopic, false) &&
+                mqttClient.subscribe(fullTopic.c_str(), st.qos);
             ets_printf("[MQTT] %s topic=%s qos=%d\n",
                        ok ? "Subscribed" : "SUB_FAIL", fullTopic.c_str(), st.qos);
             
@@ -1507,7 +1624,7 @@ bool MQTTClient::subscribeAll() {
 }
 
 void MQTTClient::yieldToWeb() {
-    if (stopped || !isConnected) {
+    if (stopped) {
         return;
     }
     // Align foreground yielding with the Web guard recovery line. Waiting
@@ -1518,12 +1635,18 @@ void MQTTClient::yieldToWeb() {
     if (dram8Free >= FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE) {
         return;
     }
+    _webYieldPending = true;
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || _reconnectLifetime.active()) return;
+    _webYieldPending = false;
+    if (stopped || !isConnected) return;
     ets_printf("[MQTT] yieldToWeb: foreground request arrived, free8=%lu < %lu, sync disconnect\n",
                (unsigned long)dram8Free,
                (unsigned long)FastBee::MemoryBudget::WEB_GUARD_RECOVERY_DRAM_FREE);
     isConnected = false;  // 先置位，避免 protocol_handle 并发继续 publish
     wifiClient.stop();
     if (_wifiClientSecure) _wifiClientSecure->stop();
+    if (_externalClient) _externalClient->stop();
     reconnectInterval = 30000;  // 30s 冷却，重连由前台推迟门控接管
     lastReconnectAttempt = millis();
     _notifyStatusChange();
@@ -1531,11 +1654,22 @@ void MQTTClient::yieldToWeb() {
 
 void MQTTClient::handle() {
     if (stopped) {
-        static unsigned long _hStopWarn = 0;
-        if (millis() - _hStopWarn > 30000) { _hStopWarn = millis(); Serial.println("[MQTT-DBG] handle() skipped: stopped"); }
+        if (_reconnectLifetime.stopping() && !_reconnectLifetime.active() && !_stopCompleted)
+            stop(); // Complete a watchdog cancellation after worker acknowledgement.
         return;  // 被显式停止时不做任何操作
     }
+    // The worker owns reconnect/TLS/transport until its final acknowledgement,
+    // even when doReconnect has already cleared its historical running flag.
+    if (_reconnectLifetime.active()) {
+        const unsigned long scheduled = _reconnectScheduledMs.load();
+        if (millis() - scheduled > RECONNECT_WATCHDOG_TIMEOUT_MS)
+            recoverStuckReconnect("watchdog_timeout");
+        return;
+    }
 
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || stopped || _reconnectLifetime.active()) return;
+    if (_webYieldPending.exchange(false)) yieldToWeb();
     bool activeNetworkIsWifi = (getActiveMqttNetworkType() == NetworkType::NET_WIFI);
 
     // 2026-08-05 fix: 8BIT DRAM 枯竭紧急断开。INTERNAL 口径（含 IRAM/RTC）
@@ -1563,6 +1697,7 @@ void MQTTClient::handle() {
                        webForegroundActive ? 1 : 0, (unsigned long)dram8Free);
             wifiClient.stop();
             if (_wifiClientSecure) _wifiClientSecure->stop();
+            if (_externalClient) _externalClient->stop();
             isConnected = false;
             reconnectInterval = 30000;  // 30s 冷却（15s 实测 churn）
             lastReconnectAttempt = millis();
@@ -1633,12 +1768,13 @@ void MQTTClient::handle() {
             // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
             wifiClient.stop();
             if (_wifiClientSecure) _wifiClientSecure->stop();
+            if (_externalClient) _externalClient->stop();
             LOG_WARNING("MQTT: Connection lost");
             Serial.println("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件（仅前3次触发，避免无限循环重启）
 #if FASTBEE_ENABLE_PERIPH_EXEC
-            if (reconnectCount <= 3) {
+            if (!isConnectionTestOnly() && reconnectCount <= 3) {
                 PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
             } else {
                 Serial.printf("[MQTT-DBG] Skip EVENT_MQTT_DISCONNECTED (reconnectCount=%lu > 3)\n",
@@ -1682,13 +1818,12 @@ void MQTTClient::handle() {
             }
         }
 
-        // 自愈看门狗：一次性重连任务若异常终止（如栈溢出）可能遗留
-        // _reconnectPending/_reconnectRunning 卡死，使调度门控永远不满足、自动重连永久停摆。
-        // 若标志持续超过最大执行窗口（正常 doReconnect < 40s），强制重置并回收僵死任务。
+        // Residual scheduling timeout also fails closed without deleting tasks.
         if ((_reconnectPending || _reconnectRunning) &&
             _reconnectScheduledMs != 0 &&
             (now - _reconnectScheduledMs > RECONNECT_WATCHDOG_TIMEOUT_MS)) {
             recoverStuckReconnect("watchdog_timeout");
+            return;
         }
 
         if (now - lastReconnectAttempt >= reconnectInterval) {
@@ -1746,8 +1881,10 @@ void MQTTClient::handle() {
         }
         lastLoopTime = millis();
         mqttClient.loop();
+        if (stopped || _reconnectLifetime.stopping()) return;
 
         // 处理延迟的 DATA_COMMAND 和异步任务上报队列
+        if (isConnectionTestOnly()) return;
         processQueuedCommands();
         processQueuedReports();
         
@@ -1768,12 +1905,13 @@ void MQTTClient::handle() {
 }
 
 void MQTTClient::processQueuedCommands() {
+    if (isConnectionTestOnly()) return;
     if (!_dataCommandQueue) return;
     // 内存保护：handleDataCommand 内部大量 JSON 序列化。
     if (!mqttHasInternalDram(30000, 4096, "processQueuedCommands")) return;
     String* cmd = nullptr;
     int processed = 0;
-    while (processed < 2 && xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) {
+    while (!stopped && processed < 2 && xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) {
         if (cmd) {
             size_t cmdLen = cmd->length();
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -1797,6 +1935,7 @@ void MQTTClient::processQueuedCommands() {
 }
 
 void MQTTClient::processQueuedReports() {
+    if (isConnectionTestOnly()) return;
     // 内存保护：publishReportData 构造 String + MQTT publish
     // 使用 DRAM 内部内存检测（排除 PSRAM），与 mqttHasInternalDram() 保持一致
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 20000) return;
@@ -1812,17 +1951,25 @@ void MQTTClient::processQueuedReports() {
     // 限速（实测 2026-08-05）：重连后积压上报一次性 flush 会突发塞满
     // lwIP 发送缓冲，8BIT 数秒内跌 5-10KB → 强制断开 → churn。
     // 限制每秒最多 flush 一批，让 broker ACK 逐步释放发送缓冲。
-    {
-        static unsigned long _lastReportFlushMs = 0;
-        unsigned long const nowFlush = millis();
-        if (nowFlush - _lastReportFlushMs < 1000UL) return;
-        _lastReportFlushMs = nowFlush;
-    }
-
-    // 背压机制：队列深度 >= HIGH_WATERMARK 时加速排空（处理更多批次）
     portENTER_CRITICAL(&_slotMux);
-    uint8_t depthSnapshot = _slotCount;
+    const uint32_t nowFlush = millis();
+    if (_reportConsumerActive || (_reportFlushAttempted &&
+        static_cast<uint32_t>(nowFlush - _lastReportFlushMs) < 1000u)) {
+        portEXIT_CRITICAL(&_slotMux);
+        return;
+    }
+    _reportConsumerActive = true;
+    _reportFlushAttempted = true;
+    _lastReportFlushMs = nowFlush;
+    const uint8_t depthSnapshot = _slotCount;
     portEXIT_CRITICAL(&_slotMux);
+    // One consumer owns the retry slot, including across unlocked publish.
+    // This is not an MQTTClient lifetime lease: callers must still keep it alive.
+    struct ConsumerExit {
+        portMUX_TYPE* mux;
+        bool& active;
+        ~ConsumerExit() { portENTER_CRITICAL(mux); active = false; portEXIT_CRITICAL(mux); }
+    } consumerExit{&_slotMux, _reportConsumerActive};
     const uint8_t maxBatch = (depthSnapshot >= BACKPRESSURE_HIGH_WATERMARK)
         ? BACKPRESSURE_DRAIN_BATCH : 4;
 
@@ -1837,9 +1984,11 @@ void MQTTClient::processQueuedReports() {
                 if (slot.occupied) {
                     _pendingReportSlot.length = slot.length;
                     _pendingReportSlot.encoding = slot.encoding;
+                    _pendingReportSlot.topicIndex = slot.topicIndex;
                     memcpy(_pendingReportSlot.payload, slot.payload,
                            slot.length + 1U);
                     _pendingReportSlot.occupied = true;
+                    _pendingReportAttempts = 0;
                 }
                 slot.clear();
                 _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
@@ -1851,35 +2000,55 @@ void MQTTClient::processQueuedReports() {
         if (!_pendingReportSlot.occupied) break;
         const String pendingPayload(_pendingReportSlot.payload,
                                     _pendingReportSlot.length);
+        // String allocation failure must not publish a shortened/empty report
+        // and subsequently clear the exact bytes retained in the fixed slot.
+        if (pendingPayload.length() != _pendingReportSlot.length ||
+            memcmp(pendingPayload.c_str(), _pendingReportSlot.payload, _pendingReportSlot.length) != 0) {
+            portENTER_CRITICAL(&_slotMux);
+            incrementQueueCounter(_queueStats.allocationDeferred);
+            portEXIT_CRITICAL(&_slotMux);
+            break;
+        }
+        portENTER_CRITICAL(&_slotMux);
+        incrementQueueCounter(_pendingReportAttempts);
+        portEXIT_CRITICAL(&_slotMux);
         const bool publishOk =
-            _pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX
+            _pendingReportSlot.encoding == MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT
+                ? publishPreparedTopic(_pendingReportSlot.topicIndex, pendingPayload)
+                : _pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX
                 ? publishModbusRtuReport(pendingPayload)
                 : publishReportData(pendingPayload);
         if (!publishOk) {
+            portENTER_CRITICAL(&_slotMux);
+            incrementQueueCounter(_queueStats.publishRejected);
+            portEXIT_CRITICAL(&_slotMux);
             // Keep the exact frame/JSON document for the next flush. Producers
             // can continue using the ring without racing the consumer slot.
             break;
         }
+        portENTER_CRITICAL(&_slotMux);
         _pendingReportSlot.clear();
-        _queueStats.publishTotal++;
+        _pendingReportAttempts = 0;
+        incrementQueueCounter(_queueStats.publishTotal);
+        portEXIT_CRITICAL(&_slotMux);
         processed++;
     }
 
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     if (processed > 0) {
-        HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* hm = fw ? fw->getHealthMonitor() : nullptr;
         if (hm) {
-            portENTER_CRITICAL(&_slotMux);
-            uint8_t depthNow = _slotCount;
-            portEXIT_CRITICAL(&_slotMux);
-            hm->setMqttQueueDepth(depthNow);
+            hm->setMqttQueueDepth(getQueueDepth());
         }
     }
 #endif
 }
 
 void MQTTClient::setMinReportInterval(uint32_t ms) {
+    portENTER_CRITICAL(&_slotMux);
     _minReportInterval = ms;
+    portEXIT_CRITICAL(&_slotMux);
     if (ms > 0) {
         LOGGER.infof("[MQTT] Report interval limited to %lu ms", (unsigned long)ms);
     } else {
@@ -1888,7 +2057,9 @@ void MQTTClient::setMinReportInterval(uint32_t ms) {
 }
 
 bool MQTTClient::queueReportData(const String& payload) {
-    return queueReportData(payload.c_str(), (uint16_t)payload.length());
+    // Validate size_t before narrowing; e.g. 65537 bytes must not become 1.
+    if (payload.length() > MQTT_SLOT_MAX_PAYLOAD) return rejectInvalidReport();
+    return queueReportData(payload.c_str(), static_cast<uint16_t>(payload.length()));
 }
 
 bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
@@ -1903,8 +2074,7 @@ bool MQTTClient::queueModbusRtuReport(const String& hexPayload) {
                             validationLength)) {
         LOG_WARNINGF("[MQTT] Invalid Modbus RTU frame rejected before enqueue (hexLen=%u)",
                      static_cast<unsigned>(hexPayload.length()));
-        _queueStats.dropTotal++;
-        return false;
+        return rejectInvalidReport();
     }
     return queueReportDataEncoded(
         hexPayload.c_str(), static_cast<uint16_t>(hexPayload.length()),
@@ -1912,35 +2082,35 @@ bool MQTTClient::queueModbusRtuReport(const String& hexPayload) {
 }
 
 bool MQTTClient::queueReportDataEncoded(const char* payload, uint16_t length,
-                                        MqttPayloadEncoding encoding) {
-    if (!payload && length > 0) {
-        _queueStats.dropTotal++;
+                                        MqttPayloadEncoding encoding, uint16_t topicIndex) {
+    if (isConnectionTestOnly()) {
+        portENTER_CRITICAL(&_slotMux);
+        incrementQueueCounter(_queueStats.testModeRejected);
+        portEXIT_CRITICAL(&_slotMux);
         return false;
     }
-    // 降采样检查：如果距上次上报不足 _minReportInterval 则跳过
-    if (_minReportInterval > 0) {
-        unsigned long now = millis();
-        if (now - _lastReportQueueTime < _minReportInterval) {
-            _queueStats.throttleDrops++;
-            return false;  // 降采样丢弃
-        }
-        _lastReportQueueTime = now;
-    }
-
     // 256-byte Modbus RTU frames occupy exactly 512 HEX characters. Preserve
     // that boundary and reject larger payloads atomically instead of emitting
     // a truncated frame/JSON document.
-    if (length > MQTT_SLOT_MAX_PAYLOAD) {
-        LOGGER.warningf("[MQTT] Payload too large: %u > %u bytes, enqueue rejected",
-                        length, MQTT_SLOT_MAX_PAYLOAD);
-        _queueStats.dropTotal++;
-        return false;
-    }
+    if (!payload || length == 0 || length > MQTT_SLOT_MAX_PAYLOAD ||
+        memchr(payload, '\0', length) != nullptr ||
+        (encoding != MqttPayloadEncoding::TEXT && encoding != MqttPayloadEncoding::MODBUS_RTU_HEX &&
+         encoding != MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT) ||
+        (encoding == MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT && topicIndex == UINT16_MAX) ||
+        (encoding != MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT && topicIndex != UINT16_MAX))
+        return rejectInvalidReport();
 
     // 入队与队满丢旧在同一临界区内完成，避免生产者(worker任务)与
     // 消费者(loopTask)并发修改 _slotReadIndex/_slotCount 导致索引错乱
     bool droppedOldest = false;
     portENTER_CRITICAL(&_slotMux);
+    const uint32_t now = millis();
+    if (_minReportInterval > 0 && _reportQueueAttempted &&
+        static_cast<uint32_t>(now - _lastReportQueueTime) < _minReportInterval) {
+        incrementQueueCounter(_queueStats.throttleDrops);
+        portEXIT_CRITICAL(&_slotMux);
+        return false;
+    }
     if (_slotCount >= MQTT_REPORT_SLOTS) {
         // 缓冲区满时丢弃最旧的
         _reportSlots[_slotReadIndex].clear();
@@ -1955,34 +2125,94 @@ bool MQTTClient::queueReportDataEncoded(const char* payload, uint16_t length,
     slot.payload[length] = '\0';
     slot.length = length;
     slot.encoding = encoding;
+    slot.topicIndex = topicIndex;
     slot.occupied = true;
 
     _slotWriteIndex = (_slotWriteIndex + 1) % MQTT_REPORT_SLOTS;
     _slotCount++;
-    uint8_t depthNow = _slotCount;
+    _lastReportQueueTime = now;
+    _reportQueueAttempted = true;
+    incrementQueueCounter(_queueStats.enqueueTotal);
+    if (encoding == MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT) incrementQueueCounter(_queueStats.configuredTopicAccepted);
+    if (droppedOldest) {
+        incrementQueueCounter(_queueStats.dropTotal);
+        incrementQueueCounter(_queueStats.evictedOldest);
+    }
     portEXIT_CRITICAL(&_slotMux);
 
-    // 日志/统计在锁外执行（LOGGER 可能阻塞，禁止在自旋锁临界区内调用）
+    // Logs/callbacks remain outside the short critical section.
     if (droppedOldest) {
         LOGGER.warning("[MQTT] Report queue full, dropping oldest");
-        _queueStats.dropTotal++;
     }
-    _queueStats.enqueueTotal++;
 
 #if FASTBEE_ENABLE_HEALTH_MONITOR
-    HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
-    if (hm) hm->setMqttQueueDepth(depthNow);
+    auto* fw = FastBeeFramework::getInstance();
+    HealthMonitor* hm = fw ? fw->getHealthMonitor() : nullptr;
+    if (hm) hm->setMqttQueueDepth(getQueueDepth());
 #endif
     
     return true;
+}
+
+bool MQTTClient::rejectInvalidReport() {
+    portENTER_CRITICAL(&_slotMux);
+    incrementQueueCounter(_queueStats.dropTotal);
+    incrementQueueCounter(_queueStats.invalidDrops);
+    portEXIT_CRITICAL(&_slotMux);
+    return false;
+}
+
+MQTTClient::QueueSnapshot MQTTClient::getReportQueueSnapshot() const {
+    QueueSnapshot result;
+    portENTER_CRITICAL(&_slotMux);
+    result.ringDepth = _slotCount;
+    result.pendingReport = _pendingReportSlot.occupied;
+    result.depth = _slotCount + (result.pendingReport ? 1 : 0);
+    result.consumerActive = _reportConsumerActive;
+    result.pendingAttempts = _pendingReportAttempts;
+    const uint32_t elapsed = static_cast<uint32_t>(millis() - _lastReportFlushMs);
+    result.retryDelayMs = result.depth && _reportFlushAttempted && !_reportConsumerActive && elapsed < 1000u
+        ? 1000u - elapsed : 0;
+    result.stats = _queueStats;
+    portEXIT_CRITICAL(&_slotMux);
+    return result;
+}
+
+uint8_t MQTTClient::getQueueDepth() const { return getReportQueueSnapshot().depth; }
+MQTTClient::QueueStats MQTTClient::getQueueStats() const { return getReportQueueSnapshot().stats; }
+
+FastBee::MqttReportRetirement::Snapshot MQTTClient::getReportRetirementSnapshot() {
+    portENTER_CRITICAL(&g_mqttRetirementMux);
+    const auto result = g_mqttReportRetirement.snapshot();
+    portEXIT_CRITICAL(&g_mqttRetirementMux);
+    return result;
+}
+
+void MQTTClient::recordReportQueueRetirement() {
+    portENTER_CRITICAL(&_slotMux);
+    if (_reportRetirementRecorded) { portEXIT_CRITICAL(&_slotMux); return; }
+    _reportRetirementRecorded = true;
+    const uint8_t ringDepth = _slotCount;
+    const bool pending = _pendingReportSlot.occupied;
+    const bool active = _reportConsumerActive;
+    portEXIT_CRITICAL(&_slotMux);
+    // Never nest the per-instance and boot-ledger critical sections. Owner
+    // lifetime admission has already excluded producers and the consumer.
+    portENTER_CRITICAL(&g_mqttRetirementMux);
+    g_mqttReportRetirement.record(_reportRetirementReason, ringDepth, pending, active);
+    portEXIT_CRITICAL(&g_mqttRetirementMux);
 }
 
 String MQTTClient::getStatus() const {
     return isConnected ? F("Connected") : F("Disconnected");
 }
 
-void MQTTClient::setTransportClient(Client* client) {
+bool MQTTClient::setTransportClient(Client* client, bool secure) {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || _beginAttempted.load() || _reconnectLifetime.active()) return false;
+    if (!client && secure) return false;
     _externalClient = client;
+    _externalClientSecure = client && secure;
     if (client) {
         mqttClient.setClient(*client);
         LOG_INFO("MQTT: External transport client set");
@@ -1990,17 +2220,31 @@ void MQTTClient::setTransportClient(Client* client) {
         mqttClient.setClient(wifiClient);
         LOG_INFO("MQTT: Transport client cleared, using WiFiClient");
     }
+    return true;
+}
+
+bool MQTTClient::validateTransportSecurity() {
+    if (!_externalClient || config.scheme != "mqtts" || _externalClientSecure) return true;
+    lastErrorCode = -15;
+    LOG_WARNING("MQTT: MQTTS rejected: external transport is not a known TLS provider");
+    return false;
 }
 
 void MQTTClient::setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback) {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || _beginAttempted.load()) return;
     messageCallback = callback;
 }
 
 void MQTTClient::setStatusChangeCallback(StatusChangeCallback cb) {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || _beginAttempted.load()) return;
     _statusChangeCallback = cb;
 }
 
 void MQTTClient::setMonitorDataProvider(std::function<String()> provider) {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked() || _beginAttempted.load()) return;
     _monitorDataProvider = provider;
 }
 
@@ -2013,15 +2257,19 @@ void MQTTClient::_notifyStatusChange() {
     JsonDocument doc;
     JsonObject data = doc.to<JsonObject>();
 
-    data["initialized"] = true;  // SSE 推送时 MQTT 客户端已存在且配置已加载
-    data["connected"] = isConnected;
-    data["stopped"] = stopped;
-    data["server"] = config.server;
-    data["port"] = config.port;
-    data["clientId"] = config.clientId;
-    data["reconnectCount"] = reconnectCount;
-    data["lastError"] = lastErrorCode;
-    data["lastErrorCode"] = lastErrorCode;
+    FastBee::setFixedJsonField(data, "initialized", true);  // SSE 推送时 MQTT 客户端已存在且配置已加载
+    FastBee::setFixedJsonField(data, "connectionTestOnly", isConnectionTestOnly());
+    FastBee::setFixedJsonField(data, "connected", isConnected.load());
+    FastBee::setFixedJsonField(data, "stopped", stopped.load());
+    FastBee::setFixedJsonField(data, "reconnectWorkerActive", _reconnectLifetime.active());
+    FastBee::setFixedJsonField(data, "reconnectStopPending", _reconnectLifetime.stopping() && _reconnectLifetime.active());
+    FastBee::setFixedJsonField(data, "reconnectCancellationRequested", _reconnectLifetime.stopping());
+    FastBee::setFixedJsonField(data, "server", config.server);
+    FastBee::setFixedJsonField(data, "port", config.port);
+    FastBee::setFixedJsonField(data, "clientId", config.clientId);
+    FastBee::setFixedJsonField(data, "reconnectCount", reconnectCount.load());
+    FastBee::setFixedJsonField(data, "lastError", lastErrorCode.load());
+    FastBee::setFixedJsonField(data, "lastErrorCode", lastErrorCode.load());
     // Keep asynchronous SSE diagnostics aligned with the REST status route.
     // The transport pointer only says which Client object was injected; it
     // does not say that Ethernet/4G is currently registered on the network.
@@ -2040,53 +2288,45 @@ void MQTTClient::_notifyStatusChange() {
     } else {
         networkConnected = _externalClient || WiFi.status() == WL_CONNECTED;
     }
-    data["lastErrorName"] = mqttStatusErrorName(lastErrorCode);
-    data["lastErrorClass"] = mqttStatusErrorClass(
-        lastErrorCode, _lastMqttsTlsMemoryFailure);
+    FastBee::setFixedJsonField(data, "lastErrorName", mqttStatusErrorName(lastErrorCode));
+    FastBee::setFixedJsonField(data, "lastErrorClass", mqttStatusErrorClass(
+        lastErrorCode, _lastMqttsTlsMemoryFailure));
     const char* errorMessage = mqttStatusErrorMessage(
         lastErrorCode, networkConnected, _lastMqttsTlsMemoryFailure);
-    data["lastErrorMessage"] = errorMessage;
+    FastBee::setFixedJsonField(data, "lastErrorMessage", errorMessage);
     // Keep the legacy alias used by older Web bundles and make the reason
     // available to SSE-only pages without waiting for a REST status poll.
-    data["errorMessage"] = errorMessage;
-    data["statusReason"] = errorMessage;
-    data["networkConnected"] = networkConnected;
-    data["autoReconnect"] = config.autoReconnect;
-    data["connecting"] = !stopped && !isConnected && config.autoReconnect;
-    data["tlsMemoryFailure"] = _lastMqttsTlsMemoryFailure;
-    data["scheme"] = config.scheme;
-    data["tlsAllocated"] = (_wifiClientSecure != nullptr);
-    data["webPausedForMqtts"] = _webServerPaused;
-    data["disabledByMemory"] = _disabledByMemory;
-    data["stoppedByMemory"] = _stoppedByMemory;
+    FastBee::setFixedJsonField(data, "errorMessage", errorMessage);
+    FastBee::setFixedJsonField(data, "statusReason", errorMessage);
+    FastBee::setFixedJsonField(data, "networkConnected", networkConnected);
+    FastBee::setFixedJsonField(data, "autoReconnect", config.autoReconnect);
+    FastBee::setFixedJsonField(data, "connecting", !stopped && !isConnected && config.autoReconnect);
+    FastBee::setFixedJsonField(data, "tlsMemoryFailure", _lastMqttsTlsMemoryFailure.load());
+    FastBee::setFixedJsonField(data, "scheme", config.scheme);
+    FastBee::setFixedJsonField(data, "tlsAllocated", isTlsTransportAllocated());
+    FastBee::setFixedJsonField(data, "webPausedForMqtts", _webServerPaused.load());
+    FastBee::setFixedJsonField(data, "disabledByMemory", _disabledByMemory.load());
+    FastBee::setFixedJsonField(data, "stoppedByMemory", _stoppedByMemory.load());
     if (_disabledByMemory) {
         // Match the REST contract even when an SSE consumer receives the
         // stopped event before its next /api/mqtt/status poll.
-        data["lastError"] = -13;
-        data["lastErrorCode"] = -13;
-        data["lastErrorName"] = "MQTT_DISABLED_BY_MEMORY";
-        data["lastErrorClass"] = "resource";
-        data["lastErrorMessage"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
-        data["errorMessage"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
-        data["statusReason"] = "设备内存紧张，MQTT 已自动禁用，请恢复内存后重新启用";
+        FastBee::writeMqttDiagnostic(data, FastBee::MqttDiagnostic::MemoryDisabled,
+            FastBee::MqttDiagnosticFields::Status | FastBee::MqttDiagnosticFields::Reason);
     } else if (_stoppedByMemory) {
         // Keep SSE diagnostics aligned with the REST status contract while a
         // temporary memory stop is waiting for the next recovery sample.
-        data["connected"] = false;
-        data["connecting"] = false;
-        data["lastError"] = -14;
-        data["lastErrorCode"] = -14;
-        data["lastErrorName"] = "MQTT_STOPPED_BY_MEMORY";
-        data["lastErrorClass"] = "resource";
-        data["lastErrorMessage"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
-        data["errorMessage"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
-        data["statusReason"] = "设备内存紧张，MQTT 已暂时停止，内存恢复后将自动重连";
+        FastBee::setFixedJsonField(data, "connected", false);
+        FastBee::setFixedJsonField(data, "connecting", false);
+        FastBee::writeMqttDiagnostic(data, FastBee::MqttDiagnostic::MemoryStopped,
+            FastBee::MqttDiagnosticFields::Status | FastBee::MqttDiagnosticFields::Reason);
     }
     // 队列背压统计（消费者侧监控用）
-    data["queueDepth"] = _slotCount;
-    data["queueEnqueue"] = _queueStats.enqueueTotal;
-    data["queueDrops"] = _queueStats.dropTotal;
-    data["queuePublished"] = _queueStats.publishTotal;
+    const auto queueSnapshot = getReportQueueSnapshot();
+    FastBee::setFixedJsonField(data, "queueDepth", queueSnapshot.depth);
+    FastBee::setFixedJsonField(data, "queueEnqueue", queueSnapshot.stats.enqueueTotal);
+    FastBee::setFixedJsonField(data, "queueDrops", queueSnapshot.stats.dropTotal);
+    FastBee::setFixedJsonField(data, "queuePublished", queueSnapshot.stats.publishTotal);
+    FastBee::addMqttReportQueueStatus(data, &queueSnapshot);
 
     String json;
     serializeJson(doc, json);
@@ -2135,43 +2375,9 @@ String MQTTClient::buildFullTopic(const String& topic, bool autoPrefix) const {
 }
 
 String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, MqttTopicType topicType) const {
-    String resolvedTopic = topic;
-    resolvedTopic.replace("{deviceNum}", config.deviceNum);
-    resolvedTopic.replace("{productId}", config.productId);
-
-    if (!autoPrefix) {
-        return resolvedTopic;
-    }
-    // autoPrefix启用时，根据topicType自动生成设备前缀
-    // OTA类型(5,6): /{deviceNum} + topic
-    // 其他类型: /{productId}/{deviceNum} + topic
-    String prefix;
-    if (topicType == MqttTopicType::OTA_UPGRADE || topicType == MqttTopicType::OTA_BINARY) {
-        // A complete OTA template is already rooted at the device and must not
-        // receive a second device prefix, even if an older UI left autoPrefix on.
-        const String devicePrefix = "/" + config.deviceNum;
-        if (!config.deviceNum.isEmpty() &&
-            (resolvedTopic == devicePrefix || resolvedTopic.startsWith(devicePrefix + "/"))) {
-            return resolvedTopic;
-        }
-        if (!config.deviceNum.isEmpty()) {
-            prefix = devicePrefix;
-        }
-        // FastBee defines OTA topics at /{deviceNum}/... . The optional
-        // application topicPrefix is intentionally not part of this contract.
-        return prefix + (resolvedTopic.startsWith("/") ? resolvedTopic : "/" + resolvedTopic);
-    } else {
-        if (!config.productId.isEmpty() && !config.deviceNum.isEmpty()) {
-            prefix = "/" + config.productId + "/" + config.deviceNum;
-        } else if (!config.deviceNum.isEmpty()) {
-            prefix = "/" + config.deviceNum;
-        }
-    }
-    // 额外的topicPrefix（如果设置了的话，追加在设备前缀之前）
-    if (!config.topicPrefix.isEmpty()) {
-        return config.topicPrefix + prefix + resolvedTopic;
-    }
-    return prefix + resolvedTopic;
+    return FastBee::buildMqttTopicPath(topic, autoPrefix,
+        topicType == MqttTopicType::OTA_UPGRADE || topicType == MqttTopicType::OTA_BINARY,
+        config.deviceNum, config.productId, config.topicPrefix);
 }
 
 void MQTTClient::normalizeFastBeeOtaTopics() {
@@ -2233,6 +2439,7 @@ void MQTTClient::normalizeFastBeeOtaTopics() {
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
+    if (isConnectionTestOnly() || stopped) return;
     ets_printf("[MQTT] CALLBACK ENTERED topic=%s len=%u\n", topic, length);
     // DRAM 内存保护：低于阈值时丢弃入站消息，防止低内存时 JSON 解析/外设执行崩溃
     // 2026-08-05：改用 8BIT 口径（INTERNAL 虚高 ~28KB，旧守卫从不生效）
@@ -2324,15 +2531,18 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     // FastBee OTA and raw Modbus RTU frames are fixed wire protocols. Passing
     // either through a user rule script can corrupt firmware metadata or bytes.
 #if FASTBEE_ENABLE_RULE_SCRIPT
-    if (!isOtaProtocol && !isRawModbusCommand) {
+    if (!isOtaProtocol && !isRawModbusCommand &&
+        FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript")) {
         String redirectTopic;
         message = RuleScriptManager::getInstance().applyReceiveTransform(
             0, message, topicStr, &redirectTopic);
         if (!redirectTopic.isEmpty()) {
             // 转换后重定向到目标主题，跳过正常处理流程
             {
-                RecursiveMutexGuard lock(_publishMutex);
-                mqttClient.publish(redirectTopic.c_str(), message.c_str(), false);
+                RecursiveMutexGuard lock(_publishMutex, 0);
+                if (lock.isLocked() && !stopped && isConnected &&
+                    FastBee::validMqttTopicText(redirectTopic, true))
+                    mqttClient.publish(redirectTopic.c_str(), message.c_str(), false);
             }
             String truncated = message.length() > 120 ? message.substring(0, 120) + "..." : message;
             Serial.printf("[MQTT] Rule redirect: %s -> %s len=%u payload=%s\n",
@@ -2355,7 +2565,7 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     // 收到实时监测指令时，解析 count/interval 并启动定时发布
     if (tType == MqttTopicType::REALTIME_MON) {
         JsonDocument monDoc;
-        DeserializationError err = deserializeJson(monDoc, message);
+        DeserializationError err = deserializeJson(monDoc, message.c_str(), message.length());
         if (!err) {
             int count = monDoc["count"] | 0;
             unsigned long interval = monDoc["interval"] | 1000;
@@ -2462,56 +2672,48 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
         }
     }
 
-    // 收到 NTP 时间同步响应时，计算校准时间并设置系统时钟
+    // Only a single current, bounded, echoed request may set the clock.
     if (tType == MqttTopicType::NTP_SYNC) {
+        MqttNtpGuard requestGuard(ntpRequestBusy);
         JsonDocument ntpDoc;
-        DeserializationError err = deserializeJson(ntpDoc, message);
-        if (!err && ntpDoc.containsKey("serverSendTime") && ntpDoc.containsKey("serverRecvTime")) {
-            // 解析服务端时间戳（毫秒）
-            double deviceSendTime = ntpDoc["deviceSendTime"].as<String>().toDouble();
-            double serverRecvTime = ntpDoc["serverRecvTime"].as<String>().toDouble();
-            double serverSendTime = ntpDoc["serverSendTime"].as<String>().toDouble();
-            double deviceRecvTime = (double)millis();
-
-            // 使用记录的本地发送时间替代服务端回传值（更精确）
-            if (ntpDeviceSendTime > 0) {
-                deviceSendTime = (double)ntpDeviceSendTime;
-            }
-
-            // NTP 算法：当前时间 = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2
-            double currentTimeMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0;
-
-            // 转换为 timeval 并设置系统时钟
-            time_t epochSec = (time_t)(currentTimeMs / 1000.0);
-            long microSec = (long)((currentTimeMs - (double)epochSec * 1000.0) * 1000.0);
-            struct timeval tv;
-            tv.tv_sec = epochSec;
-            tv.tv_usec = microSec;
-            settimeofday(&tv, nullptr);
-
-            // 设置时区为 CST-8（中国标准时间）
-            setenv("TZ", "CST-8", 1);
-            tzset();
-
-            // 重置发送时间
-            ntpDeviceSendTime = 0;
-
-            // 打印校准结果
-            struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 0)) {
-                char timeBuf[32];
-                strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-                char logBuf[80];
-                snprintf(logBuf, sizeof(logBuf), "MQTT: NTP synced, time: %s", timeBuf);
-                LOG_INFO(logBuf);
-                // 触发NTP同步完成系统事件
+        const auto parseError = deserializeJson(ntpDoc, message.c_str(), message.length());
+        if (requestGuard.held && !parseError && ntpRequestPending && isConnected &&
+            ntpRequestConnection == ntpConnectionEpoch.load(std::memory_order_acquire) &&
+            ntpDoc.containsKey("serverSendTime") && ntpDoc.containsKey("serverRecvTime")) {
+            double echoedSend = 0, serverRecv = 0, serverSend = 0;
+            const uint64_t receivedAt = static_cast<uint64_t>(esp_timer_get_time()) / 1000;
+            const bool matched = readMqttTimeNumber(ntpDoc["deviceSendTime"], echoedSend) &&
+                echoedSend == static_cast<double>(ntpDeviceSendTime);
+            if (matched) {
+                // Consume even a malformed matching reply. Do not reuse it as a
+                // later success or overwrite the configured POSIX timezone.
+                ntpRequestPending = false;
+                long long epochMs = 0;
+                const bool accepted = receivedAt >= ntpDeviceSendTime &&
+                    receivedAt - ntpDeviceSendTime <= 10000U &&
+                    readMqttTimeNumber(ntpDoc["serverRecvTime"], serverRecv) &&
+                    readMqttTimeNumber(ntpDoc["serverSendTime"], serverSend) &&
+                    FastBee::estimateHttpTimeMilliseconds<time_t>(serverRecv, serverSend,
+                        static_cast<uint32_t>(ntpDeviceSendTime), static_cast<uint32_t>(receivedAt), 10000, epochMs) &&
+                    FastBee::SystemTimeQuality::applyMilliseconds(epochMs,
+                        FastBee::SystemTimeQuality::Source::Mqtt, false, ntpTimeSequence);
+                if (accepted) {
+                    struct tm timeinfo{};
+                    if (getLocalTime(&timeinfo, 0)) {
+                        char timeBuf[32] = {};
+                        if (strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo)) {
+                            LOG_INFOF("MQTT: time synchronized, source authentication unverified: %s", timeBuf);
 #if FASTBEE_ENABLE_PERIPH_EXEC
-                PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NTP_SYNCED, timeBuf);
+                            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NTP_SYNCED, timeBuf);
 #endif
+                        }
+                    }
+                } else {
+                    LOG_WARNING("MQTT: time reply rejected or clock update unconfirmed");
+                }
+            } else {
+                LOG_DEBUG("MQTT: stale or unmatched time reply ignored");
             }
-        } else if (!err && !ntpDoc.containsKey("serverSendTime")) {
-            // 收到的是 NTP 请求而非响应（仅含 deviceSendTime），忽略
-            LOG_DEBUG("MQTT: NTP_SYNC request received (not response), ignoring");
         }
     }
 
@@ -2523,7 +2725,15 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 bool MQTTClient::reconnect() {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return false;
+    if (stopped || _reconnectLifetime.stopping()) return false;
+    ntpConnectionEpoch.fetch_add(1, std::memory_order_acq_rel);
     const bool isMqttsReconnect = (config.scheme == "mqtts");
+    if (!validateTransportSecurity()) {
+        _notifyStatusChange();
+        return false;
+    }
     _lastMqttsTlsMemoryFailure = false;
     // 运行时功能门控：mqtts 功能在功能配置页被禁用（用户关闭或开机预算不足）
     // 时拒绝建立 TLS 连接。明确提示策略：不静默降级明文，避免"以为加密实际
@@ -2572,6 +2782,12 @@ bool MQTTClient::reconnect() {
         connClientId = buildClientId();
         connPassword = buildEncryptedPassword();
         if (connPassword.isEmpty()) {
+            if (isConnectionTestOnly()) {
+                lastErrorCode = -9;
+                LOG_WARNING("MQTT: Encrypted connection test failed; no simple-auth fallback");
+                _notifyStatusChange();
+                return false;
+            }
             LOG_WARNING("MQTT: AES password generation failed, falling back to simple auth");
             connClientId = "S&" + config.deviceNum + "&" + config.productId + "&" + config.userId;
             connPassword = buildSimplePassword();
@@ -2616,7 +2832,7 @@ bool MQTTClient::reconnect() {
         tlsBeforeDram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         tlsBeforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     }
-    if (!config.willTopic.isEmpty()) {
+    if (!isConnectionTestOnly() && !config.willTopic.isEmpty()) {
         ok = mqttClient.connect(
             connClientId.c_str(),
             config.username.c_str(),
@@ -2631,6 +2847,9 @@ bool MQTTClient::reconnect() {
             config.username.c_str(),
             connPassword.c_str());
     }
+    // Cancellation can arrive during the blocking socket/TLS handshake. Do not
+    // announce connection or start subscriptions/business bursts afterwards.
+    if (stopped || _reconnectLifetime.stopping()) return false;
     if (isMqtts) {
         tlsAfterDram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         tlsAfterLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
@@ -2653,6 +2872,9 @@ bool MQTTClient::reconnect() {
         ets_printf("[MQTT] *** MQTT CONNECTED! ***\n");
         LOG_INFO("MQTT: Connected");
         _notifyStatusChange();  // 通知状态变化：连接成功
+        // A persisted connection probe never enters business subscriptions,
+        // publications, time sync or event rules, including after reboot.
+        if (isConnectionTestOnly()) return true;
         // 触发MQTT连接成功系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONNECTED, "");
@@ -2697,14 +2919,15 @@ bool MQTTClient::reconnect() {
         }
         reconnectCount++;
         ets_printf("[MQTT] Connect FAILED rc=%d (cnt=%lu)\n",
-                     lastErrorCode, (unsigned long)reconnectCount);
+                     lastErrorCode.load(), (unsigned long)reconnectCount);
         char buf2[48];
-        snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode);
+        snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode.load());
         LOG_WARNING(buf2);
         _notifyStatusChange();  // 通知状态变化：连接失败
         // 触发MQTT连接失败系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
-        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONN_FAILED, String(lastErrorCode));
+        if (!isConnectionTestOnly())
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONN_FAILED, String(lastErrorCode.load()));
 #endif
     }
     return ok;
@@ -2716,20 +2939,26 @@ bool MQTTClient::reconnect() {
 void MQTTClient::ensureTlsTransport() {
     ensureMbedtlsAllocatorForMqtts();
     if (!_wifiClientSecure) {
+        _tlsOwner.allocating();
         _wifiClientSecure = new (std::nothrow) WiFiClientSecure();
         if (!_wifiClientSecure) {
+            _tlsOwner.released();
             LOG_WARNING("[MQTT] WiFiClientSecure allocation failed");
             return;
         }
         const size_t caBundleSize = static_cast<size_t>(x509_crt_bundle_end - x509_crt_bundle_start);
         if (caBundleSize == 0) {
             LOG_ERROR("[MQTT] Built-in CA certificate bundle is unavailable");
+            _tlsOwner.retiring();
             delete _wifiClientSecure;
             _wifiClientSecure = nullptr;
+            _tlsOwner.released();
             return;
         }
         _wifiClientSecure->setCACertBundle(x509_crt_bundle_start, caBundleSize);
         _wifiClientSecure->setHandshakeTimeout(30);
+        _tlsTransportAllocated = true;
+        _tlsOwner.allocated();
         if (!_externalClient) {
             mqttClient.setClient(*_wifiClientSecure);
         }
@@ -2740,9 +2969,12 @@ void MQTTClient::ensureTlsTransport() {
 
 void MQTTClient::releaseTlsTransport() {
     if (_wifiClientSecure) {
+        _tlsOwner.retiring();
         _wifiClientSecure->stop();
         delete _wifiClientSecure;
         _wifiClientSecure = nullptr;
+        _tlsTransportAllocated = false;
+        _tlsOwner.released();
         if (!_externalClient) {
             mqttClient.setClient(wifiClient);
         }
@@ -2834,10 +3066,15 @@ void MQTTClient::reconnectTaskEntry(void* param) {
     // 启动期延迟：让 Web 路由注册完成即可。
     LOG_INFOF("[MQTT] Reconnect task armed, holding %lums for web boot",
               (unsigned long)client->_taskStartupDelayMs);
-    vTaskDelay(pdMS_TO_TICKS(client->_taskStartupDelayMs));
+    const uint32_t started = millis();
+    while (!client->_reconnectLifetime.stopping() && !client->stopped &&
+           static_cast<uint32_t>(millis() - started) < client->_taskStartupDelayMs) {
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
     LOG_INFO("[MQTT] Reconnect task active");
 
-    if (client->_reconnectPending && !client->_reconnectRunning) {
+    if (!client->_reconnectLifetime.stopping() && !client->stopped &&
+        client->_reconnectPending && !client->_reconnectRunning) {
         client->doReconnect();
     } else {
         // doReconnect 被跳过（如状态被并发重置）：主动清除 pending，
@@ -2847,15 +3084,30 @@ void MQTTClient::reconnectTaskEntry(void* param) {
 
     // 加固：无论 doReconnect 是否执行/是否正常返回，任务退出前必须清除运行标志，
     // 防止异常路径下 _reconnectRunning 残留为 true 而永久阻塞重连调度。
+    if (client->_reconnectLifetime.stopping() || client->stopped) {
+        RecursiveMutexGuard lock(client->_publishMutex, 0);
+        if (lock.isLocked() && client->disconnect()) {
+            client->resumeWebServices();
+            client->_stopCompleted = true;
+        }
+        // A busy owner defers cleanup to stop() after worker acknowledgement.
+    }
+    client->_reconnectPending = false;
     client->_reconnectRunning = false;
-    client->_reconnectTaskHandle = nullptr;
+    client->_reconnectScheduledMs = 0;
     LOG_INFO("[MQTT] Reconnect task exiting");
+    // LAST object access. A manager may destroy client immediately afterwards.
+    // RTOS self-delete only reclaims this task, with no MQTTClient access.
+    client->_reconnectLifetime.finish();
     vTaskDelete(nullptr);
 }
 
 void MQTTClient::doReconnect() {
+    RecursiveMutexGuard lock(_publishMutex, 0);
+    if (!lock.isLocked()) return;
     _reconnectPending = false;
     _reconnectRunning = true;
+    if (stopped || _reconnectLifetime.stopping()) return;
 
     // The flag is specific to the current MQTTS attempt.  Do not carry a
     // previous TLS-memory diagnosis into a plain MQTT or feature-disabled
@@ -2923,6 +3175,7 @@ void MQTTClient::doReconnect() {
         uint32_t gateFree = 0, gateLargest = 0, gate8Free = 0;
         bool gatePass = false;
         for (int gi = 0; gi < 16 && !gatePass; gi++) {
+            if (stopped || _reconnectLifetime.stopping()) return;
             // 等待期间出现 Web 前台请求则立即放弃：连接握手/突发 publish
             // 会与页面加载竞争 WiFi TX 通道（实测内存充足时也会挂起）
             {
@@ -3162,6 +3415,7 @@ void MQTTClient::doReconnect() {
     LOG_INFOF("[MQTT] Background %s reconnect starting...", isMqtts ? "MQTTS" : "MQTT");
 
     bool ok = reconnect();
+    if (stopped || _reconnectLifetime.stopping()) return;
 
     if (ok) {
         reconnectInterval = 5000;  // 连接成功，重置间隔
@@ -3309,7 +3563,7 @@ String MQTTClient::buildEncryptedPassword() {
     }
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, ntpJson);
+    DeserializationError err = deserializeJson(doc, ntpJson.c_str(), ntpJson.length());
     if (err) {
         LOG_WARNING("MQTT: NTP response parse failed");
         return "";

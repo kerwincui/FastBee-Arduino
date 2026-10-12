@@ -73,7 +73,10 @@ esp_err_t uart_get_baudrate(int port, uint32_t* baud) {
 #endif
 
 #include "protocols/ModbusUartHardwareSnapshot.h"
+#ifndef TEST_UNSUPPORTED
+// Unsupported target/SDK tests deliberately provide no GPIO register fakes.
 #include "protocols/ModbusUartRxMode.h"
+#endif
 
 int main() {
     JsonDocument doc;

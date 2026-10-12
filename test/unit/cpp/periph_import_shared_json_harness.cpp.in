@@ -1,0 +1,77 @@
+
+struct PeriphExecRouteHandlerOracle:PeriphExecRouteHandler {
+    using PeriphExecRouteHandler::PeriphExecRouteHandler;
+    void handleImportChunk(AsyncWebServerRequest* request);
+};
+@ORACLE_IMPORT@
+struct ImportOutcome {
+    std::vector<std::string> responses,documents;
+    std::map<std::string,std::string> disk;
+    size_t writes=0,opens=0,commits=0,received=0,eligible=0,failures=0;
+    bool committed=false,pending=false;
+    std::string session;
+    std::vector<DocumentProbeAllocator::Event> allocations;
+    bool operator==(const ImportOutcome& o)const{
+        return std::tie(responses,documents,disk,writes,opens,commits,received,eligible,failures,
+                        committed,pending,session,allocations)==
+               std::tie(o.responses,o.documents,o.disk,o.writes,o.opens,o.commits,o.received,o.eligible,o.failures,
+                        o.committed,o.pending,o.session,o.allocations);
+    }
+};
+template<class Handler>
+static ImportOutcome importRun(unsigned scenario,size_t failAt=SIZE_MAX,bool persistent=false){
+    reset();WebHandlerContext context;Handler handler(&context);
+    auto& manager=PeriphExecManager::getInstance();
+    DocumentProbeAllocator allocator(failAt,persistent);importAllocator=&allocator;importDocuments.clear();
+    ImportOutcome result;
+    const auto invoke=[&](AsyncWebServerRequest& request){
+        handler.handleImportChunk(&request);
+        std::string bytes;serializeJson(request.result,bytes);
+        result.responses.push_back(std::to_string(request.status)+":"+request.error+":"+bytes);
+    };
+    if(scenario==1)files.writeLimit=1;
+    if(scenario==2)files.openFailure=true;
+    if(scenario==3)context.authorized=false;
+    if(scenario==4)context.developer=false;
+    if(scenario==5)HandlerUtils::pressure=true;
+    if(scenario==6)HandlerUtils::lowMemory=true;
+    if(scenario==7)manager.pending=true;
+    if(scenario>=8&&scenario<=10){
+        manager.commitSuccess=false;
+        manager.failure=scenario==8?"CONFIG_MEMORY_PRESSURE":scenario==9?"RULE_SERVICE_BUSY":"CONFIG_INVALID";
+    }
+    {
+        // The fake transport retains each response document until its request dies.
+        auto first=request(sessionA,0,6,"abc");invoke(first);
+        auto duplicate=request(sessionA,0,6,"abc");invoke(duplicate);
+        auto wrong=request(sessionA,0,6,"xyz");invoke(wrong);
+        auto last=request(sessionA,3,6,"def");invoke(last);
+        if(scenario>=8&&scenario<=10)manager.commitSuccess=true;
+        invoke(last);
+        auto mismatch=request(sessionA,3,6,"XYZ");invoke(mismatch);
+    }
+    assert(allocator.blocks.empty());
+    result.documents=importDocuments;result.disk=files.data;result.writes=files.writes;result.opens=files.opens;
+    result.commits=manager.commits;result.received=handler.importReceived;result.committed=handler.importCommitted;
+    result.pending=manager.pending;result.session=handler.importSession;result.allocations=allocator.events;
+    result.eligible=allocator.eligible;result.failures=allocator.failures;importAllocator=nullptr;
+    return result;
+}
+int main(int argc,char** argv){
+    assert(argc==2);const std::string mode=argv[1];size_t cases=0;
+    if(mode=="import"){
+        for(unsigned i=0;i<11;++i){
+            assert(importRun<PeriphExecRouteHandlerOracle>(i)==importRun<PeriphExecRouteHandler>(i));++cases;
+        }
+    }else if(mode=="import-oom"){
+        for(unsigned i:{0U,1U,8U,9U,10U}){
+            const auto baseline=importRun<PeriphExecRouteHandlerOracle>(i);
+            assert(baseline==importRun<PeriphExecRouteHandler>(i));
+            for(bool persistent:{false,true})for(size_t at=0;at<=baseline.eligible+1;++at){
+                assert(importRun<PeriphExecRouteHandlerOracle>(i,at,persistent)==
+                       importRun<PeriphExecRouteHandler>(i,at,persistent));++cases;
+            }
+        }
+    }else return 2;
+    std::cout<<"PASS "<<mode<<" "<<cases<<" cases\n";
+}

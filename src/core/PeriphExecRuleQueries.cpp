@@ -4,6 +4,7 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecRemoteBindings.h"
+#include "core/RuleCompletionGraph.h"
 #include <algorithm>
 #include <new>
 
@@ -20,6 +21,15 @@ bool PeriphExecManager::getRuleSnapshot(const String& id, PeriphExecRule& snapsh
     if (it == rules.end()) return false;
     snapshot = it->second;
     return true;
+}
+
+bool PeriphExecManager::isRuleExecutionCurrent(const PeriphExecRule& snapshot) const {
+    MutexGuard lock(_rulesMutex, 0);
+    if (!lock.isLocked() || _configurationLoadFailed || _configurationRestartPending ||
+        !snapshot.runtimeRevision || _ruleRuntimeRevision == UINT64_MAX) return false;
+    const auto found = rules.find(snapshot.id);
+    return found != rules.end() && found->second.runtimeRevision == snapshot.runtimeRevision &&
+        snapshot.runtimeRevision == _ruleRuntimeRevision;
 }
 
 std::vector<PeriphExecRule> PeriphExecManager::getAllRules() const {
@@ -101,6 +111,16 @@ bool PeriphExecManager::setRuleEnabledLocked(const String& id, bool enabled,
     }
     if (enabled) for (const auto& trigger : it->second.triggers) {
         if (hasRetiredRemoteSource(trigger)) { errorMsg = "REMOTE_CHANNEL_RETIRED: rule remains paused"; return false; }
+    }
+    if (enabled && (FastBee::hasThermostatAction(it->second) || FastBee::hasSdRecorderAction(it->second))) {
+        PeriphExecRule candidate = it->second;
+        candidate.enabled = true;
+        if (candidate.id != it->second.id || !validateRuleActionsLocked(candidate, errorMsg)) return false;
+    }
+    if (enabled) {
+        if (const char* issue = FastBee::validateRuleCompletionGraph(rules, nullptr, nullptr, &id)) {
+            errorMsg = issue; return false;
+        }
     }
     it->second.enabled = enabled;
     return true;

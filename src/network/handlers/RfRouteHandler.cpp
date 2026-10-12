@@ -12,6 +12,28 @@
 #include "peripherals/drivers/RFLearnDriver.h"
 #include <ArduinoJson.h>
 
+namespace {
+const char* rfLearnStateName(RfLearnState state) {
+    switch (state) { case RfLearnState::LEARNING: return "learning"; case RfLearnState::CAPTURED: return "captured";
+        case RfLearnState::TIMEOUT: return "timeout"; default: return "idle"; }
+}
+int rfKeyErrorStatus(const String& error) {
+    if (error == "RF_KEY_NOT_FOUND") return 404;
+    if (error.startsWith("RF_KEYS_") && error != "RF_KEYS_LIMIT") return 503;
+    return 400;
+}
+bool rfUnsignedParameter(const String& text, uint32_t low, uint32_t high, uint32_t& out) {
+    if (text.isEmpty() || text.length() > 5) return false;
+    uint32_t value = 0;
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        value = value * 10 + static_cast<uint32_t>(text[i] - '0');
+    }
+    if (value < low || value > high) return false;
+    out = value; return true;
+}
+}
+
 RfRouteHandler::RfRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx)
 {
@@ -50,14 +72,14 @@ void RfRouteHandler::handleStatus(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
     RFLearnDriver& rf = RFLearnDriver::getInstance();
+    RfStatusSnapshot snapshot;
+    if (!rf.getSnapshot(snapshot)) { ctx->sendError(request, 503, "RF状态暂不可用"); return; }
 
     JsonDocument doc;
-    doc["initialized"] = rf.isInitialized();
-    doc["learnState"] = rf.getLearnStateName();
-    doc["keyCount"] = (int)rf.getKeyCount();
-    doc["lastCode"] = rf.getLastCode();
-    doc["lastBits"] = rf.getLastBitLength();
-    doc["lastPulse"] = rf.getLastPulseWidth();
+    doc["initialized"] = snapshot.initialized; doc["stopping"] = snapshot.stopping;
+    doc["learnState"] = rfLearnStateName(snapshot.learnState);
+    doc["keyCount"] = snapshot.keyCount;
+    doc["lastCode"] = snapshot.lastCode; doc["lastBits"] = snapshot.lastBits; doc["lastPulse"] = snapshot.lastPulse;
     ctx->sendSuccess(request, doc);
 }
 
@@ -67,21 +89,19 @@ void RfRouteHandler::handleLearnStart(AsyncWebServerRequest* request)
     if (!ctx->requireDeveloperMode(request)) return;
 
     RFLearnDriver& rf = RFLearnDriver::getInstance();
-    if (!rf.isInitialized()) {
-        ctx->sendError(request, 400, "RF接收器未初始化，请先在外设管理中启用433MHz RF模块(RX模式)");
-        return;
-    }
 
     uint32_t timeoutMs = 10000;
     if (request->hasParam("timeoutMs", true)) {
-        long v = request->getParam("timeoutMs", true)->value().toInt();
-        if (v > 0) timeoutMs = (uint32_t)v;
+        if (!rfUnsignedParameter(request->getParam("timeoutMs", true)->value(), 1000, 60000, timeoutMs)) {
+            ctx->sendError(request, 400, "timeoutMs必须为1000~60000的整数"); return;
+        }
     }
-    rf.startLearn(timeoutMs);
+    if (!rf.startLearn(timeoutMs)) { ctx->sendError(request, 409, "RF接收器未就绪、忙或正在停止"); return; }
+    RfStatusSnapshot snapshot;
+    if (!rf.getSnapshot(snapshot)) { ctx->sendError(request, 503, "学习已请求，状态暂不可用，请查询状态"); return; }
 
     JsonDocument doc;
-    doc["learnState"] = rf.getLearnStateName();
-    doc["remainingMs"] = rf.getLearnRemainingMs();
+    doc["learnState"] = rfLearnStateName(snapshot.learnState); doc["remainingMs"] = snapshot.remainingMs;
     ctx->sendSuccess(request, doc);
 }
 
@@ -89,20 +109,19 @@ void RfRouteHandler::handleLearnStatus(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
     RFLearnDriver& rf = RFLearnDriver::getInstance();
+    RfStatusSnapshot snapshot;
+    if (!rf.getSnapshot(snapshot)) { ctx->sendError(request, 503, "RF状态暂不可用"); return; }
 
     JsonDocument doc;
-    doc["learnState"] = rf.getLearnStateName();
-    doc["remainingMs"] = rf.getLearnRemainingMs();
-    doc["code"] = rf.getLearnedCode();
-    doc["bits"] = rf.getLearnedBitLength();
-    doc["pulse"] = rf.getLearnedPulseWidth();
+    doc["learnState"] = rfLearnStateName(snapshot.learnState); doc["remainingMs"] = snapshot.remainingMs;
+    doc["code"] = snapshot.learnedCode; doc["bits"] = snapshot.learnedBits; doc["pulse"] = snapshot.learnedPulse;
     ctx->sendSuccess(request, doc);
 }
 
 void RfRouteHandler::handleLearnStop(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
-    RFLearnDriver::getInstance().stopLearn();
+    if (!RFLearnDriver::getInstance().stopLearn()) { ctx->sendError(request, 503, "取消学习未确认"); return; }
     ctx->sendSuccess(request, "已取消学习");
 }
 
@@ -110,9 +129,15 @@ void RfRouteHandler::handleListKeys(AsyncWebServerRequest* request)
 {
     if (!ctx->requireAuth(request)) return;
     RFLearnDriver& rf = RFLearnDriver::getInstance();
-    String keys = rf.getKeysJson();
-    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)rf.getKeyCount()) +
+    String keys; size_t count = 0; RfStatusSnapshot snapshot;
+    if (!rf.getSnapshot(snapshot) || (!snapshot.keysLoaded && !rf.loadKeyMap()) || !rf.getKeySnapshot(keys, count)) {
+        ctx->sendError(request, 503, "RF按键库暂不可用"); return;
+    }
+    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)count) +
                   ",\"keys\":" + keys + "}}";
+    const size_t expected = sizeof("{\"success\":true,\"data\":{\"count\":") - 1 +
+        String((int)count).length() + sizeof(",\"keys\":") - 1 + keys.length() + 2;
+    if (resp.length() != expected) { ctx->sendError(request, 503, "RF按键库响应内存不足"); return; }
     request->send(200, "application/json", resp);
 }
 
@@ -127,17 +152,16 @@ void RfRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
     }
     String name = request->getParam("name", true)->value();
     String code = request->getParam("code", true)->value();
-    uint8_t bits = request->hasParam("bits", true)
-                       ? (uint8_t)request->getParam("bits", true)->value().toInt()
-                       : 24;
-    uint16_t pulse = request->hasParam("pulse", true)
-                         ? (uint16_t)request->getParam("pulse", true)->value().toInt()
-                         : 350;
+    uint32_t bits = 24, pulse = 350;
+    if ((request->hasParam("bits", true) && !rfUnsignedParameter(request->getParam("bits", true)->value(), 12, 32, bits)) ||
+        (request->hasParam("pulse", true) && !rfUnsignedParameter(request->getParam("pulse", true)->value(), 80, 2000, pulse))) {
+        ctx->sendError(request, 400, "RF按键bits须为12~32，pulse须为80~2000的整数"); return;
+    }
     name.trim();
 
     String err;
     if (!RFLearnDriver::getInstance().upsertKey(name, code, bits, pulse, err)) {
-        ctx->sendError(request, 400, err.length() ? err : String("保存失败"));
+        ctx->sendError(request, rfKeyErrorStatus(err), err.length() ? err : String("保存失败"));
         return;
     }
     ctx->sendSuccess(request, "按键已保存");
@@ -154,8 +178,9 @@ void RfRouteHandler::handleDeleteKey(AsyncWebServerRequest* request)
     }
     String name = request->getParam("name", true)->value();
     name.trim();
-    if (!RFLearnDriver::getInstance().deleteKey(name)) {
-        ctx->sendError(request, 404, "未找到该按键");
+    String error;
+    if (!RFLearnDriver::getInstance().deleteKey(name, &error)) {
+        ctx->sendError(request, rfKeyErrorStatus(error), error);
         return;
     }
     ctx->sendSuccess(request, "按键已删除");
@@ -166,7 +191,8 @@ void RfRouteHandler::handleClearKeys(AsyncWebServerRequest* request)
     if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
-    RFLearnDriver::getInstance().clearKeys();
+    String error;
+    if (!RFLearnDriver::getInstance().clearKeys(&error)) { ctx->sendError(request, rfKeyErrorStatus(error), error); return; }
     ctx->sendSuccess(request, "已清除全部按键");
 }
 

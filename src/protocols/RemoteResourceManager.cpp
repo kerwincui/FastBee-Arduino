@@ -122,7 +122,7 @@ bool fetchWeather(JsonObjectConst source,JsonDocument& normalized,Reason& reason
     http.end();
     if (received<0 || response.exceeded || !response.body.length()) return fail(Reason::Response);
     JsonDocument parsed;
-    auto e=deserializeJson(parsed,response.body,DeserializationOption::NestingLimit(12));
+    auto e=deserializeJson(parsed,response.body.c_str(), response.body.length(),DeserializationOption::NestingLimit(12));
     if (e) return fail(httpReason==Reason::None ? Reason::Response : httpReason);
     reason=FastBee::RemoteResourceModel::providerFailure(parsed.as<JsonVariantConst>());
     if (reason!=Reason::None) return false;

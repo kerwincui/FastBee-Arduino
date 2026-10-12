@@ -21,7 +21,7 @@ struct RuntimeFeatureManager {
                std::string(key) == "mdns" ? mdns : screen;
     }
     bool shouldEnable(const char* key) const {
-        assert(std::string(key) == "fileLogging");
+        assert(std::string(key) == "fileLogging" || std::string(key) == "logViewer");
         return logging && compiled && budget && !runtimeDisabled;
     }
     ConfigUpdateResult updateAndSave(const JsonDocument& doc, UserConfigSnapshot* previous) {
@@ -62,6 +62,8 @@ struct LoggerSystem {
     bool enabled = false, rejectEnable = false;
     int calls = 0, level = 3;
     static LoggerSystem& getInstance() { static LoggerSystem l; return l; }
+    void enableLogViewer(bool requested) { viewerEnabled = requested; }
+    bool viewerEnabled = false;
     void enableFileLogging(bool requested) {
         ++calls;
         events.emplace_back(requested ? "logger:on" : "logger:off");

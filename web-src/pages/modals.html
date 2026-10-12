@@ -120,6 +120,7 @@
                                         <option value="54" disabled data-implemented="false">MFRC522 RFID（待驱动）</option>
                                         <option value="55" disabled data-implemented="false">通用 IO 扩展器</option>
                                         <option value="56" disabled data-implemented="false">彩色显示与触摸</option>
+                                        <option value="57" disabled data-implemented="false">PCA9685 PWM</option>
                                         <option value="60">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -545,13 +546,32 @@
                                     <small id="io-expander-feature-status" class="field-hint" role="status"></small>
                                     <div class="fb-grid-2">
                                         <div class="fb-form-group"><label for="io-expander-bus-id">I2C 总线</label><select id="io-expander-bus-id"><option value="">直接配置 SDA、SCL</option></select></div>
-                                        <div class="fb-form-group"><label for="io-expander-address">I2C 地址</label><input id="io-expander-address" type="text" value="0x20" placeholder="0x20"></div>
-                                        <div class="fb-form-group"><label for="io-expander-interval">采样间隔 (ms)</label><input id="io-expander-interval" type="number" min="20" max="1000" step="1" value="20"></div>
+                                        <div class="fb-form-group"><label for="io-expander-address">I2C 地址</label><input id="io-expander-address" type="text" placeholder="按固件驱动范围填写"></div>
+                                        <div class="fb-form-group"><label for="io-expander-interval">采样间隔 (ms)</label><input id="io-expander-interval" type="number"></div>
+                                        <div id="io-expander-reset-fields" class="fb-form-group is-hidden"><label for="io-expander-reset-id">专用 RESET 输出</label><select id="io-expander-reset-id"></select><small>使用原生 GPIO 数字输出，非反相、非 PWM，初始电平为高；启用前确认连接到芯片 RESET。</small></div>
                                     </div>
                                     <small>先保存父设备，再添加数字输入或输出并选择其通道。PCF8574 为准双向 IO，输入释放为高；不支持 PWM 或呼吸效果。</small>
+                                    <small id="io-expander-group-hint" class="is-hidden">MCP23017：父设备与通道先保持禁用保存；必须显式配置 A7（7）和 B7（15）为输出。随后从父设备的启用按钮选择整组通道、核对初始电平后启动；整组禁用后再修改接线配置。</small>
                                 </div>
 
                                 <!-- 彩色显示与触摸参数。引脚在此处按角色保存，通用 pins 数组保持为空。 -->
+                                <div id="pca9685-params" class="peripheral-params-group is-hidden">
+                                    <p id="pca9685-feature-status" class="field-hint"></p>
+                                    <p class="field-hint">所有通道共用频率。保存或重启不会初始化芯片或启用输出；需在诊断窗口准备 OE、确认芯片重新上电，再单独启用输出。OE 必须外接上拉，不能与 RESET 或其它负载共用。</p>
+                                    <div class="fb-grid-2">
+                                        <div class="fb-form-group"><label for="pca9685-bus-id">I2C 主总线</label><select id="pca9685-bus-id"><option value="">请选择</option></select></div>
+                                        <div class="fb-form-group"><label for="pca9685-oe-id">专用 OE 输出（初始高电平）</label><select id="pca9685-oe-id"><option value="">请选择</option></select></div>
+                                        <div class="fb-form-group"><label for="pca9685-address">I2C 地址（十进制，排除保留地址）</label><input id="pca9685-address" type="number"></div>
+                                        <div class="fb-form-group"><label for="pca9685-channelMask">通道掩码（十进制）</label><input id="pca9685-channelMask" type="number"><small>位 0～15 对应通道 0～15。</small></div>
+                                        <div class="fb-form-group"><label for="pca9685-pwmHz">共享频率（Hz）</label><input id="pca9685-pwmHz" type="number"></div>
+                                        <div class="fb-form-group"><label for="pca9685-clockHz">内部振荡器频率估计（Hz）</label><input id="pca9685-clockHz" type="number"><small>用于计算，不表示实测频率；不支持外部时钟模式。</small></div>
+                                        <div class="fb-form-group"><label for="pca9685-minAngle">最小角度（°）</label><input id="pca9685-minAngle" type="number"></div>
+                                        <div class="fb-form-group"><label for="pca9685-maxAngle">最大角度（°）</label><input id="pca9685-maxAngle" type="number"></div>
+                                        <div class="fb-form-group"><label for="pca9685-minPulseUs">最小脉宽（μs）</label><input id="pca9685-minPulseUs" type="number"></div>
+                                        <div class="fb-form-group"><label for="pca9685-maxPulseUs">最大脉宽（μs）</label><input id="pca9685-maxPulseUs" type="number"></div>
+                                    </div>
+                                    <label><input id="pca9685-openDrain" type="checkbox">开漏输出（需按负载接上拉）</label>
+                                </div>
                                 <div id="display-params" class="peripheral-params-group is-hidden">
                                     <h4 class="u-mb-10">彩色显示与触摸</h4>
                                     <div class="u-hint-bar u-hint-bar-info">
@@ -752,6 +772,15 @@
                                 <!-- DS1302 参数 -->
                                 <div id="ds1302-params" class="peripheral-params-group is-hidden">
                                     <h4 class="u-mb-10">DS1302 参数</h4>
+                                    <div class="fb-form-group">
+                                        <label><input type="checkbox" id="ds1302-boot-seed"> 启动时用 RTC 初始化无效的系统时间</label>
+                                        <small>默认关闭，仅启动尝试一次；不覆盖已有时间，不代表校准或联网同步。保存后下次启动生效，会影响已启用的每日定时规则，请先核对日历与偏移。</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="ds1302-utc-offset">RTC 固定 UTC 偏移（分钟）</label>
+                                        <input type="number" id="ds1302-utc-offset" min="-840" max="840" step="1" placeholder="如 UTC+8 填 480，UTC 填 0">
+                                        <small>启用时必须明确填写。按 RTC 内日历设置，不随系统时区或夏令时自动变化。</small>
+                                    </div>
                                     <div class="fb-grid-2">
                                         <div class="fb-form-group">
                                             <label for="ds1302-hour-mode">显示制式</label>
@@ -1055,6 +1084,9 @@
             <form id="periph-exec-form" class="fb-form">
                 <fieldset>
                     <input type="hidden" id="periph-exec-original-id" value="">
+                    <details id="pe-template-wizard" class="u-note-card u-mb-15 is-hidden">
+                        <summary>从只读采集模板开始（新增规则）</summary>
+                    </details>
 
                     <!-- 第一部分：基础配置 -->
                     <div class="pe-base-grid">
@@ -1078,7 +1110,7 @@
                     <div class="section-title section-title-actions">
                         <span>触发配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecTrigger">
-                            <span>添加触发</span>
+                            添加触发
                         </button>
                     </div>
                     <div id="periph-exec-triggers">
@@ -1089,7 +1121,7 @@
                     <div class="section-title section-title-actions">
                         <span>执行动作配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecAction">
-                            <span>添加动作</span>
+                            添加动作
                         </button>
                     </div>
                     <div id="periph-exec-actions">
@@ -1103,147 +1135,6 @@
         <div class="modal-footer">
             <button class="fb-btn" id="cancel-periph-exec-btn" type="button">取消</button>
             <button class="fb-btn fb-btn-primary" id="save-periph-exec-btn" type="button">保存</button>
-        </div>
-    </div>
-</div>
-
-<!-- 规则脚本模态窗 -->
-<div id="rule-script-modal" class="modal">
-    <div class="modal-content u-modal-content-700">
-        <div class="modal-header">
-            <h2 class="modal-title" id="rule-script-modal-title">
-                新增规则脚本</h2>
-            <button id="close-rule-script-modal" class="modal-close-btn">&times;</button>
-        </div>
-        <div class="modal-body">
-            <form id="rule-script-form" class="fb-form">
-                <fieldset>
-                    <input type="hidden" id="rule-script-original-id" value="">
-                    <div class="fb-form-group">
-                        <label for="rule-script-name">规则名称</label>
-                        <input type="text" id="rule-script-name" class="" placeholder="例如: 数据格式转换"
-                            required>
-                    </div>
-                    <div class="fb-form-group">
-                        <label>启用</label>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="rule-script-enabled" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div class="fb-form-group">
-                        <label for="rule-script-trigger-type">触发类型</label>
-                        <select id="rule-script-trigger-type" class="">
-                            <option value="0">数据接收</option>
-                            <option value="1">数据上报</option>
-                        </select>
-                    </div>
-                    <div class="fb-form-group">
-                        <label for="rule-script-protocol-type">协议类型</label>
-                        <select id="rule-script-protocol-type" class="">
-                            <option value="0">MQTT</option>
-                            <option value="1">Modbus RTU</option>
-                        </select>
-                    </div>
-                    <div id="rule-script-topic-fields" style="display:none;">
-                        <div class="fb-form-group">
-                            <label for="rule-script-source-topic">源主题</label>
-                            <input type="text" id="rule-script-source-topic" class=""
-                                placeholder="例如: /device/sensor/data 或 /device/+/data">
-                            <small>留空匹配所有 MQTT 消息，支持 + (单级) / # (多级) 通配符</small>
-                        </div>
-                        <div class="fb-form-group">
-                            <label for="rule-script-target-topic">目标主题</label>
-                            <input type="text" id="rule-script-target-topic" class=""
-                                placeholder="例如: /cloud/telemetry">
-                            <small>留空不重定向，转换后发布到此主题</small>
-                        </div>
-                    </div>
-                    <div class="fb-form-group">
-                        <label for="rule-script-content">脚本内容</label>
-                        <textarea id="rule-script-content" class="textarea-code"
-                            maxlength="2048"
-                            placeholder='{"temp": ${temperature}, "humi": ${humidity}}'></textarea>
-                        <small>使用 ${key} 引用输入数据中的值，例如
-                            ${temperature}</small>
-                    </div>
-                    <div id="rule-script-error" class="message message-error is-hidden"></div>
-                </fieldset>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button class="fb-btn" id="cancel-rule-script-btn" type="button">取消</button>
-            <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button">保存</button>
-        </div>
-    </div>
-</div>
-
-<!-- 添加用户模态窗 -->
-<div id="add-user-modal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h2 class="modal-title" id="add-user-title">添加用户</h2>
-            <button id="close-add-user-modal" class="modal-close-btn">×</button>
-        </div>
-        <div class="modal-body">
-            <form id="add-user-form" class="fb-form">
-                <fieldset>
-                    <div class="fb-form-group">
-                        <label for="add-username-input" id="add-username-label">用户名</label>
-                        <input type="text" id="add-username-input" class="" placeholder="请输入用户名"
-                            required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="add-password-input" id="add-password-label">密码</label>
-                        <input type="password" id="add-password-input" class="" placeholder="请输入密码"
-                            required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="add-confirm-password-input" id="add-confirm-password-label">确认密码</label>
-                        <input type="password" id="add-confirm-password-input" class=""
-                            placeholder="请再次输入密码" required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="add-description-input" id="add-description-label">描述</label>
-                        <input type="text" id="add-description-input" class=""
-                            placeholder="可选，最多64字符" maxlength="64">
-                    </div>
-                    <div id="add-user-error" class="message message-error is-hidden"></div>
-                </fieldset>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button class="fb-btn" id="cancel-add-user-btn" type="button">取消</button>
-            <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button">添加</button>
-        </div>
-    </div>
-</div>
-
-<!-- 配置导入/导出选择弹窗 -->
-<div id="config-transfer-modal" class="modal">
-    <div class="modal-content u-modal-content-560">
-        <div class="modal-header">
-            <h2 class="modal-title" id="config-transfer-modal-title">选择配置文件</h2>
-            <button class="modal-close-btn">&times;</button>
-        </div>
-        <div class="modal-body" style="padding:16px 20px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-                <label class="fb-checkbox" style="font-weight:600">
-                    <input type="checkbox" id="config-transfer-select-all" checked>
-                    <span>全选</span>
-                </label>
-                <span id="config-transfer-summary" style="font-size:12px;color:var(--text-secondary)"></span>
-            </div>
-            <div id="config-transfer-list" style="display:flex;flex-direction:column;gap:8px">
-                <!-- 动态填充配置文件复选框 -->
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="fb-btn" id="config-transfer-cancel-btn" type="button">取消</button>
-            <button class="fb-btn fb-btn-warning" id="config-transfer-confirm-btn" type="button">确认</button>
         </div>
     </div>
 </div>

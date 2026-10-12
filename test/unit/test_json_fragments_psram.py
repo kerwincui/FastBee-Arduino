@@ -54,6 +54,45 @@ std::string drain(FastBee::JsonFragmentsResponse& response) {
  assert(response._fillBuffer(bytes,sizeof(bytes))==0);return result;
 }
 int main() {
+ struct SnapshotReader : FastBee::JsonFragmentsResponse::Reader {
+  std::string bytes="\"sensor\"";size_t offset=0;bool again=true;
+  size_t length() const override{return bytes.size();}
+  size_t read(uint8_t* out,size_t cap) override {
+   if(again){again=false;return TryAgain;}
+   size_t n=std::min(cap,bytes.size()-offset);
+   memcpy(out,bytes.data()+offset,n);offset+=n;return n;
+  }
+ };
+ for(bool usePsram:{true,false}) {
+  available=usePsram;
+  FastBee::JsonFragmentsResponse response(1,FastBee::JsonFragmentsResponse::Storage::CatalogLiterals);
+  assert(response.setReader(0,std::unique_ptr<SnapshotReader>(new SnapshotReader)));
+  JsonDocument doc;doc["replacement"]=true;
+  assert(!response.set(0,doc));
+  assert(!response.setCatalogLiteral(0,"null"));
+  assert(!response.setReader(0,std::unique_ptr<SnapshotReader>(new SnapshotReader)));
+  uint8_t bytes[3];assert(response._fillBuffer(bytes,0)==0);
+  assert(response._fillBuffer(bytes,sizeof(bytes))==FastBee::JsonFragmentsResponse::Reader::TryAgain);
+  assert(response._sourceValid() && drain(response)=="\"sensor\"");
+  // A retry between ordinary fragments must publish the bytes already staged
+  // and retain the reader's position for the next callback in both allocators.
+  FastBee::JsonFragmentsResponse mixed(3);
+  JsonDocument empty;
+  assert(mixed.set(0,empty,"[",",") &&
+         mixed.setReader(1,std::unique_ptr<SnapshotReader>(new SnapshotReader)) &&
+         mixed.set(2,empty,",","]"));
+  uint8_t staging[137];
+  size_t copied=mixed._fillBuffer(staging,sizeof(staging));
+  std::string body(reinterpret_cast<char*>(staging),copied);
+  assert(body=="[null,");
+  while(body.size()<mixed._contentLength) {
+   copied=mixed._fillBuffer(staging,sizeof(staging));
+   assert(copied&&copied<=sizeof(staging));
+   body.append(reinterpret_cast<char*>(staging),copied);
+  }
+  assert(body=="[null,\"sensor\",null]" && mixed._fillBuffer(staging,sizeof(staging))==0);
+ }
+ assert(allocations.empty() && stringBytes==0);
  for(bool usePsram:{true,false}) {
   available=usePsram;
   {
@@ -89,6 +128,23 @@ int main() {
   assert(allocations.size()==1); // disconnected before completion
  }
  assert(allocations.empty());assert(stringBytes==0);
+ // Explicit owned strings must remain in that mode even when PSRAM exists.
+ // Transfer does not serialize, copy the payload, or allocate a PSRAM buffer.
+ available=true;
+ {
+  std::string payload(5000,'m');
+  String first(payload.c_str()),last("]");
+  FastBee::JsonFragmentsResponse response(2,FastBee::JsonFragmentsResponse::Storage::OwnedStrings);
+  assert(response.allocated());stringPeak=stringBytes;
+  const size_t before=stringBytes;
+  assert(response.set(0,std::move(first)) && response.set(1,std::move(last)));
+  assert(response._sourceValid() && stringBytes==before && stringPeak==before);
+  assert(allocations.empty());
+  first="caller changed";last="caller changed";
+  assert(drain(response)==payload+"]");
+  assert(allocations.empty());
+ }
+ assert(stringBytes==0);
  std::cout<<"PSRAM fragments: <128B String capacity for >15KB payload; ownership, partial reads, OOM, cancellation and fallback passed\n";
 }
 ''',encoding='utf8')
@@ -97,7 +153,8 @@ int main() {
             run=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-DESP32',
                 '-DARDUINOJSON_ENABLE_ARDUINO_STRING=0','-DARDUINOJSON_ENABLE_STD_STRING=1',
                 '-I'+str(temp),'-I'+str(ROOT/'include'),'-I'+str(json_header.parent),
-                str(temp/'main.cpp'),'-o',str(exe)],capture_output=True,text=True,env=env,timeout=60)
+                str(temp/'main.cpp'),str(ROOT/'src/utils/SharedJsonSerializer.cpp'),
+                '-o',str(exe)],capture_output=True,text=True,env=env,timeout=60)
             self.assertEqual(run.returncode,0,run.stdout+run.stderr)
             run=subprocess.run([str(exe)],capture_output=True,text=True,env=env,timeout=15)
             self.assertEqual(run.returncode,0,run.stdout+run.stderr)

@@ -28,6 +28,7 @@ private:
     void handleDeleteRule(AsyncWebServerRequest* request);
     void handleEnableRule(AsyncWebServerRequest* request);
     void handleDisableRule(AsyncWebServerRequest* request);
+    void handleImportRules(AsyncWebServerRequest* request);
 };
 
 #endif // FASTBEE_ENABLE_RULE_SCRIPT

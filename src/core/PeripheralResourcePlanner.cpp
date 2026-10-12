@@ -5,6 +5,7 @@
 
 #include "core/PeripheralConfig.h"
 #include "core/PeripheralResourcePlanner.h"
+#include "core/UartPortPolicy.h"
 
 namespace FastBee {
 namespace {
@@ -26,6 +27,7 @@ bool isGenericAnalogSensor(const PeripheralConfig& config) {
 }
 
 uint32_t i2cFrequency(const PeripheralConfig& config) {
+    if (config.type == PeripheralType::IO_EXPANDER || config.type == PeripheralType::PCA9685_PWM) return 100000U;
     if (isLocalI2cSensor(config)) {
         return config.params.sensor.frequency > 0
             ? config.params.sensor.frequency : 100000U;
@@ -39,6 +41,8 @@ uint32_t i2cFrequency(const PeripheralConfig& config) {
 }
 
 uint8_t i2cAddress(const PeripheralConfig& config) {
+    if (config.type == PeripheralType::PCA9685_PWM) return config.params.pca9685.address;
+    if (config.type == PeripheralType::IO_EXPANDER) return config.params.ioExpander.address;
     if (isLocalI2cSensor(config)) return config.params.sensor.address;
     if (config.type == PeripheralType::LCD1602) {
         return config.params.lcd1602.address;
@@ -70,6 +74,8 @@ uint8_t requiredPinCount(const PeripheralConfig& config) {
         case PeripheralType::UART:
         case PeripheralType::I2C:
         case PeripheralType::ENCODER:
+        case PeripheralType::IO_EXPANDER:
+        case PeripheralType::PCA9685_PWM:
         case PeripheralType::LCD1602:
             return 2;
         case PeripheralType::SPI:
@@ -144,6 +150,9 @@ uint16_t requiredCapabilities(const PeripheralConfig& config, uint8_t index) {
         case PeripheralType::I2C:
         case PeripheralType::LCD1602:
             return PIN_CAP_INPUT | PIN_CAP_OUTPUT;
+        case PeripheralType::IO_EXPANDER:
+        case PeripheralType::PCA9685_PWM:
+            return PIN_CAP_INPUT | PIN_CAP_OUTPUT;
         case PeripheralType::SPI:
             return index == 0 ? PIN_CAP_INPUT : PIN_CAP_OUTPUT;
         case PeripheralType::RFID_MFRC522:
@@ -203,6 +212,8 @@ PinRole roleForPin(const PeripheralConfig& config, uint8_t index) {
             return index == 0 ? PinRole::UART_RX : PinRole::UART_TX;
         case PeripheralType::I2C:
         case PeripheralType::LCD1602:
+        case PeripheralType::IO_EXPANDER:
+        case PeripheralType::PCA9685_PWM:
             return index == 0 ? PinRole::I2C_SDA : PinRole::I2C_SCL;
         case PeripheralType::SPI:
             if (index == 0) return PinRole::SPI_MISO;
@@ -265,6 +276,8 @@ PinRole roleForPin(const PeripheralConfig& config, uint8_t index) {
 
 bool isI2cPin(const PeripheralConfig& config, uint8_t index) {
     return (config.type == PeripheralType::I2C ||
+            config.type == PeripheralType::PCA9685_PWM ||
+            config.type == PeripheralType::IO_EXPANDER ||
             config.type == PeripheralType::LCD1602 ||
             isLocalI2cSensor(config) ||
             (config.type == PeripheralType::LCD && config.params.lcd.interface == 2)) &&
@@ -328,6 +341,8 @@ PeripheralResourcePlanner::PeripheralResourcePlanner(
     : _profile(profile), _context(context), _result(result),
       _existing(existing), _existingCount(existingCount) {
     _result.reset();
+    addEthernet(_context.ethernet);
+    addCellular(_context.cellular);
 }
 
 void PeripheralResourcePlanner::addIssue(
@@ -503,9 +518,13 @@ bool PeripheralResourcePlanner::claimIdentityMatches(
     if (left.kind != right.kind) return false;
     switch (left.kind) {
         case ResourceKind::GPIO:
+            // A physical pin is unique even when different bus hosts use it.
+            return left.index == right.index;
         case ResourceKind::I2C_ADDRESS:
         case ResourceKind::SPI_CS:
         case ResourceKind::ADC_CHANNEL:
+        case ResourceKind::IO_CHANNEL:
+        case ResourceKind::CONTROL_OUTPUT:
             return left.unit == right.unit && left.index == right.index;
         default:
             return left.unit == right.unit;
@@ -536,7 +555,7 @@ bool PeripheralResourcePlanner::claimConflicts(
                 : PreflightIssueCode::GPIO_CONFLICT;
             return true;
         case ResourceKind::I2C_BUS:
-            if (samePins(existing, candidate)) {
+            if (samePins(existing, candidate) && existing.parameterA == candidate.parameterA) {
                 compatibleShare = true;
             } else {
                 code = PreflightIssueCode::I2C_BUS_PINS_MISMATCH;
@@ -559,6 +578,12 @@ bool PeripheralResourcePlanner::claimConflicts(
             return true;
         case ResourceKind::I2C_ADDRESS:
             code = PreflightIssueCode::I2C_ADDRESS_CONFLICT;
+            return true;
+        case ResourceKind::IO_CHANNEL:
+            code = PreflightIssueCode::IO_CHANNEL_CONFLICT;
+            return true;
+        case ResourceKind::CONTROL_OUTPUT:
+            code = PreflightIssueCode::CONTROL_OUTPUT_CONFLICT;
             return true;
         case ResourceKind::SPI_CS:
             code = PreflightIssueCode::SPI_CS_CONFLICT;
@@ -673,6 +698,67 @@ bool PeripheralResourcePlanner::addPeripheral(
         const PeripheralConfig& config, ClaimState state,
         const char* overrideId) {
     const char* ownerId = ownerFor(config, overrideId);
+
+    if (config.isExpanderChannel()) {
+        const PeripheralConfig* parent = nullptr;
+        size_t parentIndex = 0;
+        for (size_t i = 0; _existing && i < _existingCount; ++i) {
+            if (sameText(_existing[i].id.c_str(), config.params.gpio.providerId)) {
+                parent = &_existing[i]; parentIndex = i; break;
+            }
+        }
+        const bool mcp = parent && parent->type == PeripheralType::IO_EXPANDER &&
+            strcasecmp(parent->params.ioExpander.driver, "MCP23017") == 0;
+        if (!parent || parentIndex > UINT8_MAX || parent->type != PeripheralType::IO_EXPANDER ||
+            (state == ClaimState::ACTIVE && !parent->enabled) || config.pinCount != 0 ||
+            config.params.gpio.channel >= (mcp ? 16 : 8) ||
+            (config.type != PeripheralType::GPIO_DIGITAL_INPUT && config.type != PeripheralType::GPIO_DIGITAL_OUTPUT) ||
+            (mcp && config.type == PeripheralType::GPIO_DIGITAL_INPUT &&
+             (config.params.gpio.channel == 7 || config.params.gpio.channel == 15))) {
+            addIssue(PreflightSeverity::ERROR, PreflightIssueCode::IO_REFERENCE_INVALID,
+                     ResourceKind::IO_CHANNEL, 0, config.params.gpio.channel, ownerId,
+                     config.params.gpio.providerId, "Logical channel requires a compatible provider and no MCU pins");
+            return false;
+        }
+        ResourceClaim channel;
+        channel.kind = ResourceKind::IO_CHANNEL;
+        channel.state = state;
+        channel.unit = static_cast<uint8_t>(parentIndex);
+        channel.index = config.params.gpio.channel;
+        channel.ownerId = ownerId;
+        addClaim(channel);
+        return _result.allowed;
+    }
+
+    if (config.type == PeripheralType::PCA9685_PWM ||
+        (config.type == PeripheralType::IO_EXPANDER &&
+         strcasecmp(config.params.ioExpander.driver, "MCP23017") == 0)) {
+        const char* controlId = config.type == PeripheralType::PCA9685_PWM
+            ? config.params.pca9685.oePeripheralId : config.params.ioExpander.resetPeripheralId;
+        const PeripheralConfig* reset = nullptr;
+        for (size_t i = 0; _existing && i < _existingCount; ++i) {
+            if (sameText(_existing[i].id.c_str(), controlId)) {
+                reset = &_existing[i]; break;
+            }
+        }
+        if (!reset || reset->type != PeripheralType::GPIO_DIGITAL_OUTPUT || reset->isExpanderChannel() ||
+            reset->pinCount != 1 || reset->params.gpio.passive || reset->params.gpio.invertLogic ||
+            reset->params.gpio.initialState != GPIOState::STATE_HIGH ||
+            (state == ClaimState::ACTIVE && !reset->enabled)) {
+            addIssue(PreflightSeverity::ERROR, PreflightIssueCode::CONTROL_REFERENCE_INVALID,
+                     ResourceKind::CONTROL_OUTPUT, 0, 0, ownerId, controlId,
+                     "RESET/OE requires a dedicated native non-inverted inactive-HIGH output");
+            return false;
+        }
+        // Native output owns the GPIO claim; this separate lease claim records
+        // who controls that output, without falsely duplicating its GPIO owner.
+        ResourceClaim control;
+        control.kind = ResourceKind::CONTROL_OUTPUT;
+        control.state = state;
+        control.index = reset->pins[0];
+        control.ownerId = ownerId;
+        addClaim(control);
+    }
 
     if (config.type == PeripheralType::SCREEN_DISPLAY) {
         struct DisplayPinClaim {
@@ -887,21 +973,27 @@ bool PeripheralResourcePlanner::addPeripheral(
     // against the same configuration snapshot used to construct the graph,
     // regardless of peripheral order, just as the runtime bus resolver does.
     const PeripheralConfig* referencedBus = nullptr;
-    if (isLocalI2cSensor(config) && config.params.sensor.busPeripheralId[0]) {
+    const char* busReference = config.type == PeripheralType::IO_EXPANDER
+        ? config.params.ioExpander.busPeripheralId
+        : config.type == PeripheralType::PCA9685_PWM ? config.params.pca9685.busPeripheralId
+        : isLocalI2cSensor(config) ? config.params.sensor.busPeripheralId : "";
+    if (busReference[0]) {
         for (size_t i = 0; _existing && i < _existingCount; ++i) {
-            if (sameText(_existing[i].id.c_str(), config.params.sensor.busPeripheralId)) {
+            if (sameText(_existing[i].id.c_str(), busReference)) {
                 referencedBus = &_existing[i];
                 break;
             }
         }
         if (!referencedBus || referencedBus->type != PeripheralType::I2C ||
-            !referencedBus->enabled || !referencedBus->params.i2c.isMaster ||
+            (state == ClaimState::ACTIVE && !referencedBus->enabled) || !referencedBus->params.i2c.isMaster ||
             referencedBus->params.i2c.address != 0 || config.pinCount != 0 ||
             referencedBus->pinCount != 2 ||
-            (i2cFrequency(*referencedBus) != 100000 && i2cFrequency(*referencedBus) != 400000)) {
+            (i2cFrequency(*referencedBus) != 100000 && i2cFrequency(*referencedBus) != 400000) ||
+            (config.type == PeripheralType::IO_EXPANDER &&
+             strcasecmp(config.params.ioExpander.driver, "PCF8574") == 0 && i2cFrequency(*referencedBus) != 100000)) {
             addIssue(PreflightSeverity::ERROR, PreflightIssueCode::I2C_REFERENCE_INVALID,
-                     ResourceKind::I2C_BUS, 0, 0, ownerId, config.params.sensor.busPeripheralId,
-                     "Sensor requires an enabled master I2C bus reference without a device address or local pins");
+                     ResourceKind::I2C_BUS, 0, 0, ownerId, busReference,
+                     "Requires a compatible master I2C bus reference without a device address or local pins");
             return false;
         }
     }
@@ -948,7 +1040,22 @@ bool PeripheralResourcePlanner::addPeripheral(
         }
     }
 
-    if (config.type == PeripheralType::UART) {
+    if (config.type == PeripheralType::UART && FastBee::isProtocolUartId(config.id.c_str())) {
+        const uint8_t port = FastBee::serviceUartPort(
+            _profile.resources.firstGenericUartPort + _profile.resources.genericUartCount);
+        if (!_profile.resources.genericUartCount || port == UINT8_MAX) {
+            addIssue(PreflightSeverity::ERROR, PreflightIssueCode::UART_PORT_EXHAUSTED,
+                     ResourceKind::UART_PORT, port, 0, ownerId, nullptr,
+                     "Protocol requires a non-console UART controller");
+        } else {
+            ResourceClaim uart;
+            uart.kind = ResourceKind::UART_PORT;
+            uart.state = state;
+            uart.unit = port;
+            uart.ownerId = ownerId;
+            addClaim(uart);
+        }
+    } else if (config.type == PeripheralType::UART) {
         allocateFirstFree(ResourceKind::UART_PORT,
                           _profile.resources.firstGenericUartPort,
                           _profile.resources.genericUartCount,
@@ -956,6 +1063,8 @@ bool PeripheralResourcePlanner::addPeripheral(
     }
 
     const bool i2cPeripheral = config.type == PeripheralType::I2C ||
+        config.type == PeripheralType::PCA9685_PWM ||
+        config.type == PeripheralType::IO_EXPANDER ||
         config.type == PeripheralType::LCD1602 ||
         isLocalI2cSensor(config) ||
         (config.type == PeripheralType::LCD && config.params.lcd.interface == 2);
@@ -979,6 +1088,12 @@ bool PeripheralResourcePlanner::addPeripheral(
             addClaim(bus);
 
             const uint8_t addressValue = i2cAddress(config);
+            if (config.type == PeripheralType::PCA9685_PWM) {
+                ResourceClaim alias;
+                alias.kind = ResourceKind::I2C_ADDRESS; alias.state = state;
+                alias.unit = 0; alias.index = 0x70; alias.ownerId = ownerId;
+                addClaim(alias);
+            }
             if (addressValue > 0) {
                 ResourceClaim address;
                 address.kind = ResourceKind::I2C_ADDRESS;
@@ -1194,6 +1309,10 @@ const char* preflightIssueCodeName(PreflightIssueCode code) {
         case PreflightIssueCode::I2C_BUS_UNAVAILABLE: return "I2C_BUS_UNAVAILABLE";
         case PreflightIssueCode::I2C_BUS_PINS_MISMATCH: return "I2C_BUS_PINS_MISMATCH";
         case PreflightIssueCode::I2C_REFERENCE_INVALID: return "I2C_REFERENCE_INVALID";
+        case PreflightIssueCode::IO_REFERENCE_INVALID: return "IO_REFERENCE_INVALID";
+        case PreflightIssueCode::IO_CHANNEL_CONFLICT: return "IO_CHANNEL_CONFLICT";
+        case PreflightIssueCode::CONTROL_REFERENCE_INVALID: return "CONTROL_REFERENCE_INVALID";
+        case PreflightIssueCode::CONTROL_OUTPUT_CONFLICT: return "CONTROL_OUTPUT_CONFLICT";
         case PreflightIssueCode::I2C_ADDRESS_CONFLICT: return "I2C_ADDRESS_CONFLICT";
         case PreflightIssueCode::SPI_BUS_UNAVAILABLE: return "SPI_BUS_UNAVAILABLE";
         case PreflightIssueCode::SPI_BUS_PINS_MISMATCH: return "SPI_BUS_PINS_MISMATCH";
@@ -1232,6 +1351,8 @@ const char* resourceKindName(ResourceKind kind) {
         case ResourceKind::GPIO: return "gpio";
         case ResourceKind::I2C_BUS: return "i2c_bus";
         case ResourceKind::I2C_ADDRESS: return "i2c_address";
+        case ResourceKind::IO_CHANNEL: return "io_channel";
+        case ResourceKind::CONTROL_OUTPUT: return "control_output";
         case ResourceKind::SPI_BUS: return "spi_bus";
         case ResourceKind::SPI_CS: return "spi_cs";
         case ResourceKind::UART_PORT: return "uart_port";

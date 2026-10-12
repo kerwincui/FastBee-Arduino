@@ -35,7 +35,9 @@ class DeviceConfigPersistenceTests(unittest.TestCase):
                 '-DARDUINOJSON_ENABLE_ARDUINO_STRING=1','-DARDUINOJSON_ENABLE_ARDUINO_STREAM=0',
                 '-DARDUINOJSON_ENABLE_ARDUINO_PRINT=0','-DARDUINOJSON_ENABLE_PROGMEM=0',
                 f'-I{temp}',f'-I{headers[0].parent}',f'-I{ROOT / "include"}',
-                str(ROOT/'test/unit/cpp/device_config_persistence_harness.cpp'),'-o',str(exe)],
+                '-include', str(ROOT/'test/unit/cpp/fixed_json_document_prelude.h'),
+                str(ROOT/'test/unit/cpp/device_config_persistence_harness.cpp'),
+                str(ROOT/'src/network/FixedJsonField.cpp'),'-o',str(exe)],
                 capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=60)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             result=subprocess.run([str(exe)],capture_output=True,text=True,timeout=15)

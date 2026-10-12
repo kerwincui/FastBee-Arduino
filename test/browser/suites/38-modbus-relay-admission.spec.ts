@@ -10,6 +10,7 @@ async function setup(page:any){
  w.apiGetSilent=(url:any,params:any)=>request('GET',url,params);
  w.apiPostPriority=(url:any,params:any)=>request('POST',url,params);
  });
+ await page.addScriptTag({path:path.resolve(runtime,'../../js/utils.js')});
  for(const module of ['device-control/core.js','device-control/modbus-ctrl.js','protocol/modbus-relay-motor.js'])await page.addScriptTag({path:path.join(runtime,module)});
  await page.evaluate(()=>{const a=(window as any).AppState;Object.assign(a,{
   _modbusDevices:[{slaveAddress:6,channelCount:2,controlProtocol:1}],_dcCoilStates:{0:[false,false]},_coilStates:[false,false],_deviceCoilCache:{},_activeDeviceIdx:0,_dcLifecycleGeneration:1,
@@ -24,6 +25,28 @@ test('actual click bindings registered twice admit only one cross-channel/batch 
  expect(await page.evaluate(()=>(window as any).aborts)).toBe(0);
  await settle(page);await page.locator('.dc-coil-card[data-ch="1"]').click();
  expect(await page.evaluate(()=>(window as any).requests)).toHaveLength(2);await settle(page);
+});
+
+test('protocol delay preserves the selected register or coil mode and matches fullscreen params',async({page})=>{
+ await setup(page);
+ await page.evaluate(()=>{
+  const a=(window as any).AppState;
+  document.body.insertAdjacentHTML('beforeend','<input id="modbus-ctrl-delay-ch" value="1"><input id="modbus-ctrl-delay-units" value="15">');
+  Object.assign(a._modbusDevices[0],{controlProtocol:1,coilBase:100,ncMode:true});
+  a.startCoilDelay();
+ });
+ expect(await page.evaluate(()=>(window as any).requests[0])).toEqual({method:'POST',url:'/api/modbus/coil/delay',params:{
+  slaveAddress:6,channel:1,delayBase:512,delayUnits:15,ncMode:true,coilBase:100,mode:'register'
+ }});
+ await settle(page,true);
+ await page.evaluate(()=>{const a=(window as any).AppState;a._dcStartCoilDelay(0,1,15);});
+ expect(await page.evaluate(()=>(window as any).requests[1].params)).toEqual(await page.evaluate(()=>(window as any).requests[0].params));
+ await settle(page,true);
+ await page.evaluate(()=>{const a=(window as any).AppState;Object.assign(a._modbusDevices[0],{controlProtocol:0,ncMode:false});a.startCoilDelay();});
+ expect(await page.evaluate(()=>(window as any).requests[2].params.mode)).toBe('coil');
+ expect(await page.evaluate(()=>(window as any).requests[2].params.ncMode)).toBe(false);
+ await settle(page,true);
+ expect(await page.evaluate(()=>(window as any).aborts)).toBe(0);
 });
 
 test('pending status coalesces manual refreshes and rejects writes until settled',async({page})=>{

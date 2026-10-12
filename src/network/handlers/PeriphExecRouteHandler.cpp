@@ -6,6 +6,19 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
+#include "network/PendingReportStatus.h"
+#include "network/UartTextStatus.h"
+#include "core/RtcAction.h"
+#include "core/UartAction.h"
+#include "core/SdStatusAction.h"
+#include "core/PeripheralActionContract.h"
+#include "network/RuleActionContracts.h"
+#include "network/FixedJsonField.h"
+#include "network/JsonFragmentsResponse.h"
+#include "utils/SharedJsonSerializer.h"
+#include "network/HttpOutputControl.h"
+#include "core/SensorConfigEpoch.h"
+#include "core/ActionValueContract.h"
 #include "core/PeriphExecExecutor.h"  // guessSensorDataField（数据源字段推断与执行器同规则）
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
@@ -21,11 +34,14 @@
 #include <LittleFS.h>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <limits>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <utility>
 #include <vector>
+#include <esp_timer.h>
 
 bool validateRemoteChannelRuleAction(const ExecAction& action,
                                      String& errorCode,
@@ -112,6 +128,13 @@ public:
 
     void append(bool value) {
         append(value ? "true" : "false");
+    }
+
+    void appendUnsigned(uint64_t value) {
+        char buffer[24];
+        const int written = snprintf(buffer, sizeof(buffer), "%llu", static_cast<unsigned long long>(value));
+        if (written <= 0 || static_cast<size_t>(written) >= sizeof(buffer)) { ok_ = false; return; }
+        append(buffer);
     }
 
     void appendQuoted(const String& value) {
@@ -370,6 +393,8 @@ const char* asyncExecErrorName(AsyncExecError error) {
         case AsyncExecError::INCOMPLETE_ACTIONS: return "incomplete_actions";
         case AsyncExecError::CANCELLED_BY_SYSTEM: return "cancelled_by_system";
         case AsyncExecError::WORKER_QUEUE_FULL: return "worker_queue_full";
+        case AsyncExecError::UART_SOURCE_UNCONFIRMED: return "uart_source_unconfirmed";
+        case AsyncExecError::RULE_REVISION_UNCONFIRMED: return "rule_revision_unconfirmed";
     }
     return "unknown";
 }
@@ -385,6 +410,7 @@ bool asyncExecStatusIsTerminal(AsyncExecStatus status) {
 int runOnceRejectionStatus(const String& reason) {
     if (reason == "rule_not_found" || reason == "rule_not_found_or_disabled") return 404;
     if (reason == "already_running") return 409;
+    if (reason.startsWith("CONTROL_")) return 409;
     if (reason == "action_not_automatable" || reason == "action_order_invalid") return 400;
     if (reason == "no_task_slot" || reason == "context_pool_exhausted" ||
         reason == "worker_queue_full") return 429;
@@ -509,7 +535,7 @@ bool buildControlItemJson(
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) &&
             !action.actionValue.isEmpty()) {
             JsonDocument actionDocument;
-            if (!deserializeJson(actionDocument, action.actionValue) && actionDocument["ctrl"].is<JsonArray>()) {
+            if (!deserializeJson(actionDocument, action.actionValue.c_str(), action.actionValue.length()) && actionDocument["ctrl"].is<JsonArray>()) {
                 for (JsonObject control : actionDocument["ctrl"].as<JsonArray>()) {
                     if (control["d"].is<int>() && control["d"].as<int>() >= 0)
                         appendTarget(String("modbus:") + String(control["d"].as<int>()));
@@ -549,7 +575,7 @@ bool buildControlItemJson(
         if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
             action.actionValue.isEmpty()) continue;
         JsonDocument pollDocument;
-        const DeserializationError error = deserializeJson(pollDocument, action.actionValue);
+        const DeserializationError error = deserializeJson(pollDocument, action.actionValue.c_str(), action.actionValue.length());
         if (!error && pollDocument["poll"].is<JsonArray>()) {
             for (JsonVariant value : pollDocument["poll"].as<JsonArray>()) {
                 if (!value.is<int>() || value.as<int>() < 0) continue;
@@ -571,7 +597,7 @@ bool buildControlItemJson(
             }
 
             JsonDocument sensorDocument;
-            if (deserializeJson(sensorDocument, action.actionValue)) continue;
+            if (deserializeJson(sensorDocument, action.actionValue.c_str(), action.actionValue.length())) continue;
 
             String sensorPeriphId = sensorDocument["periphId"] | "";
             if (sensorPeriphId.isEmpty()) sensorPeriphId = action.targetPeriphId;
@@ -595,13 +621,27 @@ bool buildControlItemJson(
             writer.appendQuoted(sensorPeriphId);
             writer.append(",\"label\":");
             writer.appendQuoted(label);
-            writer.append(",\"unit\":");
-            writer.appendQuoted(unit);
-
             const auto cached = sensorCache.find(cacheKey);
+            writer.append(",\"unit\":");
+            writer.appendQuoted(cached == sensorCache.end() ? unit : cached->second.unit);
+
             if (cached != sensorCache.end()) {
                 writer.append(",\"value\":");
                 writer.appendQuoted(cached->second.value);
+                const int64_t nowUs = esp_timer_get_time();
+                const uint64_t now = nowUs < 0 ? 0 : static_cast<uint64_t>(nowUs) / 1000;
+                const bool known = nowUs >= 0 && cached->second.sampledAtMs <= now;
+                const uint32_t maxAge = cached->second.maxAgeMs ? cached->second.maxAgeMs : PeriphExecManager::SENSOR_CACHE_TTL_MS;
+                const bool valid = known && now - cached->second.sampledAtMs <= maxAge;
+                writer.append(",\"valid\":"); writer.append(valid);
+                writer.append(",\"quality\":"); writer.appendQuoted(valid ? "good" : known ? "stale" : "unknown");
+                if (known) {
+                    writer.append(",\"sampledAtMs\":"); writer.appendUnsigned(cached->second.sampledAtMs);
+                    writer.append(",\"ageMs\":"); writer.appendUnsigned(now - cached->second.sampledAtMs);
+                    writer.append(",\"maxAgeMs\":"); writer.appendUnsigned(maxAge);
+                }
+            } else {
+                writer.append(",\"valid\":false,\"quality\":\"unknown\"");
             }
             writer.append('}');
         }
@@ -799,10 +839,10 @@ void PeriphExecRouteHandler::handleImportChunk(AsyncWebServerRequest* request) {
         }
     }
     JsonDocument result;
-    result["received"] = importReceived;
-    result["saved"] = importCommitted;
-    result["applied"] = false;
-    result["restartRequired"] = importCommitted;
+    FastBee::setFixedJsonField(result, "received", importReceived);
+    FastBee::setFixedJsonField(result, "saved", importCommitted);
+    FastBee::setFixedJsonField(result, "applied", false);
+    FastBee::setFixedJsonField(result, "restartRequired", importCommitted);
     ctx->sendSuccess(request, result);
 }
 
@@ -902,7 +942,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             if (action.actionValue.isEmpty()) return;
 
             JsonDocument sDoc;
-            DeserializationError sErr = deserializeJson(sDoc, action.actionValue);
+            DeserializationError sErr = deserializeJson(sDoc, action.actionValue.c_str(), action.actionValue.length());
             if (sErr) return;
 
             String periphId = sDoc["periphId"].as<String>();
@@ -1051,6 +1091,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                     case 27: flowSummary += F("OLED显示"); break;
                     case 33: flowSummary += F("远程控制"); break;
                     case 34: flowSummary += F("远程读取"); break;
+                    case 39: flowSummary += F("持续温控"); break;
                     default: flowSummary += F("动作"); break;
                 }
                 if (!targetPeriphName.isEmpty()) { flowSummary += F(" → "); flowSummary += targetPeriphName; }
@@ -1114,7 +1155,14 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     const int profileRemaining = std::max(1, profileMax - total);
     const bool runtimeDegraded = HandlerUtils::memoryDegradationActive();
 
-    header.reserve(460 + sensorSources.length());
+    const String pendingReports = FastBee::pendingReportStatusJson(mgr.getPendingReportStatus());
+    const String uartText = FastBee::uartTextStatusJson();
+    // This takes the rules mutex independently, after the list snapshot lock
+    // above is released. Retiring controllers remain visible even if their
+    // rules were disabled/deleted; null explicitly means unavailable.
+    const String thermostats = mgr.getThermostatDiagnosticsJson();
+    const String sdRecorder = mgr.getSdRecorderDiagnosticsJson();
+    header.reserve(500 + sensorSources.length() + pendingReports.length() + uartText.length() + thermostats.length() + sdRecorder.length());
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
@@ -1130,6 +1178,14 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         header += F(",\"degraded\":true");
     }
     HandlerUtils::appendMemoryDegradationStatus(header);
+    header += F(",\"pendingReports\":");
+    header += pendingReports;
+    header += F(",\"uartText\":");
+    header += uartText;
+    header += F(",\"thermostats\":");
+    header += thermostats;
+    header += F(",\"sdRecorder\":");
+    header += sdRecorder;
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
     header += F("\",\"max\":");
@@ -1358,40 +1414,49 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
     String value = ctx->getParamValue(request, "value", "");
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    
-    // 异步提交执行（不阻塞 Web 请求线程）
+
+    FastBee::OrdinaryControlContext control;
+    if (!FastBee::beginHttpRuleOutput(*ctx, request, FastBee::SensorConfigEpoch::current(), control)) return;
+    // Manual rules never share a single-target takeover confirmation.
     String rejectionReason;
     AsyncExecResult operation;
-    bool submitted = mgr.runOnce(id, value, &rejectionReason, &operation);
+    bool submitted = mgr.runOnce(id, value, &rejectionReason, &operation, &control);
+    if (!submitted) PeripheralManager::getInstance().finishOrdinaryControl(control, true);
 
     JsonDocument doc;
     if (submitted) {
-        doc["success"] = true;
-        doc["message"] = operation.asyncExecution
-            ? "Rule execution accepted" : "Rule execution finished";
-        doc["operationId"] = operation.operationId;
-        doc["state"] = asyncExecStatusName(operation.status);
-        doc["queuedAt"] = operation.queuedAt;
-        doc["deadlineAt"] = operation.deadlineAt;
-        doc["queuePosition"] = operation.queuePosition;
+        FastBee::writeOrdinaryControlJson(doc["control"].to<JsonObject>(), operation.ordinaryControlResult);
+        FastBee::setFixedJsonField(doc, "success", true);
+        FastBee::setFixedJsonField(doc, "message", operation.asyncExecution
+            ? "Rule execution accepted" : "Rule execution finished");
+        FastBee::setFixedJsonField(doc, "operationId", operation.operationId);
+        FastBee::setFixedJsonField(doc, "state", asyncExecStatusName(operation.status));
+        FastBee::setFixedJsonField(doc, "queuedAt", operation.queuedAt);
+        FastBee::setFixedJsonField(doc, "peripheralConfigEpoch", operation.peripheralConfigEpoch);
+        FastBee::setFixedJsonField(doc, "deadlineAt", operation.deadlineAt);
+        FastBee::setFixedJsonField(doc, "queuePosition", operation.queuePosition);
     } else {
-        doc["success"] = false;
-        doc["reason"] = rejectionReason;
+        FastBee::setFixedJsonField(doc, "success", false);
+        FastBee::setFixedJsonField(doc, "reason", rejectionReason);
+        FastBee::writeOrdinaryControlJson(doc["control"].to<JsonObject>(), operation.ordinaryControlResult);
         if (operation.operationId != 0) {
-            doc["operationId"] = operation.operationId;
-            doc["state"] = asyncExecStatusName(operation.status);
+            FastBee::setFixedJsonField(doc, "operationId", operation.operationId);
+            FastBee::setFixedJsonField(doc, "state", asyncExecStatusName(operation.status));
         }
         if (rejectionReason == "rule_not_found") {
-            doc["message"] = "Rule not found";
+            FastBee::setFixedJsonField(doc, "message", "Rule not found");
         } else if (rejectionReason == "already_running") {
-            doc["message"] = "Rule is already running";
+            FastBee::setFixedJsonField(doc, "message", "Rule is already running");
         } else {
-            doc["message"] = "Rule execution was not admitted; retry later";
+            FastBee::setFixedJsonField(doc, "message", "Rule execution was not admitted; inspect the reason before a new request");
         }
     }
     String responseBody;
-    responseBody.reserve(measureJson(doc) + 1);
-    serializeJson(doc, responseBody);
+    const size_t responseBytes = measureJson(doc);
+    if (doc.overflowed() || !responseBody.reserve(responseBytes + 1) ||
+        serializeJson(doc, responseBody) != responseBytes || responseBody.length() != responseBytes) {
+        ctx->sendError(request, 503, "CONTROL_RESPONSE_UNCONFIRMED"); return;
+    }
     const int responseStatus = submitted
         ? (operation.asyncExecution && !asyncExecStatusIsTerminal(operation.status) ? 202 : 200)
         : runOnceRejectionStatus(rejectionReason);
@@ -1420,13 +1485,96 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         (request->hasParam("includeActions") &&
          request->getParam("includeActions")->value() == "true");
 
+    // Checked appender preserves the accumulated prefix. ArduinoJson's built-in
+    // String writer clears its destination when constructed.
+    struct ResultText {
+        String text;
+        size_t expected = 0;
+        bool ok = true;
+        bool reserve(size_t bytes) {
+            if (!ok) return false;
+            if (bytes > std::numeric_limits<unsigned int>::max() || !text.reserve(bytes)) ok = false;
+            return ok;
+        }
+        size_t write(uint8_t byte) { return write(&byte, 1); }
+        size_t write(const uint8_t* bytes, size_t count) {
+            if (!ok) return 0;
+            if (count > std::numeric_limits<unsigned int>::max() - expected) {
+                ok = false; return 0;
+            }
+            expected += count;
+            if (count && (!text.concat(reinterpret_cast<const char*>(bytes),
+                                       static_cast<unsigned int>(count)) ||
+                          text.length() != expected)) {
+                ok = false; return 0;
+            }
+            return count;
+        }
+        void operator+=(const char* value) {
+            write(reinterpret_cast<const uint8_t*>(value), std::strlen(value));
+        }
+        void operator+=(const __FlashStringHelper* value) {
+            *this += reinterpret_cast<const char*>(value);
+        }
+        void operator+=(const String& value) {
+            write(reinterpret_cast<const uint8_t*>(value.c_str()), value.length());
+        }
+        void operator+=(char value) { write(static_cast<uint8_t>(value)); }
+        void number(unsigned long long value) {
+            char decimal[21];
+            const int count = std::snprintf(decimal, sizeof(decimal), "%llu", value);
+            if (count <= 0 || static_cast<size_t>(count) >= sizeof(decimal)) { ok = false; return; }
+            write(reinterpret_cast<const uint8_t*>(decimal), static_cast<size_t>(count));
+        }
+        void escaped(const char* value, size_t count) {
+            for (size_t index = 0; index < count && ok; ++index) {
+                const char c = value[index];
+                switch (c) {
+                case '"': *this += "\\\""; break;
+                case '\\': *this += "\\\\"; break;
+                case '\b': *this += "\\b"; break;
+                case '\f': *this += "\\f"; break;
+                case '\n': *this += "\\n"; break;
+                case '\r': *this += "\\r"; break;
+                case '\t': *this += "\\t"; break;
+                default:
+                    if (static_cast<uint8_t>(c) < 0x20) {
+                        char escapedByte[7];
+                        std::snprintf(escapedByte, sizeof(escapedByte), "\\u%04x", static_cast<uint8_t>(c));
+                        *this += escapedByte;
+                    } else *this += c;
+                    break;
+                }
+            }
+        }
+        void escaped(const String& value) { escaped(value.c_str(), value.length()); }
+        void escaped(const char* value) { escaped(value, std::strlen(value)); }
+        bool json(const JsonDocument& document) {
+            if (!ok || document.overflowed()) { ok = false; return false; }
+            const size_t count = measureJson(document);
+            const size_t prefix = expected;
+            if (count > std::numeric_limits<unsigned int>::max() - prefix ||
+                !reserve(prefix + count)) { ok = false; return false; }
+            const size_t written = FastBee::serializeJsonShared(document, *this);
+            if (written != count || text.length() != prefix + count) ok = false;
+            return ok;
+        }
+    };
+
     auto results = PeriphExecManager::getInstance().getRecentResults();
     int total = static_cast<int>(results.size());
     int emitted = 0;
-    String items;
+    ResultText items;
+    auto unavailable = [&]() {
+        std::vector<AsyncExecResult>().swap(results);
+        items.text = String();
+        ctx->sendError(request, 503, "CONTROL_RESULT_UNAVAILABLE");
+    };
     const size_t expectedItems = static_cast<size_t>(
         limit < total ? limit : total);
-    items.reserve(expectedItems * (includeActions ? 768 : 320));
+    if (!items.reserve(expectedItems * (includeActions ? 768 : 320))) {
+        unavailable(); return;
+    }
 
     for (int i = total - 1; i >= 0 && emitted < limit; --i) {
         const auto& result = results[static_cast<size_t>(i)];
@@ -1439,13 +1587,13 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         }
 
         items += F("{\"operationId\":");
-        items += String(result.operationId);
+        items.number(result.operationId);
         items += F(",\"ruleId\":\"");
-        items += escapePeriphExecJsonString(result.ruleId);
+        items.escaped(result.ruleId);
         items += F("\",\"ruleName\":\"");
-        items += escapePeriphExecJsonString(result.ruleName);
+        items.escaped(result.ruleName);
         items += F("\",\"status\":");
-        items += String(static_cast<int>(result.status));
+        items.number(static_cast<int>(result.status));
         items += F(",\"statusName\":\"");
         items += asyncExecLegacyStatusName(result.status);
         items += F("\",\"state\":\"");
@@ -1455,28 +1603,38 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
         items += F(",\"errorCode\":\"");
         items += asyncExecErrorName(result.errorCode);
         items += F("\",\"queuedAt\":");
-        items += String(result.queuedAt);
+        items.number(result.queuedAt);
+        items += F(",\"peripheralConfigEpoch\":");
+        items.number(result.peripheralConfigEpoch);
         items += F(",\"startedAt\":");
-        items += String(result.startTime);
+        items.number(result.startTime);
         items += F(",\"endedAt\":");
-        items += String(result.endTime);
+        items.number(result.endTime);
         items += F(",\"deadlineAt\":");
-        items += String(result.deadlineAt);
+        items.number(result.deadlineAt);
         items += F(",\"queuePosition\":");
-        items += String(static_cast<unsigned int>(result.queuePosition));
+        items.number(static_cast<unsigned int>(result.queuePosition));
         items += F(",\"async\":");
         items += result.asyncExecution ? F("true") : F("false");
+        {
+            JsonDocument control;
+            FastBee::writeOrdinaryControlJson(control.to<JsonObject>(), result.ordinaryControlResult);
+            if (control.overflowed()) { control.clear(); unavailable(); return; }
+            items += F(",\"control\":");
+            if (!items.json(control)) { control.clear(); unavailable(); return; }
+        }
         // Legacy timestamps retained for existing device tests and clients.
         items += F(",\"startTime\":");
-        items += String(result.startTime);
+        items.number(result.startTime);
         items += F(",\"endTime\":");
-        items += String(result.endTime);
+        items.number(result.endTime);
         items += F(",\"durationMs\":");
-        items += String(duration);
+        items.number(duration);
         items += F(",\"reportCount\":");
-        items += String(static_cast<unsigned int>(result.reportCount));
+        items.number(static_cast<unsigned int>(result.reportCount));
+        items += F(",\"reportCountScope\":\"attempted_results\",\"deliveryVerified\":false");
         items += F(",\"actionCount\":");
-        items += String(static_cast<unsigned int>(result.actionCount));
+        items.number(static_cast<unsigned int>(result.actionCount));
         items += F(",\"actionTraceTruncated\":");
         items += result.actionTraceTruncated ? F("true") : F("false");
         if (includeActions) {
@@ -1488,37 +1646,57 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
                 if (actionIndex > 0) items += ',';
                 const auto& action = result.actionTraces[actionIndex];
                 items += F("{\"index\":");
-                items += String(static_cast<unsigned int>(action.index));
+                items.number(static_cast<unsigned int>(action.index));
                 items += F(",\"actionType\":");
-                items += String(static_cast<unsigned int>(action.actionType));
+                items.number(static_cast<unsigned int>(action.actionType));
                 items += F(",\"targetPeriphId\":\"");
-                items += escapePeriphExecJsonString(String(action.targetPeriphId));
+                items.escaped(action.targetPeriphId);
                 items += F("\",\"value\":\"");
-                items += escapePeriphExecJsonString(String(action.valueSummary));
+                items.escaped(action.valueSummary);
                 items += F("\",\"success\":");
                 items += action.success ? F("true") : F("false");
                 items += F(",\"durationMs\":");
-                items += String(action.durationMs);
+                items.number(action.durationMs);
                 items += F(",\"detailCount\":");
-                items += String(static_cast<unsigned int>(action.detailCount));
+                items.number(static_cast<unsigned int>(action.detailCount));
                 items += F(",\"remark\":\"");
-                items += escapePeriphExecJsonString(String(action.remark));
+                items.escaped(action.remark);
                 items += F("\"}");
             }
             items += F("]");
         }
         items += F("}");
+        if (!items.ok) { unavailable(); return; }
         emitted++;
     }
 
-    String response;
-    response.reserve(80 + items.length());
-    response += F("{\"success\":true,\"total\":");
-    response += String(total);
-    response += F(",\"data\":[");
-    response += items;
-    response += F("]}");
-    request->send(200, "application/json", response);
+    // The serialized items own everything needed after the history snapshot is
+    // released. Transfer them to the response instead of allocating an envelope
+    // String followed by AsyncBasicResponse's unchecked copy of that body.
+    std::vector<AsyncExecResult>().swap(results);
+    ResultText header;
+    if (!header.reserve(64)) {
+        unavailable(); return;
+    }
+    header += F("{\"success\":true,\"total\":");
+    header.number(static_cast<unsigned long long>(total));
+    header += F(",\"data\":[");
+    if (!header.ok) { header.text = String(); unavailable(); return; }
+    String footer = F("]}");
+    const bool hasItems = !items.text.isEmpty();
+    std::unique_ptr<FastBee::JsonFragmentsResponse> response(
+        new (std::nothrow) FastBee::JsonFragmentsResponse(
+            hasItems ? 3 : 2, FastBee::JsonFragmentsResponse::Storage::OwnedStrings));
+    if (footer.length() != 2 || !response || !response->allocated() ||
+        !response->set(0, std::move(header.text)) ||
+        (hasItems && !response->set(1, std::move(items.text))) ||
+        !response->set(hasItems ? 2 : 1, std::move(footer)) || !response->_sourceValid()) {
+        response.reset();
+        header.text = String();
+        footer = String();
+        unavailable(); return;
+    }
+    HandlerUtils::sendWithClose(request, response.release());
 }
 
 // ========== 获取静态事件列表 ==========
@@ -1656,92 +1834,62 @@ bool parseClockTime(const String& value) {
     return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 }
 
-bool isOutputPeripheral(PeripheralType type) {
-    return type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
-           type == PeripheralType::GPIO_PWM_OUTPUT ||
-           type == PeripheralType::GPIO_ANALOG_OUTPUT;
-}
 
-bool isSensorPeripheral(PeripheralType type) {
-    return type == PeripheralType::GPIO_DIGITAL_INPUT ||
-           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
-           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
-           type == PeripheralType::GPIO_ANALOG_INPUT ||
-           type == PeripheralType::ADC ||
-           type == PeripheralType::SENSOR_GENERIC ||
-           type == PeripheralType::ONE_WIRE ||
-           type == PeripheralType::RADAR_SENSOR ||
-           type == PeripheralType::RF_MODULE;
-}
 
 bool actionNeedsPeripheral(uint8_t actionType) {
-    return !(actionType == 6 || actionType == 7 || actionType == 8 ||
-             actionType == 9 || actionType == 15 || actionType == 18 ||
-             actionType == 21 || actionType == 22 || actionType == 23 ||
-             actionType == 31 || actionType == 32 || actionType == 33 ||
-             actionType == 34);
+    return FastBee::PeripheralActionContract::requiresPeripheralTarget(actionType);
 }
 
 bool actionTargetMatches(uint8_t actionType, const PeripheralConfig& config) {
-    if (actionType <= 3 || actionType == 13 || actionType == 14 ||
-        actionType == 30) return isOutputPeripheral(config.type);
-    if (actionType == 4) {
-        return config.type == PeripheralType::GPIO_PWM_OUTPUT ||
-               config.type == PeripheralType::GPIO_DIGITAL_OUTPUT;
-    }
-    if (actionType == 5) {
-        return config.type == PeripheralType::DAC ||
-               config.type == PeripheralType::GPIO_ANALOG_OUTPUT;
-    }
-    if (actionType == 11) return config.type == PeripheralType::NEO_PIXEL;
-    if (actionType == 12) return config.type == PeripheralType::STEPPER_MOTOR;
-    if (actionType == 16 || actionType == 17) return config.isModbusPeripheral();
-    if (actionType == 19) return isSensorPeripheral(config.type);
-    if (actionType >= 24 && actionType <= 26) {
-        return config.type == PeripheralType::SEVEN_SEGMENT_TM1637;
-    }
-    if (actionType == 27) return config.type == PeripheralType::LCD;
-    if (actionType == 28) return config.type == PeripheralType::RF_MODULE;
-    if (actionType == 29) return config.type == PeripheralType::UART;
-    return true;
+    return FastBee::PeripheralActionContract::matchesPeripheralTarget(actionType, config);
+}
+
+// Both rule representations keep the same ordered common fields. Explicit
+// noinline prevents LTO from duplicating these writers into each representation.
+__attribute__((noinline)) void writeRuleTriggerFields(JsonObject item, const ExecTrigger& trigger) {
+    FastBee::setFixedJsonField(item, "triggerType", trigger.triggerType);
+    FastBee::setFixedJsonField(item, "triggerPeriphId", trigger.triggerPeriphId);
+    FastBee::setFixedJsonField(item, "operatorType", trigger.operatorType);
+    FastBee::setFixedJsonField(item, "compareValue", trigger.compareValue);
+    FastBee::setFixedJsonField(item, "timerMode", trigger.timerMode);
+    FastBee::setFixedJsonField(item, "intervalSec", trigger.intervalSec);
+    FastBee::setFixedJsonField(item, "timePoint", trigger.timePoint);
+    FastBee::setFixedJsonField(item, "eventId", trigger.eventId);
+    FastBee::setFixedJsonField(item, "pollResponseTimeout", trigger.pollResponseTimeout);
+    FastBee::setFixedJsonField(item, "pollMaxRetries", trigger.pollMaxRetries);
+    FastBee::setFixedJsonField(item, "pollInterPollDelay", trigger.pollInterPollDelay);
+}
+
+__attribute__((noinline)) void writeRuleActionFields(JsonObject item, const ExecAction& action) {
+    FastBee::setFixedJsonField(item, "targetPeriphId", action.targetPeriphId);
+    FastBee::setFixedJsonField(item, "actionType", action.actionType);
+    FastBee::setFixedJsonField(item, "actionValue", action.actionValue);
+    FastBee::setFixedJsonField(item, "useReceivedValue", action.useReceivedValue);
+    FastBee::setFixedJsonField(item, "syncDelayMs", action.syncDelayMs);
+    FastBee::setFixedJsonField(item, "execMode", action.execMode);
 }
 
 void writeRuleCandidate(JsonObject target, const PeriphExecRule& rule) {
-    target["id"] = rule.id;
-    target["name"] = rule.name;
-    target["enabled"] = rule.enabled;
-    target["execMode"] = rule.execMode;
-    target["protocolType"] = rule.protocolType;
-    target["scriptContent"] = rule.scriptContent;
-    target["reportAfterExec"] = rule.reportAfterExec;
-    target["allowPanelControl"] = rule.allowPanelControl;
-    target["recordHistory"] = rule.recordHistory;
+    FastBee::setFixedJsonField(target, "id", rule.id);
+    FastBee::setFixedJsonField(target, "name", rule.name);
+    FastBee::setFixedJsonField(target, "enabled", rule.enabled);
+    FastBee::setFixedJsonField(target, "execMode", rule.execMode);
+    FastBee::setFixedJsonField(target, "protocolType", rule.protocolType);
+    FastBee::setFixedJsonField(target, "scriptContent", rule.scriptContent);
+    FastBee::setFixedJsonField(target, "reportAfterExec", rule.reportAfterExec);
+    FastBee::setFixedJsonField(target, "allowPanelControl", rule.allowPanelControl);
+    FastBee::setFixedJsonField(target, "recordHistory", rule.recordHistory);
 
     JsonArray triggers = target["triggers"].to<JsonArray>();
     for (const ExecTrigger& trigger : rule.triggers) {
         JsonObject item = triggers.add<JsonObject>();
-        item["triggerType"] = trigger.triggerType;
-        item["triggerPeriphId"] = trigger.triggerPeriphId;
-        item["operatorType"] = trigger.operatorType;
-        item["compareValue"] = trigger.compareValue;
-        item["timerMode"] = trigger.timerMode;
-        item["intervalSec"] = trigger.intervalSec;
-        item["timePoint"] = trigger.timePoint;
-        item["eventId"] = trigger.eventId;
-        item["pollResponseTimeout"] = trigger.pollResponseTimeout;
-        item["pollMaxRetries"] = trigger.pollMaxRetries;
-        item["pollInterPollDelay"] = trigger.pollInterPollDelay;
+        writeRuleTriggerFields(item, trigger);
     }
 
     JsonArray actions = target["actions"].to<JsonArray>();
     for (const ExecAction& action : rule.actions) {
         JsonObject item = actions.add<JsonObject>();
-        item["targetPeriphId"] = action.targetPeriphId;
-        item["actionType"] = action.actionType;
-        item["actionValue"] = action.actionValue;
-        item["useReceivedValue"] = action.useReceivedValue;
-        item["syncDelayMs"] = action.syncDelayMs;
-        item["execMode"] = action.execMode;
+        writeRuleActionFields(item, action);
     }
 }
 }  // namespace
@@ -1790,9 +1938,9 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
     if (!id.isEmpty()) candidate.id = id;
 
     JsonDocument response;
-    response["success"] = true;
+    FastBee::setFixedJsonField(response, "success", true);
     JsonObject data = response["data"].to<JsonObject>();
-    data["operation"] = operation;
+    FastBee::setFixedJsonField(data, "operation", operation);
     JsonArray issues = data["issues"].to<JsonArray>();
     size_t errorCount = 0;
     size_t warningCount = 0;
@@ -1801,10 +1949,10 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
                         const String& path, const String& message,
                         uint8_t issueRisk = 0) {
         JsonObject issue = issues.add<JsonObject>();
-        issue["code"] = code;
-        issue["severity"] = severity;
-        issue["path"] = path;
-        issue["message"] = message;
+        FastBee::setFixedJsonField(issue, "code", code);
+        FastBee::setFixedJsonField(issue, "severity", severity);
+        FastBee::setFixedJsonField(issue, "path", path);
+        FastBee::setFixedJsonField(issue, "message", message);
         if (strcmp(severity, "error") == 0) ++errorCount;
         else ++warningCount;
         if (issueRisk > risk) risk = issueRisk;
@@ -1926,14 +2074,29 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
     for (size_t index = 0; index < candidate.actions.size(); ++index) {
         const ExecAction& action = candidate.actions[index];
         const String path = String("rule.actions[") + index + "]";
-        if (action.actionType > 34 || action.actionType == 20) {
+        if (action.actionType > 39 || action.actionType == 20) {
             addIssue("INVALID_ACTION_TYPE", "error", path + ".actionType",
-                     "actionType must be 0-34 and cannot use reserved slot 20");
+                     "actionType must be 0-39 and cannot use reserved slot 20");
             continue;
         }
         if (action.execMode > 1) {
             addIssue("INVALID_ACTION_EXEC_MODE", "error", path + ".execMode",
                      "Action execMode must be 0 or 1");
+        }
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SD_STATUS)) {
+            if (const char* error = FastBee::validateSdStatusAction(action))
+                addIssue("INVALID_SD_STATUS_ACTION", "error", path, error);
+            if (candidate.allowPanelControl)
+                addIssue("PANEL_ACTION_NOT_ALLOWED", "error", path, "SD status is not a panel-control action");
+        }
+        if (FastBee::isRtcAction(action.actionType)) {
+            if (const char* error = FastBee::validateRtcAction(action)) {
+                addIssue("INVALID_RTC_ACTION", "error", path, error);
+            }
+            if (candidate.allowPanelControl) {
+                addIssue("PANEL_ACTION_NOT_ALLOWED", "error", path,
+                         "RTC actions are not panel-control actions");
+            }
         }
         if (action.syncDelayMs > 10000) {
             addIssue("ACTION_DELAY_TOO_LONG", "error", path + ".syncDelayMs",
@@ -2009,6 +2172,12 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
                         addIssue("ACTION_TARGET_DISABLED", "warning", path + ".targetPeriphId",
                                  "Target peripheral is currently disabled", 1);
                     }
+                    if (target.type == PeripheralType::UART && (action.actionType == 10 || action.actionType == 29)) {
+                        if (const char* error = FastBee::validateUartAction(action))
+                            addIssue(error, "error", path + ".actionValue", "Invalid UART payload; maximum 256 expanded bytes");
+                        addIssue("UART_LOCAL_ONLY", "warning", path,
+                                 "One local write only; peer receipt is unverified. Partial writes must not be blindly retried", 1);
+                    }
                 }
             }
         }
@@ -2047,7 +2216,8 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
             }
         }
         if (!action.useReceivedValue && action.actionType == 5) {
-            if (!parseStrictLong(action.actionValue, numeric) || numeric < 0 || numeric > 255) {
+            uint8_t dacValue = 0;
+            if (!FastBee::parseDacActionValue(action.actionValue.c_str(), action.actionValue.length(), dacValue)) {
                 addIssue("INVALID_DAC_VALUE", "error", path + ".actionValue",
                          "DAC value must be between 0 and 255");
             }
@@ -2058,7 +2228,7 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
         }
         if (action.actionType == 18) {
             JsonDocument poll;
-            if (action.actionValue.isEmpty() || deserializeJson(poll, action.actionValue) ||
+            if (action.actionValue.isEmpty() || deserializeJson(poll, action.actionValue.c_str(), action.actionValue.length()) ||
                 (!poll["poll"].is<JsonArray>() && !poll["ctrl"].is<JsonArray>())) {
                 addIssue("INVALID_MODBUS_POLL", "error", path + ".actionValue",
                          "Modbus poll value must be JSON with poll or ctrl array");
@@ -2066,7 +2236,7 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
         }
         if (action.actionType == 19) {
             JsonDocument sensor;
-            if (action.actionValue.isEmpty() || deserializeJson(sensor, action.actionValue)) {
+            if (action.actionValue.isEmpty() || deserializeJson(sensor, action.actionValue.c_str(), action.actionValue.length())) {
                 addIssue("INVALID_SENSOR_CONFIG", "error", path + ".actionValue",
                          "Sensor read actionValue must be valid JSON");
             }
@@ -2074,18 +2244,23 @@ void PeriphExecRouteHandler::handlePreflightRuleJson(AsyncWebServerRequest* requ
     }
 
     const bool allowed = errorCount == 0;
-    data["allowed"] = allowed;
-    data["requiresConfirmation"] = allowed && (warningCount > 0 || risk > 0);
-    data["riskLevel"] = risk == 2 ? "high" : (risk == 1 ? "medium" : "low");
-    data["errorCount"] = errorCount;
-    data["warningCount"] = warningCount;
+    FastBee::setFixedJsonField(data, "allowed", allowed);
+    FastBee::setFixedJsonField(data, "requiresConfirmation", allowed && (warningCount > 0 || risk > 0));
+    FastBee::setFixedJsonField(data, "riskLevel", risk == 2 ? "high" : (risk == 1 ? "medium" : "low"));
+    FastBee::setFixedJsonField(data, "errorCount", errorCount);
+    FastBee::setFixedJsonField(data, "warningCount", warningCount);
     JsonObject limits = data["limits"].to<JsonObject>();
-    limits["maxRules"] = FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES;
-    limits["maxTriggersPerRule"] = MAX_TRIGGERS_PER_RULE;
-    limits["maxActionsPerRule"] = MAX_ACTIONS_PER_RULE;
+    FastBee::setFixedJsonField(limits, "maxRules", FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES);
+    FastBee::setFixedJsonField(limits, "maxTriggersPerRule", MAX_TRIGGERS_PER_RULE);
+    FastBee::setFixedJsonField(limits, "maxActionsPerRule", MAX_ACTIONS_PER_RULE);
     if (operation == "update") writeRuleCandidate(data["current"].to<JsonObject>(), current);
     writeRuleCandidate(data["candidate"].to<JsonObject>(), candidate);
-    response["allowed"] = allowed;
+    FastBee::appendRuleActionContracts(data, candidate);
+    if (response.overflowed()) {
+        ctx->sendError(request, 503, "Rule preflight response allocation failed");
+        return;
+    }
+    FastBee::setFixedJsonField(response, "allowed", allowed);
     HandlerUtils::sendJsonStream(request, response);
 }
 
@@ -2259,36 +2434,25 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     JsonDocument ruleDoc;
-    ruleDoc["id"] = rule.id;
-    ruleDoc["name"] = rule.name;
-    ruleDoc["enabled"] = rule.enabled;
-    ruleDoc["execMode"] = rule.execMode;
+    FastBee::setFixedJsonField(ruleDoc, "id", rule.id);
+    FastBee::setFixedJsonField(ruleDoc, "name", rule.name);
+    FastBee::setFixedJsonField(ruleDoc, "enabled", rule.enabled);
+    FastBee::setFixedJsonField(ruleDoc, "execMode", rule.execMode);
 
     // 触发器数组
     JsonArray trigArr = ruleDoc["triggers"].to<JsonArray>();
     for (const auto& t : rule.triggers) {
         JsonObject tObj = trigArr.add<JsonObject>();
-        tObj["triggerType"] = t.triggerType;
-        tObj["triggerPeriphId"] = t.triggerPeriphId;
-        tObj["operatorType"] = t.operatorType;
-        tObj["compareValue"] = t.compareValue;
-        tObj["timerMode"] = t.timerMode;
-        tObj["intervalSec"] = t.intervalSec;
-        tObj["timePoint"] = t.timePoint;
-        tObj["eventId"] = t.eventId;
-        // 轮询触发通信参数
-        tObj["pollResponseTimeout"] = t.pollResponseTimeout;
-        tObj["pollMaxRetries"] = t.pollMaxRetries;
-        tObj["pollInterPollDelay"] = t.pollInterPollDelay;
+        writeRuleTriggerFields(tObj, t);
         // 运行时状态
-        tObj["lastTriggerTime"] = t.lastTriggerTime;
-        tObj["triggerCount"] = t.triggerCount;
+        FastBee::setFixedJsonField(tObj, "lastTriggerTime", t.lastTriggerTime);
+        FastBee::setFixedJsonField(tObj, "triggerCount", t.triggerCount);
 
         // 关联触发外设名称
         if (!t.triggerPeriphId.isEmpty()) {
             PeripheralConfig periph;
             if (pm.getPeripheralSnapshot(t.triggerPeriphId, periph)) {
-                tObj["triggerPeriphName"] = periph.name;
+                FastBee::setFixedJsonField(tObj, "triggerPeriphName", periph.name);
             }
         }
     }
@@ -2297,29 +2461,24 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
     JsonArray actArr = ruleDoc["actions"].to<JsonArray>();
     for (const auto& a : rule.actions) {
         JsonObject aObj = actArr.add<JsonObject>();
-        aObj["targetPeriphId"] = a.targetPeriphId;
-        aObj["actionType"] = a.actionType;
-        aObj["actionValue"] = a.actionValue;
-        aObj["useReceivedValue"] = a.useReceivedValue;
-        aObj["syncDelayMs"] = a.syncDelayMs;
-        aObj["execMode"] = a.execMode;
+        writeRuleActionFields(aObj, a);
         if (!a.targetPeriphId.isEmpty()) {
             PeripheralConfig periph;
             if (pm.getPeripheralSnapshot(a.targetPeriphId, periph)) {
-                aObj["targetPeriphName"] = periph.name;
-                aObj["targetPeriphType"] = static_cast<int>(periph.type);
+                FastBee::setFixedJsonField(aObj, "targetPeriphName", periph.name);
+                FastBee::setFixedJsonField(aObj, "targetPeriphType", static_cast<int>(periph.type));
             }
         }
     }
 
     // 数据转换管道
-    ruleDoc["protocolType"] = rule.protocolType;
-    ruleDoc["scriptContent"] = rule.scriptContent;
+    FastBee::setFixedJsonField(ruleDoc, "protocolType", rule.protocolType);
+    FastBee::setFixedJsonField(ruleDoc, "scriptContent", rule.scriptContent);
 
     // 数据上报控制
-    ruleDoc["reportAfterExec"] = rule.reportAfterExec;
-    ruleDoc["allowPanelControl"] = rule.allowPanelControl;
-    ruleDoc["recordHistory"] = rule.recordHistory;
+    FastBee::setFixedJsonField(ruleDoc, "reportAfterExec", rule.reportAfterExec);
+    FastBee::setFixedJsonField(ruleDoc, "allowPanelControl", rule.allowPanelControl);
+    FastBee::setFixedJsonField(ruleDoc, "recordHistory", rule.recordHistory);
 
     String output;
     serializeJson(ruleDoc, output);

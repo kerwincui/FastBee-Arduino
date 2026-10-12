@@ -30,7 +30,7 @@ class ConfigTransferContractTests(unittest.TestCase):
 
     def test_successful_import_is_exported_and_compared(self):
         import_pos = SMOKE_SCRIPT.index('# Test 3: Import config (using exported bundle)')
-        import_block = SMOKE_SCRIPT[import_pos:import_pos + 5000]
+        import_block = SMOKE_SCRIPT[import_pos:SMOKE_SCRIPT.index('\nif ($DelayMs', import_pos)]
         self.assertIn('$readbackContent = Invoke-RawWithRetry', import_block)
         self.assertIn('$expectedNames = @($expectedObject.PSObject.Properties.Name | Sort-Object)', import_block)
         self.assertIn('Compare-Object -ReferenceObject $expectedNames', import_block)
@@ -47,12 +47,16 @@ class ConfigTransferContractTests(unittest.TestCase):
         self.assertIn('$response.RawContentStream', raw_block)
         self.assertIn('[System.Text.Encoding]::UTF8.GetString', raw_block)
 
-    def test_memory_degradation_requires_retryable_503_metadata(self):
+    def test_import_requires_session_and_does_not_pass_degraded_or_unknown_write(self):
         import_pos = SMOKE_SCRIPT.index('# Test 3: Import config (using exported bundle)')
-        import_block = SMOKE_SCRIPT[import_pos:import_pos + 2400]
-        self.assertIn('$importChunk.code -eq 503', import_block)
-        self.assertIn('$importChunk.PSObject.Properties.Name -contains "retryAfter"', import_block)
-        self.assertIn('Passed = ($importOk -or $importDegraded)', import_block)
+        import_block = SMOKE_SCRIPT[import_pos:SMOKE_SCRIPT.index('\nif ($DelayMs', import_pos)]
+        self.assertIn('/api/config/transfer/import-begin', import_block)
+        self.assertIn('if ($beginOk)', import_block)
+        self.assertIn('session = $importSession', import_block)
+        self.assertIn('Passed = $importOk', import_block)
+        self.assertIn('Passed = $readbackOk', import_block)
+        self.assertNotIn('Passed = ($importOk -or', import_block)
+        self.assertNotIn('Passed = ($readbackOk -or', import_block)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+{
+  "peripherals": [
+    {
+      "id": "dht11",
+      "name": "DHT11温湿度传感器",
+      "type": 38,
+      "enabled": true,
+      "pins": [
+        10
+      ],
+      "params": {}
+    },
+    {
+      "id": "led",
+      "name": "板载LED",
+      "type": 12,
+      "enabled": true,
+      "pins": [
+        8
+      ],
+      "params": {
+        "initialState": 1,
+        "pwmChannel": 0,
+        "pwmFrequency": 1000,
+        "pwmResolution": 8,
+        "defaultDuty": 0
+      }
+    },
+    {
+      "id": "oled",
+      "name": "OLED显示屏",
+      "type": 36,
+      "enabled": true,
+      "pins": [
+        5,
+        6
+      ],
+      "params": {
+        "width": 72,
+        "height": 40,
+        "interface": 2
+      }
+    }
+  ]
+}

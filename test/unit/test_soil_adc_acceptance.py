@@ -18,6 +18,10 @@ class SoilAcceptanceTests(unittest.TestCase):
     def test_low_moisture_is_never_a_measurement_pass(self):
         with self.assertRaisesRegex(ValueError,'quality=low'):
             soil.validate_reading('ai_soil_humidity',self.config(),self.reading(quality='low',valueValid=False,value=None,pinVoltageMv=550))
+    def test_sdk_read_failure_is_never_a_valid_zero(self):
+        with self.assertRaisesRegex(ValueError, 'Invalid calibrated voltage'):
+            soil.validate_reading('ai_soil_humidity', self.config(), self.reading(
+                quality='read_failed', valueValid=False, value=None, rawValue=None, pinVoltageMv=None))
     def test_valid_flag_without_value_fails(self):
         with self.assertRaises(ValueError):
             soil.validate_reading('ai_soil_humidity',self.config(),self.reading(value=None))

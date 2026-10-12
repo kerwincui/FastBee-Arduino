@@ -125,7 +125,7 @@ private:
     // 其他私有方法
     bool addSystemTasks();             // 添加系统任务
     void checkForRestart();            // 检查重启条件
-    void syncTimeFromConfig();         // 从配置同步NTP时间
+    bool syncTimeFromConfig();         // True only when this SNTP configuration was accepted
 
     // 系统状态
     bool systemInitialized;
@@ -133,6 +133,8 @@ private:
     bool ntpSynced = false;            // NTP同步完成标志
     bool ntpSyncPending = false;       // NTP同步待处理标志
     bool ntpSyncStarted = false;       // NTP同步已启动标志
+    bool ntpAttemptConfigured = false; // A rejected TZ/config attempt cannot claim a later sync
+    uint32_t ntpStartSequence = 0;     // Provenance revision before this attempt
     int ntpRetryCount = 0;             // NTP同步重试计数
     unsigned long ntpGiveUpTimeMs = 0; // NTP同步放弃时间戳（用于冷却后重试）
     uint8_t ntpHttpFallbackAttempts = 0; // PSRAM设备的HTTP时间回退次数

@@ -629,7 +629,7 @@ static void test_source_maintenance_uses_init_display_not_begin() {
         return;
     }
 
-    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance()");
+    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance(const PeripheralConfig& config)");
     TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "performMaintenance() definition not found");
     std::string code = stripLineComments(body);  // 注释里会提到 begin()，需剔除
 
@@ -653,7 +653,7 @@ static void test_source_maintenance_reasserts_power_and_contrast() {
         return;
     }
 
-    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance()");
+    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance(const PeripheralConfig& config)");
     TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "performMaintenance() definition not found");
 
     // 重发初始化后必须退出省电、重施对比度、并把原有画面推回屏幕
@@ -677,7 +677,7 @@ static void test_source_maintenance_warning_is_rate_limited() {
         return;
     }
 
-    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance()");
+    std::string body = extractFunctionBody(content, "void LCDManager::performMaintenance(const PeripheralConfig& config)");
     TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "performMaintenance() definition not found");
     std::string code = stripLineComments(body);
 
@@ -711,7 +711,7 @@ static void test_source_lcd_serializes_i2c_operations_and_reports_bus_failure() 
                              "compound LCD operations require a recursive mutex");
 
     std::string custom = extractFunctionBody(source, "bool LCDManager::showCustomText(");
-    std::string maintenance = extractFunctionBody(source, "void LCDManager::performMaintenance()");
+    std::string maintenance = extractFunctionBody(source, "void LCDManager::performMaintenance(const PeripheralConfig& config)");
     std::string refresh = extractFunctionBody(source, "bool LCDManager::refresh()");
     std::string initialize = extractFunctionBody(source, "bool LCDManager::initialize(");
     std::string probe = extractFunctionBody(source, "bool LCDManager::probeI2cDisplay(");
@@ -811,7 +811,7 @@ static void test_source_peripheral_manager_persists_contrast() {
     }
 
     // 保存时写出、加载时读回（默认 255），两边都不能漏
-    TEST_ASSERT_TRUE_MESSAGE(srcContains(content, "params[\"contrast\"]  = config.params.lcd.contrast"),
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(content, "FastBee::setFixedJsonField(params, \"contrast\", config.params.lcd.contrast)"),
                              "saveConfiguration must persist lcd contrast");
     TEST_ASSERT_TRUE_MESSAGE(srcContains(content, "params[\"contrast\"] | 255"),
                              "loadConfiguration must read lcd contrast with default 255");

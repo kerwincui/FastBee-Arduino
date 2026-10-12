@@ -1,0 +1,369 @@
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <mutex>
+#include <atomic>
+#include <future>
+#include <functional>
+#include <thread>
+#include "protocols/MqttTopicPath.h"
+// Boundary seeding only; exercise the real ledger's saturation transitions.
+#define private public
+#include "protocols/MqttReportRetirement.h"
+#undef private
+#define FASTBEE_ENABLE_HEALTH_MONITOR 0
+#define FASTBEE_ENABLE_RULE_SCRIPT 1
+#define MQTT_MAX_HEADER_SIZE 5
+#define ARDUINOJSON_ENABLE_ARDUINO_STRING 0
+#define MQTT_CLIENT_H
+using portMUX_TYPE=std::mutex;
+#define portMUX_INITIALIZER_UNLOCKED {}
+thread_local unsigned criticalDepth=0;
+void portENTER_CRITICAL(portMUX_TYPE* mux) { assert(criticalDepth==0);mux->lock();++criticalDepth; }
+void portEXIT_CRITICAL(portMUX_TYPE* mux) { assert(criticalDepth==1);--criticalDepth;mux->unlock(); }
+portMUX_TYPE g_mqttRetirementMux = portMUX_INITIALIZER_UNLOCKED;
+FastBee::MqttReportRetirement g_mqttReportRetirement;
+uint32_t fakeNow=0;
+uint32_t millis() { return fakeNow; }
+size_t fakeHeap=40000;
+constexpr int MALLOC_CAP_INTERNAL=1;
+size_t heap_caps_get_free_size(int) { return fakeHeap; }
+bool failCopy=false,corruptCopy=false,foreground=false;
+class String {
+    std::string value;
+public:
+    String() = default;
+    String(const char* text):value(text?text:"") {}
+    String(const std::string& text):value(text) {}
+    String(const char* text,unsigned int length):value(failCopy?"":std::string(text,length)) {
+        if(corruptCopy && !value.empty())value[0]^=1;
+    }
+    size_t length() const { return value.size(); }
+    const char* c_str() const { return value.c_str(); }
+    bool isEmpty() const { return value.empty(); }
+    bool reserve(unsigned int size) { value.reserve(size); return true; }
+    bool concat(const char* bytes, unsigned int size) { value.append(bytes, size); return true; }
+    int indexOf(char c) const { const auto at = value.find(c); return at == std::string::npos ? -1 : static_cast<int>(at); }
+    String substring(size_t begin, size_t end) const { return String(value.substr(begin, end-begin)); }
+    friend String operator+(const String& a, const String& b) { return String(a.value+b.value); }
+    friend bool operator==(const String& a, const String& b) { return a.value==b.value; }
+};
+bool admissionBusy = false;
+struct RecursiveMutexGuard { RecursiveMutexGuard(void*, int = 0) {} bool isLocked() const { return !admissionBusy; } };
+enum class MqttTopicType { DATA_REPORT, OTA_BINARY, OTA_UPGRADE, NTP_SYNC };
+struct Topic { String topic = "topic"; bool enabled = true, autoPrefix = false, retain = false; MqttTopicType topicType = MqttTopicType::DATA_REPORT; };
+using MqttPublishTopic = Topic;
+unsigned transforms = 0;
+bool transformOk = true, webBusy = false;
+std::string transformed;
+struct RuleScriptManager {
+    static RuleScriptManager& getInstance() { static RuleScriptManager r; return r; }
+    bool tryApplyReportTransform(int, const String& raw, String& out, size_t limit) {
+        ++transforms; out = transformed.empty() ? raw : String(transformed); return transformOk && out.length() <= limit;
+    }
+    String applyReportTransform(int, const String& raw) { ++transforms; return raw; }
+};
+struct Logger {
+    template<class... Args> void infof(Args...) { assert(criticalDepth==0); }
+    void info(const char*) { assert(criticalDepth==0); }
+    void warning(const char*) { assert(criticalDepth==0); }
+} LOGGER;
+#define LOG_WARNINGF(...) LOGGER.infof(__VA_ARGS__)
+#define LOG_WARNING(...) LOGGER.warning(__VA_ARGS__)
+template<class... Args> void ets_printf(Args...) { assert(criticalDepth==0); }
+struct SerialLog { template<class... Args> void printf(Args...) { assert(criticalDepth==0); } } Serial;
+struct WebConfigManager { bool isForegroundRequestActive() const { return foreground; } bool isWebBusy() const { return webBusy; } } web;
+struct FastBeeFramework {
+    static FastBeeFramework* getInstance() { static FastBeeFramework value;return &value; }
+    WebConfigManager* getWebConfigManager() { return &web; }
+};
+namespace Protocols { constexpr size_t MODBUS_BUFFER_SIZE=256; }
+@SLOTS@
+@DECODE@
+class MQTTClient {
+public:
+    bool stopped = false;
+    bool isConnected = true;
+    void* _publishMutex = nullptr;
+    struct Config { std::vector<Topic> publishTopics = std::vector<Topic>(2); String deviceNum = "dev"; } config;
+    std::vector<std::string> wireTopics;
+    std::vector<bool> wireRetains;
+    struct Transport {
+        MQTTClient* owner;
+        uint16_t size = 1024;
+        uint16_t getBufferSize() const { return size; }
+        bool connected() const { return owner->isConnected; }
+        bool publish(const char* topic, const char* payload, bool retain) {
+            owner->wireTopics.emplace_back(topic); owner->wireRetains.push_back(retain);
+            return owner->publish(String(payload), false);
+        }
+    } mqttClient{this};
+    String buildFullTopicWithType(const String& value, bool, MqttTopicType) { return value; }
+    bool queueTopicMessage(size_t, const String&);
+    std::vector<size_t> topicRows;
+    bool publishPreparedTopic(size_t topic, const String& value) { topicRows.push_back(topic); return publishToTopicImpl(topic, value, true); }
+    bool publishToTopicImpl(size_t, const String&, bool);
+    bool testOnly = false;
+    bool isConnectionTestOnly() const { return testOnly; }
+@PUBLIC@
+@PRIVATE@
+    uint8_t getQueueDepth() const;
+    bool queueReportData(const String&);
+    bool queueReportData(const char*,uint16_t);
+    bool queueModbusRtuReport(const String&);
+    void setMinReportInterval(uint32_t);
+    std::function<bool(const String&,bool)> send;
+    unsigned calls=0;
+    std::vector<std::string> frames;
+    bool publishReportData(const String& value) { return publish(value,false); }
+    bool publishModbusRtuReport(const String& value) { return publish(value,true); }
+    bool publish(const String& value,bool raw) {
+        assert(criticalDepth==0 && value.length()>0);++calls;
+        frames.emplace_back(value.c_str(),value.length());return send?send(value,raw):true;
+    }
+};
+@METHODS@
+@TOPIC_ADMISSION@
+@TOPIC_PUBLISH@
+#include "protocols/MqttReportQueueStatus.h"
+
+int main(int argc,char** argv) {
+    assert(argc==2);const std::string mode=argv[1];MQTTClient q;
+    using Reason=FastBee::MqttRetirementReason;
+    if(mode=="topic_route_retain") {
+        q.config.publishTopics[1].topic="custom/sensor"; q.config.publishTopics[1].retain=true;
+        assert(q.queueTopicMessage(1,"raw")); q.processQueuedReports();
+        assert(q.wireTopics.size()==1 && q.wireTopics[0]=="custom/sensor" && q.wireRetains[0]);
+        assert(q.frames[0]=="raw" && transforms==1 && q.getQueueDepth()==0); return 0;
+    }
+    if(mode=="topic_flush_guards") {
+        q.isConnected=false; assert(q.queueTopicMessage(1,"raw")); q.processQueuedReports();
+        assert(q.getReportQueueSnapshot().pendingReport && q.calls==0);
+        q.isConnected=true; webBusy=true; fakeNow+=1000; q.processQueuedReports(); assert(q.calls==0);
+        webBusy=false; fakeNow+=1000; q.processQueuedReports(); assert(q.calls==1 && q.getQueueDepth()==0);
+        assert(!q.publishPreparedTopic(999,"raw"));
+        q.config.publishTopics[1].topic=""; assert(!q.publishPreparedTopic(1,"raw"));
+        q.config.publishTopics[1].topic="bad/#"; assert(!q.publishPreparedTopic(1,"raw"));
+        q.config.publishTopics[1].topic="topic"; q.config.publishTopics[1].topicType=MqttTopicType::NTP_SYNC;
+        assert(!q.publishPreparedTopic(1,"raw") && q.calls==1); return 0;
+    }
+    if(mode=="topic_transform_failure") {
+        transformOk=false; assert(!q.queueTopicMessage(1,"raw"));
+        assert(q.getQueueDepth()==0 && q.calls==0 && q.getQueueStats().invalidDrops==1); return 0;
+    }
+    if(mode=="topic_offline" || mode=="topic_transform_frozen" || mode=="topic_pinned") {
+        transformed = "frozen";
+        assert(q.queueTopicMessage(1, "original")); assert(q.calls == 0 && transforms == 1);
+        q.send=[](const String&, bool){return false;}; q.processQueuedReports();
+        assert(q.getReportQueueSnapshot().pendingReport && q.topicRows.back() == 1 && q.frames.back() == "frozen");
+        transformed = "new-rule-output";
+        if(mode=="topic_pinned") for(unsigned i=0;i<20;++i) assert(q.queueReportData("telemetry"));
+        fakeNow += 1000; q.send=[](const String&, bool){return true;}; q.processQueuedReports();
+        assert(q.frames[1] == "frozen" && q.topicRows.back() == 1 && transforms == 1);
+        assert(q.getQueueStats().configuredTopicAccepted == 1);
+        if(mode=="topic_pinned") assert(q.getQueueStats().evictedOldest == 12);
+        else assert(q.getQueueDepth() == 0);
+        return 0;
+    }
+    if(mode=="topic_reject") {
+        assert(!q.queueTopicMessage(65536, "x")); assert(!q.queueTopicMessage(1, ""));
+        q.config.publishTopics[1].enabled=false; assert(!q.queueTopicMessage(1,"x")); q.config.publishTopics[1].enabled=true;
+        for(auto type:{MqttTopicType::OTA_BINARY,MqttTopicType::OTA_UPGRADE,MqttTopicType::NTP_SYNC}) {
+            q.config.publishTopics[1].topicType=type; assert(!q.queueTopicMessage(1,"x"));
+        }
+        q.config.publishTopics[1].topicType=MqttTopicType::DATA_REPORT;
+        q.config.publishTopics[1].topic="invalid/+"; assert(!q.queueTopicMessage(1,"x"));
+        q.config.publishTopics[1].topic="topic"; admissionBusy=true; assert(!q.queueTopicMessage(1,"x")); admissionBusy=false;
+        q.stopped=true; assert(!q.queueTopicMessage(1,"x"));
+        assert(q.getQueueDepth()==0 && q.calls==0 && transforms==0); return 0;
+    }
+    if(mode=="topic_packet") {
+        transformed=std::string(513,'x'); assert(!q.queueTopicMessage(1,"x"));
+        transformed="512?"; q.mqttClient.size=12; assert(!q.queueTopicMessage(1,"x"));
+        transformed="x"; q.mqttClient.size=13; assert(q.queueTopicMessage(1,"x"));
+        assert(q.getQueueDepth()==1 && q.getQueueStats().invalidDrops==2); return 0;
+    }
+    if(mode=="topic_test_isolation") {
+        q.testOnly=true; assert(!q.queueTopicMessage(0,"x"));
+        assert(q.getQueueStats().testModeRejected==1 && transforms==0 && q.calls==0); return 0;
+    }
+    if(mode=="retire_once") {
+        assert(q.queueReportData("old"));q.setReportRetirementReason(Reason::Rebuild);
+        q.recordReportQueueRetirement();q.recordReportQueueRetirement();
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.instances==1&&s.instancesWithLoss==1&&s.discardedReports==1);
+        assert(s.lastLossReason==Reason::Rebuild&&s.lastLossRingDepth==1);
+        assert(q.getQueueDepth()==1&&q.calls==0);return 0; // Recording itself does not clear/replay.
+    }
+    if(mode=="retire_retained") {
+        assert(q.queueReportData("pinned"));q.send=[](const String&,bool){return false;};
+        q.processQueuedReports();assert(q.getReportQueueSnapshot().pendingReport);
+        assert(q.queueReportData("ring"));q.setReportRetirementReason(Reason::NetworkSwitch);
+        q.recordReportQueueRetirement();
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.discardedReports==2&&s.lastLossPendingReport&&s.lastLossRingDepth==1);return 0;
+    }
+    if(mode=="retire_empty_preserves") {
+        assert(q.queueReportData("lost"));q.setReportRetirementReason(Reason::ConfigurationDisabled);
+        q.recordReportQueueRetirement();MQTTClient next;next.recordReportQueueRetirement();
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.instances==2&&s.instancesWithLoss==1&&s.discardedReports==1);
+        assert(s.lastLossReason==Reason::ConfigurationDisabled);return 0;
+    }
+    if(mode=="retire_unknown") {
+        q._reportConsumerActive=true;q.recordReportQueueRetirement();
+        auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.instances==1&&s.unconfirmedInstances==1&&s.discardedReports==0);
+        g_mqttReportRetirement.record(Reason::Rebuild,9,false,false);
+        s=MQTTClient::getReportRetirementSnapshot();assert(s.unconfirmedInstances==2);return 0;
+    }
+    if(mode=="retire_reasons") {
+        for(uint8_t i=0;i<FastBee::MqttReportRetirement::ReasonCount;++i) {
+            MQTTClient instance;assert(instance.queueReportData("one"));
+            instance.setReportRetirementReason(static_cast<Reason>(i));instance.recordReportQueueRetirement();
+        }
+        q.setReportRetirementReason(static_cast<Reason>(255));assert(q.queueReportData("fallback"));q.recordReportQueueRetirement();
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.instances==7&&s.discardedReports==7&&s.byReason[0]==2);
+        for(uint8_t i=1;i<FastBee::MqttReportRetirement::ReasonCount;++i)assert(s.byReason[i]==1);
+        return 0;
+    }
+    if(mode=="retire_saturation") {
+        auto& seed=g_mqttReportRetirement._snapshot;
+        seed.instances=seed.instancesWithLoss=UINT32_MAX;seed.discardedReports=UINT32_MAX-1;
+        seed.byReason[static_cast<uint8_t>(Reason::Rebuild)]=UINT32_MAX-1;
+        g_mqttReportRetirement.record(Reason::Rebuild,8,true,false);
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.saturated&&s.instances==UINT32_MAX&&s.discardedReports==UINT32_MAX);
+        assert(s.byReason[static_cast<uint8_t>(Reason::Rebuild)]==UINT32_MAX);return 0;
+    }
+    if(mode=="retire_concurrent") {
+        std::vector<std::thread> threads;
+        for(unsigned i=0;i<16;++i)threads.emplace_back([]{
+            MQTTClient instance;assert(instance.queueReportData("old"));instance.recordReportQueueRetirement();
+        });
+        for(auto& thread:threads) {thread.join();}
+        const auto s=MQTTClient::getReportRetirementSnapshot();
+        assert(s.instances==16&&s.discardedReports==16&&s.unconfirmedInstances==0);return 0;
+    }
+    if(mode=="retire_json_unavailable") {
+        assert(q.queueReportData("lost"));q.recordReportQueueRetirement();
+        JsonDocument doc;FastBee::addMqttReportQueueStatus(doc.to<JsonObject>(),nullptr);
+        assert(doc["reportQueue"]["available"]==false&&doc["reportQueue"]["depth"].isNull());
+        auto history=doc["reportQueue"]["retirement"];
+        assert(history["discardedReports"]==1&&history["scope"]=="boot");
+        assert(history["persisted"]==false&&history["payloadRetained"]==false);
+        std::string encoded;serializeJson(doc,encoded);assert(encoded.find("lost")==std::string::npos);return 0;
+    }
+    if(mode=="test_isolation" || mode=="test_retains_existing" || mode=="test_counter_saturation") {
+        if(mode=="test_retains_existing")assert(q.queueReportData("existing"));
+        if(mode=="test_counter_saturation")q._queueStats.testModeRejected=UINT32_MAX;
+        q.testOnly=true;
+        assert(!q.queueReportData("blocked") && !q.queueModbusRtuReport("010300000001840A"));
+        q.processQueuedReports();
+        assert(q.calls==0 && q.getQueueDepth()==(mode=="test_retains_existing"?1:0));
+        assert(q.getQueueStats().testModeRejected==(mode=="test_counter_saturation"?UINT32_MAX:2));
+        JsonDocument doc;const auto snapshot=q.getReportQueueSnapshot();
+        FastBee::addMqttReportQueueStatus(doc.to<JsonObject>(),&snapshot);
+        assert(doc["reportQueue"]["rejectedTestMode"]==snapshot.stats.testModeRejected);
+        return 0;
+    }
+    if(mode=="empty"||mode=="null"||mode=="nul"||mode=="oversize"||mode=="cast_wrap") {
+        bool ok=false;
+        if(mode=="empty")ok=q.queueReportData("");
+        if(mode=="null")ok=q.queueReportData(nullptr,0);
+        if(mode=="nul")ok=q.queueReportData("a\0b",3);
+        if(mode=="oversize")ok=q.queueReportData(String(std::string(513,'a')));
+        if(mode=="cast_wrap")ok=q.queueReportData(String(std::string(65537,'a')));
+        assert(!ok && q.getQueueDepth()==0 && q.getQueueStats().invalidDrops==1);return 0;
+    }
+    if(mode=="json_unavailable") {
+        JsonDocument doc;FastBee::addMqttReportQueueStatus(doc.to<JsonObject>(),nullptr);
+        assert(doc["reportQueue"]["available"].as<bool>()==false);
+        assert(doc["reportQueue"]["depth"].isNull());return 0;
+    }
+    if(mode=="producers"||mode=="throttle_concurrent") {
+        if(mode=="throttle_concurrent")q.setMinReportInterval(1000);
+        std::vector<std::thread> producers;
+        for(int i=0;i<8;++i)producers.emplace_back([&]{for(int j=0;j<100;++j)q.queueReportData("x");});
+        for(auto& producer:producers)producer.join();
+        const auto s=q.getReportQueueSnapshot();
+        if(mode=="producers")assert(s.depth==8 && s.stats.enqueueTotal==800 && s.stats.evictedOldest==792);
+        else assert(s.depth==1 && s.stats.enqueueTotal==1 && s.stats.throttleDrops==799);
+        return 0;
+    }
+    if(mode=="throttle_invalid") {
+        q.setMinReportInterval(1000);assert(!q.queueReportData(""));assert(q.queueReportData("a"));
+        fakeNow=999;assert(!q.queueReportData("b"));fakeNow=1000;assert(q.queueReportData("b"));
+        assert(q.getQueueStats().invalidDrops==1 && q.getQueueStats().throttleDrops==1);return 0;
+    }
+    if(mode=="saturation") {
+        q._queueStats.enqueueTotal=UINT32_MAX;q._queueStats.invalidDrops=UINT32_MAX;
+        q._queueStats.dropTotal=UINT32_MAX;q._queueStats.publishTotal=UINT32_MAX;
+        assert(!q.queueReportData(""));assert(q.queueReportData("a"));q.processQueuedReports();
+        const auto stats=q.getQueueStats();assert(stats.enqueueTotal==UINT32_MAX && stats.invalidDrops==UINT32_MAX);
+        assert(stats.dropTotal==UINT32_MAX && stats.publishTotal==UINT32_MAX);return 0;
+    }
+    const std::string payload=mode=="exact512"?std::string(512,'x'):"original";
+    if(mode=="raw") {
+        assert(!q.queueModbusRtuReport("invalid"));assert(q.queueModbusRtuReport("010300000001840A"));
+        q.send=[](const String&,bool raw){assert(raw);return false;};q.processQueuedReports();
+        fakeNow=1000;q.send=[](const String&,bool raw){assert(raw);return true;};q.processQueuedReports();
+        assert(q.calls==2 && q.frames[0]==q.frames[1] && q.getQueueDepth()==0);return 0;
+    }
+    assert(q.queueReportData(String(payload)));
+    if(mode=="exact512") { q.processQueuedReports();assert(q.frames[0]==payload && q.getQueueDepth()==0);return 0; }
+    if(mode=="heap"||mode=="foreground") {
+        if(mode=="heap")fakeHeap=19999;else foreground=true;
+        q.processQueuedReports();assert(q.calls==0 && q.getQueueDepth()==1 && !q.getReportQueueSnapshot().consumerActive);
+        fakeHeap=20000;foreground=false;q.processQueuedReports();assert(q.calls==1);return 0;
+    }
+    if(mode=="instance_clock") {
+        q.processQueuedReports();MQTTClient other;assert(other.queueReportData("b"));
+        other.processQueuedReports();assert(q.calls==1 && other.calls==1);return 0;
+    }
+    if(mode=="reentrant") {
+        q.send=[&](const String&,bool){q.processQueuedReports();assert(q.getReportQueueSnapshot().consumerActive);return true;};
+        q.processQueuedReports();assert(q.calls==1 && q.getQueueDepth()==0);return 0;
+    }
+    if(mode=="consumers") {
+        std::promise<void> entered,release;auto ready=release.get_future();
+        q.send=[&](const String&,bool){entered.set_value();ready.wait();return false;};
+        std::thread consumer([&]{q.processQueuedReports();});entered.get_future().wait();
+        const auto s=q.getReportQueueSnapshot();assert(s.consumerActive && s.pendingReport && s.pendingAttempts==1);
+        q.processQueuedReports();assert(q.queueReportData("second"));
+        release.set_value();
+        consumer.join();
+        assert(q.calls==1 && q.getQueueDepth()==2 && !q.getReportQueueSnapshot().consumerActive);
+        return 0;
+    }
+    if(mode=="allocation")failCopy=true;
+    if(mode=="corruption")corruptCopy=true;
+    if(mode=="wrap")fakeNow=UINT32_MAX-500u;
+    q.send=[](const String&,bool){return false;};q.processQueuedReports();
+    auto s=q.getReportQueueSnapshot();assert(s.pendingReport && s.depth==1 && s.ringDepth==0 && !s.consumerActive);
+    if(mode=="allocation"||mode=="corruption") {
+        assert(q.calls==0 && s.stats.allocationDeferred==1 && s.pendingAttempts==0);
+        failCopy=false;corruptCopy=false;
+    } else assert(q.calls==1 && s.stats.publishRejected==1 && s.pendingAttempts==1);
+    if(mode=="overflow_pin") {
+        for(int i=0;i<12;++i)assert(q.queueReportData(String(std::to_string(i))));
+        s=q.getReportQueueSnapshot();assert(s.depth==9 && s.ringDepth==8 && s.stats.evictedOldest==4);
+    }
+    if(mode=="json") {
+        JsonDocument doc;FastBee::addMqttReportQueueStatus(doc.to<JsonObject>(),&s);
+        auto j=doc["reportQueue"];
+        assert(j["available"].as<bool>() && !j["deliveryVerified"].as<bool>());
+        assert(j["depth"].as<int>()==1 && j["ringDepth"].as<int>()==0);
+        assert(j["capacity"].as<int>()==9 && j["pendingAttempts"].as<int>()==1);
+        assert(j["publishRejected"].as<int>()==1 && j["retryDelayMs"].as<int>()==1000);return 0;
+    }
+    const unsigned previous=q.calls;
+    fakeNow=static_cast<uint32_t>(fakeNow+999u);q.processQueuedReports();assert(q.calls==previous);
+    fakeNow=static_cast<uint32_t>(fakeNow+1u);q.send=[](const String&,bool){return true;};q.processQueuedReports();
+    assert(q.frames[previous]==payload && q.calls>previous);
+    if(mode!="overflow_pin")assert(q.getQueueDepth()==0);
+    assert(!q.getReportQueueSnapshot().consumerActive && criticalDepth==0);
+}

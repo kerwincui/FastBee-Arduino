@@ -1,0 +1,55 @@
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <ArduinoJson.h>
+#include "network/FixedJsonField.h"
+#include "utils/StaticPoolAllocator.h"
+static const char* mode="external";
+static unsigned externalCalls=0, internalCalls=0;
+size_t heap_caps_get_total_size(uint32_t) {return std::strcmp(mode,"not-ready")==0?0:1024*1024;}
+void* heap_caps_aligned_alloc(size_t alignment, size_t bytes, uint32_t caps) {
+    const bool external=bool(caps&2U);
+    if(external) ++externalCalls; else ++internalCalls;
+    if(std::strcmp(mode,"unavailable")==0 || (external && std::strcmp(mode,"fallback")==0))return nullptr;
+    void* ptr=std::malloc(bytes);
+    assert(!ptr || reinterpret_cast<uintptr_t>(ptr)%alignment==0);
+    return ptr;
+}
+void heap_caps_free(void* ptr) {std::free(ptr);}
+void serializePools(JsonObject memory) {
+@PRODUCTION_POOL_SERIALIZER@
+}
+int main(int argc,char** argv) {
+    if(argc>1)mode=argv[1];
+    JsonDocument doc;
+    serializePools(doc.to<JsonObject>());
+    auto pools=doc["staticPools"].as<JsonObject>();
+    const char* names[]={"periph256","rule192","small64","sensor160"};
+    const unsigned bytes[]={8192,6144,4096,3840};
+#if defined(TEST_DYNAMIC)
+    assert(pools.size()==4);
+    const bool available=std::strcmp(mode,"unavailable")!=0;
+    const bool external=std::strcmp(mode,"external")==0;
+    for(unsigned i=0;i<4;++i) {
+        auto pool=pools[names[i]].as<JsonObject>();
+        assert(pool.size()==9 && pool["totalBytes"]==bytes[i]);
+        assert(pool["storageAvailable"].is<bool>() && pool["storageAvailable"]==available);
+        assert(pool["externalStorage"].is<bool>() && pool["externalStorage"]==external);
+        assert(pool["allocatedStorageBytes"]==(available?bytes[i]:0));
+        assert(pool["used"]==0 && pool["peakUsed"]==0 && pool["overflowCount"]==0);
+    }
+    assert(externalCalls==(std::strcmp(mode,"not-ready")==0?0U:4U));
+    assert(internalCalls==(external?0U:4U));
+#else
+    assert(pools.size()==3 && pools["sensor160"].isNull());
+    for(unsigned i=0;i<3;++i) {
+        auto pool=pools[names[i]].as<JsonObject>();
+        assert(pool.size()==6 && pool["totalBytes"]==bytes[i]);
+        assert(pool["storageAvailable"].isNull() && pool["externalStorage"].isNull() && pool["allocatedStorageBytes"].isNull());
+    }
+    assert(externalCalls==0 && internalCalls==0);
+#endif
+    puts("ACTUAL_POOL_SERIALIZER_PASS");
+}

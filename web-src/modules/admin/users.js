@@ -3,6 +3,11 @@
  * 包含用户列表、添加/编辑/删除用户、启用/禁用/解锁
  */
 (function() {
+    // This template follows its lazy page module and mounts only on demand.
+    if (typeof PageLoader !== 'undefined') {
+        PageLoader._cacheModalTemplates("<div id=\"add-user-modal\" class=\"modal\"><div class=\"modal-content\"><div class=\"modal-header\"><h2 class=\"modal-title\" id=\"add-user-title\">添加用户</h2><button id=\"close-add-user-modal\" class=\"modal-close-btn\">×</button></div><div class=\"modal-body\"><form id=\"add-user-form\" class=\"fb-form\"><fieldset><div class=\"fb-form-group\"><label for=\"add-username-input\" id=\"add-username-label\">用户名</label><input type=\"text\" id=\"add-username-input\" class=\"\" placeholder=\"请输入用户名\" required></div><div class=\"fb-form-group\"><label for=\"add-password-input\" id=\"add-password-label\">密码</label><input type=\"password\" id=\"add-password-input\" class=\"\" placeholder=\"请输入密码\" required></div><div class=\"fb-form-group\"><label for=\"add-confirm-password-input\" id=\"add-confirm-password-label\">确认密码</label><input type=\"password\" id=\"add-confirm-password-input\" class=\"\" placeholder=\"请再次输入密码\" required></div><div class=\"fb-form-group\"><label for=\"add-description-input\" id=\"add-description-label\">描述</label><input type=\"text\" id=\"add-description-input\" class=\"\" placeholder=\"可选，最多64字符\" maxlength=\"64\"></div><div id=\"add-user-error\" class=\"message message-error is-hidden\"></div></fieldset></form></div><div class=\"modal-footer\"><button class=\"fb-btn\" id=\"cancel-add-user-btn\" type=\"button\">取消</button><button class=\"fb-btn fb-btn-primary\" id=\"confirm-add-user-btn\" type=\"button\">添加</button></div></div></div>", '', ['add-user-modal']);
+    }
+
     AppState.registerModule('users', {
 
         _usersEventsBound: false,

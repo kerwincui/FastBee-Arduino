@@ -145,6 +145,7 @@ HARNESS = r'''
 #include <string>
 #include <vector>
 #include "screen/ScreenBacklight.h"
+#include "core/RuntimeResourceSnapshot.h"
 #include <Arduino.h>
 #undef malloc
 #undef free
@@ -155,6 +156,7 @@ HARNESS = r'''
 #include "screen/ScreenWorkerIsolation.h"
 #include "screen/WeatherStatusText.h"
 using namespace FastBee::Screen;
+using FastBee::BacklightResourceSnapshot;
 using std::isfinite;
 
 // The actual U8g2 glyph engine never needs these hardware callbacks.

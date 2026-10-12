@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { chromium } = require('../test/browser/node_modules/playwright');
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(process.env.FASTBEE_TEST_MOTOR_SOURCE || path.join(__dirname, '..'));
 const outArg = process.argv.find(value => value.startsWith('--out='));
 const out = path.resolve(root, outArg ? outArg.slice(6) : 'artifacts/motor-protocol-generic-r7/browser');
 async function main() {
@@ -32,17 +32,17 @@ async function main() {
                     hideModal: modal => { modal.style.display = 'none'; },
                     toggleVisible: (node, visible) => { node.style.display = visible ? '' : 'none'; },
                     _renderAllDevices: () => {},
+                    saveProtocolConfig: async () => true,
                     _modbusDevices: [{ name:'Motor', deviceType:'motor', slaveAddress:8, motorRegs:[0,1,2,5,7],
                         motorMinPosition:-100, motorMaxPosition:100, motorCurrentPosition:0, motorMoveStep:0 }]
                 });
                 AppState.setupGlobalEventDelegation();
                 AppState._openEditModal(0);
             });
-            await page.locator('#mdev-edit-motor-profile').selectOption('yf53');
-            assert.equal(await page.locator('#mdev-edit-motor-profile').inputValue(), 'custom');
+            assert.equal(await page.locator('#mdev-edit-motor-profile').count(), 0);
             assert.equal(await page.locator('#mdev-edit-motor-read-speed').inputValue(), '5');
-            assert.equal(await page.locator('#mdev-edit-motor-finite').isChecked(), false);
-            await page.locator('#mdev-edit-motor-finite').check();
+            assert.equal(await page.locator('#mdev-edit-motor-finite').count(), 0);
+            await page.locator('#mdev-edit-motor-advanced > summary').click();
             for (const field of ['fwd', 'rev', 'stop']) await page.locator('#mdev-edit-motor-' + field).fill('100');
             await page.locator('#mdev-edit-motor-speed').fill('101');
             await page.locator('#mdev-edit-motor-pulse').fill('102');
@@ -63,19 +63,21 @@ async function main() {
             assert.deepEqual(overflow, []);
             await page.locator('#mdev-edit-motor-protocol-fields').scrollIntoViewIfNeeded();
             await page.screenshot({ path: path.join(out, 'editor-' + width + '.png'), fullPage: true });
-            await page.locator('[data-action="_saveEditModal"]').click();
+            await page.locator('[data-action="_saveEditModalToDevice"]').click();
             const saved = await page.evaluate(() => AppState._modbusDevices[0]);
             assert.deepEqual(saved.motorRegs, [100,100,100,101,102]);
             assert.equal(saved.motorProtocol.stopValue, 0);
             assert.equal(saved.motorProtocol.readFunction, 4);
             assert.equal(saved.motorProtocol.writeFunction, 16);
+            assert.equal(saved.motorProtocol.finitePulseMove, true);
             assert.equal(saved.slaveAddress, 8);
             assert.equal(saved.motorMinPosition, -100);
             assert.equal(saved.motorMaxPosition, 100);
             await page.evaluate(() => AppState._openEditModal(0));
             assert.equal(await page.locator('#mdev-edit-motor-stop-value').inputValue(), '0');
+            await page.locator('#mdev-edit-motor-advanced > summary').click();
             await page.locator('#mdev-edit-motor-rev-value').fill('17');
-            await page.locator('[data-action="_saveEditModal"]').click();
+            await page.locator('[data-action="_saveEditModalToDevice"]').click();
             assert.equal(await page.evaluate(() => window.warnings.length), 1);
             assert.deepEqual(await page.evaluate(() => AppState._modbusDevices[0]), saved);
             assert.deepEqual(errors, []);
@@ -84,7 +86,7 @@ async function main() {
             await page.close();
         }
         fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ status:'PASS', results, physicalMotorTested:false }, null, 2));
-        console.log('Motor protocol editor: real markup, change delegation, preset, custom values, validation and zero requests passed at 1440/390px.');
+        console.log('Motor editor: no protocol selector, advanced values, validation and zero requests passed at 1440/390px.');
     } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
