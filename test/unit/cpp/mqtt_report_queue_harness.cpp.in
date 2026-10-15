@@ -65,6 +65,18 @@ struct RuleScriptManager {
     }
     String applyReportTransform(int, const String& raw) { ++transforms; return raw; }
 };
+namespace FastBee {
+// Minimal RuntimeFeatureManager stand-in: topic tests exercise the script
+// transform path, so user-enabled/should-enable default to true like a fresh
+// features.json; individual modes may flip the flag to cover the bypass path.
+class RuntimeFeatureManager {
+public:
+    static RuntimeFeatureManager& instance() { static RuntimeFeatureManager value; return value; }
+    bool isUserEnabled(const char*) const { return ruleScriptEnabled; }
+    bool shouldEnable(const char*) const { return ruleScriptEnabled; }
+    bool ruleScriptEnabled = true;
+};
+}
 struct Logger {
     template<class... Args> void infof(Args...) { assert(criticalDepth==0); }
     void info(const char*) { assert(criticalDepth==0); }
@@ -99,12 +111,18 @@ public:
             owner->wireTopics.emplace_back(topic); owner->wireRetains.push_back(retain);
             return owner->publish(String(payload), false);
         }
+        bool publish(const char* topic, const uint8_t* payload, unsigned int plength, bool retain) {
+            owner->wireTopics.emplace_back(topic); owner->wireRetains.push_back(retain);
+            return owner->publishBytes(reinterpret_cast<const char*>(payload), plength, false);
+        }
     } mqttClient{this};
     String buildFullTopicWithType(const String& value, bool, MqttTopicType) { return value; }
     bool queueTopicMessage(size_t, const String&);
     std::vector<size_t> topicRows;
     bool publishPreparedTopic(size_t topic, const String& value) { topicRows.push_back(topic); return publishToTopicImpl(topic, value, true); }
+    bool publishPreparedTopic(size_t topic, const char* value, size_t n) { topicRows.push_back(topic); return publishToTopicImpl(topic, value, n, true); }
     bool publishToTopicImpl(size_t, const String&, bool);
+    bool publishToTopicImpl(size_t, const char*, size_t, bool);
     bool testOnly = false;
     bool isConnectionTestOnly() const { return testOnly; }
 @PUBLIC@
@@ -119,6 +137,13 @@ public:
     std::vector<std::string> frames;
     bool publishReportData(const String& value) { return publish(value,false); }
     bool publishModbusRtuReport(const String& value) { return publish(value,true); }
+    // 零拷贝重载：帧直接从字节记录，不经 String 构造（failCopy/corruptCopy 不影响）
+    bool publishReportData(const char* value, size_t n) { return publishBytes(value,n,false); }
+    bool publishModbusRtuReport(const char* value, size_t n) { return publishBytes(value,n,true); }
+    bool publishBytes(const char* value, size_t n, bool raw) {
+        assert(criticalDepth==0 && n>0);++calls;
+        frames.emplace_back(value,n);return send?send(String(value,(unsigned int)n),raw):true;
+    }
     bool publish(const String& value,bool raw) {
         assert(criticalDepth==0 && value.length()>0);++calls;
         frames.emplace_back(value.c_str(),value.length());return send?send(value,raw):true;
@@ -313,6 +338,17 @@ int main(int argc,char** argv) {
         fakeNow=1000;q.send=[](const String&,bool raw){assert(raw);return true;};q.processQueuedReports();
         assert(q.calls==2 && q.frames[0]==q.frames[1] && q.getQueueDepth()==0);return 0;
     }
+    if(mode=="consecutive_distinct") {
+        // 缓冲复用不串包：两条不同内容连续经同一消费槽零拷贝直发，字节互不污染
+        assert(q.queueReportData("first-AAAAAAAA"));
+        fakeNow+=1000;q.processQueuedReports();
+        assert(q.calls==1 && q.frames[0]=="first-AAAAAAAA" && q.getQueueDepth()==0);
+        assert(q.queueReportData("second-BB"));
+        fakeNow+=1000;q.processQueuedReports();
+        assert(q.calls==2 && q.frames[1]=="second-BB" && q.getQueueDepth()==0);
+        assert(q.frames[0]=="first-AAAAAAAA" && q.frames[1]=="second-BB");
+        return 0;
+    }
     assert(q.queueReportData(String(payload)));
     if(mode=="exact512") { q.processQueuedReports();assert(q.frames[0]==payload && q.getQueueDepth()==0);return 0; }
     if(mode=="heap"||mode=="foreground") {
@@ -345,7 +381,9 @@ int main(int argc,char** argv) {
     q.send=[](const String&,bool){return false;};q.processQueuedReports();
     auto s=q.getReportQueueSnapshot();assert(s.pendingReport && s.depth==1 && s.ringDepth==0 && !s.consumerActive);
     if(mode=="allocation"||mode=="corruption") {
-        assert(q.calls==0 && s.stats.allocationDeferred==1 && s.pendingAttempts==0);
+        // 零拷贝发布不再构造 String：String 构造失败/损坏不影响槽内字节直发
+        assert(q.calls==1 && s.stats.publishRejected==1 && s.pendingAttempts==1);
+        assert(q.frames[0]==payload);
         failCopy=false;corruptCopy=false;
     } else assert(q.calls==1 && s.stats.publishRejected==1 && s.pendingAttempts==1);
     if(mode=="overflow_pin") {

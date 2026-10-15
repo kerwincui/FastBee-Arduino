@@ -9,7 +9,6 @@
  *   2. chunk-2-app.js   : notification + page/module loaders + API preloader
  *   3. chunk-3-state.js : state modules + main
  *
- * The prod web build keeps a single zh-CN language pack.
  *
  * Usage:
  *   node scripts/build-app-bundle.js
@@ -29,23 +28,6 @@ const WWW_JS_DIR = path.join(ROOT_DIR, 'data', 'www', 'js');
 function readUtf8(fp) {
     return fs.readFileSync(fp, 'utf8');
 }
-const CRITICAL_ZH_TRANSLATIONS = {
-    'login-title': 'FastBee Arduino',
-    'username-label': '用户名',
-    'username-placeholder': '请输入用户名',
-    'password-label': '密码',
-    'password-placeholder': '请输入密码',
-    'remember-label': '记住密码',
-    'login-button': '登录系统',
-    'login-logging-in': '登录中...',
-    'login-logging-in-html': '<i class="fas fa-spinner fa-spin"></i> 登录中...',
-    'login-success-msg': '登录成功',
-    'login-welcome-title': '欢迎',
-    'login-fail-title': '登录失败',
-    'login-fail-msg': '用户名或密码错误',
-    'login-empty-warning': '请输入用户名和密码'
-};
-
 // Source files in dependency order (kept for backward-compat / fallback path in index.html)
 const BUNDLE_SOURCES = [
     { dir: JS_SRC_DIR, file: 'utils.js' },
@@ -96,20 +78,6 @@ const CHUNK_DEFINITIONS = [
 
 const CHUNK_GROUPS = CHUNK_DEFINITIONS;
 
-// i18n removed - stub for backward compatibility
-function extractZhTranslations() {
-    return { ...CRITICAL_ZH_TRANSLATIONS };
-}
-
-function filterProdI18nTranslations(all) {
-    return { ...all };
-}
-
-// No-op stub - i18n zh split chunks removed
-function buildI18nZhChunk() {
-    return '';
-}
-
 // Old single-bundle outputs that should be cleaned up
 const OBSOLETE_OUTPUTS = [
     'app-bundle.js',
@@ -129,9 +97,6 @@ function readChunkSource(dir, file) {
 }
 
 function buildChunkContent(chunk, options = {}) {
-    if (chunk.i18nZhSplit) {
-        return buildI18nZhChunk(chunk.i18nZhSplit);
-    }
     if (!chunk.files || chunk.files.length === 0) {
         throw new Error(`Chunk ${chunk.outName} has no files configured`);
     }
@@ -218,8 +183,6 @@ if (require.main === module) {
 module.exports = {
     buildAppBundle,
     buildAppChunks,
-    extractZhTranslations,
-    filterProdI18nTranslations,
     BUNDLE_SOURCES,
     CHUNK_GROUPS,
     OBSOLETE_OUTPUTS,

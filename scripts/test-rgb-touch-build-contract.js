@@ -17,10 +17,9 @@ const ROOT = path.resolve(__dirname, '..');
 const TOUCH_BUNDLE = path.join(ROOT, 'docs', 'device-test-configs', 'com8-com9-esp32s3-touch', 'config');
 const CONTRACT_FILE = path.join(TOUCH_BUNDLE, '..', 'rgb-build-contract.json');
 const RGB_BACKEND_SOURCE = path.join(ROOT, 'src', 'screen', 'RgbDisplayBackend.cpp');
-const OPTIONAL_CANDIDATE_INI = path.join(ROOT, 'artifacts', 'platformio-rgb-xip16-r19.ini');
+const OPTIONAL_CANDIDATE_INI = path.join(ROOT, 'artifacts', 'platformio-screen-r1.ini');
 const OPTIONAL_BUILD_REPORTS = [
-    path.join(ROOT, 'artifacts', 'rgb-resume-touch-roll-edge-build.json'),
-    path.join(ROOT, 'artifacts', 'rgb-xip16-r19-build.json')
+    path.join(ROOT, 'artifacts', 'screen-r1-build.json')
 ];
 
 const EXPECTED = Object.freeze({
@@ -29,7 +28,7 @@ const EXPECTED = Object.freeze({
     height: 480,
     bufferLines: 16,
     rgbFrequency: 12000000,
-    environment: 'esp32s3-F16R8-rgb-xip40-v12'
+    environment: 'esp32s3-F16R8-screen'
 });
 
 function readJson(filePath) {

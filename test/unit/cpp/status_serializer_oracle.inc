@@ -9,6 +9,30 @@ inline void writeTaskStackSnapshotJson(JsonObject data, const TaskStackSnapshot&
     data["capacity"] = TaskStackSnapshot::CAPACITY;
     data["stackUnit"] = "bytes";
     data["nameStatus"] = "unavailable";
+    // Reviewed schema extension: permanent-owner and IPC attribution fields,
+    // kept byte- and allocation-identical to the shared-helper writer.
+    data["permanentOwnerScope"] = "sdk-idle-timer-and-observed-ipc-only";
+    data["permanentOwnerBasis"] = "idle-timer-handle-equality;ipc-current-task-creation-number-same-boot";
+    JsonObject ipc = data["ipcAttribution"].to<JsonObject>();
+    ipc["status"] = sample.ipcAttribution.status == IpcOwnerStatus::Observed ? "observed" : "unknown";
+    ipc["reason"] = ipcOwnerReason(sample.ipcAttribution.status);
+    ipc["fixedRamBytes"] = sample.ipcAttribution.fixedRamBytes;
+    ipc["callerMayChangeSdkPriority"] = sample.ipcAttribution.callerMayChangeSdkPriority;
+    ipc["identityOnlyNoStackScan"] = true;
+    ipc["callerWaitsForCallback"] = false;
+    JsonArray ipcCores = ipc["cores"].to<JsonArray>();
+    for (uint32_t core = 0; core < 2; ++core) {
+        const auto& evidence = sample.ipcAttribution.cores[core];
+        JsonObject item = ipcCores.add<JsonObject>();
+        item["core"] = core;
+        item["reason"] = ipcOwnerReason(evidence.status);
+        item["generation"] = evidence.generation;
+        item["identityPublishedLate"] = evidence.publishedLate;
+        item["requestedAtUptimeMs"] = evidence.requestedAtUptimeMs;
+        item["publishedAtUptimeMs"] = evidence.publishedAtUptimeMs;
+        if (evidence.status == IpcOwnerStatus::Observed) item["taskNumber"] = evidence.taskNumber;
+        else item["taskNumber"] = nullptr;
+    }
     data["atomicSnapshot"] = false;
     data["schedulerPausePossible"] = true;
     data["hardDeadlineEnforced"] = false;
@@ -38,6 +62,14 @@ inline void writeTaskStackSnapshotJson(JsonObject data, const TaskStackSnapshot&
         JsonObject row = tasks.add<JsonObject>();
         row["taskNumber"] = sample.entries[i].taskNumber;
         row["name"] = nullptr;
+        switch (sample.entries[i].permanentOwner) {
+            case TaskStackPermanentOwner::IdleCore0: row["sdkOwner"] = "idle-core0"; break;
+            case TaskStackPermanentOwner::IdleCore1: row["sdkOwner"] = "idle-core1"; break;
+            case TaskStackPermanentOwner::TimerDaemon: row["sdkOwner"] = "timer-daemon"; break;
+            case TaskStackPermanentOwner::IpcCore0: row["sdkOwner"] = "ipc-core0"; break;
+            case TaskStackPermanentOwner::IpcCore1: row["sdkOwner"] = "ipc-core1"; break;
+            default: row["sdkOwner"] = nullptr; break;
+        }
         row["priority"] = sample.entries[i].priority;
         row["highWaterBytes"] = sample.entries[i].highWaterBytes;
         row["stateCode"] = sample.entries[i].state;

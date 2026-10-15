@@ -8,9 +8,11 @@ These files are the editable source modules for the admin area:
 
 Runtime does not load these files directly.
 
-The published runtime bundle is:
+Published runtime modules (built by `node scripts/build-admin-bundle.js`):
 
-- `data/www/js/modules/admin-bundle.js`
+- `data/www/js/modules/users.js`
+- `data/www/js/modules/logs.js`
+- `data/www/js/modules/rule-script.js`
 
 Build commands:
 

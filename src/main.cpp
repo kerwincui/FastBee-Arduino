@@ -6,6 +6,7 @@
 #include "systems/SystemRebooter.h"
 #include "systems/OtaSelfCheck.h"
 #include "network/TlsMemory.h"
+#include "systems/LoggerSystem.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
 #include <esp_chip_info.h>
@@ -34,6 +35,8 @@ size_t getArduinoLoopTaskStackSize(void) {
 
 // 全局异常终止处理器：作为最后防线，防止 uncaught exception → abort()
 // 场景：库代码（FS/NVS/ArduinoJson）抛出异常但未被捕获时触发
+// 保留 Serial 直出（D5 白名单）：崩溃/异常路径系统状态不可信，不经过
+// LoggerSystem（互斥锁/环形缓冲可能已损坏），与 RestartDiagnostics 同策略。
 static void fastbee_terminate_handler() {
     Serial.println();
     Serial.println("===== FATAL: Uncaught Exception =====");
@@ -84,6 +87,8 @@ void setup() {
     OtaSelfCheck::begin();
 
     // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
+    // 保留 Serial 直出（D5 白名单）：此段位于 LoggerSystem 初始化之前，且发布构建
+    // LOG_INFO 被编译期剔除，迁移会使启动关键诊断在发布固件中丢失。
     Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());
     Serial.printf("[BOOT] Flash: %luKB, PSRAM: %luKB\n",
                   (unsigned long)(ESP.getFlashChipSize() / 1024),
@@ -118,6 +123,7 @@ void setup() {
     FastBee::TlsMemory::ensureAllocator();
     // ESP-IDF v5 框架默认启用 TWDT（5s超时），AsyncTCP 库内部会调用 esp_task_wdt_reset()
     // 不能 deinit（否则库调用 reset 会报错），只需加大超时防止长操作触发复位
+    // 保留 Serial 直出（D5 白名单）：WDT 启动配置位于 LoggerSystem 初始化之前。
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms = 60000,       // 60秒超时（默认5秒太短）
@@ -141,25 +147,27 @@ void setup() {
     // 使用 try/catch 包裹初始化，防止库代码异常导致 abort()
     try {
         if (!framework->initialize()) {
-            Serial.println("[FATAL] Failed to initialize FastBee framework!");
-            Serial.printf("[FATAL] Remaining heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+            LOG_ERROR("[FATAL] Failed to initialize FastBee framework!");
+            LOG_ERRORF("[FATAL] Remaining heap: %lu bytes", (unsigned long)ESP.getFreeHeap());
             // OTA 后首次启动即初始化失败：标记新固件无效，由 bootloader 回滚到上一稳定分区
             OtaSelfCheck::markInvalidAndRollback("framework initialize failed");
             while (1) { delay(1000); }
         }
     } catch (const std::bad_alloc& e) {
+        // 保留 Serial 直出（D5 白名单）：OOM 路径与 NewOverride 同策略，不经过
+        // LoggerSystem（互斥锁/环形缓冲），避免极低内存下二次分配风险。
         Serial.println("[FATAL] Out of memory during initialization!");
         Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
         OtaSelfCheck::markInvalidAndRollback("init OOM");
         while (1) { delay(1000); }
     } catch (const std::exception& e) {
-        Serial.printf("[FATAL] Exception during init: %s\n", e.what());
-        Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+        LOG_ERRORF("[FATAL] Exception during init: %s", e.what());
+        LOG_ERRORF("[FATAL] Free heap: %lu bytes", (unsigned long)ESP.getFreeHeap());
         OtaSelfCheck::markInvalidAndRollback("init exception");
         while (1) { delay(1000); }
     } catch (...) {
-        Serial.println("[FATAL] Unknown exception during initialization!");
-        Serial.printf("[FATAL] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+        LOG_ERROR("[FATAL] Unknown exception during initialization!");
+        LOG_ERRORF("[FATAL] Free heap: %lu bytes", (unsigned long)ESP.getFreeHeap());
         OtaSelfCheck::markInvalidAndRollback("init unknown exception");
         while (1) { delay(1000); }
     }
@@ -177,6 +185,7 @@ void loop() {
         static unsigned long _badAllocWarn = 0;
         if (millis() - _badAllocWarn > 30000) {
             _badAllocWarn = millis();
+            // 保留 Serial 直出（D5 白名单）：OOM 路径不经过 LoggerSystem。
             Serial.printf("[LOOP] bad_alloc caught, heap=%lu — skipping cycle\n",
                           (unsigned long)ESP.getFreeHeap());
         }
@@ -187,12 +196,12 @@ void loop() {
         static unsigned long _excWarn = 0;
         if (millis() - _excWarn > 10000) {
             _excWarn = millis();
-            Serial.printf("[LOOP] Exception in run() (#%lu): %s\n",
-                          (unsigned long)_loopExceptionCount, e.what());
+            LOG_ERRORF("[LOOP] Exception in run() (#%lu): %s",
+                       (unsigned long)_loopExceptionCount, e.what());
         }
         // 连续 10 次异常说明系统性故障，调度安全重启
         if (_loopExceptionCount >= 10 && !SystemRebooter::isScheduled()) {
-            Serial.println("[LOOP] 10 consecutive exceptions, scheduling safe reboot");
+            LOG_ERROR("[LOOP] 10 consecutive exceptions, scheduling safe reboot");
             SystemRebooter::scheduleReboot("loop_exception_loop", 3000,
                                             RestartReason::UNCAUGHT_EXCEPTION);
         }
@@ -200,10 +209,10 @@ void loop() {
         // 未知异常：最危险的情况，立即调度重启
         static uint32_t _unknownExcCount = 0;
         _unknownExcCount++;
-        Serial.printf("[LOOP] Unknown exception in run() (#%lu)\n",
-                      (unsigned long)_unknownExcCount);
+        LOG_ERRORF("[LOOP] Unknown exception in run() (#%lu)",
+                   (unsigned long)_unknownExcCount);
         if (_unknownExcCount >= 3 && !SystemRebooter::isScheduled()) {
-            Serial.println("[LOOP] 3 consecutive unknown exceptions, scheduling reboot");
+            LOG_ERROR("[LOOP] 3 consecutive unknown exceptions, scheduling reboot");
             SystemRebooter::scheduleReboot("loop_unknown_exception", 3000,
                                             RestartReason::UNCAUGHT_EXCEPTION);
         }
@@ -254,12 +263,12 @@ void loop() {
             .trigger_panic = true
         };
         if (esp_task_wdt_reconfigure(&wdt_cfg_panic) == ESP_OK) {
-            Serial.println("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
+            LOG_INFO("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
             _wdtPanicUpgraded = true;
         }
 #else
         esp_task_wdt_init(60, true);
-        Serial.println("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
+        LOG_INFO("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
         _wdtPanicUpgraded = true;
 #endif
     }

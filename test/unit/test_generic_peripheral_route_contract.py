@@ -9,6 +9,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ROUTE = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/core/PeripheralRouteMapper.cpp",
+    "src/core/PeripheralPreflightRouteSupport.cpp",
+    "src/core/PeripheralParamApply.cpp",
+    "src/core/PeripheralManagerConfigHelpers.h",
     "src/network/handlers/PeripheralRouteHandler.cpp",
     "src/network/handlers/PeripheralCatalogRoutes.cpp",
     "src/network/handlers/PeripheralRouteReadSupport.h",
@@ -38,8 +42,12 @@ def definition(name):
 
 
 def body(name):
-    start = ROUTE.index(name + "(")
-    return braced(ROUTE, ROUTE.index("{", start))
+    # Anchor on the definition (return type + name); the route layer calls
+    # these helpers before the core units' definitions appear in ROUTE.
+    match = re.search(r"(?:bool|void)\s+" + re.escape(name) + r"\s*\(", ROUTE)
+    if not match:
+        raise AssertionError("Missing production definition: " + name)
+    return braced(ROUTE, ROUTE.index("{", match.start()))
 
 
 class GenericPeripheralRouteContractTests(unittest.TestCase):
@@ -50,11 +58,16 @@ class GenericPeripheralRouteContractTests(unittest.TestCase):
         self.assertTrue(json_headers, "Project ArduinoJson dependency required")
         definitions = [definition(name) for name in (
             "isDigitalInputPeripheral", "isAnalogInputPeripheral", "isAnalogInputConfigType",
-            "hasPeripheralRequestField", "readIoRequestInteger",
-            "applyIoPeripheralRequestParameters", "addDisplayParams", "addGenericPeripheralFields")]
+            "isAdcInputType", "readIoFormInteger", "applyIoPeripheralRequestParameters",
+            "addDisplayParams", "addGenericPeripheralFields")]
+        # The header declares the allowHex default; the extracted definition
+        # must carry it for the standalone harness compile.
+        definitions[4] = definitions[4].replace(
+            "String& error,\n                       bool allowHex)",
+            "String& error,\n                       bool allowHex = false)")
         p1 = body("applyP1PeripheralParams")
         sensor = p1.index("else if (config.type == PeripheralType::SENSOR_GENERIC)")
-        definitions.append("bool applySensorRequest(WebHandlerContext* ctx, AsyncWebServerRequest* request, "
+        definitions.append("bool applySensorRequest(const FastBee::PeripheralFormFields& form, "
                            "PeripheralConfig& config, bool resetDefaults, String& errorMsg) " +
                            braced(p1, p1.index("{", sensor))[:-1] + "return true;\n}")
         start = PERSISTENCE.index("if (config.isGPIOPeripheral() && config.isExpanderChannel())")
@@ -71,7 +84,9 @@ class GenericPeripheralRouteContractTests(unittest.TestCase):
                            "\n".join(assignments) + " }")
         with tempfile.TemporaryDirectory(prefix="fastbee-route-") as directory:
             generated = Path(directory) / "route_under_test.inc"
-            generated.write_text("\n\n".join(definitions), encoding="utf-8")
+            generated.write_text(
+                "using FastBee::PeripheralFormFields;\n\n" + "\n\n".join(definitions),
+                encoding="utf-8")
             executable = Path(directory) / ("route.exe" if os.name == "nt" else "route")
             command = [compiler, "-std=c++17", "-pthread", "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0",
                        "-DARDUINOJSON_ENABLE_STD_STRING=1", "-Wall", "-Wextra",

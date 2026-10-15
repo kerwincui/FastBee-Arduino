@@ -36,6 +36,8 @@ public:
         if (current != _entryMode) {
             WiFi.mode(_entryMode);
             if (_caller) {
+                // D5 保留：WiFi 模式切换可能发生在 arduino_events 任务栈上，
+                // 与 WiFiManager.cpp 同约束——LOGGER 宏内部 256B 栈缓冲区禁用。
                 Serial.printf("[WiFi-Mode] restore %d->%d (%s)\n",
                               (int)current, (int)_entryMode, _caller);
             }

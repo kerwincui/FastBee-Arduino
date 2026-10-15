@@ -19,6 +19,14 @@ static bool failAllocation = false;
 static std::function<void()> duringAllocation;
 static void* ringAllocation = nullptr;
 static size_t allocationCount = 0, releaseCount = 0;
+// The throwing form must be replaced too: without it, throwing-new expressions
+// in the exe (std::string/std::function storage, shared_ptr control blocks)
+// resolve to libstdc++-6.dll's operator new while the deletes below free() from
+// the exe's CRT — a cross-domain free the Windows heap reports as 0xC0000374.
+void* operator new(size_t count) {
+    if (void* result = std::malloc(count)) return result;
+    throw std::bad_alloc();
+}
 void* operator new(size_t count, const std::nothrow_t&) noexcept {
     if (failAllocation) return nullptr;
     if (duringAllocation) { auto hook = std::move(duringAllocation); duringAllocation = {}; hook(); }
@@ -36,6 +44,7 @@ void operator delete(void* pointer) noexcept {
     std::free(pointer);
 }
 void operator delete(void* pointer, size_t) noexcept { ::operator delete(pointer); }
+void operator delete(void* pointer, const std::nothrow_t&) noexcept { ::operator delete(pointer); }
 
 struct Mutex { bool held = false, reject = false; };
 using SemaphoreHandle_t = Mutex*;
@@ -126,7 +135,24 @@ void LoggerSystem::cleanupOldLogFiles() {}
 void LoggerSystem::checkLogFileSize() {}
 bool LoggerSystem::isModuleFiltered(const char*) const { return false; }
 #include "logger_methods.inc"
+// D5：生产代码迁移到 LOG_* 宏；抽取的 degradeFileLogging 代码块依赖这些宏。
+// 块内持有 LoggerSystem& logger 形参，宏直接映射到该实例的方法（与设备上
+// LOG_* 走 LOGGER 单例等价），避免在重入回调里构造第二个单例及注册
+// FeatureInstanceObserver（会引入静态析构顺序问题），include 后 #undef，
+// 避免遮蔽下方 LogLevel 枚举名。
+#define LOG_INFO(msg) logger.info(msg)
+#define LOG_INFOF(fmt, ...) logger.infof(fmt, ##__VA_ARGS__)
+#define LOG_WARNING(msg) logger.warning(msg)
+#define LOG_WARNINGF(fmt, ...) logger.warningf(fmt, ##__VA_ARGS__)
+#define LOG_ERROR(msg) logger.error(msg)
+#define LOG_ERRORF(fmt, ...) logger.errorf(fmt, ##__VA_ARGS__)
 #include "logger_degradation.inc"
+#undef LOG_INFO
+#undef LOG_INFOF
+#undef LOG_WARNING
+#undef LOG_WARNINGF
+#undef LOG_ERROR
+#undef LOG_ERRORF
 
 void formattedLog(LoggerSystem& logger, const char* format, ...) {
     va_list args;

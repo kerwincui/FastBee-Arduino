@@ -7,7 +7,7 @@ test.beforeEach(async({page})=>{
   await page.route('http://ota.test/**',r=>r.fulfill({contentType:'text/html',body:'<meta charset="utf-8">'+html}));
   await page.goto('http://ota.test/');
   await page.evaluate(()=>{
-    const w=window as any;w.calls=[];w.notices=[];w.confirm=()=>true;
+    const w=window as any;w.calls=[];w.notices=[];w.confirm=()=>true;w.FBConfirm=async()=>true;
     w.originalMessage=()=>42;
     w.AppState={currentPage:'device',_showMessage:w.originalMessage,registerModule(_n:string,m:any){Object.assign(this,m);},onPageHide(){}};
     w.Notification={success:(v:string)=>w.notices.push(v)};
@@ -54,7 +54,9 @@ test('navigation during begin response parsing cannot upload firmware later',asy
 
 test('late URL acceptance after navigation cannot restart polling',async({page})=>{
   await page.locator('#ota-url').fill('https://firmware.example/app.bin');
-  await page.evaluate(()=>{const w=window as any;w.apiPost=()=>new Promise(r=>w.urlDone=r);w.AppState.startOnlineUpgrade();w.AppState.currentPage='network';w.AppState._hideDeviceOta();w.urlDone({success:true});});
+  await page.evaluate(()=>{const w=window as any;w.apiPost=()=>new Promise(r=>w.urlDone=r);w.AppState.startOnlineUpgrade();});
+  await expect.poll(()=>page.evaluate(()=>typeof (window as any).urlDone)).toBe('function');
+  await page.evaluate(()=>{const w=window as any;w.AppState.currentPage='network';w.AppState._hideDeviceOta();w.urlDone({success:true});});
   expect(await page.evaluate(()=>(window as any).AppState._otaPollTimer)).toBeNull();
 });
 

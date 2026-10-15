@@ -66,6 +66,11 @@ function captureWriter(removeComments) {
         }
     }
     assert.deepEqual(rows.map(row => row.name).sort(), [...reviewedFragments].sort());
+    const peripheralModals = original.get('pages/peripheral-modals.html');
+    assert.ok(peripheralModals && peripheralModals.includes('id="peripheral-modal"'),
+        'peripheral modal bundle must be published');
+    assert.equal(published.get('pages/peripheral-modals.html'), peripheralModals,
+        'unreviewed peripheral modal bundle must stay byte-identical');
     const browser = await chromium.launch({headless: true});
     try {
         const page = await browser.newPage();
@@ -103,13 +108,16 @@ function captureWriter(removeComments) {
         });
         for (const script of ['web-src/js/page-loader.js','web-src/js/state-ui.js','web-src/modules/runtime/network.js'])
             await page.addScriptTag({content: fs.readFileSync(path.join(root, script), 'utf8')});
-        const interactions = await page.evaluate(rows => {
+        const interactions = await page.evaluate(({rows, peripheralModals}) => {
             const results = [];
             for (const variant of ['html','optimized']) {
                 document.body.innerHTML = rows.find(row => row.name === 'pages/network.html')[variant];
                 PageLoader._modalTemplates = {}; PageLoader._modalHosts = {};
                 PageLoader._cacheModalTemplates(rows.find(row => row.name === 'pages/modals.html')[variant], '',
-                    ['change-password-modal', 'peripheral-modal']);
+                    ['change-password-modal', 'periph-exec-modal']);
+                // The peripheral editor bundle loads separately in production
+                // (PageLoader.loadPeripheralModals); it is not comment-stripped.
+                PageLoader._cacheModalTemplates(peripheralModals, '', ['peripheral-modal']);
                 const modalIds = Object.keys(PageLoader._modalTemplates).sort(), closed = [];
                 for (let cycle = 0; cycle < 2; cycle += 1) for (const id of modalIds) {
                     const modal = PageLoader.mountModal(id);
@@ -147,7 +155,7 @@ function captureWriter(removeComments) {
                 results.push({modalIds, closed, saves, prevented, modes, staticVisible, dynamicHidden: group.style.display});
             }
             return results;
-        }, rows);
+        }, {rows, peripheralModals});
         assert.deepEqual(interactions[1], interactions[0], 'real modal/network consumer interaction drift');
         assert.equal(interactions[1].modalIds.length, 4);
         assert.ok(interactions[1].closed.every(Boolean));

@@ -10,6 +10,7 @@ async function mount(page: Page) {
   await page.evaluate(() => {
     const w = window as any;
     w.confirm = () => true;
+    w.FBConfirm = async () => true;
     w.escapeHtml = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     w.Notification = { success() {}, warning() {}, error() {} };
     w.AppState = { registerModule(_name: string, methods: any) { Object.assign(this, methods); },
@@ -46,7 +47,7 @@ async function mount(page: Page) {
 
 test.beforeEach(async ({page}) => mount(page));
 
-test('diagnostics stays in more menu and remains available to read-only users', async ({page}) => {
+test('diagnostics shows directly in the action row and remains available to read-only users', async ({page}) => {
   await page.evaluate(async () => {
     const w = window as any;
     w.AppState.isDeveloperModeEnabled = () => false;
@@ -56,10 +57,9 @@ test('diagnostics stays in more menu and remains available to read-only users', 
   });
   const row = page.locator('#peripheral-table-body tr').first();
   const diagnose = row.locator('[data-peripheral-action="diagnose"]');
-  await expect(diagnose).toBeHidden();
-  await row.locator('summary').click();
   await expect(diagnose).toBeVisible();
   await expect(diagnose).toBeEnabled();
+  await expect(row.locator('.peripheral-more, summary')).toHaveCount(0);
   await expect(row.locator('[data-peripheral-action="edit"]')).toBeDisabled();
 });
 

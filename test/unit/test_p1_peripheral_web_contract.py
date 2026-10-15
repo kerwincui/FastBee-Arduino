@@ -7,7 +7,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PAGE = (ROOT / "web-src/pages/peripheral.html").read_text(encoding="utf-8")
-MODALS = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8")
+# 2026-10-15 起外设编辑器模板拆分为 pages/peripheral-modals.html（懒加载模板包），
+# 契约断言继续覆盖合并后的全部模态框标记。
+MODALS = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8") + (
+    ROOT / "web-src/pages/peripheral-modals.html"
+).read_text(encoding="utf-8")
 WEB = (ROOT / "web-src/modules/runtime/peripherals.js").read_text(encoding="utf-8")
 STATE = (ROOT / "web-src/js/state.js").read_text(encoding="utf-8")
 SAVE = (ROOT / "web-src/modules/runtime/peripheral-save.js").read_text(encoding="utf-8")
@@ -131,7 +135,8 @@ class P1PeripheralWebContractTests(unittest.TestCase):
     def test_sd_and_rfid_actions_match_safe_backend_contract(self):
         for action in ("mount", "unmount", "write-file", "delete-file"):
             self.assertIn(f"'{action}'", IO)
-        self.assertIn("if (normalized === 'delete-file' && !confirm(", IO)
+        # B4 起删除确认走异步 FBConfirm（Promise<boolean>），取消语义不变。
+        self.assertIn("if (normalized === 'delete-file' && !await FBConfirm(", IO)
         self.assertIn("if (normalized === 'delete-file') Object.assign(payload, {path: path, confirm: 'DELETE'});", IO)
         self.assertIn("action: 'scan'", IO)
         self.assertIn("action === 'read-block' || action === 'write-block'", IO)

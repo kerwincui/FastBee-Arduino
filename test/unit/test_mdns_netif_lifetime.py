@@ -44,6 +44,7 @@ struct SerialMock {
   void println(const char*) {}
 } Serial;
 #define LOG_INFO(...) ((void)0)
+#define LOG_INFOF(...) ((void)0)
 struct Dns { void stopMDNS() {
   if (mdns) { assert(live && "mDNS accessed a destroyed netif"); ++stops; mdns=false; }
 } };

@@ -76,7 +76,9 @@ class P1StorageDriverContractTests(unittest.TestCase):
 
     def test_sensor_cache_is_fixed_bounded_and_reuses_instances(self):
         self.assertIn("MAX_ENTRIES = 6", CACHE_HEADER)
-        self.assertIn("Entry _entries[MAX_ENTRIES]", CACHE_HEADER)
+        # Entries live in stable unique_ptr slots of a fixed-size array: the
+        # cache stays bounded by MAX_ENTRIES and each slot owns its driver.
+        self.assertIn("std::unique_ptr<Entry> _entries[MAX_ENTRIES]", CACHE_HEADER)
         self.assertIn("findExact", CACHE_SOURCE)
         self.assertIn("allocateEntry", CACHE_SOURCE)
         self.assertEqual(CACHE_SOURCE.count("createDriver(driverName)"), 1)

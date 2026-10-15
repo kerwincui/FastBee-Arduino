@@ -146,7 +146,7 @@ const PRIVATE_NAMES = Object.freeze({
         '_refreshPeriphExecRiskNotice',
         '_refreshPeriphExecTemplateChoices',
         '_reindexPeriphExecBlocks',
-        '_renderPendingReportStatus',
+
         '_renderPeriphExecActionButton',
         '_renderPeriphExecLazyActionPanel',
         '_renderPeriphExecPagination',
@@ -159,7 +159,7 @@ const PRIVATE_NAMES = Object.freeze({
         '_renderSdRecorderRuntime',
         '_renderSensorDataFieldOptions',
         '_renderThermostatRuntime',
-        '_renderUartTextStatus',
+
         '_requirePeriphExecData',
         '_resetPeriphExecTemplateWizard',
         '_resolvePeriphExecRiskLevel',

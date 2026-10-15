@@ -1,4 +1,11 @@
-﻿[CmdletBinding()]
+﻿# FastBee 设备冒烟测试。
+#
+# 特性门控语义：设备在 features.json 中关闭的运行期功能（如 deviceControl/userAdmin）
+# 会让相关 API 按设计返回 503 + "<Feature> disabled by runtime feature config"（无 retryAfter）。
+# 这是用户配置状态而非部署回归：默认将该确定性响应分类为 SKIPPED(feature-gated)，
+# 保留在结果表中并明确标注，但不计入失败数、不导致非零退出；其余失败语义不变。
+# 使用 -RequireEnabledFeatures 恢复旧的严格行为（门控响应同样判 FAIL 并导致失败退出）。
+[CmdletBinding()]
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
@@ -12,7 +19,8 @@ param(
     [int]$DelayMs = 400,
     [switch]$ReadOnly,
     [switch]$RequireNetworkConnected,
-    [switch]$RequireMqttConnected
+    [switch]$RequireMqttConnected,
+    [switch]$RequireEnabledFeatures
 )
 
 $ErrorActionPreference = "Stop"
@@ -705,6 +713,7 @@ function Add-Check {
         $ok = $true
         $message = "OK"
         $degraded = $false
+        $featureGated = $false
 
         if ($null -eq $response) {
             $ok = $false
@@ -715,10 +724,23 @@ function Add-Check {
             # （HealthMonitor 高压限流 / WebMemoryGuard DRAM 水位拒绝），冒烟测试视为降级通过并标注
             $respCode = if ($response.PSObject.Properties.Name -contains "code") { $response.code } else { $null }
             $respMsg = if ($response.PSObject.Properties.Name -contains "message") { [string]$response.message } else { "" }
+            $respErr = if ($response.PSObject.Properties.Name -contains "error") { [string]$response.error } else { "" }
+            $respText = if ($respMsg) { $respMsg } else { $respErr }
             if ($respCode -eq 503 -and ($response.PSObject.Properties.Name -contains "retryAfter") -and $respMsg -match "memory pressure|low memory|memory guard") {
                 $ok = $true
                 $degraded = $true
                 $message = "degraded: memory pressure (503 gated, by design)"
+            }
+            elseif (-not $RequireEnabledFeatures -and $respCode -eq 503 -and
+                    -not ($response.PSObject.Properties.Name -contains "retryAfter") -and
+                    $respText -cmatch "disabled by runtime feature config$") {
+                # 用户在 features.json 中关闭运行期功能（如 deviceControl/userAdmin）时，
+                # 固件按设计返回 503 + 确定性文案且无 retryAfter，属于用户配置状态而非部署回归。
+                # 默认分类为 SKIPPED(feature-gated)：保留结果、明确标注、不计失败；
+                # -RequireEnabledFeatures 恢复旧的严格判定。该响应是确定性的，无需重试。
+                $ok = $true
+                $featureGated = $true
+                $message = "skipped (feature-gated): $respText"
             }
             else {
                 $ok = $false
@@ -734,8 +756,8 @@ function Add-Check {
             }
         }
 
-        # 降级响应是 503 错误体而非业务数据，跳过语义检查
-        if ($ok -and -not $degraded) {
+        # 降级/特性门控响应是 503 错误体而非业务数据，跳过语义检查
+        if ($ok -and -not $degraded -and -not $featureGated) {
             $semanticError = Test-CheckSemantics -Name $Name -Response $response
             if (-not [string]::IsNullOrWhiteSpace($semanticError)) {
                 $ok = $false

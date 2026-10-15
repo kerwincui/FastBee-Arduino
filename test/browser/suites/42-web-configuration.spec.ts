@@ -26,7 +26,7 @@ test('all eleven menus remain usable after repeated navigation without page erro
 
 test('device tabs save independently and remain available after OTA module loads', async ({authPage,navigateTo})=>{
   await navigateTo('device');
-  await expect(authPage.locator('#device-config-load-status')).toContainText('配置已加载');
+  await expect(authPage.locator('#dev-id')).toHaveValue('OFFLINE-UI');
   const writes:any[]=[];
   await authPage.route('**/api/device/config*', async route=>{
     if(route.request().method()==='GET') return route.continue();

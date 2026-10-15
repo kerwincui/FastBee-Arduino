@@ -78,7 +78,10 @@ class FeatureConfigPersistenceContractTests(unittest.TestCase):
         )
 
     def test_factory_reset_restores_feature_defaults(self):
-        reset_start = SYSTEM_ROUTE.index('/api/system/factory-reset')
+        # D2 重构后 factory-reset 业务下沉到 handleFactoryReset 方法体
+        reset_start = SYSTEM_ROUTE.index(
+            "void SystemRouteHandler::handleFactoryReset(AsyncWebServerRequest* request)"
+        )
         reset_end = SYSTEM_ROUTE.index("request->send(response);", reset_start)
         reset_body = SYSTEM_ROUTE[reset_start:reset_end]
         self.assertIn("RuntimeFeatureManager::instance().resetToDefaults()", reset_body)

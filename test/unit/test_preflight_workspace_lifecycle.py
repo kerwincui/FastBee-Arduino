@@ -81,6 +81,17 @@ struct PeripheralManager {
     static PeripheralManager& getInstance(){static PeripheralManager manager;return manager;}
     SemaphoreHandle_t getMutex(){return &mutex;}
 };
+// The extracted route body constructs the concrete form adapter; provide a
+// fieldless standalone stub so the workspace/lock lifecycle compiles without
+// pulling the real adapter's interface header (and its ArduinoJson chain).
+class WebPeripheralFormFields {
+public:
+    WebPeripheralFormFields(WebHandlerContext*, AsyncWebServerRequest*) {}
+    bool has(const char*) const { return false; }
+    String value(const char*, const char* fallback) const { return fallback; }
+    int intValue(const char*, int fallback) const { return fallback; }
+    bool boolValue(const char*, bool fallback) const { return fallback; }
+};
 // @factory@
 struct RequestHandler {
     WebHandlerContext* ctx;

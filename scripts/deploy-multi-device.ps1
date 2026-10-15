@@ -26,6 +26,8 @@ $ErrorActionPreference = "Stop"
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $projectRoot
 . (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
+. (Join-Path $PSScriptRoot "lib\pio-runner.ps1")
+Initialize-PioRunner
 
 if ($DryRun -and $BuildOnly) { throw "DryRun and BuildOnly cannot be used together." }
 if ($SerialSeconds -lt 2) { throw "SerialSeconds must be at least 2." }
@@ -160,7 +162,7 @@ function Test-TargetPort {
     # PlatformIO's JSON inventory handles USB CDC/CH34x variants that older
     # .NET runtimes may omit. This is still enumeration only; no port is opened.
     try {
-        $pioRaw = & pio device list --json-output 2>$null
+        $pioRaw = Invoke-PioRunner -Args @('device', 'list', '--json-output') 2>$null
         if ($LASTEXITCODE -eq 0 -and $pioRaw) {
             $pioJson = (($pioRaw | Out-String) | ConvertFrom-Json -ErrorAction Stop)
             foreach ($entry in @($pioJson)) {

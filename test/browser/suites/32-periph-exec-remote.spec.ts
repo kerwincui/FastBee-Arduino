@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures/base.fixture';
+import { uiScreenshotPath } from '../evidence-paths';
 const { MAPPING: privateNames } = require('../../../scripts/web-private-properties');
 
 test.describe('PeriphExec weather and retired remote actions', () => {
@@ -16,7 +17,7 @@ test.describe('PeriphExec weather and retired remote actions', () => {
     for (const width of [1280, 390]) {
       await authPage.setViewportSize({ width, height: 844 });
       expect(await modal.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBeTruthy();
-      await modal.screenshot({ path: `test-results/ui/periph-rule-options-${width}.png` });
+      await modal.screenshot({ path: uiScreenshotPath(`periph-rule-options-${width}.png`) });
     }
     await authPage.evaluate(names => {
       const app = (window as any).AppState;

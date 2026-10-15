@@ -149,16 +149,6 @@
             });
         },
 
-        // 创建通知
-        createNotification: function(type, message, duration) {
-            duration = duration || 3000;
-            var div = document.createElement('div');
-            div.className = 'notification notification-' + type;
-            div.textContent = message;
-            document.body.appendChild(div);
-            setTimeout(function() { div.remove(); }, duration);
-            return div;
-        },
 
         // 创建 DocumentFragment（批量 DOM 操作）
         createFragment: function() {

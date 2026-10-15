@@ -950,9 +950,9 @@
                 });
         },
 
-        deletePeriphExecRule(id) {
+        async deletePeriphExecRule(id) {
             if (!this.guardDeveloperModeAction()) return;
-            if (!confirm('确定要删除此规则吗？')) return;
+            if (!await FBConfirm({ title: '删除规则', message: '确定要删除此规则吗？该操作不可恢复。', danger: true })) return;
             apiDelete('/api/periph-exec/', { id: id })
                 .then(res => {
                     if (res && res.success) {
@@ -1075,68 +1075,6 @@
             }, 2000);
         },
 
-        _renderUartTextStatus(status, loading) {
-            const el = document.getElementById('periph-exec-uart-text-status');
-            if (!el) return;
-            const fields = ['dispatchAttempts','oversizedFrames','invalidByteFrames','readFailures',
-                'sourceChanges','staleFrames','serializationFailures','hardwareFifoFaults','hardwareBufferFaults',
-                'hardwareFrameFaults','hardwareParityFaults','hardwareBreakFaults'];
-            if (!status || status.available !== true || status.scope !== 'boot' || status.unit !== 'events' ||
-                status.peerVerified !== false || status.maxFrameBytes !== 160 || status.idleBoundaryMs !== 500 ||
-                status.hardwareErrorScope !== 'first_observed_generic_stream_fault' ||
-                status.hardwareErrorRecovery !== 'explicit_restart' || status.hardwareErrorDeliveryConfirmed !== false ||
-                typeof status.countsAreLowerBounds !== 'boolean' || fields.some(key =>
-                    !Number.isSafeInteger(status[key]) || status[key] < 0 || status[key] > 4294967295) ||
-                (fields.some(key => status[key] === 4294967295) && !status.countsAreLowerBounds)) {
-                el.textContent = loading ? 'UART文本接收诊断加载中…' : 'UART文本接收诊断未确认，不能判断没有丢帧';
-                return;
-            }
-            el.textContent = 'UART文本接收（本次启动累计' + (status.countsAreLowerBounds ? '，计数为下限' : '') +
-                '）：提交规则匹配尝试 ' + status.dispatchAttempts + '；超长帧 ' + status.oversizedFrames +
-                '，无效字节帧 ' + status.invalidByteFrames + '，读取失败 ' + status.readFailures +
-                '，来源变化观察 ' + status.sourceChanges + '，发布时来源未确认 ' + status.staleFrames +
-                '，序列化失败 ' + status.serializationFailures +
-                '；硬件首故障 FIFO ' + status.hardwareFifoFaults + '，缓冲满 ' + status.hardwareBufferFaults +
-                '，帧错误 ' + status.hardwareFrameFaults + '，奇偶错误 ' + status.hardwareParityFaults + '，BREAK ' + status.hardwareBreakFaults +
-                '。硬件故障后接收锁存，核对线路后显式停用再启用以恢复；不会重放旧数据。SDK错误通知可能延迟或缺失。' +
-                '160字节/换行或空读500ms边界；软件项仅统计规则文本接收，硬件项覆盖通用UART首故障，各项不可相加为丢帧总数，零计数不证明通信正常。提交不代表规则已执行或对端验证。';
-        },
-
-        _renderPendingReportStatus(status, loading) {
-            const el = document.getElementById('periph-exec-report-status');
-            if (!el) return;
-            const fields = ['depth','capacity','maxPayloadBytes','retryIntervalMs','admitted','evicted',
-                'rejectedInvalid','rejectedMemory','rejectedFull','rejectedBusy','contention','retryAccepted','retryRejected',
-                'oldestAttempts','retryDelayMs','rejectedUnknownInstance','discardedInstanceChanged'];
-            const retryState = status && (!status.depth ? 'empty' : status.inFlight ? 'in_flight' : status.retryDelayMs ? 'cooldown' : 'ready');
-            if (!status || status.available !== true || status.deliveryVerified !== false ||
-                status.bindingScope !== 'mqtt_instance' ||
-                typeof status.inFlight !== 'boolean' || fields.some(key => !Number.isSafeInteger(status[key]) || status[key] < 0) ||
-                status.depth > status.capacity || (status.inFlight && status.depth === 0) ||
-                status.retryState !== retryState || !['none','accepted','rejected','instance_changed'].includes(status.lastRetryResult) ||
-                status.retryDelayMs > 5000 || status.oldestAttempts > 4294967295 ||
-                ((!status.depth || status.inFlight) && status.retryDelayMs !== 0) ||
-                (!status.depth && status.oldestAttempts !== 0) ||
-                (status.depth > 0 && (!Number.isSafeInteger(status.oldestAgeMs) || status.oldestAgeMs < 0 || status.oldestAgeMs > 4294967295)) ||
-                status.capacity !== 5 || status.maxPayloadBytes !== 512 || status.retryIntervalMs !== 5000) {
-                el.textContent = loading ? '离线上报状态加载中…' : '离线上报状态未确认（旧固件、忙碌或请求失败），不能判断缓存为空';
-                return;
-            }
-            el.textContent = '离线上报缓存 ' + status.depth + '/' + status.capacity +
-                (status.depth ? '，最旧缓存约 ' + Math.floor(status.oldestAgeMs / 1000) + ' 秒（设备计时）' : '') +
-                (status.depth ? '，队首已尝试 ' + status.oldestAttempts + ' 次' : '') +
-                (status.inFlight ? '，正在尝试入队' : status.retryDelayMs ?
-                    '，冷却至少 ' + Math.ceil(status.retryDelayMs / 1000) + ' 秒后可重试' :
-                    status.depth ? '，待连接和调度就绪后重试' : '，无待重试报告') +
-                '；最近重试：' + ({none:'尚未完成',accepted:'本地接受',rejected:'拒绝，已保留',instance_changed:'实例已更换，报告未发送并丢弃'}[status.lastRetryResult]) +
-                '；启动以来：重试本地接受 ' + status.retryAccepted + '，拒绝并保留 ' + status.retryRejected +
-                '，满额淘汰旧报告 ' + status.evicted + '；拒绝缓存：格式/长度 ' + status.rejectedInvalid +
-                '，内存 ' + status.rejectedMemory + '，在途满额 ' + status.rejectedFull + '，锁忙 ' + status.rejectedBusy +
-                '，归属未确认 ' + status.rejectedUnknownInstance + '；实例更换丢弃 ' + status.discardedInstanceChanged +
-                '；入队/重试锁竞争 ' + status.contention +
-                '。只重试到原MQTT实例；同配置重建也不跨实例重放。仅内存缓存，重启丢失；本地接受不代表平台收到。';
-        },
-
         loadPeriphExecPage() {
             const tbody = document.getElementById('periph-exec-table-body');
             if (!tbody) return;
@@ -1151,8 +1089,6 @@
                 this._peListFilter = filterVal;
             }
             const requestSequence = this._peListSequence = (this._peListSequence || 0) + 1;
-            this._renderPendingReportStatus(null, true);
-            this._renderUartTextStatus(null, true);
             this._peThermostats = null;
             this._peSdRecorder = undefined;
 
@@ -1166,8 +1102,6 @@
             return apiGet(apiUrl)
                 .then(execRes => {
                     if (requestSequence !== this._peListSequence) return;
-                    this._renderPendingReportStatus(execRes && execRes.success ? execRes.pendingReports : null);
-                    this._renderUartTextStatus(execRes && execRes.success === true ? execRes.uartText : null);
                     this._peThermostats = execRes && execRes.success === true && Array.isArray(execRes.thermostats) ? execRes.thermostats : null;
                     this._peSdRecorder = execRes?.success === true && Object.prototype.hasOwnProperty.call(execRes, 'sdRecorder') &&
                         (execRes.sdRecorder === null || (typeof execRes.sdRecorder === 'object' && !Array.isArray(execRes.sdRecorder))) ? execRes.sdRecorder : undefined;
@@ -1249,8 +1183,6 @@
                 })
                 .catch(() => {
                     if (requestSequence !== this._peListSequence) return;
-                    this._renderPendingReportStatus(null);
-                    this._renderUartTextStatus(null);
                     this.renderEmptyTableRow(tbody, 5, '暂无外设执行');
                     this._renderPeriphExecPagination(0, 1, 10);
                 });

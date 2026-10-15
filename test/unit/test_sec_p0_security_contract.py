@@ -62,6 +62,19 @@ def braced_block(source: str, marker: str) -> str:
     raise AssertionError(f"unterminated block after {marker!r}")
 
 
+# D2 重构后 SystemRoute 的 lambda 业务下沉到 handle* 方法；
+# 这些路由的契约断言改在处理器函数体上进行，注册本身仍做存在性校验。
+SYSTEM_ROUTE_HANDLERS = {
+    ("/api/system/factory-reset", "HTTP_POST"): "handleFactoryReset",
+    ("/api/config/transfer/list", "HTTP_GET"): "handleConfigTransferList",
+    ("/api/config/transfer/export", "HTTP_GET"): "handleConfigTransferExport",
+    ("/api/config/transfer/import", "HTTP_POST"): "handleConfigTransferImport",
+    ("/api/config/transfer/import-chunk", "HTTP_POST"): "handleConfigTransferImportChunk",
+    ("/api/files/content", "HTTP_GET"): "handleGetFileContent",
+    ("/api/files/save", "HTTP_POST"): "handleSaveFile",
+}
+
+
 def route_block(source: str, path: str, method: str) -> str:
     uri = re.escape(f'"{path}"')
     registration = re.search(
@@ -70,6 +83,11 @@ def route_block(source: str, path: str, method: str) -> str:
     )
     if registration is None:
         raise AssertionError(f"missing {method} route {path}")
+    handler = SYSTEM_ROUTE_HANDLERS.get((path, method))
+    if handler is not None:
+        return braced_block(
+            source, f"void SystemRouteHandler::{handler}(AsyncWebServerRequest* request)"
+        )
     start = registration.start()
     end = source.find("server->on(", registration.end())
     return source[start : end if end >= 0 else len(source)]
@@ -393,7 +411,9 @@ class SecP0SecurityContractTests(unittest.TestCase):
         self.assertNotIn("LittleFS.remove(path)", chunk_route)
 
     def test_factory_reset_frontend_submits_confirmation_and_password(self):
-        factory_reset = braced_block(DEVICE_CONFIG, "\n        factoryReset()")
+        # 锚点不含 "{"（braced_block 从 marker 之后定位开括号）；
+        # 当前定义为 async 方法，调用点 this.factoryReset() 无缩进特征不会误匹配。
+        factory_reset = braced_block(DEVICE_CONFIG, "\n        async factoryReset()")
         self.assertIn("document.getElementById('dev-factory-confirm')", factory_reset)
         self.assertIn("document.getElementById('dev-factory-password')", factory_reset)
         self.assertIn("if (confirmValue !== 'RESET')", factory_reset)

@@ -93,10 +93,6 @@ function _ensureMainStylesheet(onReady) {
 }
 
 function _bootApp() {
-    // 降级 i18n（确保 i18n 未加载时有 fallback）
-    if (typeof i18n === 'undefined') {
-        window.i18n = { currentLang: 'zh-CN', t: function(k) { return k; }, updatePageText: function() {} };
-    }
 
     // 初始化消息通知系统
     if (typeof Notification !== 'undefined' && Notification.init) {

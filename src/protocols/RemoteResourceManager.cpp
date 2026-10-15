@@ -352,6 +352,11 @@ bool RemoteResourceManager::saveConfig(JsonVariantConst submitted,String& error)
     error=""; return true;
 }
 
+bool RemoteResourceManager::knowsConfiguredSource(const String& ref) {
+    Guard lock(mutex_);
+    return RemoteResourceModel::knowsWeatherSource(config_.as<JsonVariantConst>(), ref);
+}
+
 void RemoteResourceManager::appendChoices(JsonArray sources,JsonArray controls) {
     Guard lock(mutex_);
     (void)controls;

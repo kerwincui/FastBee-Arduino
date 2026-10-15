@@ -609,7 +609,7 @@
                     excluded: ['device.json','network.json','protocol.json','users.json','auth.json','rule_scripts.json','ir_keys.json']}, files};
         },
 
-        exportDeviceConfigBundle(reusable = false) {
+        async exportDeviceConfigBundle(reusable = false) {
             const btn = document.getElementById(reusable === true ? 'dev-config-plan-export-btn' : 'dev-config-export-btn');
             if (btn) btn.disabled = true;
             this._setConfigTransferStatus('正在读取配置列表...');
@@ -660,7 +660,7 @@
                             const response = await this._configTransferFetch('/api/config/transfer/export?name=' + encodeURIComponent(original.name));
                             if (!response.ok || await response.text() !== rawContents[first]) throw new Error('导出期间配置发生变化，未生成方案；请稳定配置后重试');
                         }
-                        if (!confirm('方案不包含设备身份、网络、协议、用户、认证、转换脚本或红外文件，标准凭据字段已清空。\n逻辑ID、名称、静态文本和数据模板仍会保留，请确认其中没有现场秘密。\n所有外设与执行规则将停用；目标板须重新映射接线并完成预检。确认下载？')) { this._setConfigTransferStatus('--'); return; }
+                        if (!await FBConfirm({ title: '导出迁移方案', message: '方案不包含设备身份、网络、协议、用户、认证、转换脚本或红外文件，标准凭据字段已清空。\n逻辑ID、名称、静态文本和数据模板仍会保留，请确认其中没有现场秘密。\n所有外设与执行规则将停用；目标板须重新映射接线并完成预检。确认下载？', danger: true, requireCheck: true, checkLabel: '我已确认方案中没有现场秘密' })) { this._setConfigTransferStatus('--'); return; }
                     }
 
                     // 单文件直接导出原始JSON，多文件导出bundle包
@@ -890,7 +890,7 @@
                 const state = await this._readConfigMigration();
                 if (state.phase === 'empty') { this._setConfigTransferStatus(this._configMigrationStatusText(state)); return; }
                 if (state.phase === 'incomplete' && state.canQuarantine === true && /^[a-f0-9]{64}$/.test(state.orphanRevision || '')) {
-                    if (!confirm('该暂存记录不完整，尚未进入应用阶段。确认将整份残缺记录保全到独立目录？\n不删除原证据、不改变当前配置、不重启；保全后可重新开始迁移。')) return;
+                    if (!await FBConfirm({ title: '保全残缺迁移记录', message: '该暂存记录不完整，尚未进入应用阶段。确认将整份残缺记录保全到独立目录？\n不删除原证据、不改变当前配置、不重启；保全后可重新开始迁移。' })) return;
                     const result = await apiPost('/api/config/migration/quarantine', {revision: state.orphanRevision, confirm: 'QUARANTINE'}, 30000);
                     if (result?.success !== true || result.data?.phase !== 'empty' || result.data?.orphanRetained !== true)
                         throw new Error('保全结果未确认，请查询迁移状态，未自动重试');
@@ -900,7 +900,7 @@
                 if (!/^[a-f0-9]{32}$/.test(state.session || '') || ['blocked', 'applying', 'incomplete'].includes(state.phase)) {
                     throw new Error('当前记录不能安全清理，请保全后修复');
                 }
-                if (!confirm(this._configMigrationStatusText(state) + '\n确认清除该次迁移暂存内容和恢复副本？未应用的迁移将取消，当前配置保持不变。')) return;
+                if (!await FBConfirm({ title: '清除迁移暂存', message: this._configMigrationStatusText(state) + '\n确认清除该次迁移暂存内容和恢复副本？未应用的迁移将取消，当前配置保持不变。', danger: true })) return;
                 const result = await apiPost('/api/config/migration/discard', {session: state.session, confirm: 'DISCARD'}, 30000);
                 if (result?.success !== true || result.data?.phase !== 'empty') throw new Error('清理结果未确认，请查询迁移状态，未自动重试');
                 this._setConfigTransferStatus('该次迁移的暂存和恢复副本已清理，当前配置保持不变');
@@ -983,7 +983,7 @@
                 const bit = riskBits[issue.code];
                 if (!bit) throw new Error('存在未支持的资源风险，请在外设页面处理后重新迁移');
                 if (!(acknowledgements & bit)) {
-                    if (!confirm('目标设备资源风险：' + String(issue.message || issue.code) + '\n确认已核对该项接线和恢复条件？')) throw new Error('资源风险未确认，暂存保留，尚未安排应用');
+                    if (!await FBConfirm({ title: '资源风险确认', message: '目标设备资源风险：' + String(issue.message || issue.code) + '\n确认已核对该项接线和恢复条件？', danger: true })) throw new Error('资源风险未确认，暂存保留，尚未安排应用');
                     acknowledgements |= bit;
                 }
             }
@@ -991,8 +991,8 @@
             if (preview.issues.some(issue => ['DORMANT_GPIO_CONFLICT', 'DORMANT_RESOURCE_CONFLICT'].includes(issue.code))) {
                 throw new Error('配置启用后存在资源冲突，请清理本次暂存并修正接线后重新预览：\n' + issuesText);
             }
-            if (issuesText && !confirm('完整资源预检提示：\n' + issuesText + '\n确认已阅读这些限制并继续准备迁移？')) throw new Error('未确认资源预检提示，暂存保留');
-            if (!confirm('已校验 ' + files.length + ' 个文件及目标配置依赖。\n目标设备身份、网络和凭据保持不变。确认准备整组迁移，等待下次重启应用？\n不会自动重启；接线与实物效果仍须现场核验。')) throw new Error('未确认应用，暂存保留，可查询或清理');
+            if (issuesText && !await FBConfirm({ title: '资源预检提示', message: '完整资源预检提示：\n' + issuesText + '\n确认已阅读这些限制并继续准备迁移？', danger: true })) throw new Error('未确认资源预检提示，暂存保留');
+            if (!await FBConfirm({ title: '准备迁移', message: '已校验 ' + files.length + ' 个文件及目标配置依赖。\n目标设备身份、网络和凭据保持不变。确认准备整组迁移，等待下次重启应用？\n不会自动重启；接线与实物效果仍须现场核验。', danger: true })) throw new Error('未确认应用，暂存保留，可查询或清理');
             const prepared = await apiPost('/api/config/migration/prepare', {
                 session, revision: preview.revision, acknowledgements: String(acknowledgements), confirm: 'PREPARE'
             }, 30000);

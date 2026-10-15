@@ -29,7 +29,9 @@ class StatusFixedJsonSerializerTests(unittest.TestCase):
             "include/network/SDCardStatusJson.h", "include/peripherals/SDCardManager.h",
             "include/network/SystemTimeStatus.h", "include/utils/SystemTimeQuality.h",
             "include/utils/SystemTimeZone.h", "include/network/FixedJsonField.h",
-            "src/network/FixedJsonField.cpp", "test/mocks/Arduino.h")]
+            "include/systems/TaskStackIpcOwners.h",
+            "src/network/FixedJsonField.cpp", "src/systems/TaskStackIpcOwners.cpp",
+            "test/mocks/Arduino.h")]
         cls.inputs += [CPP / "status_serializer_harness.cpp",
                        CPP / "status_serializer_oracle.inc", Path(__file__)]
         cls.before = [hashlib.sha256(path.read_bytes()).hexdigest() for path in cls.inputs]
@@ -58,7 +60,8 @@ class StatusFixedJsonSerializerTests(unittest.TestCase):
             "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0", "-DARDUINOJSON_ENABLE_STD_STRING=1",
             "-I" + str(ROOT / "test/mocks"), "-I" + str(ROOT / "include"),
             "-I" + json_root, str(generated),
-            str(ROOT / "src/network/FixedJsonField.cpp"), "-o", str(cls.binary)],
+            str(ROOT / "src/network/FixedJsonField.cpp"),
+            str(ROOT / "src/systems/TaskStackIpcOwners.cpp"), "-o", str(cls.binary)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
         if compiled.returncode:
             raise AssertionError(compiled.stdout + compiled.stderr)

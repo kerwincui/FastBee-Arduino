@@ -424,7 +424,7 @@ bool FBNetworkManager::initialize() {
     bool success = false;
     
     // 调试：打印实际加载的WiFi配置
-    Serial.printf("[NET] Config: mode=%d staSSID=[%s] networkType=%d\n",
+    LOG_INFOF("[NET] Config: mode=%d staSSID=[%s] networkType=%d",
         (int)wifiConfig.mode, wifiConfig.staSSID.c_str(), (int)wifiConfig.networkType);
     
     switch (wifiConfig.mode) {
@@ -450,14 +450,14 @@ bool FBNetworkManager::initialize() {
                         break;
                     }
                     LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
-                    Serial.println("[NET] STA failed, switching to AP mode...");
+                    LOG_WARNING("[NET] STA failed, switching to AP mode...");
                     ets_printf("[NET] STA failed, switching to AP mode...\n");
                     wifiManager->setModeTransitioning(false);
                     // STA 失败后回退到纯 AP 模式，供用户通过 Web 重新配置
                     // 不使用 AP+STA 双模式，避免频繁模式切换导致 arduino_events 栈溢出
                     success = startAPMode();
                     if (success) {
-                        Serial.printf("[NET] AP started: %s  IP: %s\n",
+                        LOG_INFOF("[NET] AP started: %s  IP: %s",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
                         ets_printf("[NET] AP started: %s  IP: %s\n",
@@ -471,7 +471,7 @@ bool FBNetworkManager::initialize() {
                         wifiConfig.mode = NetworkMode::NETWORK_AP;
                         _apFallbackAuto = true;  // 标记为自动回退，启用 WiFi 探测恢复
                     } else {
-                        Serial.println("[NET] AP start FAILED!");
+                        LOG_ERROR("[NET] AP start FAILED!");
                     }
                 }
             } else {
@@ -586,11 +586,11 @@ void FBNetworkManager::updateStaAuthBackoff() {
         WiFiRetryPolicy::authFailureCooldownMs(_consecutiveAuthFailures);
 
     if (_authRetryCooldownMs == 0) {
-        Serial.printf("[NET] STA auth/association failure reason=%u streak=%u; preserving one fast retry\n",
+        LOG_WARNINGF("[NET] STA auth/association failure reason=%u streak=%u; preserving one fast retry",
                       (unsigned int)reason,
                       (unsigned int)_consecutiveAuthFailures);
     } else {
-        Serial.printf("[NET] STA auth/association failure reason=%u streak=%u; cooling down %lums\n",
+        LOG_WARNINGF("[NET] STA auth/association failure reason=%u streak=%u; cooling down %lums",
                       (unsigned int)reason,
                       (unsigned int)_consecutiveAuthFailures,
                       _authRetryCooldownMs);
@@ -605,7 +605,7 @@ void FBNetworkManager::launchBootStaRetryConnection() {
         const int selected =
             (_bootConnectRetries - 1) % _bootStaRetryCandidateCount;
         const BootStaCandidate& ap = _bootStaRetryCandidates[selected];
-        Serial.printf("[NET] STA boot retry pinned BSSID %02X:%02X:%02X:%02X:%02X:%02X ch=%d rssi=%d (%d/%d)\n",
+        LOG_INFOF("[NET] STA boot retry pinned BSSID %02X:%02X:%02X:%02X:%02X:%02X ch=%d rssi=%d (%d/%d)",
                       ap.bssid[0], ap.bssid[1], ap.bssid[2],
                       ap.bssid[3], ap.bssid[4], ap.bssid[5],
                       (int)ap.channel, (int)ap.rssi,
@@ -613,7 +613,7 @@ void FBNetworkManager::launchBootStaRetryConnection() {
         WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str(),
                    ap.channel, ap.bssid);
     } else {
-        Serial.printf("[NET] STA boot retry %d using automatic AP selection\n",
+        LOG_INFOF("[NET] STA boot retry %d using automatic AP selection",
                       (int)_bootConnectRetries);
         WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
     }
@@ -636,12 +636,12 @@ void FBNetworkManager::startBootStaRetryScan() {
     WiFi.mode(WIFI_MODE_NULL);
     if (_authRetryCooldownMs > 0) {
         _bootStaRetryScanState = BootStaRetryScanState::AUTH_COOLDOWN;
-        Serial.printf("[NET] STA retry radio cooldown started (%lums)\n",
+        LOG_INFOF("[NET] STA retry radio cooldown started (%lums)",
                       _authRetryCooldownMs);
         return;
     }
     _bootStaRetryScanState = BootStaRetryScanState::DRIVER_NULL_SETTLE;
-    Serial.println("[NET] Async boot retry driver reset started");
+    LOG_INFO("[NET] Async boot retry driver reset started");
 }
 
 void FBNetworkManager::handleBootStaRetryScan() {
@@ -656,7 +656,7 @@ void FBNetworkManager::handleBootStaRetryScan() {
         }
         _bootStaRetryScanState = BootStaRetryScanState::DRIVER_STA_SETTLE;
         _bootStaRetryScanStartedAt = now;
-        Serial.println("[NET] STA auth cooldown complete; asynchronous candidate scan resuming");
+        LOG_INFO("[NET] STA auth cooldown complete; asynchronous candidate scan resuming");
         return;
     }
 
@@ -680,7 +680,7 @@ void FBNetworkManager::handleBootStaRetryScan() {
         const int16_t scanStart = WiFi.scanNetworks(true, true);
         if (scanStart == WIFI_SCAN_FAILED) {
             WiFi.scanDelete();
-            Serial.println("[NET] Async boot retry scan unavailable; using automatic AP selection");
+            LOG_WARNING("[NET] Async boot retry scan unavailable; using automatic AP selection");
             _bootStaRetryScanInProgress = false;
             _bootStaRetryScanState = BootStaRetryScanState::IDLE;
             _bootStaRetryScanStartedAt = 0;
@@ -689,7 +689,7 @@ void FBNetworkManager::handleBootStaRetryScan() {
         }
         _bootStaRetryScanState = BootStaRetryScanState::SCANNING;
         _bootStaRetryScanStartedAt = now;
-        Serial.println("[NET] Async boot retry scan started");
+        LOG_INFO("[NET] Async boot retry scan started");
         return;
     }
 
@@ -705,7 +705,7 @@ void FBNetworkManager::handleBootStaRetryScan() {
     if (scanTimedOut) {
         WiFi.scanDelete();
         scanCount = WIFI_SCAN_FAILED;
-        Serial.println("[NET] Async boot retry scan timed out; using automatic AP selection");
+        LOG_WARNING("[NET] Async boot retry scan timed out; using automatic AP selection");
     }
 
     if (scanCount >= 0) {
@@ -751,7 +751,7 @@ void FBNetworkManager::handleBootStaRetryScan() {
         _bootStaRetryCandidates[insertAt] = current;
     }
 
-    Serial.printf("[NET] Async boot retry scan complete: %d candidate BSSID%s\n",
+    LOG_INFOF("[NET] Async boot retry scan complete: %d candidate BSSID%s",
                   (int)_bootStaRetryCandidateCount,
                   _bootStaRetryCandidateCount == 1 ? "" : "s");
     _bootStaRetryScanInProgress = false;
@@ -1136,7 +1136,7 @@ void FBNetworkManager::update() {
             // 真正的切换动作需要 NetworkManager 层持久化配置并重新发起连接）
             if (ipManager->checkIPConflict() && wifiConfig.autoFailover) {
                 LOG_WARNING("NetworkManager: Static IP conflict confirmed, falling back to DHCP");
-                Serial.println("[NET] IP conflict detected! Switching to DHCP and reconnecting...");
+                LOG_WARNING("[NET] IP conflict detected! Switching to DHCP and reconnecting...");
                 statusInfo.conflictDetected = true;
                 wifiConfig.ipConfigType = IPConfigType::DHCP;
                 saveNetworkConfig();  // 持久化，避免重启后再次陷入同一冲突
@@ -1180,7 +1180,7 @@ void FBNetworkManager::update() {
             if (_gwArpFailCount < 255) _gwArpFailCount++;
             if (_gwArpFailCount <= GW_PROBE_WARNING_THRESHOLD ||
                 (_gwArpFailCount % 20) == 0) {
-                Serial.printf("[NET] Gateway ping unanswered (%d, baseline=%s, advisory only)\n",
+                LOG_WARNINGF("[NET] Gateway ping unanswered (%d, baseline=%s, advisory only)",
                               (int)_gwArpFailCount,
                               _gwProbeEverSucceeded ? "confirmed" : "unknown");
                 LOG_WARNINGF("NetworkManager: Gateway ping unanswered (%d, baseline=%s, advisory only)",
@@ -1196,7 +1196,7 @@ void FBNetworkManager::update() {
     const uint32_t bootConnectTimeout =
         wifiConfig.connectTimeout < 45000UL ? 45000UL : wifiConfig.connectTimeout;
     if (connecting && (currentTime - connectingStartTime >= bootConnectTimeout)) {
-        Serial.printf("[WiFi] Connection timeout after %lums\n",
+        LOG_WARNINGF("[WiFi] Connection timeout after %lums",
                       (unsigned long)bootConnectTimeout);
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
@@ -1208,7 +1208,7 @@ void FBNetworkManager::update() {
         // 旧逻辑一次失败即回退 AP，之后探测退避过长，设备可长期卡在 AP。
         if (_bootConnectRetries < BOOT_STA_MAX_RETRIES) {
             _bootConnectRetries++;
-            Serial.printf("[NET] STA boot retry %d/%d: resetting WiFi driver and reconnecting...\n",
+            LOG_WARNINGF("[NET] STA boot retry %d/%d: resetting WiFi driver and reconnecting...",
                           (int)_bootConnectRetries, (int)BOOT_STA_MAX_RETRIES);
             LOGGER.infof("NetworkManager: STA boot timeout, retry %d/%d",
                          (int)_bootConnectRetries, (int)BOOT_STA_MAX_RETRIES);
@@ -1234,11 +1234,11 @@ void FBNetworkManager::update() {
             }
             // 非阻塞模式：重试全部失败后回退到 AP 模式，供用户通过 Web 重新配置
             LOG_WARNING("NetworkManager: STA timeout (non-blocking), falling back to AP mode");
-            Serial.println("[NET] STA timeout, switching to AP mode...");
+            LOG_WARNING("[NET] STA timeout, switching to AP mode...");
             ets_printf("[NET] STA timeout, switching to AP mode...\n");
             wifiManager->setModeTransitioning(false);
             if (startAPMode()) {
-                Serial.printf("[NET] AP started: %s  IP: %s\n",
+                LOG_INFOF("[NET] AP started: %s  IP: %s",
                     wifiConfig.apSSID.c_str(),
                     WiFi.softAPIP().toString().c_str());
                 ets_printf("[NET] AP started: %s  IP: %s\n",
@@ -1257,7 +1257,7 @@ void FBNetworkManager::update() {
                 _lastApProbeTime = currentTime;
                 _apProbeFailCount = 0;
             } else {
-                Serial.println("[NET] AP start FAILED!");
+                LOG_ERROR("[NET] AP start FAILED!");
                 statusInfo.status = NetworkStatus::CONNECTION_FAILED;
                 triggerEvent(NetworkStatus::CONNECTION_FAILED, "Connection timeout");
             }
@@ -1956,7 +1956,7 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     {
         uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (dramFree < WIFI_CONNECT_MIN_DRAM) {
-            Serial.printf("[NET] connectToWiFiBlocking: DRAM too low (dram=%lu < %lu), skipping\n",
+            LOG_WARNINGF("[NET] connectToWiFiBlocking: DRAM too low (dram=%lu < %lu), skipping",
                           (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
             LOG_WARNINGF("[NET] DRAM too low for WiFi.begin (dram=%lu need=%lu)",
                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
@@ -1996,7 +1996,7 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     statusInfo.status = NetworkStatus::CONNECTING;
     startBootStaRetryScan();
     triggerEvent(NetworkStatus::CONNECTING, "STA scanning candidates (async)");
-    Serial.printf("[NET] STA candidate scan initiated (async), polling in update()\n");
+    LOG_INFOF("[NET] STA candidate scan initiated (async), polling in update()");
     LOG_INFO("NetworkManager: STA candidate scan initiated (async)");
     return true;
 }
@@ -2143,7 +2143,7 @@ void FBNetworkManager::attemptReconnect() {
                 WiFi.softAPIP().toString().c_str(),
                 wifiConfig.apSSID.c_str(),
                 wifiConfig.apPassword.length());
-            Serial.println("[WiFi] AP fallback active - STA reconnect disabled until user reconfigures");
+            LOG_WARNING("[WiFi] AP fallback active - STA reconnect disabled until user reconfigures");
             LOG_INFO("NetworkManager: AP fallback active, STA reconnect paused");
             
             // 切换到 AP 模式，停止自动重连
@@ -2172,7 +2172,7 @@ void FBNetworkManager::attemptReconnect() {
              (int)statusInfo.reconnectAttempts,
              (int)wifiConfig.maxReconnectAttempts,
              (unsigned long)wifiConfig.reconnectInterval);
-    Serial.println(reconnBuf);
+    LOG_INFO(reconnBuf);
     LOG_INFO("NetworkManager: Reconnection attempt " +
              String(statusInfo.reconnectAttempts) +
              "/" + String(wifiConfig.maxReconnectAttempts));
@@ -2204,13 +2204,13 @@ void FBNetworkManager::handleApModeWifiProbe() {
     if (_apProbeState == ApProbeState::IDLE) {
         const uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_8BIT);
         if (dramFree < WIFI_CONNECT_MIN_DRAM) {
-            Serial.printf("[WiFi-AP] Probe skipped: DRAM too low (free8=%lu < %lu)\n",
+            LOG_WARNINGF("[WiFi-AP] Probe skipped: DRAM too low (free8=%lu < %lu)",
                           (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
             resetApModeWifiProbe();
             return;
         }
         if (WiFi.softAPgetStationNum() > 0) {
-            Serial.println("[WiFi-AP] Probe deferred: AP client connected");
+            LOG_INFO("[WiFi-AP] Probe deferred: AP client connected");
             const unsigned long interval =
                 (_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD)
                     ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS;
@@ -2227,13 +2227,13 @@ void FBNetworkManager::handleApModeWifiProbe() {
             WiFi.scanDelete();
             WiFi.enableSTA(false);
             _apProbeFailCount++;
-            Serial.printf("[WiFi-AP] Async pre-scan failed (#%d), keeping AP\n",
+            LOG_WARNINGF("[WiFi-AP] Async pre-scan failed (#%d), keeping AP",
                           _apProbeFailCount);
             resetApModeWifiProbe();
             return;
         }
         _apProbeState = ApProbeState::SCANNING;
-        Serial.printf("[WiFi-AP] Async pre-scan started for SSID '%s'\n",
+        LOG_INFOF("[WiFi-AP] Async pre-scan started for SSID '%s'",
                       wifiConfig.staSSID.c_str());
         return;
     }
@@ -2248,7 +2248,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
             WiFi.scanDelete();
             WiFi.enableSTA(false);  // async scan temporarily enabled APSTA
             _apProbeFailCount++;
-            Serial.printf("[WiFi-AP] Async pre-scan timed out/failed (#%d), keeping AP\n",
+            LOG_WARNINGF("[WiFi-AP] Async pre-scan timed out/failed (#%d), keeping AP",
                           _apProbeFailCount);
             resetApModeWifiProbe();
             return;
@@ -2287,7 +2287,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
         }
         WiFi.scanDelete();
         WiFi.enableSTA(false);  // restore pure AP after async APSTA scan
-        Serial.printf("[WiFi-AP] Pre-scan: %d networks, SSID '%s' %s (%u candidate%s)\n",
+        LOG_INFOF("[WiFi-AP] Pre-scan: %d networks, SSID '%s' %s (%u candidate%s)",
                       (int)scanCount,
                       wifiConfig.staSSID.c_str(),
                       ssidVisible ? "visible" : "NOT visible (fast-fail, keep AP)",
@@ -2304,7 +2304,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
                 (_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD)
                     ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS;
             _lastApProbeTime = now - interval + AP_PROBE_DEFER_MS;
-            Serial.println("[WiFi-AP] Probe deferred: AP client joined during scan");
+            LOG_INFO("[WiFi-AP] Probe deferred: AP client joined during scan");
             resetApModeWifiProbe();
             return;
         }
@@ -2331,7 +2331,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
                 (_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD)
                     ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS;
             _lastApProbeTime = now - interval + AP_PROBE_DEFER_MS;
-            Serial.println("[WiFi-AP] Probe deferred: AP client joined before switch");
+            LOG_INFO("[WiFi-AP] Probe deferred: AP client joined before switch");
             resetApModeWifiProbe();
             return;
         }
@@ -2369,13 +2369,13 @@ void FBNetworkManager::handleApModeWifiProbe() {
             const ApProbeCandidate& ap = _apProbeCandidates[selected];
             WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str(),
                        ap.channel, ap.bssid);
-            Serial.printf("[WiFi-AP] Probe try %u pinned to BSSID %02X:%02X:%02X:%02X:%02X:%02X ch%ld rssi=%ld\n",
+            LOG_INFOF("[WiFi-AP] Probe try %u pinned to BSSID %02X:%02X:%02X:%02X:%02X:%02X ch%ld rssi=%ld",
                           (unsigned)(_apProbeAttempt + 1),
                           ap.bssid[0], ap.bssid[1], ap.bssid[2],
                           ap.bssid[3], ap.bssid[4], ap.bssid[5],
                           (long)ap.channel, (long)ap.rssi);
         } else {
-            Serial.printf("[WiFi-AP] Probe try %u using automatic AP selection\n",
+            LOG_INFOF("[WiFi-AP] Probe try %u using automatic AP selection",
                           (unsigned)(_apProbeAttempt + 1));
             WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
         }
@@ -2387,7 +2387,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
     if (_apProbeState == ApProbeState::WAITING_STA) {
         if (WiFi.status() == WL_CONNECTED &&
             WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-            Serial.printf("[WiFi-AP] WiFi recovered! IP: %s, switching back to STA mode\n",
+            LOG_INFOF("[WiFi-AP] WiFi recovered! IP: %s, switching back to STA mode",
                           WiFi.localIP().toString().c_str());
             LOGGER.infof("[WiFi-AP] WiFi recovered! IP: %s",
                          WiFi.localIP().toString().c_str());
@@ -2463,7 +2463,7 @@ void FBNetworkManager::handleApModeWifiProbe() {
                          _apProbeFailCount,
                          (unsigned long)(AP_PROBE_BACKOFF_MS / 60000));
         }
-        Serial.printf("[WiFi-AP] Probe failed (#%d), AP restored, next probe in %lumin\n",
+        LOG_WARNINGF("[WiFi-AP] Probe failed (#%d), AP restored, next probe in %lumin",
                       _apProbeFailCount,
                       (unsigned long)((_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD
                           ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS) / 60000));
@@ -2504,6 +2504,15 @@ bool FBNetworkManager::shouldRunMDNS() const {
 
 NetworkStatusInfo FBNetworkManager::getStatusInfo() const {
     return statusInfo;
+}
+
+void FBNetworkManager::patchStatusInfoWithWiFiLink(NetworkStatusInfo& info) const {
+    if (wifiConfig.networkType != NetworkType::NET_WIFI || WiFi.status() != WL_CONNECTED) return;
+    info.status = NetworkStatus::CONNECTED;
+    if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+    if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+    info.rssi = WiFi.RSSI();
+    if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
 }
 
 String FBNetworkManager::scanNetworks() {
@@ -2920,6 +2929,31 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
     if (resourceError) *resourceError = "";
     WiFiConfig effectiveConfig = newConfig;
     normalizeUnsupportedNetworkType(effectiveConfig);
+    // SEC-P0-02（09-15 审计）纵深防御：网络字段格式在持锁与配置生效前统一校验，
+    // 只拒绝明确非法值；空值语义保持不变（自动生成 SSID、回退默认域名、DHCP）。
+    auto validateNetworkFields = [](const WiFiConfig& config) -> const char* {
+        if (!NetworkUtils::isValidSSID(config.staSSID)) return "staSSID";
+        if (!NetworkUtils::isValidSSID(config.apSSID)) return "apSSID";
+        if (!NetworkUtils::isValidHostname(config.customDomain)) return "customDomain";
+        if (!NetworkUtils::isValidOptionalIP(config.apIP)) return "apIP";
+        if (!NetworkUtils::isValidOptionalIP(config.staticIP)) return "staticIP";
+        if (!NetworkUtils::isValidOptionalIP(config.gateway)) return "gateway";
+        if (!NetworkUtils::isValidOptionalIP(config.subnet)) return "subnet";
+        if (!NetworkUtils::isValidOptionalIP(config.dns1)) return "dns1";
+        if (!NetworkUtils::isValidOptionalIP(config.dns2)) return "dns2";
+        for (const auto& network : config.networks) {
+            if (!NetworkUtils::isValidSSID(network.ssid)) return "networks.ssid";
+        }
+        for (const auto& ip : config.backupIPs) {
+            if (!NetworkUtils::isValidOptionalIP(ip)) return "backupIPs";
+        }
+        return nullptr;
+    };
+    if (const char* invalidField = validateNetworkFields(effectiveConfig)) {
+        if (resourceError) *resourceError = String("NETWORK_FIELD_INVALID: ") + invalidField;
+        LOG_WARNINGF("NetworkManager: updateConfig rejected NETWORK_FIELD_INVALID: %s", invalidField);
+        return false;
+    }
     const auto resourceMutex = PeripheralManager::getInstance().getMutex();
     RecursiveMutexGuard resourceLock(resourceMutex, pdMS_TO_TICKS(500));
     if (resourceMutex && !resourceLock.isLocked()) {

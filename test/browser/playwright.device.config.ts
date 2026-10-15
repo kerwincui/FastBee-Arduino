@@ -32,7 +32,7 @@ const reporters: ReporterDescription[] = externalReportDir
 export default defineConfig({
   ...baseConfig,
   ...constrainedDevicePolicy,
-  outputDir: externalOutputDir || './test-results/device',
+  outputDir: externalOutputDir || '../../artifacts/test-results/device',
   reporter: reporters,
   projects: [smokeProject],
 });

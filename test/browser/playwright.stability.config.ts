@@ -37,7 +37,7 @@ const stabilityWorkers = Number.isFinite(parsedStabilityWorkers) && parsedStabil
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: './test-results/stability',
+  outputDir: '../../artifacts/test-results/stability',
   fullyParallel: true, // 稳定性测试启用并行，多 worker 同时工作
   forbidOnly: !!process.env.CI,
   retries: 1, // 稳定性测试只重试 1 次（过多重试掩盖真实问题）

@@ -1,10 +1,10 @@
 #include "systems/TaskStackIpcOwners.h"
+#include "core/ChipConfig.h"
 
 #if defined(ESP_PLATFORM)
 #include <freertos/FreeRTOS.h>
 #endif
-#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32S3 && configNUMBER_OF_CORES == 2 && \
-    CONFIG_ESP_IPC_ENABLE && configUSE_TRACE_FACILITY == 1
+#if CHIP_HAS_S3_IPC_OWNER_SNAPSHOT
 #include <esp_attr.h>
 #include <esp_timer.h>
 #include <esp_private/esp_ipc.h>

@@ -3,7 +3,9 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
-const app = { currentPage: 'peripheral' };
+const app = { currentPage: 'peripheral',
+    showModal(el) { el.showModal(); },
+    hideModal(el) { el.removed = true; } };
 const requests = [];
 let snapshots = 0;
 function element(tag) {
@@ -12,7 +14,14 @@ function element(tag) {
         appendChild(node) { this.children.push(node); },
         setAttribute() {}, addEventListener(type, handler) { this.events[type] = handler; },
         remove() { this.removed = true; }, showModal() { snapshots++; },
-        querySelector(tagName) { return this.children.find(child => child.tag === tagName); }
+        querySelector(tagName) {
+            for (const child of this.children) {
+                if (child.tag === tagName) return child;
+                const found = child.querySelector(tagName);
+                if (found) return found;
+            }
+            return undefined;
+        }
     };
 }
 const document = { createElement: element, body: element('body') };

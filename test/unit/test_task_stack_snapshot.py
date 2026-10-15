@@ -1,5 +1,6 @@
 """Real task snapshot backend/routes with offline SDK, allocator and auth doubles."""
 import hashlib
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -155,14 +156,28 @@ int xTaskGetSchedulerState();
     def test_non_esp_backend_is_unknown(self): self.check('unavailable', 'host')
     def test_host_current_task_is_unknown_not_zero(self): self.check('legacy', 'host')
 
-    def test_full_scan_has_only_the_explicit_post_caller(self):
+    def test_full_scan_callers_are_explicit_post_and_gated_health_sampler(self):
         source = (ROOT / 'src/network/handlers/SystemRouteHandler.cpp').read_text(encoding='utf-8')
         self.assertIn('FastBee::setupTaskStackSnapshotRoute(server, ctx);', source)
         self.assertNotIn('captureTaskStackSnapshot(', source)
+        health = (ROOT / 'src/systems/HealthMonitor.cpp').read_text(encoding='utf-8')
+        # D6 \u9636\u6bb5\u4e00\uff1aHealthMonitor \u5185\u552f\u4e00\u8c03\u7528\u70b9\u5c31\u662f\u95e8\u63a7\u91c7\u6837\u65b9\u6cd5\u672c\u8eab\u3002
+        method = definition(health, 'void HealthMonitor::logFullTaskStackWatermarks()')
+        self.assertEqual(method.count('captureTaskStackSnapshot('), 1)
+        self.assertEqual(health.count('captureTaskStackSnapshot('), 1)
+        self.assertIn('captureTaskStackSnapshot(isMemorySevere() || isMemoryCritical(), false)', method)
+        self.assertIn('FULL_STACK_SAMPLE_INTERVAL_MS', method)
+        header = (ROOT / 'include/systems/HealthMonitor.h').read_text(encoding='utf-8')
+        match = re.search(r'FULL_STACK_SAMPLE_INTERVAL_MS\s*=\s*(\d+)UL', header)
+        self.assertIsNotNone(match)
+        # \u786c\u6027\u7ea6\u675f\uff1auxTaskGetSystemState \u4f1a\u6682\u505c\u6682\u505c\u6b62\u8c03\u5ea6\u5668\uff0c\u91c7\u6837\u95f4\u9694\u987b\u5728 5-10min \u7a97\u53e3\u5185\u3002
+        self.assertGreaterEqual(int(match.group(1)), 300000)
+        self.assertLessEqual(int(match.group(1)), 600000)
         for path in ('src/systems/HealthMonitor.cpp', 'src/systems/RestartDiagnostics.cpp'):
             text = (ROOT / path).read_text(encoding='utf-8')
             self.assertNotIn('xTaskGetHandle(', text)
-            self.assertNotIn('captureTaskStackSnapshot(', text)
+        restart = (ROOT / 'src/systems/RestartDiagnostics.cpp').read_text(encoding='utf-8')
+        self.assertNotIn('captureTaskStackSnapshot(', restart)
         for name in ('loopTaskWatermark', 'asyncTcpWatermark', 'mqttReconnWatermark'):
             self.assertIn(f'FastBee::setFixedJsonField(pre, "{name}", nullptr);', source)
 

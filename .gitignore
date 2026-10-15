@@ -23,12 +23,10 @@ dist/
 .cursor/
 .codex/
 .codex-logs/
+.superpowers/
 *.swp
 *.swo
 *~
-
-# Qoder AI assistant config
-.qoderignore
 
 # Node.js dependencies
 node_modules/
@@ -74,8 +72,12 @@ docs/test-report.md
 docs/.device-config-backups/
 
 # ESP-IDF sdkconfig generated files
-sdkconfig*
+sdkconfig
+sdkconfig.old
 sdkconfig.*.local
+
+# ESP-IDF component manager output (restorable via dependencies.lock; E1 2026-10-15 停止跟踪)
+managed_components/
 
 # Web frontend: source lives in web-src/, build artifacts are generated per-profile (lite/standard/full).
 # Run `node scripts/gzip-www.js` or use `deploy.ps1` (auto-generates if missing).
@@ -86,6 +88,9 @@ data/www/
 
 # Temporary files
 /tmp/
+
+# Workspace snapshots and isolated build directories (repo-root only, never committed)
+/fastbee-*/
 temp-web-update.zip
 tmp-file-list.csv
 *.tmp

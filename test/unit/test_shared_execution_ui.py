@@ -22,6 +22,9 @@ const context=vm.createContext({AppState:app,document,Notification:{warning:(...
  setTimeout:fn=>fn(),prompt:()=>null});context.window=context;
 const load=file=>vm.runInContext(fs.readFileSync('web-src/'+file,'utf8'),context);
 load('js/utils.js');
+// B4 起执行值回退输入走异步 FBConfirm（Promise<string|null>）；桩沿用原 prompt 回退
+// 语义（message、默认值两个入参），由场景自行替换 context.prompt 驱动确认/取消/空值。
+context.FBConfirm=(opts)=>Promise.resolve(opts&&opts.input?context.prompt(String(opts.message),String(opts.input.value??'')):false);
 const lazy=kind=>load(kind==='core'?'modules/runtime/device-control/core.js':'modules/runtime/periph-exec.js');
 const input=()=>nodes.get('periph-exec-run-value-input'),button=id=>nodes.get(id);
 const tests={

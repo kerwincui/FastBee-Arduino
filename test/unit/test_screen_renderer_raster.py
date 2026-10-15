@@ -20,7 +20,7 @@ class ScreenRendererRasterTests(unittest.TestCase):
     def setUpClass(cls):
         candidates = [Path(os.environ.get("FASTBEE_U8G2_CLIB", "missing")),
                       ROOT / ".pio/libdeps/esp32s3-F16R8/U8g2/src/clib",
-                      ROOT.parent / "fb-panel-check-20260917/.pio/libdeps/esp32s3-F16R8/U8g2/src/clib"]
+                      ROOT / "fastbee-u8g2-fallback/.pio/libdeps/esp32s3-F16R8/U8g2/src/clib"]  # 2026-10-16 由仓外 ../fb-panel-check-20260917 迁入仓根 fastbee-* 目录
         library = next((p for p in candidates if (p / "u8g2.h").exists()), None)
         compiler = shutil.which("g++")
         fallback = Path("D:/msys64/ucrt64/bin/g++.exe")
@@ -29,8 +29,15 @@ class ScreenRendererRasterTests(unittest.TestCase):
         if library is None or compiler is None:
             raise unittest.SkipTest("Requires g++ and installed U8g2 (or FASTBEE_U8G2_CLIB)")
 
-        runtime = (ROOT / "src/screen/ScreenRuntime.cpp").read_text(encoding="utf-8")
-        production = runtime[runtime.index("constexpr uint16_t rgb565"):runtime.index("uint32_t hashBytes")]
+        renderer_header = (ROOT / "src/screen/StripeRenderer.h").read_text(encoding="utf-8")
+        renderer_header = (ROOT / "src/screen/StripeRenderer.h").read_text(encoding="utf-8")
+        renderer_impl = (ROOT / "src/screen/StripeRenderer.cpp").read_text(encoding="utf-8")
+        header_span = renderer_header[renderer_header.index("constexpr uint16_t rgb565"):renderer_header.index("} // namespace Screen")].rstrip()
+        # The harness provides its own global allocatePreferred; drop the moved
+        # declaration so renderer calls still bind to the harness definition.
+        header_span = re.sub(r"^void\* allocatePreferred\(size_t bytes\);\n", "", header_span, flags=re.M)
+        production = (header_span + "\n"
+                      + renderer_impl[renderer_impl.index("Palette paletteFor(const char* theme) {"):renderer_impl.index("void* allocatePreferred")])
         # Test visibility only: uint8_t config.bufferLines cannot represent a
         # 480-row reference. Its scratch storage is enlarged after real begin().
         production = production.replace("private:", "public:")
@@ -62,15 +69,17 @@ class ScreenRendererRasterTests(unittest.TestCase):
         sources = "\n".join(
             "#undef FASTBEE_SCREEN_WORKER_ISOLATION\n"
             "#define FASTBEE_SCREEN_WORKER_ISOLATION " + ("1" if name == "diagnostic" else "0") + "\n"
+            "#undef FASTBEE_SCREEN_LARGE_FONT\n"
+            "#define FASTBEE_SCREEN_LARGE_FONT " + ("1" if name == "largefont" else "0") + "\n"
             "namespace " + name + " {\n"
             "time_t time(time_t* p) { return fixedTime(p); }\n"
             "tm* localtime_r(const time_t* p, tm* out) { return fixedLocaltime(p, out); }\n"
             + code + "\n}\n"
             for name, code in (("optimized", production), ("unculled", reference),
-                               ("overculled", mutant), ("diagnostic", production)))
+                               ("overculled", mutant), ("diagnostic", production), ("largefont", production)))
         harness = (HARNESS.replace("@CONFIG@", config).replace("@SNAPSHOTS@", snapshots)
                    .replace("@BACKEND@", backend).replace("@PRODUCTION@", sources))
-        cls.temporary = tempfile.TemporaryDirectory(prefix="fastbee-renderer-raster-")
+        cls.temporary = tempfile.TemporaryDirectory(prefix="fastbee-renderer-raster-", dir=ROOT / "tmp")
         cls.addClassCleanup(cls.temporary.cleanup)
         directory = Path(cls.temporary.name)
         cpp = directory / "raster.cpp"
@@ -130,6 +139,18 @@ class ScreenRendererRasterTests(unittest.TestCase):
     def test_real_control_targets_and_local_pressed_pixels(self):
         self.run_group("control-targets")
 
+    def test_fault_indicator_renders_only_while_fault_active(self):
+        self.run_group("faults")
+
+    def test_truncated_text_marks_the_cut_with_an_ellipsis(self):
+        self.run_group("ellipsis")
+
+    def test_history_tap_selects_each_sample_and_y_axis_shows_unit_and_precision(self):
+        self.run_group("history-select")
+
+    def test_large_font_tiers_thresholds_and_stripe_compatibility(self):
+        self.run_group("large-font")
+
 
 HARNESS = r'''
 #include <algorithm>
@@ -155,6 +176,8 @@ HARNESS = r'''
 #include "screen/StripeChangeCache.h"
 #include "screen/ScreenWorkerIsolation.h"
 #include "screen/WeatherStatusText.h"
+#include "screen/PanelStatusText.h"
+#include "screen/ScreenThemeVocabulary.h"
 using namespace FastBee::Screen;
 using FastBee::BacklightResourceSnapshot;
 using std::isfinite;
@@ -304,7 +327,7 @@ ScreenPanelSnapshot scene(ScreenVisualType visual, int height = 132, int y = 37)
     snapshot.activePageIndex = 1;
     snapshot.cardCount = 1;
     std::strcpy(snapshot.themeId, "dark");
-    std::strcpy(snapshot.backgroundPresetId, "gradient");
+    std::strcpy(snapshot.backgroundPresetId, "soft-gradient");
     auto& page = snapshot.pages[1];
     std::strcpy(page.id, "main");
     page.cardCount = 1;
@@ -358,6 +381,32 @@ void visuals() {
         snapshot.cards[0].value[0] = 0;
         compare(snapshot, "status-quality=" + std::to_string(static_cast<int>(quality)));
     }
+    // Degraded values take the quality color so they cannot be mistaken for
+    // live readings; a pending ("waiting for data") value stays neutral.
+    {
+        auto snapshot = scene(ScreenVisualType::VALUE, 96, 95);
+        MemoryDisplay display; optimized::StripeRenderer renderer;
+        DisplayConfigParams config{}; config.bufferLines = 16; String error;
+        assert(renderer.begin(&display, config, error));
+        const auto bounds = renderer.cardBounds(snapshot, snapshot.cards[0]);
+        const int16_t top = bounds.y + std::max<int16_t>(27, bounds.h / 2 - 8);
+        const int16_t bottom = std::min<int16_t>(bounds.y + bounds.h, top + 26);
+        const auto band = [&](const std::vector<uint16_t>& pixels) {
+            return std::vector<uint16_t>(pixels.begin() + 1 + top * 480,
+                                         pixels.begin() + 1 + bottom * 480);
+        };
+        assert(renderer.render(snapshot, "", error));
+        const auto live = band(display.pixels);
+        for (auto quality : {ScreenValueQuality::STALE, ScreenValueQuality::ERROR,
+                             ScreenValueQuality::OFFLINE}) {
+            snapshot.cards[0].quality = quality;
+            assert(renderer.render(snapshot, "", error));
+            assert(live != band(display.pixels));
+        }
+        snapshot.cards[0].quality = ScreenValueQuality::UNKNOWN;
+        assert(renderer.render(snapshot, "", error));
+        equalPixels(live, band(display.pixels), "pending-value-stays-neutral", 16);
+    }
     clockSynchronized = false;
     compare(scene(ScreenVisualType::CLOCK, 96), "clock-unsynchronized");
     clockSynchronized = true;
@@ -410,8 +459,8 @@ void geometry() {
             page.rotation = rotation;
             page.logicalWidth = smaller ? 320 : 480;
             page.logicalHeight = smaller ? 240 : 480;
-            std::strcpy(page.backgroundPresetId, rotation == 90 ? "geometry" : "solid");
-            std::strcpy(page.themeId, rotation == 180 ? "light" : "accent");
+            std::strcpy(page.backgroundPresetId, rotation == 90 ? "grid" : "solid");
+            std::strcpy(page.themeId, rotation == 180 ? "light" : "high-contrast");
             page.cardCount = snapshot.cardCount = 4;
             snapshot.cards[1] = scene(ScreenVisualType::NAVIGATION, 62).cards[0];
             snapshot.cards[1].rect = {8, 170, 130, 62};
@@ -530,6 +579,14 @@ void themes() {
     const auto contrast = optimized::paletteFor("high-contrast");
     assert(contrast.background == 0 && contrast.text == 0xffff);
     assert(contrast.background != optimized::paletteFor("dark").background);
+    // Motor button fills derive from the palette (F8); labels must keep
+    // readable contrast on every theme, not a fixed white.
+    assert(optimized::textOn565(optimized::paletteFor("dark").success) == optimized::rgb565(12, 14, 16));
+    assert(optimized::textOn565(optimized::paletteFor("dark").accent) == optimized::rgb565(12, 14, 16));
+    assert(optimized::textOn565(optimized::paletteFor("dark").danger) == optimized::rgb565(12, 14, 16));
+    assert(optimized::textOn565(optimized::paletteFor("high-contrast").success) == optimized::rgb565(12, 14, 16));
+    assert(optimized::textOn565(optimized::paletteFor("high-contrast").accent) == optimized::rgb565(255, 255, 255));
+    assert(optimized::textOn565(optimized::paletteFor("light").success) == optimized::rgb565(255, 255, 255));
     auto snapshot = scene(ScreenVisualType::VALUE, 132, 180);
     std::strcpy(snapshot.themeId, "high-contrast");
     std::strcpy(snapshot.backgroundPresetId, "solid");
@@ -539,8 +596,16 @@ void themes() {
     assert(solid != grid);
     assert(grid[56 * 480 + 28] != grid[57 * 480 + 29]);
     compare(snapshot, "canonical-high-contrast-grid");
+    // Unknown backgrounds render as solid; removed themes (accent/vivid)
+    // fall back to the dark palette instead of drifting.
     std::strcpy(snapshot.backgroundPresetId, "geometry");
-    equalPixels(grid, raster<optimized::StripeRenderer>(snapshot, 31), "legacy-grid-alias", 31);
+    equalPixels(solid, raster<optimized::StripeRenderer>(snapshot, 31), "unknown-preset-renders-solid", 31);
+    std::strcpy(snapshot.themeId, "accent");
+    const auto removedTheme = raster<optimized::StripeRenderer>(snapshot, 31);
+    std::strcpy(snapshot.themeId, "dark");
+    equalPixels(removedTheme, raster<optimized::StripeRenderer>(snapshot, 31), "removed-theme-falls-back-to-dark", 31);
+    assert(optimized::paletteFor("accent").background == optimized::paletteFor("dark").background);
+    assert(optimized::paletteFor("vivid").background == optimized::paletteFor("dark").background);
 }
 
 void bars() {
@@ -697,6 +762,10 @@ void controlTargets() {
         } else if(visual==ScreenVisualType::SELECT) {
             controls={screenSelectButton(bounds,false),screenSelectButton(bounds,true)};
         } else if(visual==ScreenVisualType::SWITCH) {
+            // The whole card is the toggle hot zone; the pill remains the
+            // visual anchor and is still where pressed pixels change.
+            for(auto point : {bounds.x+1, bounds.x+bounds.w/2, bounds.x+bounds.w-2})
+                assert(renderer.hitTest(snapshot,point,bounds.y+bounds.h/2)==0);
             controls={{static_cast<int16_t>(bounds.x+bounds.w-64),static_cast<int16_t>(bounds.y+bounds.h/2-4),54,26}};
         } else if(visual==ScreenVisualType::NAVIGATION) {
             controls={renderer.navigationButton(bounds)};
@@ -707,7 +776,8 @@ void controlTargets() {
         const auto baseline=display.pixels;
         if(visual==ScreenVisualType::MOTOR_CONTROL){
             ScreenMotorLayout layout{bounds};
-            const uint16_t colors[]={optimized::rgb565(24,116,70),optimized::rgb565(168,56,66),optimized::rgb565(32,91,174)};
+            const auto darkPalette=optimized::paletteFor("dark");
+            const uint16_t colors[]={darkPalette.success,darkPalette.danger,darkPalette.accent};
             for(unsigned column=0;column<3;++column){
                 const auto button=layout.command(column);
                 assert(baseline[1+(button.y+8)*480+button.x+button.w/2]==colors[column]);
@@ -738,7 +808,9 @@ void controlTargets() {
             assert(display.pixels==baseline);
         }
         // Parent card border, title and padding never act as controls and
-        // even a forced pressed-card ID cannot recolor their pixels.
+        // even a forced pressed-card ID cannot recolor their pixels. A switch
+        // card is the exception: its whole surface toggles by design.
+        if(visual!=ScreenVisualType::SWITCH)
         for(auto point:std::vector<std::pair<int,int>>{{bounds.x+1,bounds.y+1},{bounds.x+25,bounds.y+20},{bounds.x+1,bounds.y+bounds.h/2}}){
             assert(renderer.hitTest(snapshot,point.first,point.second)==-1);
             assert(renderer.tapTarget(snapshot,point.first,point.second,"")==0);
@@ -765,6 +837,41 @@ void controlTargets() {
         assert(renderer.hitTest(snapshot,button.x+button.w/2,button.y+button.h/2)==-1);
         assert(renderer.tapTarget(snapshot,button.x+button.w/2,button.y+button.h/2,"")==0);
         assert(!renderer.feedbackHitTest(snapshot,button.x+button.w/2,button.y+button.h/2));
+    }
+    // Numeric step buttons paint at 44x44 and the hit region matches exactly.
+    {
+        auto snapshot=scene(ScreenVisualType::NUMBER_CONTROL,448,16);
+        auto& card=snapshot.cards[0];card.rect={16,16,448,448};card.pending=false;
+        card.kind=ScreenCardKind::CONTROL;card.interactive=true;
+        const auto bounds=renderer.cardBounds(snapshot,card);
+        const int16_t stepTop=bounds.y+31;
+        const int16_t executeTop=bounds.y+bounds.h-38;
+        assert(stepTop+44<=executeTop-4);
+        const auto hit= [&](int x,int y){
+            return renderer.numericControlHitTest(snapshot,card,
+                static_cast<uint16_t>(x),static_cast<uint16_t>(y));
+        };
+        assert(hit(bounds.x+10,stepTop)==optimized::NumericControlHit::DECREMENT);
+        assert(hit(bounds.x+53,stepTop)==optimized::NumericControlHit::DECREMENT);
+        assert(hit(bounds.x+54,stepTop)==optimized::NumericControlHit::NONE);
+        assert(hit(bounds.x+bounds.w-54,stepTop)==optimized::NumericControlHit::INCREMENT);
+        assert(hit(bounds.x+bounds.w-55,stepTop)==optimized::NumericControlHit::NONE);
+        assert(hit(bounds.x+10,stepTop+43)==optimized::NumericControlHit::DECREMENT);
+        assert(hit(bounds.x+10,stepTop+44)==optimized::NumericControlHit::NONE);
+        renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+        const auto baseline=display.pixels;
+        for(bool plus : {false,true}){
+            const int16_t bx=plus?bounds.x+bounds.w-54:bounds.x+10;
+            renderer.setPressed(card.id,bx+22,stepTop+22);
+            assert(renderer.render(snapshot,"",error));
+            size_t changed=0;
+            for(int y=stepTop;y<stepTop+44;++y)
+                for(int x=bx;x<bx+44;++x)
+                    if(display.pixels[1+y*480+x]!=baseline[1+y*480+x])++changed;
+            assert(changed>0);
+            renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
+            assert(display.pixels==baseline);
+        }
     }
     // One or two real pages occupy the whole footer without phantom tabs.
     for(unsigned count:{1,2}){
@@ -821,6 +928,235 @@ void preview() {
     compare(snapshot,"industrial-system");save("screen-system");
 }
 
+void faults() {
+    auto snapshot = scene(ScreenVisualType::VALUE, 132, 80);
+    MemoryDisplay display; optimized::StripeRenderer renderer;
+    DisplayConfigParams config{}; config.bufferLines = 16; String error;
+    assert(renderer.begin(&display, config, error));
+    assert(renderer.render(snapshot, "", error));
+    const auto normal = display.pixels;
+    assert(renderer.render(snapshot, "", error, optimized::SCREEN_FAULT_TOUCH));
+    const auto touchFault = display.pixels;
+    assert(touchFault != normal);
+    assert(renderer.render(snapshot, "", error, optimized::SCREEN_FAULT_RENDER_RETRY));
+    const auto renderFault = display.pixels;
+    assert(renderFault != normal && renderFault != touchFault);
+    assert(renderer.render(snapshot, "", error,
+        static_cast<uint8_t>(optimized::SCREEN_FAULT_RENDER_RETRY | optimized::SCREEN_FAULT_TOUCH)));
+    const auto both = display.pixels;
+    assert(both != normal && both != touchFault && both != renderFault);
+    assert(renderer.render(snapshot, "", error));
+    assert(display.pixels == normal);
+    // The strip is a warning-colored 12px label at the top-right corner.
+    const auto palette = optimized::paletteFor("dark");
+    bool foundWarning = false;
+    for (int y = 4; y < 16 && !foundWarning; ++y)
+        for (int x = 480 - 108; x < 480 - 8; ++x)
+            if (touchFault[1 + y * 480 + x] == palette.warning) { foundWarning = true; break; }
+    assert(foundWarning);
+}
+
+
+void ellipsis() {
+    const char* longLabel = "室内温度设定值与回读对比";
+    auto frame = [](const char* value, uint16_t maxWidth, uint8_t scale) {
+        std::vector<uint16_t> guard(480 * 480 + 2, 0xBEEF);
+        {
+            optimized::StripeCanvas canvas(guard.data() + 1, 480, 480, 0, 480);
+            canvas.clear(0);
+            canvas.text(10, 100, value, 0x7E3F, maxWidth, scale);
+        }
+        assert(guard.front() == 0xBEEF && guard.back() == 0xBEEF);
+        return std::vector<uint16_t>(guard.begin() + 1, guard.end() - 1);
+    };
+    for (uint8_t scale : {1, 2}) {
+        const int unit = 12 * scale;
+        char ellipsisText[4];
+        ellipsisText[0] = char(0xE2); ellipsisText[1] = char(0x80);
+        ellipsisText[2] = char(0xA6); ellipsisText[3] = 0;
+        const auto solo = frame(ellipsisText, 480, scale);
+        size_t soloInk = 0;
+        for (int gy = 100; gy < 100 + unit; ++gy)
+            for (int gx = 10; gx < 10 + unit; ++gx)
+                if (solo[gy * 480 + gx]) ++soloInk;
+        assert(soloInk > 0); // the U+2026 glyph really renders from this font
+        const uint16_t fitsWidth = static_cast<uint16_t>(10 + unit * 12);
+        const auto fits = frame(longLabel, fitsWidth, scale);
+        for (uint16_t width : {static_cast<uint16_t>(10 + unit * 3),
+                               static_cast<uint16_t>(10 + unit * 7)}) {
+            const auto cut = frame(longLabel, width, scale);
+            assert(cut != fits);
+            // Ink never crosses the requested width bound.
+            for (size_t i = 0; i < cut.size(); ++i)
+                if (cut[i]) assert(int(i % 480) < 10 + int(width));
+            // The freed last slot is the previous glyph with the U+2026
+            // glyph OR-ed over it (font mode 1 draws transparently).
+            const int slot = 10 + (int(width) - 10) / unit * unit - unit;
+            const int glyphs = (int(width) - 10) / unit;
+            char prefixValue[40] = {};
+            std::strncpy(prefixValue, longLabel, static_cast<size_t>(glyphs) * 3);
+            const auto prefix = frame(prefixValue, 480, scale);
+            for (int gy = 100; gy < 100 + unit; ++gy)
+                for (int gx = 0; gx < unit; ++gx)
+                    assert(cut[gy * 480 + slot + gx] ==
+                           uint16_t(prefix[gy * 480 + slot + gx] | solo[gy * 480 + 10 + gx]));
+            // A label that fits keeps its final character instead.
+            const int fitSlot = 10 + unit * 11;
+            bool differsFromEllipsis = false;
+            for (int gy = 100; gy < 100 + unit && !differsFromEllipsis; ++gy)
+                for (int gx = 0; gx < unit; ++gx)
+                    if (fits[gy * 480 + fitSlot + gx] != solo[gy * 480 + 10 + gx])
+                        { differsFromEllipsis = true; break; }
+            assert(differsFromEllipsis);
+        }
+    }
+}
+
+void historySelect() {
+    auto snapshot = scene(ScreenVisualType::LINE, 300, 8);
+    auto& card = snapshot.cards[0];
+    card.kind = ScreenCardKind::DATA;
+    card.interactive = false;  // panel config never marks trend cards interactive
+    card.pending = false;
+    card.precision = 2;
+    std::strcpy(card.unit, "C");
+    const double samples[] = {3, 9, 4, 18, 22, 8, 15, 27, 12, 6};
+    for (int i = 0; i < 10; ++i) {
+        card.history[i].value = samples[i];
+        card.history[i].sequence = 101 + i;
+        card.history[i].uptimeMs = 10000U + i * 30000U;
+        card.history[i].epochMs = 1790000000000ULL + i * 30000ULL;
+    }
+    MemoryDisplay display; optimized::StripeRenderer renderer;
+    DisplayConfigParams config{}; config.bufferLines = 16; String error;
+    assert(renderer.begin(&display, config, error));
+    const auto bounds = renderer.cardBounds(snapshot, card);
+    const int16_t plotX = bounds.x + 48, plotW = bounds.w - 62;
+    assert(plotW >= 20);
+    // Tap routing: the chart answers taps without being interactive, so the
+    // existing gesture state machine reaches the selection branch.
+    assert(renderer.hitTest(snapshot, bounds.x + bounds.w / 2, bounds.y + bounds.h / 2) == 0);
+    assert(renderer.tapTarget(snapshot, bounds.x + bounds.w / 2, bounds.y + bounds.h / 2, "") > 0);
+    assert(renderer.actionHitTest(snapshot, card, bounds.x + 30, bounds.y + 60));
+    // Uptime is evenly spaced (30s), so the dots spread linearly; a tap on
+    // each dot's pixel x selects exactly that sample (10/10 individually).
+    const auto axis = optimized::StripeRenderer::historyAxis(card);
+    assert(axis.uptime && axis.epoch);
+    for (uint8_t i = 0; i < 10; ++i) {
+        const double fraction = static_cast<double>(i) / 9;
+        const int16_t pointX = static_cast<int16_t>(plotX + fraction * plotW);
+        assert(renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(pointX)) == i);
+        assert(renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(pointX + 5)) == i);
+        assert(renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(pointX - 5)) == i);
+    }
+    // Between neighbours the nearer dot wins; an exact midpoint is a tie that
+    // keeps the left sample.
+    for (uint8_t i = 0; i < 9; ++i) {
+        const int16_t midX = static_cast<int16_t>(plotX + ((i + 0.5) / 9) * plotW);
+        const int picked = renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(midX));
+        assert(picked == i || picked == i + 1);
+    }
+    // No usable clock: positions fall back to sample order, still even.
+    for (auto& point : card.history) { point.uptimeMs = 10000; point.epochMs = 0; }
+    assert(!optimized::StripeRenderer::historyAxis(card).epoch);
+    for (uint8_t i = 0; i < 10; ++i)
+        assert(renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(
+            static_cast<int16_t>(plotX + (static_cast<double>(i) / 9) * plotW))) == i);
+    // Epoch-only axis (uptime discontinuity): position follows wall clock.
+    for (int i = 0; i < 10; ++i) {
+        card.history[i].uptimeMs = i == 5 ? 999U : 10000U + i * 30000U;
+        card.history[i].epochMs = 1790000000000ULL + i * 30000ULL;
+    }
+    const auto epochAxis = optimized::StripeRenderer::historyAxis(card);
+    assert(epochAxis.epoch && !epochAxis.uptime);
+    for (uint8_t i = 0; i < 10; ++i)
+        assert(renderer.historyTapIndex(card, bounds, static_cast<uint16_t>(
+            static_cast<int16_t>(plotX + (static_cast<double>(i) / 9) * plotW))) == i);
+    // Restore the primary uptime axis for the rendering checks below.
+    for (int i = 0; i < 10; ++i) card.history[i].uptimeMs = 10000U + i * 30000U;
+
+    auto band = [](const std::vector<uint16_t>& pixels, int y0, int y1) {
+        return std::vector<uint16_t>(pixels.begin() + y0 * 480, pixels.begin() + y1 * 480);
+    };
+    // Selecting a point changes what the detail row reads; all ten points
+    // produce pairwise distinct detail rows.
+    const int16_t detailTop = bounds.y + bounds.h - 24, detailBottom = bounds.y + bounds.h - 6;
+    const auto unselected = raster<optimized::StripeRenderer>(snapshot, 16);
+    std::vector<std::vector<uint16_t>> detailRows;
+    for (uint8_t i = 0; i < 10; ++i) {
+        card.selectedHistorySequence = card.history[i].sequence;
+        const auto frame = raster<optimized::StripeRenderer>(snapshot, 16);
+        assert(i != 0 || frame != unselected);
+        const auto row = band(frame, detailTop, detailBottom);
+        for (const auto& previous : detailRows) assert(previous != row);
+        detailRows.push_back(row);
+    }
+    // The top Y tick carries the unit; the middle tick must not change when
+    // the unit is removed.
+    const int16_t topTick = bounds.y + 30, midTick = bounds.y + 35 + (bounds.h - 91) / 2 - 5;
+    std::strcpy(card.unit, "C");
+    const auto withUnit = raster<optimized::StripeRenderer>(snapshot, 16);
+    std::strcpy(card.unit, "");
+    const auto withoutUnit = raster<optimized::StripeRenderer>(snapshot, 16);
+    assert(band(withUnit, topTick, topTick + 12) != band(withoutUnit, topTick, topTick + 12));
+    assert(band(withUnit, midTick, midTick + 12) == band(withoutUnit, midTick, midTick + 12));
+    // Tick precision follows card.precision instead of being clamped to 1.
+    std::strcpy(card.unit, "C");
+    card.precision = 0;
+    const auto wholeTicks = raster<optimized::StripeRenderer>(snapshot, 16);
+    card.precision = 2;
+    const auto hundredthTicks = raster<optimized::StripeRenderer>(snapshot, 16);
+    assert(band(wholeTicks, topTick, topTick + 12) != band(hundredthTicks, topTick, topTick + 12));
+    assert(band(wholeTicks, midTick, midTick + 12) != band(hundredthTicks, midTick, midTick + 12));
+    compare(snapshot, "history-selected-precision-unit");
+}
+
+// F3 large-font tiers: the wqy16 build ("largefont" namespace, compiled with
+// FASTBEE_SCREEN_LARGE_FONT=1) switches the card value to tier 3 (32px
+// wqy16 X2) and the title to tier 4 (16px wqy16 native) at rect.h>=120,
+// while the default build degrades those requests to the wqy12 tiers.
+void largeFont() {
+    // mapRect scales logical rows into the 408-row content area; pin the
+    // page logical height so the card heights below are physical pixels.
+    const auto physical = [](ScreenPanelSnapshot snapshot) {
+        snapshot.pages[1].logicalHeight = 408;
+        return snapshot;
+    };
+    // Value tier threshold: identical pixels below 120, different at 120.
+    for (int h : {119, 120}) {
+        auto snapshot = physical(scene(ScreenVisualType::VALUE, h, 60));
+        snapshot.cards[0].pending = false;
+        const auto small = raster<optimized::StripeRenderer>(snapshot, 16);
+        const auto large = raster<largefont::StripeRenderer>(snapshot, 16);
+        if (h == 119) equalPixels(small, large, "value-tier-below-threshold", 16);
+        else assert(small != large);
+    }
+    // Title tier in isolation: STATUS cards draw no drawValue, so only the
+    // title can differ when it switches to the 16px face at rect.h>=120.
+    for (int h : {119, 120}) {
+        auto snapshot = physical(scene(ScreenVisualType::STATUS, h, 60));
+        snapshot.cards[0].pending = false;
+        const auto small = raster<optimized::StripeRenderer>(snapshot, 16);
+        const auto large = raster<largefont::StripeRenderer>(snapshot, 16);
+        if (h == 119) equalPixels(small, large, "title-tier-below-threshold", 16);
+        else assert(small != large);
+    }
+    // The 32px face spans multiple stripes: every stripe height, including
+    // the 16-line production one, must reproduce the full-frame reference.
+    auto snapshot = physical(scene(ScreenVisualType::VALUE, 160, 60));
+    snapshot.cards[0].pending = false;
+    const auto wanted = raster<largefont::StripeRenderer>(snapshot, 480);
+    for (int lines : {480, 1, 7, 16, 31})
+        equalPixels(wanted, raster<largefont::StripeRenderer>(snapshot, lines), "large-font-stripes", lines);
+    // Tier 3 lays down more ink than the 24px wqy12 X2 tier.
+    const auto small = raster<optimized::StripeRenderer>(snapshot, 16);
+    const auto textColor = optimized::paletteFor("dark").text;
+    const auto ink = [&](const std::vector<uint16_t>& pixels) {
+        return std::count(pixels.begin(), pixels.end(), textColor);
+    };
+    assert(ink(wanted) > ink(small));
+}
+
 int main(int argc, char** argv) {
     static_assert(sizeof(u8g2_uint_t) == 2, "480px requires 16-bit U8g2 coordinates");
     assert(argc == 2);
@@ -836,6 +1172,10 @@ int main(int argc, char** argv) {
     else if (group == "preview") preview();
     else if (group == "navigation-history") navigationHistory();
     else if (group == "control-targets") controlTargets();
+    else if (group == "faults") faults();
+    else if (group == "ellipsis") ellipsis();
+    else if (group == "history-select") historySelect();
+    else if (group == "large-font") largeFont();
     else return 3;
     assert(allocations.empty());
     std::printf("%s raster comparisons passed (%zu pixel comparisons)\n", group.c_str(), comparisons);

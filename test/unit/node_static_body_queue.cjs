@@ -22,11 +22,15 @@ async function probe(minified) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = 'http://127.0.0.1:' + server.address().port;
+  // index.html's inline queue now reads document.currentScript (boot nonce);
+  // stub just enough DOM for the vm sandbox. Keep vm execution inside try so
+  // a setup error closes the server and the process exits instead of hanging.
   const sandbox = {console, Promise, AbortController, URL, fetch,
+    document: {currentScript: null},
     setTimeout(fn, ms) { return setTimeout(fn, ms === 8000 ? 150 : ms >= 800 ? 1 : ms); }, clearTimeout};
   sandbox.window = sandbox; vm.createContext(sandbox);
-  vm.runInContext(minified ? minifyJS(queue + '\n' + loader) : queue + '\n' + loader, sandbox);
   try {
+    vm.runInContext(minified ? minifyJS(queue + '\n' + loader) : queue + '\n' + loader, sandbox);
     const page = sandbox.PageLoader;
     let released = false;
     const active = page._enqueueOp(() => page._fetchWithRetry(base + '/ok', 0));

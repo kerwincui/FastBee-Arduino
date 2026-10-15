@@ -399,10 +399,6 @@
             };
         },
 
-        _protocolMotorReport(data, waiting) {
-            window.renderModbusMotorReport(document.getElementById('modbus-ctrl-motor-report'), data, waiting, '窗口');
-        },
-
         async _protocolMotorRequest(params, action, value) {
             var self = this, index = this._activeDeviceIdx;
             var generation = this._modbusCtrlGeneration || 0;
@@ -415,12 +411,6 @@
             this._protocolMotorSequence = (this._protocolMotorSequence || 0) + 1;
             var requestId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + this._protocolMotorSequence;
             if (!isRead) pending[key] = requestId;
-            // A newer stop may finish before this operation. Only the latest
-            // control in this view may change its report display; reads never do.
-            var report = function(data, waiting) {
-                if (!isRead && current() && pending[key] === requestId) self._protocolMotorReport(data, waiting);
-            };
-            report(null, true);
             var started = Date.now(), operationId = 0;
             var terminal = false;
             try {
@@ -440,7 +430,6 @@
                     operationId = data.operationId;
                     if (!data.pending) {
                         terminal = true;
-                        report(data);
                         if (data.success !== true) throw new Error(data.error || '电机未确认指令');
                         return response;
                     }
@@ -462,7 +451,6 @@
                     }
                 }
             } catch (error) {
-                if (!terminal) report(null);
                 if (!current()) {
                     var stale = new Error('控制窗口已关闭，已提交指令不会重发');
                     stale.motorViewClosed = true; throw stale;

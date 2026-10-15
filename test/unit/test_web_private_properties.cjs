@@ -14,11 +14,14 @@ const m = helper.MAPPING;
 const records = helper.readAuditSources(root);
 
 function checkAuditor() {
-    // The original 289 mappings are an append-only published contract. A future
-    // extension cannot rename already reviewed members by inserting/reordering.
-    const first289 = JSON.stringify(Object.entries(m).slice(0, 289));
-    assert.equal(crypto.createHash('sha256').update(first289).digest('hex'),
-        'b60edad74f8c8e208c775af334eada0eecb55d4a8d25a2664048f482f08874f8');
+    // The mapping is a published contract: the pending-report/uart-text
+    // cleanup retired _renderPendingReportStatus and _renderUartTextStatus,
+    // leaving 288 mappings and shifting execution-family indices after the
+    // gaps. The first 288 entries below are pinned so a future extension
+    // cannot rename already reviewed members by inserting/reordering.
+    const first288 = JSON.stringify(Object.entries(m).slice(0, 288));
+    assert.equal(crypto.createHash('sha256').update(first288).digest('hex'),
+        '965b6718a64a29ad108b8ec6be0c08acb3125501a1559a6fc585a50957fff273');
     assert.equal(m._restoreRtcBootSeed, '$p38');
     assert.equal(helper.auditPrivateRuntimeSources(records, root).members, Object.keys(m).length);
     assert.equal(new Set(Object.values(m)).size, Object.keys(m).length);

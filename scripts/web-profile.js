@@ -391,6 +391,13 @@ function writeWebResourceManifest(wwwDir, context = resolveWebBuildContext()) {
         .map((filePath) => path.relative(wwwDir, filePath).replace(/\\/g, '/'))
         .filter((relPath) => shouldIncludeAsset(relPath, context))
         .sort();
+    // sw.js is generated from web-src/sw.js.template after the module build
+    // finishes; it is always published, so declare it before the file exists.
+    if (!resources.includes('sw.js') &&
+        fs.existsSync(path.join(ROOT_DIR, 'web-src', 'sw.js.template'))) {
+        resources.push('sw.js');
+        resources.sort();
+    }
     const manifest = {
         schemaVersion: 1,
         environment: context.environment,

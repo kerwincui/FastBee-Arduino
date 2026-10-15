@@ -18,6 +18,8 @@ MANAGER_CPP = "\n".join(
     )
 )
 ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/core/PeripheralRouteMapper.cpp",
+    "src/core/PeripheralParamApply.cpp",
     "src/network/handlers/PeripheralRouteHandler.cpp",
     "src/network/handlers/PeripheralReadRoutes.cpp",
 ))
@@ -224,8 +226,14 @@ class ServoConfigContractTests(unittest.TestCase):
         detail = function_body(
             ROUTE_CPP, r"\bPeripheralRouteHandler::handleGetPeripheral\s*\("
         )
-        self.assertRegex(add, r"applyServoParams\s*\([^;]*\btrue\b")
-        self.assertRegex(update, r"applyServoParams\s*\([^;]*\bfalse\b")
+        # The legacy per-type readers moved into the core parameter unit; the
+        # mutation routes still apply servo params with reset on add only.
+        add_params = function_body(ROUTE_CPP, r"\bapplyAddTypeParams\s*\(")
+        update_params = function_body(ROUTE_CPP, r"\bapplyUpdateTypeParams\s*\(")
+        self.assertRegex(add_params, r"applyServoParams\s*\([^;]*\btrue\b")
+        self.assertRegex(update_params, r"applyServoParams\s*\([^;]*\bfalse\b")
+        self.assertIn("applyAddTypeParams", add)
+        self.assertIn("applyUpdateTypeParams", update)
         self.assertIn("addServoParams", detail)
         self.assertIn("addPeripheralAndSave", add)
         self.assertIn("updatePeripheralAndSave", update)
@@ -273,10 +281,13 @@ class ServoConfigContractTests(unittest.TestCase):
             add,
             r'getParamBool\s*\(\s*request\s*,\s*"enabled"\s*,\s*false\s*\)',
         )
+        # Creation never energizes a servo; that rule lives in the core-side
+        # legacy add-type reader now.
+        add_params = function_body(ROUTE_CPP, r"\bapplyAddTypeParams\s*\(")
         servo_branch = re.search(
             r"config\.type\s*==\s*PeripheralType::PWM_SERVO(?P<body>.*?)"
             r"(?:else\s+if|\n\s*if\s*\(config\.id\.isEmpty)",
-            add,
+            add_params,
             re.S,
         )
         self.assertIsNotNone(servo_branch)

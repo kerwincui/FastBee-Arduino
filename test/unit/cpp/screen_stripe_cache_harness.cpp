@@ -8,6 +8,8 @@
 #include "screen/StripeChangeCache.h"
 #include "screen/ScreenInteraction.h"
 #include "screen/WeatherStatusText.h"
+#include "screen/PanelStatusText.h"
+#include "screen/ScreenThemeVocabulary.h"
 
 using namespace FastBee::Screen;
 using String = std::string;
@@ -53,6 +55,11 @@ struct ScreenPanelCardSnapshot {
     float weatherTemperature = 0;
 };
 const char* qualityText(ScreenValueQuality) { return "unknown"; }
+enum ScreenFaultFlag : uint8_t {
+    SCREEN_FAULT_NONE = 0,
+    SCREEN_FAULT_RENDER_RETRY = 0x01,
+    SCREEN_FAULT_TOUCH = 0x02,
+};
 using PixelRect = ScreenPixelRect;
 static std::vector<uint16_t> desired(480*480, 1);
 struct StripeCanvas {
@@ -85,6 +92,7 @@ struct StripeRenderer {
     void drawPage(StripeCanvas& c, const ScreenPanelSnapshot&, const ScreenPanelPageSnapshot&, const Palette&) { c.paint(); }
     void drawEmpty(StripeCanvas& c, const Palette&) { c.paint(); }
     void drawConfirmation(StripeCanvas& c, const ScreenPanelSnapshot&, const char*, const Palette&) { c.paint(); }
+    void drawFaultIndicator(StripeCanvas&, const Palette&, uint8_t) const {}
     void drawWeatherIcon(StripeCanvas& c,const char* condition,int,int,uint16_t,const Palette&) const { c.weatherIcon=condition; }
     static bool booleanValue(const char* s) { return !std::strcmp(s,"true"); }
 #include "production_stripe_renderer.inc"

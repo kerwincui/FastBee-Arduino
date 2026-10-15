@@ -20,6 +20,8 @@ async function bundleOutcome(mode) {
         document: {getElementById(id) { return id === 'dev-config-import-file' ? input : id === 'dev-config-import-btn' ? button : null; }},
         Notification: {error(value) { errors.push(value); }, success(value) { successes.push(value); }, warning() {}},
         confirm: () => mode !== 'review-cancel',
+        // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean>），与 confirm 桩同语义。
+        FBConfirm: async () => mode !== 'review-cancel',
         apiGetFresh: async url => {
             calls.push({url});
             assert.equal(url, '/api/config/migration');

@@ -18,6 +18,8 @@ MANAGER_CPP = "\n".join(
     )
 )
 ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
+    "src/core/PeripheralRouteMapper.cpp",
+    "src/core/PeripheralParamApply.cpp",
     "src/network/handlers/PeripheralRouteHandler.cpp",
     "src/network/handlers/PeripheralReadRoutes.cpp",
     "src/network/handlers/PeripheralRouteReadSupport.h",
@@ -29,7 +31,10 @@ PERIPHERAL_SAVE_JS = (ROOT / "web-src/modules/runtime/peripheral-save.js").read_
 EXEC_FORM_JS = (ROOT / "web-src/modules/runtime/periph-exec-form.js").read_text(encoding="utf-8")
 EXEC_MODBUS_JS = (ROOT / "web-src/modules/runtime/periph-exec-modbus.js").read_text(encoding="utf-8")
 EXEC_SENSOR_JS = (ROOT / "web-src/modules/runtime/periph-exec-sensor.js").read_text(encoding="utf-8")
-MODALS_HTML = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8")
+MODALS_HTML = "\n".join(
+    (ROOT / path).read_text(encoding="utf-8")
+    for path in ("web-src/pages/modals.html", "web-src/pages/peripheral-modals.html")
+)
 PERIPHERAL_IO_HTML = (ROOT / "web-src/pages/fragments/peripheral-io.html").read_text(encoding="utf-8")
 
 
@@ -179,8 +184,6 @@ class EncoderContractTests(unittest.TestCase):
             self.assertIn(f'params["{field}"]', decode)
 
         for handler in (
-            "handleAddPeripheral",
-            "handleUpdatePeripheral",
             "handleGetPeripheral",
             "handleReadPeripheral",
             "handleGetPeripheralStatus",
@@ -190,6 +193,18 @@ class EncoderContractTests(unittest.TestCase):
                 ROUTE_CPP, rf"\bPeripheralRouteHandler::{handler}\s*\("
             )
             self.assertIn("PeripheralType::ENCODER", body)
+        # The add/update legacy type readers moved into the core parameter
+        # unit; the mutation routes delegate to them.
+        for handler, reader in (
+            ("handleAddPeripheral", "applyAddTypeParams"),
+            ("handleUpdatePeripheral", "applyUpdateTypeParams"),
+        ):
+            body = function_body(
+                ROUTE_CPP, rf"\bPeripheralRouteHandler::{handler}\s*\("
+            )
+            self.assertIn(reader, body)
+            reader_body = function_body(ROUTE_CPP, rf"\b{reader}\s*\(")
+            self.assertIn("PeripheralType::ENCODER", reader_body)
 
     def test_encoder_isr_has_no_fake_fallback_and_uses_both_phases(self):
         setup = function_body(MANAGER_CPP, r"\bPeripheralManager::setupHardware\s*\(")

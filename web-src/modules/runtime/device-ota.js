@@ -310,7 +310,7 @@
 
         // ============ 在线升级（URL 下载） ============
 
-        startOnlineUpgrade() {
+        async startOnlineUpgrade() {
             const epoch = this._otaEpoch || 0;
             if (this._otaBusy) return;
             if (!this._otaSupported) {
@@ -329,7 +329,7 @@
                     t('dev-ota-no-network-hint', '当前未检测到可用的网络连接，请先连接网络，或选择本地文件上传方式升级。'));
                 return;
             }
-            if (!confirm(t('dev-ota-confirm-online', '确定从该地址下载固件并升级？升级过程中请勿断电。'))) return;
+            if (!await FBConfirm({ title: '在线升级', message: t('dev-ota-confirm-online', '确定从该地址下载固件并升级？升级过程中请勿断电。'), danger: true })) return;
 
             this._setBusy(true);
             this._resetProgress();
@@ -376,7 +376,7 @@
             if (nameEl) nameEl.textContent = file.name + ' (' + formatBytes(file.size) + ')';
         },
 
-        startLocalUpload() {
+        async startLocalUpload() {
             const epoch = this._otaEpoch || 0;
             if (this._otaBusy) return;
             if (!this._otaSupported) {
@@ -405,7 +405,7 @@
                     t('dev-ota-file-too-large', '固件大小超出可用升级空间'));
                 return;
             }
-            if (!confirm(t('dev-ota-confirm-upload', '确认上传固件并升级？升级过程中设备将重启，请勿断电。'))) return;
+            if (!await FBConfirm({ title: '固件上传升级', message: t('dev-ota-confirm-upload', '确认上传固件并升级？升级过程中设备将重启，请勿断电。'), danger: true })) return;
 
             this._setBusy(true);
             this._resetProgress();

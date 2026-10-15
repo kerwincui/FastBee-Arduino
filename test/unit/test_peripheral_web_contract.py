@@ -8,7 +8,11 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-MODALS = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8")
+# 2026-10-15 起外设编辑器模板拆分为 pages/peripheral-modals.html（懒加载模板包），
+# 契约断言继续覆盖合并后的全部模态框标记。
+MODALS = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8") + (
+    ROOT / "web-src/pages/peripheral-modals.html"
+).read_text(encoding="utf-8")
 PERIPHERALS = (ROOT / "web-src/modules/runtime/peripherals.js").read_text(
     encoding="utf-8"
 )
@@ -153,7 +157,8 @@ class PeripheralWebContractTests(unittest.TestCase):
         self.assertIn("operation: 'enable'", PERIPHERALS)
         self.assertIn("payload.acknowledgements = acknowledgements", PERIPHERALS)
         self.assertIn("'/api/peripherals/disable'", PERIPHERALS)
-        self.assertIn("if (!confirm('启用前预检提示", PERIPHERALS)
+        # B4 起确认走异步 FBConfirm（Promise<boolean>），仍须先展示预检警告再确认。
+        self.assertIn("if (!await FBConfirm({ message: '预检提示：", PERIPHERALS)
 
 
 if __name__ == "__main__":

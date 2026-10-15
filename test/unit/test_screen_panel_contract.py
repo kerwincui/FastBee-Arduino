@@ -480,7 +480,9 @@ int main(){
         for token in (
             "MAX_SOURCES = 24",
             "MAX_SAMPLES_PER_SOURCE = 10",
-            "FLUSH_DEADLINE_MS = 30000",
+            "FLUSH_DEADLINE_MS = 180000",
+            "FLUSH_COALESCE_MIN_MS = 120000",
+            "PEER_WRITE_WINDOW_MS = 2000",
             "MAX_FILE_BYTES = 64 * 1024",
         ):
             self.assertIn(token, HISTORY_HEADER)
@@ -491,6 +493,8 @@ int main(){
         self.assertNotIn("sample.value == value", record)
         tick = braced_block(HISTORY, "void PointHistory::tick(uint32_t nowMs)")
         self.assertIn("FLUSH_DEADLINE_MS", tick)
+        self.assertIn("FLUSH_COALESCE_MIN_MS", tick)
+        self.assertIn("lastFlashWriteMs", tick)
         self.assertIn('out["points"]', HISTORY)
         flush = braced_block(HISTORY, "bool PointHistory::flushNow(uint32_t timeoutMs)")
         self.assertIn("if (!_initialized) return true", flush)

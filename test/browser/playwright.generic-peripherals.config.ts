@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './suites',
   testMatch: /28-generic-peripherals\.spec\.ts/,
-  outputDir: './test-results/generic-peripherals',
+  outputDir: '../../artifacts/test-results/generic-peripherals',
   fullyParallel: false,
   workers: 1,
   retries: 0,

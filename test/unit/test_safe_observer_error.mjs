@@ -80,6 +80,7 @@ async function executeChecker(filename, kind) {
     };
     const bindings = { assert, fs, path, checkerModuleUrl: filename, createRequire: () => fakeRequire,
         isReadOnlyBatch: () => false, isReadOnlyMotorStatus: () => false, isIntentionalHealthCancellation: () => false,
+        isNavigatedAbortedRead: () => false,
         waitForMainShellStyles: async () => {},
         safeObservationError: (fault, phase) => safeObservationError(fault, phase, options),
         safeObservationEvents, safeObservationCaptureStats, process: checkerProcess,

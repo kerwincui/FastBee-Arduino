@@ -163,10 +163,10 @@
                 });
         },
 
-        clearLogs() {
+        async clearLogs() {
             const select = document.getElementById('log-file-select');
             const file = select && select.value ? select.value : 'system.log';
-            if (!confirm('确认清空日志文件 ' + file + '？')) return;
+            if (!await FBConfirm({ title: '清空日志', message: '确认清空日志文件 ' + file + '？该操作不可恢复。', danger: true })) return;
             apiPost('/api/logs/clear', { file })
                 .then((res) => {
                     if (res && res.success) {

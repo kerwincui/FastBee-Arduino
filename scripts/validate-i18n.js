@@ -31,10 +31,14 @@ if (staleActiveReferences.length > 0) {
 
 const i18nDir = path.join(root, 'web-src', 'i18n');
 const sourceFiles = fs.existsSync(i18nDir)
-    ? fs.readdirSync(i18nDir).filter((file) => /\.js$/.test(file))
+    ? fs.readdirSync(i18nDir).filter((file) => /.js$/.test(file))
     : [];
-if (sourceFiles.length === 0 && !buildScript.includes('i18n support removed')) {
-    console.error('i18n validation failed: no locale sources and no unified-build declaration');
+if (sourceFiles.length > 0) {
+    console.error(`i18n validation failed: locale sources reappeared: ${sourceFiles.join(', ')}`);
     process.exit(1);
 }
-console.log(`i18n validation passed: embedded=true, localeSources=${sourceFiles.length}`);
+if (/data-i18n|__fastbeeLoadZhChunks/.test(index) || /data-i18n/.test(fullscreen)) {
+    console.error('i18n validation failed: i18n residue attributes remain in active pages');
+    process.exit(1);
+}
+console.log('i18n validation passed: embedded=true, localeSources=0');

@@ -279,9 +279,9 @@
             this._irDeleteKey(name);
         },
 
-        _irDeleteKey(name) {
+        async _irDeleteKey(name) {
             var self = this;
-            if (!confirm('确定删除按键 "' + name + '" 吗？')) return;
+            if (!await FBConfirm({ title: '删除按键', message: '确定删除按键 "' + name + '" 吗？', danger: true })) return;
             apiPost('/api/ir/keys/delete', { name: name })
                 .then(function(res) {
                     if (res && res.success) {
@@ -296,10 +296,10 @@
                 });
         },
 
-        _irClearKeys() {
+        async _irClearKeys() {
             if (!this.guardDeveloperModeAction()) return;
             var self = this;
-            if (!confirm('确定清除全部红外按键吗？该操作不可恢复。')) return;
+            if (!await FBConfirm({ title: '清除全部按键', message: '确定清除全部红外按键吗？该操作不可恢复。', danger: true, requireCheck: true, checkLabel: '我已确认不再需要任何红外按键配置' })) return;
             apiPost('/api/ir/keys/clear', {})
                 .then(function(res) {
                     if (res && res.success) {

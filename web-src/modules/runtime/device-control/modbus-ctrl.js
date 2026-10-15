@@ -541,9 +541,6 @@
             refresh();
         },
 
-        _dcMotorReport: function(devIdx, data, waiting) {
-            window.renderModbusMotorReport(document.getElementById('dc-motor-report-' + devIdx), data, waiting, '页面');
-        },
 
         _dcMotorRequest: function(devIdx, action, value) {
             var self = this, p = this._dcGetMotorParams(devIdx);
@@ -554,11 +551,6 @@
             this._dcMotorSequence = (this._dcMotorSequence || 0) + 1;
             var token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + this._dcMotorSequence;
             if (!isRead) pending[key] = token;
-            function report(data, waiting) {
-                if (!isRead && self._dcIsLifecycleActive(generation) && pending[key] === token)
-                    self._dcMotorReport(devIdx, data, waiting);
-            }
-            report(null, true);
             var started = Date.now();
             var operationId = 0;
             var terminal = false;
@@ -573,7 +565,6 @@
                 }
                 if (!data.pending) {
                     terminal = true;
-                    report(data);
                     // Older firmware returns success only at the envelope.
                     // Never mistake a failed asynchronous operation for that
                     // legacy response shape.
@@ -596,7 +587,6 @@
             return apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action, value: value || 0, requestId: token
             }).then(completed).catch(function(error) {
-                if (!terminal) report(null);
                 throw error;
             }).finally(function() {
                 if (pending[key] === token) delete pending[key];
@@ -624,13 +614,16 @@
             var sf = Math.pow(10, decimals || 0);
             var speed = document.getElementById('dc-motor-speed-' + devIdx);
             var pulse = document.getElementById('dc-motor-pulse-' + devIdx);
+            var count = document.getElementById('dc-motor-count-' + devIdx);
             var direction = document.getElementById('dc-motor-dir-' + devIdx);
             var run = document.getElementById('dc-motor-run-' + devIdx);
             if (speed && data.speed !== undefined) speed.textContent = (data.speed / sf).toFixed(decimals || 0);
             if (pulse && data.pulse !== undefined) pulse.textContent = data.pulse;
+            if (count && data.count !== undefined) count.textContent = data.count;
             if (data.parametersKnown === false && data.parametersCached !== true) {
                 if (speed) speed.textContent = '--';
                 if (pulse) pulse.textContent = '--';
+                if (count) count.textContent = '--';
             }
             ['speed', 'pulse'].forEach(function(param) {
                 var input = document.getElementById('dc-motor-' + param + '-in-' + devIdx);

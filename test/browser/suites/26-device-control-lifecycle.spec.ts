@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures/base.fixture';
+import { uiScreenshotPath } from '../evidence-paths';
 import type { Page, Request, Route } from '@playwright/test';
 
 const DEVICE_CONTROL_APIS = [
@@ -158,7 +159,7 @@ test.describe('Suite-26: deviceControl lifecycle', () => {
     await authPage.waitForTimeout(100);
     const mobileToolbar = await authPage.evaluate(() => {
       const card = document.querySelector('.dc-header-card')?.getBoundingClientRect();
-      const actions = document.querySelector('.dc-header-actions')?.getBoundingClientRect();
+      const actions = document.querySelector('.dc-header-group')?.getBoundingClientRect();
       const labelElement = document.querySelector('.dc-sid-toggle');
       const label = labelElement?.getBoundingClientRect();
       if (!card || !actions || !label || !labelElement) return null;
@@ -233,7 +234,7 @@ test.describe('Suite-26: deviceControl lifecycle', () => {
       );
       expect(overflow, `${width}px Modbus 子设备清单不应横向溢出`).toBeFalsy();
       await authPage.screenshot({
-        path: `test-results/ui/UI-027C-modbus-inventory-${width}.png`,
+        path: uiScreenshotPath(`UI-027C-modbus-inventory-${width}.png`),
         fullPage: true,
       });
     }

@@ -70,6 +70,18 @@ class DeviceWebSmokeContractTests(unittest.TestCase):
         self.assertIn("manifest declared no resources", SCRIPT)
         self.assertIn("manifest contained no usable resource paths", SCRIPT)
 
+    def test_curl_resolution_selects_a_single_command_and_prefers_system32(self):
+        self.assertIn(
+            "$curlCandidates = @(Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue)",
+            SCRIPT,
+        )
+        self.assertIn("$curlCandidates = @(Get-Command curl -CommandType Application -ErrorAction Stop)", SCRIPT)
+        self.assertIn('Join-Path $env:SystemRoot "System32\\curl.exe"', SCRIPT)
+        self.assertIn("Select-Object -First 1", SCRIPT)
+        self.assertIn("$curlPath = $curl[0].Source", SCRIPT)
+        self.assertNotIn("$curl = Get-Command curl.exe", SCRIPT)
+        self.assertNotIn("$curlPath = $curl.Source", SCRIPT)
+
 
 if __name__ == "__main__":
     unittest.main()

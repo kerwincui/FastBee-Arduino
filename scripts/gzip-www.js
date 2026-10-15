@@ -253,13 +253,20 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
 function collectStageWhitelist(buildResult) {
     const files = new Set();
 
+    // sw.js 由 generateManifest 从 web-src/sw.js.template 生成（无 web-src 开发副本），
+    // 不在 staticAssets 同步清单内；统一架构始终发布 SW，staging 必须包含。
+    addWhitelistPath(files, 'sw.js');
     buildResult.staticAssets.forEach((item) => addWhitelistPath(files, item.dest));
     buildResult.syncedModules.forEach((item) => addWhitelistAbsolute(files, item.publishFile));
-    buildResult.i18nModules.forEach((item) => addWhitelistAbsolute(files, item.publishFile));
+    (buildResult.i18nModules || []).forEach((item) => addWhitelistAbsolute(files, item.publishFile));
     (buildResult.subdirBundles || []).forEach((item) => addWhitelistAbsolute(files, item.outPath));
 
     if (buildResult.adminBundle) {
-        addWhitelistAbsolute(files, buildResult.adminBundle.outputFile);
+        // The per-module admin builder may not emit a legacy aggregate bundle;
+        // only whitelist the aggregate when it actually exists on disk.
+        if (buildResult.adminBundle.outputFile && fs.existsSync(buildResult.adminBundle.outputFile)) {
+            addWhitelistAbsolute(files, buildResult.adminBundle.outputFile);
+        }
         (buildResult.adminBundle.modules || []).forEach((item) => addWhitelistAbsolute(files, item.publishFile));
         (buildResult.adminBundle.stubs || []).forEach((item) => addWhitelistAbsolute(files, item.stubFile));
     }
@@ -575,7 +582,7 @@ async function buildPublishStage() {
     buildResult.syncedModules.forEach((item) => {
         console.log(`  Synced: ${path.relative(ROOT_DIR(), item.publishFile)} (${item.size} bytes)`);
     });
-    buildResult.i18nModules.forEach((item) => {
+    (buildResult.i18nModules || []).forEach((item) => {
         console.log(`  Synced: ${path.relative(ROOT_DIR(), item.publishFile)} (${item.size} bytes${item.minified ? ', minified' : ''})`);
     });
     console.log(`  Built: ${path.relative(ROOT_DIR(), buildResult.adminBundle.outputFile)} (${buildResult.adminBundle.size} bytes)`);

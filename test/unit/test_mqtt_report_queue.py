@@ -59,6 +59,7 @@ for _case in ('test_isolation', 'test_retains_existing', 'test_counter_saturatio
               'retire_once', 'retire_retained', 'retire_empty_preserves', 'retire_unknown',
               'retire_reasons', 'retire_saturation', 'retire_concurrent', 'retire_json_unavailable',
               'throttle_concurrent', 'json', 'json_unavailable', 'raw', 'heap', 'foreground',
+              'consecutive_distinct',
               'topic_offline', 'topic_transform_frozen', 'topic_reject', 'topic_packet', 'topic_pinned', 'topic_test_isolation',
               'topic_route_retain', 'topic_flush_guards', 'topic_transform_failure'):
     setattr(MqttReportQueueTests, 'test_'+_case, lambda self, case=_case:self.check(case))

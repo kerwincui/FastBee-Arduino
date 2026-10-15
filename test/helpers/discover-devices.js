@@ -6,10 +6,10 @@
  * macAddress 为准，发现流程：并发探测子网 HTTP → 解析 status → 按 MAC 过滤。
  *
  * CLI：
- *   node test/e2e/helpers/discover-devices.js               # 列出所有 FastBee 设备
- *   node test/e2e/helpers/discover-devices.js D4:E9:F4      # 按 MAC 前缀过滤（大小写不敏感）
- *   node test/e2e/helpers/discover-devices.js --ips         # 仅输出逗号分隔 IP（供脚本/spec 同步消费）
- *   node test/e2e/helpers/discover-devices.js --single-pass # 只扫一轮（快速模式，默认双扫合并防瞬时漏检）
+ *   node test/helpers/discover-devices.js               # 列出所有 FastBee 设备
+ *   node test/helpers/discover-devices.js D4:E9:F4      # 按 MAC 前缀过滤（大小写不敏感，支持冒号/连字符/无分隔符写法）
+ *   node test/helpers/discover-devices.js --ips         # 仅输出逗号分隔 IP（供脚本/spec 同步消费）
+ *   node test/helpers/discover-devices.js --single-pass # 只扫一轮（快速模式，默认双扫合并防瞬时漏检）
  *
  * 可靠性：设备 Web 服务在重启/忙碌瞬间可能丢探测请求（2026-08-22 实测单扫漏检 .31），
  * 默认双扫按 MAC 合并取并集；MAC 作为身份锚，两轮间 IP 变化也能正确去重。
@@ -22,7 +22,12 @@
 const http = require('http');
 
 function normalizeMac(value) {
-  return String(value || '').trim().replace(/-/g, ':').toUpperCase();
+  const raw = String(value || '').trim();
+  const compact = raw.replace(/[:-]/g, '');
+  if (/^[0-9a-fA-F]{12}$/.test(compact)) {
+    return compact.match(/../g).join(':').toUpperCase();
+  }
+  return raw.replace(/-/g, ':').toUpperCase();
 }
 
 function parseDeviceStatus(ip, body) {

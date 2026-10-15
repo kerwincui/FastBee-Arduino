@@ -8,6 +8,7 @@
 #if FASTBEE_ENABLE_IR_REMOTE
 
 #include "network/handlers/IrRouteHandler.h"
+#include "network/handlers/HandlerUtils.h"
 #include "network/WebHandlerContext.h"
 #include "peripherals/drivers/IRRemoteDriver.h"
 #include <ArduinoJson.h>
@@ -20,22 +21,6 @@ const char* irLearnStateName(IrLearnState state) {
         case IrLearnState::TIMEOUT: return "timeout";
         default: return "idle";
     }
-}
-int irKeyErrorStatus(const String& error) {
-    if (error == "IR_KEY_NOT_FOUND") return 404;
-    if (error.startsWith("IR_KEYS_") && error != "IR_KEYS_LIMIT") return 503;
-    if (error == "IR_UNAVAILABLE") return 503;
-    return 400;
-}
-bool parseIrLearnTimeout(const String& text, uint32_t& timeout) {
-    if (text.isEmpty() || text.length() > 5) return false;
-    uint32_t value = 0;
-    for (size_t i = 0; i < text.length(); ++i) {
-        if (text[i] < '0' || text[i] > '9') return false;
-        value = value * 10 + static_cast<uint32_t>(text[i] - '0');
-    }
-    if (value < 1000 || value > 60000) return false;
-    timeout = value; return true;
 }
 }
 
@@ -105,7 +90,7 @@ void IrRouteHandler::handleLearnStart(AsyncWebServerRequest* request)
 
     uint32_t timeoutMs = 10000;
     if (request->hasParam("timeoutMs", true)) {
-        if (!parseIrLearnTimeout(request->getParam("timeoutMs", true)->value(), timeoutMs)) {
+        if (!HandlerUtils::parseUnsignedRangeParam(request->getParam("timeoutMs", true)->value(), 1000, 60000, timeoutMs)) {
             ctx->sendError(request, 400, "timeoutMs 必须为 1000~60000 的整数"); return;
         }
     }
@@ -157,12 +142,9 @@ void IrRouteHandler::handleListKeys(AsyncWebServerRequest* request)
     if (!ir.getSnapshot(snapshot) || (!snapshot.keysLoaded && !ir.loadKeyMap()) || !ir.getKeySnapshot(keys, count)) {
         ctx->sendError(request, 503, "按键库暂不可用，请稍后重试"); return;
     }
-    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)count) +
-                  ",\"keys\":" + keys + "}}";
-    const size_t expected = sizeof("{\"success\":true,\"data\":{\"count\":") - 1 +
-                            String((int)count).length() + sizeof(",\"keys\":") - 1 + keys.length() + 2;
-    if (resp.length() != expected) { ctx->sendError(request, 503, "按键库响应内存不足"); return; }
-    request->send(200, "application/json", resp);
+    if (!HandlerUtils::sendRemoteKeyListEnvelope(request, keys, count)) {
+        ctx->sendError(request, 503, "按键库响应内存不足"); return;
+    }
 }
 
 void IrRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
@@ -184,7 +166,7 @@ void IrRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
 
     String err;
     if (!IRRemoteDriver::getInstance().upsertKey(name, code, protocol, err)) {
-        ctx->sendError(request, irKeyErrorStatus(err), err.length() ? err : String("保存失败"));
+        ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(err, "IR", "IR_UNAVAILABLE"), err.length() ? err : String("保存失败"));
         return;
     }
     ctx->sendSuccess(request, "按键已保存");
@@ -203,7 +185,7 @@ void IrRouteHandler::handleDeleteKey(AsyncWebServerRequest* request)
     name.trim();
     String error;
     if (!IRRemoteDriver::getInstance().deleteKey(name, &error)) {
-        ctx->sendError(request, irKeyErrorStatus(error), error);
+        ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(error, "IR", "IR_UNAVAILABLE"), error);
         return;
     }
     ctx->sendSuccess(request, "按键已删除");
@@ -216,7 +198,7 @@ void IrRouteHandler::handleClearKeys(AsyncWebServerRequest* request)
 
     String error;
     if (!IRRemoteDriver::getInstance().clearKeys(&error)) {
-        ctx->sendError(request, irKeyErrorStatus(error), error); return;
+        ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(error, "IR", "IR_UNAVAILABLE"), error); return;
     }
     ctx->sendSuccess(request, "已清除全部按键");
 }

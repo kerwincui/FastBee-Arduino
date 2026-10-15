@@ -1,5 +1,6 @@
 {
-  "environment": "esp32s3-F16R8-rgb-xip40-v12",
+  "environment": "esp32s3-F16R8-screen",
+  "previousEnvironment": "esp32s3-F16R8-rgb-xip40-v12",
   "buildFlags": [
     "-DFASTBEE_RGB_BOUNCE_LINES=16",
     "-DFASTBEE_RGB_REQUIRE_BOUNCE=1"

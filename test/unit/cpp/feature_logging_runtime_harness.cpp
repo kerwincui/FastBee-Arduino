@@ -72,8 +72,18 @@ struct LoggerSystem {
     bool isFileLoggingEnabled() const { return enabled; }
     void setLogLevel(int value) { level = value; }
     void error(const char*) {}
+    // D5：生产代码迁移到 LOG_* 宏，mock 补齐同名方法承接抽取的函数体。
+    void info(const char*) {}
+    void warning(const char*) {}
+    void infof(const char*, ...) {}
+    void warningf(const char*, ...) {}
 };
 #define LOGGER LoggerSystem::getInstance()
+// D5：抽取自 HealthMonitor.cpp 的代码块使用 LOG_* 宏，映射到 mock LOGGER。
+#define LOG_INFO(msg) LOGGER.info(msg)
+#define LOG_INFOF(fmt, ...) LOGGER.infof(fmt, ##__VA_ARGS__)
+#define LOG_WARNING(msg) LOGGER.warning(msg)
+#define LOG_WARNINGF(fmt, ...) LOGGER.warningf(fmt, ##__VA_ARGS__)
 
 struct ScreenPanelManager {
     static ScreenPanelManager& instance() { static ScreenPanelManager m; return m; }

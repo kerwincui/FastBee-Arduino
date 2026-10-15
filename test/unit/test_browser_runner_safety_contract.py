@@ -68,9 +68,9 @@ class BrowserRunnerSafetyContractTests(unittest.TestCase):
                 self.assertIn("FASTBEE_PLAYWRIGHT_REPORT_DIR", config)
                 self.assertIn("path.join(externalReportDir, 'html')", config)
                 self.assertIn("path.join(externalReportDir, 'results.json')", config)
-        self.assertIn("externalOutputDir || './test-results'", BASE_CONFIG)
+        self.assertIn("externalOutputDir || '../../artifacts/test-results'", BASE_CONFIG)
         self.assertIn("outputFolder: 'reports/html'", BASE_CONFIG)
-        self.assertIn("externalOutputDir || './test-results/device'", DEVICE_CONFIG)
+        self.assertIn("externalOutputDir || '../../artifacts/test-results/device'", DEVICE_CONFIG)
         self.assertIn("outputFolder: 'reports/device-html'", DEVICE_CONFIG)
 
     def test_runner_restores_report_environment_after_each_device(self):
@@ -83,6 +83,25 @@ class BrowserRunnerSafetyContractTests(unittest.TestCase):
                     f'[Environment]::SetEnvironmentVariable("{name}", $original',
                     RUNNER,
                 )
+
+    def test_ui_screenshots_use_shared_evidence_path_helper(self):
+        suites = ROOT / "test" / "browser" / "suites"
+        for spec in sorted(suites.glob("*.spec.ts")):
+            text = spec.read_text(encoding="utf-8")
+            with self.subTest(spec=spec.name):
+                self.assertNotIn("'test-results/", text)
+                self.assertNotIn("`test-results/", text)
+        helper = (ROOT / "test" / "browser" / "evidence-paths.ts").read_text(encoding="utf-8")
+        self.assertIn("artifacts", helper)
+        self.assertIn("test-results", helper)
+        self.assertIn("uiScreenshotPath", helper)
+        for name in (
+            "15-ui-regression.spec.ts",
+            "26-device-control-lifecycle.spec.ts",
+            "32-periph-exec-remote.spec.ts",
+        ):
+            with self.subTest(spec=name):
+                self.assertIn("uiScreenshotPath", (suites / name).read_text(encoding="utf-8"))
 
     def test_constrained_fixture_does_not_retry_or_persist_auth_state(self):
         self.assertIn("AUTH_LOGIN_ATTEMPT_LIMIT = CONSTRAINED_DEVICE_MODE ? 1 : 2", BASE_FIXTURE)

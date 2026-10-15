@@ -72,14 +72,29 @@ class MenuFeatureContractTests(unittest.TestCase):
         self.assertIn("if (f && f.key)", STATE)
 
     def test_log_and_script_features_are_bundled_for_users(self):
+        # Hidden members stay attached to their user-visible primary via the
+        # dependsOn field: commandScript -> ruleScript, fileLogging -> logViewer.
         self.assertRegex(
             RUNTIME_FEATURES,
-            r'registerFeature\(\{"commandScript",\s*nullptr,[\s\S]{0,180}?"ruleScript"',
+            r'registerFeature\(\{"commandScript",\s*nullptr,[\s\S]{0,400}?nullptr,\s*"ruleScript"',
         )
         self.assertRegex(
             RUNTIME_FEATURES,
-            r'registerFeature\(\{"fileLogging",\s*nullptr,[\s\S]{0,180}?"logViewer"',
+            r'registerFeature\(\{"fileLogging",\s*nullptr,[\s\S]{0,400}?nullptr,\s*"logViewer"',
         )
+        # The user-visible primary is registered before its hidden member.
+        self.assertLess(
+            RUNTIME_FEATURES.index('registerFeature({"ruleScript"'),
+            RUNTIME_FEATURES.index('registerFeature({"commandScript"'),
+        )
+        self.assertLess(
+            RUNTIME_FEATURES.index('registerFeature({"logViewer"'),
+            RUNTIME_FEATURES.index('registerFeature({"fileLogging"'),
+        )
+        # Both bundle pairs are declared in the table that merges legacy
+        # member states into their primary across load/save/estimate paths.
+        self.assertIn('{"ruleScript", "commandScript"}', RUNTIME_FEATURES)
+        self.assertIn('{"logViewer", "fileLogging"}', RUNTIME_FEATURES)
         self.assertIn('registerFeature({"logViewer", "设备日志"', RUNTIME_FEATURES)
         self.assertIn("getAttachedFeatures(key)", FEATURE_CONFIG)
         self.assertIn("child.userEnabled = enabled;", FEATURE_CONFIG)

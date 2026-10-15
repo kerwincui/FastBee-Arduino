@@ -141,11 +141,14 @@ public:
     bool stop();           // false: worker cancellation queued; keep object/transport alive.
     bool publish(const String& topic, const String& message);
     bool publishToTopic(size_t topicIndex, const String& message);
+    bool publishToTopic(size_t topicIndex, const char* message, size_t length); // 零拷贝：直接引用调用方缓冲，不构造 String
     bool queueTopicMessage(size_t topicIndex, const String& message); // Local retention, never delivery confirmation.
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool publishReportData(const char* payload, size_t length); // 零拷贝版本：发布直接引用调用方缓冲
     bool publishModbusRtuReport(const String& hexPayload); // 显式二进制 RTU 上报，不依赖 handler 生命周期
+    bool publishModbusRtuReport(const char* hexPayload, size_t length); // 零拷贝版本
     bool publishOtaReply(const String& payload);   // 发布 FastBee HTTPS OTA 状态（不经过规则脚本）
     bool hasUsableFastBeeOtaReplyTopic() const;    // 规范 reply 主题是否已启用（OTA 写 Flash 前预检）
     bool publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData); // 发布设备事件到 topicType=DEVICE_EVENT 主题（格式同 DATA_REPORT）
@@ -257,7 +260,9 @@ private:
     // Loaded once, before ProtocolManager publishes the instance to readers.
     bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE);
     bool publishToTopicImpl(size_t topicIndex, const String& message, bool prepared);
+    bool publishToTopicImpl(size_t topicIndex, const char* message, size_t length, bool prepared); // 零拷贝核心实现
     bool publishPreparedTopic(size_t topicIndex, const String& message);
+    bool publishPreparedTopic(size_t topicIndex, const char* message, size_t length); // 零拷贝 prepared 发布
     std::atomic<bool> _beginAttempted{false};
     bool _connectionTestOnly = false;
     String _connectionTestId;

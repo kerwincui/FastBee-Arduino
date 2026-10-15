@@ -46,6 +46,13 @@ bool retainedAllocation(void* pointer) {
     for(auto value:allocations)if(value==pointer)return true;
     return false;
 }
+// Replace the throwing form too: otherwise exe-side throwing new resolves to
+// libstdc++-6.dll while the deletes below free() from the exe's CRT, a
+// cross-domain free the Windows heap reports as 0xC0000374.
+void* operator new(size_t count) {
+    if(void* result=std::malloc(count))return result;
+    throw std::bad_alloc();
+}
 void* operator new(size_t count,const std::nothrow_t&) noexcept {
     if(failAllocation)return nullptr;
     if(duringAllocation){auto hook=std::move(duringAllocation);duringAllocation={};hook();}
@@ -58,6 +65,7 @@ void operator delete(void* pointer) noexcept {
     std::free(pointer);
 }
 void operator delete(void* pointer,size_t) noexcept {::operator delete(pointer);}
+void operator delete(void* pointer,const std::nothrow_t&) noexcept {::operator delete(pointer);}
 ''' + base[allocation_end:]
         base = base.replace('struct Mutex { bool held = false, reject = false; };',
                             'struct Mutex { std::timed_mutex value; bool held = false, reject = false; };')

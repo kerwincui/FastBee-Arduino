@@ -36,9 +36,10 @@ class ModbusMemoryRecoveryTests(unittest.TestCase):
 #define FASTBEE_ENABLE_MQTT 0
 #define pdMS_TO_TICKS(value) (value)
 #define LOG_INFO(...) ((void)0)
+#define LOG_WARNING(...) ((void)0)
 unsigned long nowMs=1000;
 unsigned long millis(){return nowMs;}
-struct {void println(const char*){}} Serial;
+struct {void println(const char*){}} Serial __attribute__((unused));
 constexpr unsigned long MODBUS_MEMORY_RETRY_MS=30000;
 enum class ModbusRestartResult{Failed,Started,IdleNoEnabledTargets,DeferredBusy};
 struct ModbusLifecycleGuard{ModbusLifecycleGuard(bool,int){}bool isLocked()const{return true;}};

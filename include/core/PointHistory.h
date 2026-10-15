@@ -36,7 +36,12 @@ public:
     static constexpr size_t MAX_SAMPLES_PER_SOURCE = 10;
     static constexpr size_t MAX_SOURCE_REF_LENGTH = 96;
     static constexpr size_t MAX_FILE_BYTES = 64 * 1024;
-    static constexpr uint32_t FLUSH_DEADLINE_MS = 30000;
+    // 周期落盘窗口：首脏后最多 3 min 落盘（日志静默时的兜底）；脏数据满
+    // FLUSH_COALESCE_MIN_MS 后，搭乘日志 flush 刚打开的同一 Flash 写窗口
+    // （PEER_WRITE_WINDOW_MS 内）提前落盘，避免单独再开一轮写。
+    static constexpr uint32_t FLUSH_DEADLINE_MS = 180000;
+    static constexpr uint32_t FLUSH_COALESCE_MIN_MS = 120000;
+    static constexpr uint32_t PEER_WRITE_WINDOW_MS = 2000;
     static constexpr const char* DATA_FILE = "/data/point_history.json";
     static constexpr const char* CONFIG_FILE = "/config/point_history.json";
 

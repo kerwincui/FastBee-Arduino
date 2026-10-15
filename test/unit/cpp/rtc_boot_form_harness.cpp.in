@@ -16,18 +16,31 @@ struct AsyncWebServerRequest {
     std::map<std::string, String> fields;
     bool hasParam(const char* key, bool = false) const { return fields.count(key) != 0; }
 };
-struct WebHandlerContext {
-    String getParamValue(AsyncWebServerRequest* request, const char* key, const String& fallback) {
-        const auto found = request->fields.find(key);
-        return found == request->fields.end() ? fallback : found->second;
+#include "core/PeripheralFormFields.h"
+// Same adaptation the firmware route layer performs over WebHandlerContext.
+struct HarnessFormFields final : public FastBee::PeripheralFormFields {
+    explicit HarnessFormFields(AsyncWebServerRequest* request) : request(request) {}
+    bool has(const char* name) const override {
+        return request->hasParam(name, true) || request->hasParam(name);
     }
-    int getParamInt(AsyncWebServerRequest* request, const char* key, int fallback) {
-        return request->hasParam(key) ? static_cast<int>(getParamValue(request, key, "").toInt()) : fallback;
+    String value(const char* name, const char* fallback) const override {
+        const auto found = request->fields.find(name);
+        return found == request->fields.end() ? String(fallback) : found->second;
     }
-    bool getParamBool(AsyncWebServerRequest* request, const char* key, bool fallback) {
-        return request->hasParam(key) ? getParamValue(request, key, "") == "true" : fallback;
+    int intValue(const char* name, int fallback) const override {
+        const auto found = request->fields.find(name);
+        return found == request->fields.end()
+            ? fallback : static_cast<int>(found->second.toInt());
     }
+    bool boolValue(const char* name, bool fallback) const override {
+        const auto found = request->fields.find(name);
+        return found == request->fields.end() ? fallback
+            : (found->second.equalsIgnoreCase("true") || found->second == "1");
+    }
+private:
+    AsyncWebServerRequest* request;
 };
+using FastBee::PeripheralFormFields;
 @PRODUCTION_P1_FUNCTIONS@
 static void assertRoundTrip(const PeripheralConfig& config, bool expected, int offset) {
     JsonDocument doc; addP1PeripheralParams(doc.to<JsonObject>(), config);
@@ -41,34 +54,34 @@ static void assertRoundTrip(const PeripheralConfig& config, bool expected, int o
 int main() {
     PeripheralConfig config; config.type = PeripheralType::DS1302_RTC;
     initializeDs1302Defaults(config);
-    WebHandlerContext ctx; AsyncWebServerRequest request; String error;
-    assert(applyP1PeripheralParams(&ctx, &request, config, true, error));
+    AsyncWebServerRequest request; String error; HarnessFormFields form(&request);
+    assert(applyP1PeripheralParams(form, config, true, error));
     assertRoundTrip(config, false, INT16_MIN);
     request.fields["bootSeed"] = "true";
-    assert(!applyP1PeripheralParams(&ctx, &request, config, true, error));
+    assert(!applyP1PeripheralParams(form, config, true, error));
     for (const char* invalid : {"", "null", "1.0", "TRUE", " true ", "yes", "2"}) {
         request.fields["bootSeed"] = invalid; request.fields["utcOffsetMinutes"] = "0";
-        assert(!applyP1PeripheralParams(&ctx, &request, config, true, error));
+        assert(!applyP1PeripheralParams(form, config, true, error));
     }
     request.fields["bootSeed"] = "1";
     for (const char* invalid : {"", "841", "-841", "32768", "NaN", "0.5", "1e2", " 0", "0 ", "0x0", "-", "+8", "false"}) {
         request.fields["utcOffsetMinutes"] = invalid;
-        assert(!applyP1PeripheralParams(&ctx, &request, config, true, error));
+        assert(!applyP1PeripheralParams(form, config, true, error));
     }
     for (const char* offset : {"-840", "-1", "0", "480", "840"}) {
         request.fields["utcOffsetMinutes"] = offset;
-        assert(applyP1PeripheralParams(&ctx, &request, config, true, error));
+        assert(applyP1PeripheralParams(form, config, true, error));
         assertRoundTrip(config, true, std::stoi(offset));
     }
     // Missing update fields preserve an explicit reviewed offset, never opt in.
     request.fields.clear();
-    assert(applyP1PeripheralParams(&ctx, &request, config, false, error));
+    assert(applyP1PeripheralParams(form, config, false, error));
     assertRoundTrip(config, true, 840);
     request.fields["bootSeed"] = "0"; request.fields["utcOffsetMinutes"] = "";
-    assert(applyP1PeripheralParams(&ctx, &request, config, false, error));
+    assert(applyP1PeripheralParams(form, config, false, error));
     assertRoundTrip(config, false, INT16_MIN);
     // Parsing is atomic for the two new fields even when an offset fails.
     request.fields["bootSeed"] = "1"; request.fields["utcOffsetMinutes"] = "900";
-    assert(!applyP1PeripheralParams(&ctx, &request, config, false, error));
+    assert(!applyP1PeripheralParams(form, config, false, error));
     assertRoundTrip(config, false, INT16_MIN);
 }

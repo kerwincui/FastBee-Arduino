@@ -55,12 +55,19 @@ async function runImportCase(kind, mode) {
     let staged = '', selectedSize = 0, chunkCount = 0, invalidations = 0;
     const state = {registerModule(_name, methods) {Object.assign(this, methods);}};
     const response = data => ({success: true, data});
-    const ctx = {AppState: state, window: {apiInvalidateCache() {++invalidations;}},
+    const ctx = {AppState: state, window: {apiInvalidateCache() {++invalidations;},
+        // B4 起共享确认弹窗为异步 window.FBConfirm（Promise<boolean>）；与下方
+        // 同步 confirm 桩共用同一确认记录，取消语义保持一致。
+        async FBConfirm(options) {confirmations.push(options && options.message ? options.message : String(options)); return mode !== 'cancel';}},
         console: {error() {}, warn() {}, info() {}}, TextEncoder, Blob,
         document: {getElementById(id) {return id === 'dev-config-import-file' ? input : id === 'dev-config-import-btn' ? button : null;}},
         Notification: {success(text) {successes.push(text);}, error(text) {errors.push(text);}, warning(text) {errors.push(text);}},
         setTimeout() {throw new Error('migration import must not schedule retries');},
         confirm(text) {confirmations.push(text); return mode !== 'cancel';},
+        // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean>）：模块内为裸调用
+        // （顶层桩），页面会话代码经 window.FBConfirm（window 桩，见上）；两处
+        // 与同步 confirm 桩共用同一确认记录，取消语义保持一致。
+        async FBConfirm(options) {confirmations.push(options && options.message ? options.message : String(options)); return mode !== 'cancel';},
         apiPostJson() {assert.fail('page migration must not use active revisioned single-file endpoints');},
         apiGetFresh: async url => {
             calls.push({url}); assert.equal(url, '/api/config/migration');

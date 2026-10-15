@@ -4,7 +4,7 @@
  * Responsibilities:
  * 1. Sync static assets (HTML, CSS, JS) from web-src/ to data/www/.
  * 2. Sync runtime modules from web-src/modules/runtime to data/www/js/modules.
- * 3. Sync i18n modules from web-src/i18n to data/www/js/modules.
+ * 3. Generate data/www/sw.js from web-src/sw.js.template (single source of the service worker).
  * 4. Build publish-ready admin module files from web-src/modules/admin source files.
  * 5. Validate that all output modules trace back to web-src/ sources.
  *
@@ -37,13 +37,12 @@ const {
     buildAppBundle,
     BUNDLE_SOURCES: APP_BUNDLE_SOURCES,
     CHUNK_GROUPS: APP_CHUNK_GROUPS,
-    extractZhTranslations,
-    filterProdI18nTranslations
 } = require('./build-app-bundle');
 const { minifyJS, minifyRuntimeJS } = require('./minify-js');
 const { minifyPrivateRuntimeJS, isPrivateRuntimeModule } = require('./web-private-properties');
 const { minify_sync } = require('terser');
 const { withWebPublishLock } = require('./web-publish-lock');
+const { generateManifest } = require('./generate-sw-manifest');
 const { stripReviewedHtmlComments } = require('./web-html-comments');
 
 function minifyCSS(css) {
@@ -60,10 +59,15 @@ const ROOT_DIR = path.join(__dirname, '..');
 const WEB_SRC_DIR = path.join(ROOT_DIR, 'web-src');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
 const RUNTIME_SOURCE_DIR = path.join(WEB_SRC_DIR, 'modules', 'runtime');
-const I18N_SOURCE_DIR = path.join(WEB_SRC_DIR, 'i18n');
 const PUBLISH_MODULE_DIR = path.join(WWW_DIR, 'js', 'modules');
 const BUILD_CONTEXT = resolveWebBuildContext();
-const ALL_DIRECT_RUNTIME_MODULES = [
+/* ===== Runtime module manifest：新增 runtime 模块在此单点声明 =====
+ * - 直接发布的顶层模块：登记到 RUNTIME_DIRECT_MODULES。能力裁剪沿用
+ *   web-profile.js 的 ASSET_CAPABILITY_REQUIREMENTS（按发布路径声明），
+ *   device-control.js 另有 hasDeviceControl 编译期守卫。
+ * - 合并发布的 bundle：登记到 RUNTIME_BUNDLES（entry/subDir/order/siblings）。
+ *   派生集合（DIRECT_RUNTIME_MODULES、BUNDLED_*）与 source-coverage 校验自动跟随。 */
+const RUNTIME_DIRECT_MODULES = [
     'protocol.js',
     'periph-exec.js',
     'periph-exec-form.js',
@@ -87,33 +91,83 @@ const ALL_DIRECT_RUNTIME_MODULES = [
     'feature-config.js',
     'device-control.js'
 ];
-const DIRECT_RUNTIME_MODULES = ALL_DIRECT_RUNTIME_MODULES.filter((fileName) => {
+const DIRECT_RUNTIME_MODULES = RUNTIME_DIRECT_MODULES.filter((fileName) => {
     if (fileName === 'device-control.js' && !hasDeviceControl(BUILD_CONTEXT)) return false;
     return shouldIncludeAsset(`js/modules/${fileName}`, BUILD_CONTEXT);
 });
-const I18N_MODULES = [];  // i18n support removed - all translations are now hardcoded in HTML/JS
-const COMPACT_STATIC_SKIP = new Set([
-    'pages/admin.html',
-    'pages/fullscreen.html',
-    'pages/logs.html'
-    // 保留 pages/fragments/device-ota.html：OTA 在线升级/本地上传按目标能力提供
-    // （分片仅 ~1.7KB gz，device-ota.js 已在 DIRECT_RUNTIME_MODULES 发布）
-]);
-const LITE_STATIC_SKIP = new Set([
-    'pages/fragments/protocol-modbus-rtu.html',
-    'pages/rule-script.html'
-]);
-const PROD_IGNORED_ORPHAN_MODULES = new Set([
-    'i18n-en.js',
-    'i18n-engine.js',
-    'i18n-zh-CN.js',
-    'logs.js',
-    'users.js',
-]);
-// notification.js is already part of chunk-2-app.js. No standalone page loads
-// it, so publishing a second copy only consumes flash and manifest entries.
-const STANDALONE_ROOT_JS = [];
-const STANDALONE_ROOT_JS_SET = new Set(STANDALONE_ROOT_JS.map((item) => item.file));
+
+// Sub-directory bundles: 把入口 + 子模块合并为单文件 bundle，避免 ESP32 多次 HTTP 连接。
+// 拼接顺序：[按 order 拼接的子模块] + [入口文件内容]，
+// 入口文件已重写为合并模式（不再运行时动态加载子模块）。
+const RUNTIME_BUNDLES = [
+    {
+        outName: 'protocol.js',
+        entry: 'protocol.js',
+        subDir: 'protocol',
+        order: [
+            'common.js',
+            { file: 'mqtt-config.js', requirements: ['mqtt'] },
+            'protocol-lite-config.js'
+        ]
+    },
+    {
+        outName: 'protocol-full-config.js',
+        entry: null,
+        subDir: 'protocol',
+        order: ['protocol-config.js']
+    },
+    {
+        outName: 'protocol-modbus-rtu.js',
+        entry: null,
+        subDir: 'protocol',
+        order: ['modbus-config.js', 'modbus-instruments.js']
+    },
+    {
+        outName: 'protocol-modbus-control.js',
+        entry: null,
+        subDir: 'protocol',
+        order: ['modbus-control.js', 'modbus-relay-motor.js']
+    },
+    {
+        outName: 'device-control.js',
+        entry: 'device-control.js',
+        subDir: 'device-control',
+        order: ['core.js'],
+        skipWithoutDC: true
+    },
+    {
+        outName: 'device-control-view.js',
+        entry: null,
+        subDir: 'device-control',
+        order: ['render.js', 'layout.js'],
+        skipWithoutDC: true
+    },
+    {
+        outName: 'device-control-modbus.js',
+        entry: null,
+        subDir: 'device-control',
+        order: ['modbus-ops.js', 'modbus-ctrl.js'],
+        skipWithoutDC: true
+    },
+    {
+        outName: 'periph-exec.js',
+        entry: 'periph-exec.js',
+        subDir: null
+    }
+];
+
+function activeRuntimeBundles() {
+    return RUNTIME_BUNDLES.filter((bundle) => {
+        if (bundle.skipWithoutDC && !hasDeviceControl(BUILD_CONTEXT)) return false;
+        return shouldIncludeAsset(`js/modules/${bundle.outName}`, BUILD_CONTEXT);
+    });
+}
+
+// 已被 bundle 包含、在独立同步与 source-coverage 中需要跳过的文件
+const BUNDLED_ENTRY_FILES = new Set(activeRuntimeBundles().map(b => b.entry).filter(Boolean));
+const BUNDLED_SIBLING_FILES = new Set();
+activeRuntimeBundles().forEach(b => (b.siblings || []).forEach(s => BUNDLED_SIBLING_FILES.add(s)));
+const BUNDLED_SUBDIRS = new Set(RUNTIME_BUNDLES.filter(b => b.subDir).map(b => b.subDir));
 const APP_CHUNK_FILES = new Set(APP_CHUNK_GROUPS.map((chunk) => chunk.outName));
 
 function readUtf8(filePath) {
@@ -276,32 +330,255 @@ function stripDivByClass(content, className) {
     );
 }
 
-function stripProdOnlyCssRules(content) {
-    const dropSelectors = [
-        /^\.logs-/,
-        /^\.log-content/,
-        /^\.log-/,
-        /^\.ota-/,
-        /^\.ota-inline-/,
-        /^body\.fullscreen-page/,
-        /^\.fullscreen-container/,
-        /^\.fullscreen-toolbar/,
-        /^@keyframes\s+fs-/,
-        /^\[data-theme="dark"\]\s+\.logs-/,
-        /^\[data-theme="dark"\]\s+\.log-/,
-        /^\[data-theme="dark"\]\s+\.ota-/
-    ];
+// ---------------------------------------------------------------------------
+// Unused CSS rule stripping (B7 stage 1).
+//
+// A rule is removed only when every complex selector in its selector list has
+// at least one class/id anchor and every anchor is provably unreferenced in
+// the published reference corpus:
+//   - root HTML (always published) and capability-gated pages only when the
+//     page ships in this build (shouldIncludeAsset), so classes used solely
+//     by capability-excluded pages are trimmed per capability;
+//   - web-src/js (always bundled) and modules/admin (always bundled);
+//   - modules/runtime entry and sub-directory files gated by the same
+//     capability rules used for publishing.
+// Class fragments assembled at runtime ('pfx-' + x, `pfx-${x}`) are collected
+// as dynamic prefixes; any class starting with such a prefix is always kept.
+// Element/attribute-only selectors and selector lists mixing live and dead
+// selectors are kept whole (stage 1 never trims inside a selector list).
+// ---------------------------------------------------------------------------
+const RUNTIME_SUB_DIR_CAPABILITY_RULES = Object.freeze({
+    protocol: Object.freeze({ anyOf: Object.freeze(['mqtt', 'modbus']) }),
+    'device-control': Object.freeze(['deviceControl'])
+});
 
-    // 统一架构：不移除任何样式（保留全部资源）
+let cssReferenceCorpusCache = null;
 
+function walkSourceFiles(dir, filter, out = []) {
+    if (!fs.existsSync(dir)) return out;
+    fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => {
+        const filePath = path.join(dir, entry.name);
+        if (entry.isDirectory()) walkSourceFiles(filePath, filter, out);
+        else if (entry.isFile() && filter(entry.name)) out.push(filePath);
+    });
+    return out;
+}
 
-    return content
-        .split(/\r?\n/)
-        .filter((line) => {
-            const trimmed = line.trim();
-            return !dropSelectors.some((pattern) => pattern.test(trimmed));
-        })
-        .join('\n');
+function collectDynamicClassPrefixes(jsText) {
+    const prefixes = new Set();
+    let match;
+    const concatPattern = /(['"])([A-Za-z][A-Za-z0-9_-]*-)\1\s*\+/g;
+    while ((match = concatPattern.exec(jsText))) prefixes.add(match[2]);
+    const templatePattern = /`[^`]*?\b([A-Za-z][A-Za-z0-9_-]*-)\$\{/g;
+    while ((match = templatePattern.exec(jsText))) prefixes.add(match[1]);
+    return [...prefixes];
+}
+
+function getCssReferenceCorpus(context = BUILD_CONTEXT) {
+    if (cssReferenceCorpusCache) return cssReferenceCorpusCache;
+    const parts = [];
+    const pushFile = (filePath) => {
+        if (fs.existsSync(filePath)) parts.push(readUtf8(filePath));
+    };
+
+    ['index.html', 'setup.html', '404.html'].forEach((name) => pushFile(path.join(WEB_SRC_DIR, name)));
+
+    walkSourceFiles(path.join(WEB_SRC_DIR, 'pages'), (name) => name.endsWith('.html'))
+        .forEach((filePath) => {
+            const relPath = normalizePath(path.relative(WEB_SRC_DIR, filePath));
+            if (shouldIncludeAsset(relPath, context)) pushFile(filePath);
+        });
+
+    walkSourceFiles(path.join(WEB_SRC_DIR, 'js'), (name) => name.endsWith('.js')).forEach(pushFile);
+    walkSourceFiles(path.join(WEB_SRC_DIR, 'modules', 'admin'), (name) => name.endsWith('.js')).forEach(pushFile);
+
+    if (fs.existsSync(RUNTIME_SOURCE_DIR)) {
+        fs.readdirSync(RUNTIME_SOURCE_DIR, { withFileTypes: true }).forEach((entry) => {
+            const entryPath = path.join(RUNTIME_SOURCE_DIR, entry.name);
+            if (entry.isFile() && entry.name.endsWith('.js')) {
+                if (shouldIncludeAsset(`js/modules/${entry.name}`, context)) pushFile(entryPath);
+                return;
+            }
+            if (!entry.isDirectory()) return;
+            const rule = RUNTIME_SUB_DIR_CAPABILITY_RULES[entry.name];
+            if (!rule || !capabilityRuleSatisfied(rule, context)) return;
+            walkSourceFiles(entryPath, (name) => name.endsWith('.js')).forEach(pushFile);
+        });
+    }
+
+    const text = parts.join('\n');
+    cssReferenceCorpusCache = Object.freeze({
+        text,
+        dynamicPrefixes: Object.freeze(collectDynamicClassPrefixes(text))
+    });
+    return cssReferenceCorpusCache;
+}
+
+function isCssAnchorReferenced(name, corpus) {
+    if (corpus.dynamicPrefixes.some((prefix) => name.startsWith(prefix))) return true;
+    const boundary = new RegExp(`(^|[^A-Za-z0-9_-])${escapeRegExp(name)}([^A-Za-z0-9_-]|$)`);
+    return boundary.test(corpus.text);
+}
+
+function splitCssSelectorList(selectorText) {
+    const parts = [];
+    let depth = 0;
+    let quote = '';
+    let start = 0;
+    for (let index = 0; index < selectorText.length; index += 1) {
+        const char = selectorText[index];
+        if (quote) {
+            if (char === quote) quote = '';
+            continue;
+        }
+        if (char === '"' || char === "'") quote = char;
+        else if (char === '(' || char === '[') depth += 1;
+        else if (char === ')' || char === ']') depth -= 1;
+        else if (char === ',' && depth === 0) {
+            parts.push(selectorText.slice(start, index));
+            start = index + 1;
+        }
+    }
+    parts.push(selectorText.slice(start));
+    return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+function extractCssSelectorAnchors(complexSelector) {
+    const cleaned = complexSelector
+        .replace(/\[[^\]]*\]/g, ' ')      // attribute selectors may hold '#'/'.'
+        .replace(/"[^"]*"|'[^']*'/g, ' ');
+    const classes = [];
+    const ids = [];
+    let match;
+    const classPattern = /\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g;
+    while ((match = classPattern.exec(cleaned))) classes.push(match[1]);
+    const idPattern = /#([_a-zA-Z]+[_a-zA-Z0-9-]*)/g;
+    while ((match = idPattern.exec(cleaned))) ids.push(match[1]);
+    return { classes, ids };
+}
+
+function isCssRuleRemovable(selectorText, corpus) {
+    const selectors = splitCssSelectorList(selectorText);
+    if (selectors.length === 0) return false;
+    return selectors.every((complexSelector) => {
+        const { classes, ids } = extractCssSelectorAnchors(complexSelector);
+        if (classes.length + ids.length === 0) return false;
+        return classes.every((name) => !isCssAnchorReferenced(name, corpus)) &&
+            ids.every((name) => !isCssAnchorReferenced(name, corpus));
+    });
+}
+
+function parseCssNodes(text, base = 0) {
+    const nodes = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+        while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+        if (cursor >= text.length) break;
+        if (text[cursor] === '}') { cursor += 1; continue; }
+        const brace = text.indexOf('{', cursor);
+        const semicolon = text.indexOf(';', cursor);
+        if (brace < 0) {
+            nodes.push({ type: 'raw', start: base + cursor, end: base + text.length });
+            break;
+        }
+        if (semicolon >= 0 && semicolon < brace) {
+            // Top-level declaration or stray statement: keep verbatim.
+            nodes.push({ type: 'raw', start: base + cursor, end: base + semicolon + 1 });
+            cursor = semicolon + 1;
+            continue;
+        }
+        let depth = 1;
+        let end = brace + 1;
+        while (end < text.length && depth > 0) {
+            if (text[end] === '{') depth += 1;
+            else if (text[end] === '}') depth -= 1;
+            end += 1;
+        }
+        if (depth > 0) {
+            nodes.push({ type: 'raw', start: base + cursor, end: base + text.length });
+            break;
+        }
+        const prelude = text.slice(cursor, brace).trim();
+        const body = text.slice(brace + 1, end - 1);
+        if (/^@(media|supports)\b/i.test(prelude)) {
+            nodes.push({
+                type: 'atBlock', prelude,
+                start: base + cursor, openBrace: base + brace, end: base + end,
+                children: parseCssNodes(body, base + brace + 1)
+            });
+        } else if (/^@keyframes\b/i.test(prelude)) {
+            nodes.push({ type: 'keyframes', name: prelude.replace(/^@keyframes\s+/i, '').trim(), start: base + cursor, end: base + end });
+        } else if (prelude.startsWith('@')) {
+            nodes.push({ type: 'atOther', start: base + cursor, end: base + end });
+        } else if (prelude) {
+            nodes.push({ type: 'rule', selector: prelude, start: base + cursor, end: base + end });
+        } else {
+            nodes.push({ type: 'raw', start: base + cursor, end: base + end });
+        }
+        cursor = end;
+    }
+    return nodes;
+}
+
+function stripUnreferencedCssRules(cssText, corpus) {
+    const removed = [];
+    const withoutComments = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const filterNodes = (nodes) => nodes.map((node) => {
+        if (node.type === 'rule') {
+            if (isCssRuleRemovable(node.selector, corpus)) {
+                removed.push({ kind: 'rule', selector: node.selector.replace(/\s+/g, ' '), bytes: node.end - node.start });
+                return null;
+            }
+            return node;
+        }
+        if (node.type === 'atBlock') {
+            const children = filterNodes(node.children);
+            if (children.length === 0) {
+                removed.push({ kind: 'at-block', selector: node.prelude.replace(/\s+/g, ' '), bytes: node.end - node.start });
+                return null;
+            }
+            return { ...node, children };
+        }
+        return node;
+    }).filter(Boolean);
+
+    const renderNodes = (nodes) => nodes.map((node) => {
+        if (node.type === 'atBlock') {
+            return withoutComments.slice(node.start, node.openBrace + 1) + renderNodes(node.children) + '}';
+        }
+        return withoutComments.slice(node.start, node.end);
+    }).join('\n');
+
+    const filtered = filterNodes(parseCssNodes(withoutComments));
+    const keptCss = renderNodes(filtered);
+
+    // Keyframes referenced only by removed rules must not survive; names used
+    // from JS/HTML or by surviving animation declarations are kept.
+    const finalNodes = filtered.filter((node) => {
+        if (node.type !== 'keyframes') return true;
+        const animationUse = new RegExp(
+            'animation(?:-name)?\\s*:[^;}]*\\b' + escapeRegExp(node.name) + '\\b'
+        );
+        if (isCssAnchorReferenced(node.name, corpus) || animationUse.test(keptCss)) return true;
+        removed.push({ kind: 'keyframes', selector: `@keyframes ${node.name}`, bytes: node.end - node.start });
+        return false;
+    });
+
+    return { css: renderNodes(finalNodes), removed };
+}
+
+function stripCssForPublish(relPath, content) {
+    const result = stripUnreferencedCssRules(content, getCssReferenceCorpus());
+    if (result.removed.length > 0) {
+        const bytes = result.removed.reduce((sum, item) => sum + item.bytes, 0);
+        console.log(`CSS strip (${relPath}): removed ${result.removed.length} unused rule(s)/block(s), ~${bytes} B raw before minify:`);
+        result.removed.forEach((item) => {
+            const label = item.selector.length > 110 ? `${item.selector.slice(0, 107)}...` : item.selector;
+            console.log(`  - [${item.kind}] ${label} (${item.bytes} B)`);
+        });
+    }
+    return result.css;
 }
 
 function transformStaticAssetContent(relPath, content) {
@@ -455,8 +732,6 @@ function transformAppSourceContent(fileName, content) {
     return content;
 }
 
-// Sub-directories under runtime/ that contain split sub-modules
-const RUNTIME_SUB_DIRS = ['protocol', 'device-control'];
 
 function syncDirectRuntimeModules() {
     const results = [];
@@ -508,88 +783,11 @@ function syncDirectRuntimeModules() {
         });
     });
 
-    // 2. Sync sub-directory modules (protocol/, device-control/)
-    RUNTIME_SUB_DIRS.forEach((subDir) => {
-        if (BUNDLED_SUBDIRS.has(subDir)) return;
-
-        const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
-        if (!fs.existsSync(srcDir)) return;
-
-        const destDir = path.join(PUBLISH_MODULE_DIR, subDir);
-        if (!fs.existsSync(destDir)) {
-            fs.mkdirSync(destDir, { recursive: true });
-        }
-
-        fs.readdirSync(srcDir).forEach((file) => {
-            if (!file.endsWith('.js')) return;
-            const sourceFile = path.join(srcDir, file);
-            if (!fs.statSync(sourceFile).isFile()) return;
-
-            const publishFile = path.join(destDir, file);
-            const raw = readUtf8(sourceFile);
-            const content = noMinify ? raw : minifyRuntimeJS(raw);
-            writeUtf8(publishFile, content);
-
-            const relName = subDir + '/' + file;
-            results.push({
-                fileName: relName,
-                sourceFile,
-                publishFile,
-                size: Buffer.byteLength(content, 'utf8')
-            });
-        });
-    });
-
     return results;
 }
 
-function syncI18nModules() {
-    const results = [];
 
-    if (!fs.existsSync(PUBLISH_MODULE_DIR)) {
-        fs.mkdirSync(PUBLISH_MODULE_DIR, { recursive: true });
-    }
-
-    I18N_MODULES.forEach(({ file, minify: shouldMinify, optional, fallbackPublish }) => {
-        let sourceFile = path.join(I18N_SOURCE_DIR, file);
-        const publishFile = path.join(PUBLISH_MODULE_DIR, file);
-        const fallbackGzipFile = publishFile + '.gz';
-        let fallbackContent = null;
-
-        if (!fs.existsSync(sourceFile)) {
-            if (optional && fallbackPublish && fs.existsSync(publishFile)) {
-                sourceFile = publishFile;
-            } else if (optional && fallbackPublish && fs.existsSync(fallbackGzipFile)) {
-                fallbackContent = zlib.gunzipSync(fs.readFileSync(fallbackGzipFile)).toString('utf8');
-            } else if (optional) {
-                console.warn(`  Skip optional i18n module: ${file}`);
-                return;
-            } else {
-                throw new Error(`Missing i18n module source: ${sourceFile}`);
-            }
-        }
-
-        const noMinify = process.argv.includes('--no-minify');
-        // 统一架构：所有 i18n 模块都直接发布
-        let raw = fallbackContent !== null ? fallbackContent : readUtf8(sourceFile);
-        let content = (shouldMinify && !noMinify) ? minifyJS(raw) : raw;
-
-        writeUtf8(publishFile, content);
-
-        results.push({
-            fileName: file,
-            sourceFile,
-            publishFile,
-            size: Buffer.byteLength(content, 'utf8'),
-            minified: shouldMinify && !noMinify
-        });
-    });
-
-    return results;
-}
-
-// Sync static assets (HTML pages, CSS, fullscreen-required root JS) from web-src/ to data/www/.
-// Root JS is kept to the minimal standalone subset that is still referenced directly.
+// Sync static assets (HTML pages, CSS) from web-src/ to data/www/.
 function syncStaticAssets() {
     const results = [];
 
@@ -599,7 +797,6 @@ function syncStaticAssets() {
         { src: 'index.html', dest: 'index.html' },
         { src: 'setup.html', dest: 'setup.html' },
         { src: '404.html', dest: '404.html' },
-        { src: 'sw.js', dest: 'sw.js' },  // 统一架构：始终包含 SW
     ];
 
     // Copy individual root-level files
@@ -655,18 +852,20 @@ function syncStaticAssets() {
                         removeGeneratedFile(dstFile);
                         return;
                     }
-                    // Apply CSS minify for non-.min.css files
+                    // Strip provably unreferenced rules, then minify non-.min.css files
                     const noMinify = process.argv.includes('--no-minify');
                     const raw = readUtf8(srcFile);
                     const transformed = transformStaticAssetContent(relPath, raw);
-                    if (!noMinify && entry.endsWith('.css') && !entry.endsWith('.min.css')) {
-                        const minified = minifyCSS(transformed);
+                    const isPlainCss = entry.endsWith('.css') && !entry.endsWith('.min.css');
+                    const stripped = isPlainCss ? stripCssForPublish(relPath, transformed) : transformed;
+                    if (!noMinify && isPlainCss) {
+                        const minified = minifyCSS(stripped);
                         writeUtf8(dstFile, minified);
                         const size = Buffer.byteLength(minified, 'utf8');
                         results.push({ src: relPath, dest: relPath, size, cssMinified: true });
                     } else {
-                        writeUtf8(dstFile, transformed);
-                        const size = Buffer.byteLength(transformed, 'utf8');
+                        writeUtf8(dstFile, stripped);
+                        const size = Buffer.byteLength(stripped, 'utf8');
                         results.push({ src: relPath, dest: relPath, size });
                     }
                 }
@@ -675,32 +874,6 @@ function syncStaticAssets() {
         syncDirRecursive(srcDir, destDir, dirName);
     });
 
-    // Sync only the standalone root JS files that are still directly referenced by pages such as fullscreen.html.
-    const jsSrcDir = path.join(WEB_SRC_DIR, 'js');
-    const jsDestDir = path.join(WWW_DIR, 'js');
-    if (fs.existsSync(jsSrcDir)) {
-        if (!fs.existsSync(jsDestDir)) {
-            fs.mkdirSync(jsDestDir, { recursive: true });
-        }
-        // Only scripts referenced directly by standalone pages belong here.
-        const noMinify = process.argv.includes('--no-minify');
-        STANDALONE_ROOT_JS.forEach(({ file, minify: shouldMinify }) => {
-            const srcFile = path.join(jsSrcDir, file);
-            const dstFile = path.join(jsDestDir, file);
-            if (!fs.existsSync(srcFile) || !fs.statSync(srcFile).isFile()) return;
-
-            const raw = readUtf8(srcFile);
-            const content = (shouldMinify && !noMinify) ? minifyJS(raw) : raw;
-            writeUtf8(dstFile, content);
-            const size = Buffer.byteLength(content, 'utf8');
-            results.push({
-                src: `js/${file}`,
-                dest: `js/${file}`,
-                size,
-                jsMinified: shouldMinify && !noMinify
-            });
-        });
-    }
 
     return results;
 }
@@ -716,18 +889,20 @@ function validateSourceCoverage() {
     DIRECT_RUNTIME_MODULES.forEach((f) => {
         expectedFiles.add(f);
     });
-    activeSubdirBundles().forEach((bundle) => {
+    activeRuntimeBundles().forEach((bundle) => {
         expectedFiles.add(bundle.outName);
     });
-    I18N_MODULES.forEach(({ file }) => expectedFiles.add(file));
-    expectedFiles.add('admin-bundle.js');
     getAdminSourceFiles(BUILD_CONTEXT).forEach((f) => expectedFiles.add(f));
 
     // Entry points and sub-modules merged into an active bundle are represented
-    // by that bundle's output, not by separate publish files.
-    BUNDLED_ENTRY_FILES.forEach((fileName) => expectedFiles.delete(fileName));
+    // by that bundle's output, not by separate publish files. Entry names that
+    // double as the bundle output name stay expected: the merged bundle is
+    // published under that same file name.
+    const activeBundleOutNames = new Set(activeRuntimeBundles().map((bundle) => bundle.outName));
+    BUNDLED_ENTRY_FILES.forEach((fileName) => {
+        if (!activeBundleOutNames.has(fileName)) expectedFiles.delete(fileName);
+    });
     BUNDLED_SIBLING_FILES.forEach((fileName) => expectedFiles.delete(fileName));
-    activeSubdirBundles().forEach((bundle) => expectedFiles.add(bundle.outName));
 
     const actualFiles = [];
     const collect = (directory, prefix = '') => {
@@ -757,84 +932,11 @@ function validateSourceCoverage() {
     return { expectedFiles: Array.from(expectedFiles).sort(), actualFiles };
 }
 
-// Sub-directory bundles: 把入口 + 子模块合并为单文件 bundle，避免 ESP32 多次 HTTP 连接。
-// 拼接顺序：[按 order 拼接的子模块] + [入口文件内容]，
-// 入口文件已重写为合并模式（不再运行时动态加载子模块）。
-const SUBDIR_BUNDLES = [
-    {
-        outName: 'protocol.js',
-        entry: 'protocol.js',
-        subDir: 'protocol',
-        order: [
-            'common.js',
-            { file: 'mqtt-config.js', requirements: ['mqtt'] },
-            'protocol-lite-config.js'
-        ]
-    },
-    {
-        outName: 'protocol-full-config.js',
-        entry: null,
-        subDir: 'protocol',
-        order: ['protocol-config.js']
-    },
-    {
-        outName: 'protocol-modbus-rtu.js',
-        entry: null,
-        subDir: 'protocol',
-        order: ['modbus-config.js', 'modbus-instruments.js']
-    },
-    {
-        outName: 'protocol-modbus-control.js',
-        entry: null,
-        subDir: 'protocol',
-        order: ['modbus-control.js', 'modbus-relay-motor.js']
-    },
-    {
-        outName: 'device-control.js',
-        entry: 'device-control.js',
-        subDir: 'device-control',
-        order: ['core.js'],
-        skipWithoutDC: true
-    },
-    {
-        outName: 'device-control-view.js',
-        entry: null,
-        subDir: 'device-control',
-        order: ['render.js', 'layout.js'],
-        skipWithoutDC: true
-    },
-    {
-        outName: 'device-control-modbus.js',
-        entry: null,
-        subDir: 'device-control',
-        order: ['modbus-ops.js', 'modbus-ctrl.js'],
-        skipWithoutDC: true
-    },
-    {
-        outName: 'periph-exec.js',
-        entry: 'periph-exec.js',
-        subDir: null
-    }
-];
-
-function activeSubdirBundles() {
-    return SUBDIR_BUNDLES.filter((bundle) => {
-        if (bundle.skipWithoutDC && !hasDeviceControl(BUILD_CONTEXT)) return false;
-        return shouldIncludeAsset(`js/modules/${bundle.outName}`, BUILD_CONTEXT);
-    });
-}
-
-// 在独立同步、子目录同步中需要跳过的文件（已被 bundle 包含）
-const BUNDLED_ENTRY_FILES = new Set(activeSubdirBundles().map(b => b.entry).filter(Boolean));
-const BUNDLED_SIBLING_FILES = new Set();
-activeSubdirBundles().forEach(b => (b.siblings || []).forEach(s => BUNDLED_SIBLING_FILES.add(s)));
-const BUNDLED_SUBDIRS = new Set(SUBDIR_BUNDLES.filter(b => b.subDir).map(b => b.subDir));
-
 function buildSubdirBundles() {
     const noMinify = process.argv.includes('--no-minify');
     const results = [];
 
-    activeSubdirBundles().forEach((bundle) => {
+    activeRuntimeBundles().forEach((bundle) => {
         const parts = [];
 
         // 1. 子目录下的按顺序子模块
@@ -974,10 +1076,9 @@ function cleanObsoleteRootJs() {
     const jsDir = path.join(WWW_DIR, 'js');
     if (!fs.existsSync(jsDir)) return { removed, skipped };
 
-    const allowed = new Set([
-        ...Array.from(APP_CHUNK_FILES),
-        ...Array.from(STANDALONE_ROOT_JS_SET)
-    ]);
+    // Root js/ 只保留 app chunk 产物；notification.js 已并入 chunk-2-app.js，
+    // 不单独发布，白名单之外的 root JS 一律清理。
+    const allowed = new Set(APP_CHUNK_FILES);
 
     fs.readdirSync(jsDir).forEach((entry) => {
         const fullPath = path.join(jsDir, entry);
@@ -999,10 +1100,6 @@ function cleanObsoleteRootJs() {
     return { removed, skipped };
 }
 
-function cleanProdObsoleteModules() {
-    // 统一架构：不再清理任何模块
-    return [];
-}
 
 function buildWebModules() {
     console.log(`Web profile: ${getWebProfile(BUILD_CONTEXT)}`);
@@ -1011,15 +1108,16 @@ function buildWebModules() {
     fs.mkdirSync(PUBLISH_MODULE_DIR, { recursive: true });
     const staticAssets = syncStaticAssets();
     const syncedModules = syncDirectRuntimeModules();
-    const i18nModules = syncI18nModules();
     const adminBundle = buildAdminBundle(BUILD_CONTEXT);
     const appBundle = buildAppBundle({ transformSource: transformAppSourceContent });
     const subdirBundles = buildSubdirBundles();
     const bundledCleanup = cleanBundledArtifacts();
     const removedRootJs = cleanObsoleteRootJs();
-    const removedProdModules = cleanProdObsoleteModules();
 
     validateSourceCoverage();
+    // sw.js 只由 web-src/sw.js.template 生成（不再有 web-src/sw.js 开发副本）。
+    // 须在资源清单遍历 data/www 之前落盘，否则清单会漏掉 sw.js。
+    generateManifest();
     const resourceManifest = writeWebResourceManifest(WWW_DIR, BUILD_CONTEXT);
 
     return {
@@ -1027,13 +1125,11 @@ function buildWebModules() {
         removedGeneratedAssets,
         staticAssets,
         syncedModules,
-        i18nModules,
         adminBundle,
         appBundle,
         subdirBundles,
         bundledCleanup,
         removedRootJs,
-        removedProdModules,
         resourceManifest
     };
 }
@@ -1047,10 +1143,6 @@ if (require.main === module) {
     console.log(`Synced ${result.syncedModules.length} direct runtime modules`);
     result.syncedModules.forEach((item) => {
         console.log(`  Synced: ${path.relative(ROOT_DIR, item.publishFile)} (${item.size} bytes)`);
-    });
-    console.log(`Synced ${result.i18nModules.length} i18n modules`);
-    result.i18nModules.forEach((item) => {
-        console.log(`  Synced: ${path.relative(ROOT_DIR, item.publishFile)} (${item.size} bytes${item.minified ? ', minified' : ''})`);
     });
     console.log(`Built admin bundle: ${path.relative(ROOT_DIR, result.adminBundle.outputFile)} (${result.adminBundle.size} bytes)`);
     console.log(`Built app bundle: ${path.relative(ROOT_DIR, result.appBundle.outputFile)} (${result.appBundle.size} bytes${result.appBundle.minified ? ', minified' : ''})`);
@@ -1084,17 +1176,16 @@ module.exports = {
     syncStaticAssets,
     syncDirectRuntimeModules,
     buildSubdirBundles,
-    syncI18nModules,
     validateSourceCoverage,
     minifyCSS,
+    stripUnreferencedCssRules,
+    getCssReferenceCorpus,
     transformAppSourceContent,
     transformStaticAssetContent,
-    ALL_DIRECT_RUNTIME_MODULES,
+    RUNTIME_DIRECT_MODULES,
+    RUNTIME_BUNDLES,
     DIRECT_RUNTIME_MODULES,
-    RUNTIME_SUB_DIRS,
-    I18N_MODULES,
     RUNTIME_SOURCE_DIR,
-    I18N_SOURCE_DIR,
     PUBLISH_MODULE_DIR,
     WEB_SRC_DIR,
     WWW_DIR

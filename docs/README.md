@@ -2,6 +2,40 @@
 
 本目录每台设备只维护一套公开配置。四台当前测试设备统一放在 [device-test-configs/](device-test-configs/README.md)，另两种板卡保留各自唯一的样例。公开配置已脱敏，不能用空凭据覆盖现场配置；完整用户手册维护在 [FastBee 设备端文档](https://fastbee.cn/doc/device/)。
 
+## 根目录文件索引
+
+以下按分组登记 `docs/` 根目录当前保留的文件；设备配置样例目录的入口见下方[唯一配置入口](#唯一配置入口)表。
+
+### 计划与审计
+
+- [项目审计与改进计划（2026-10-13）](project-audit-and-improvement-plan-20261013.md)：当前系统改进任务的执行清单与在途事项接管记录
+
+其余历史计划与审计文档已于 2026-10-13 清理，在途事项由上述计划接管，历史见 git 记录。
+
+### 契约与生成物
+
+- [资源与稳定性验收约束](generic-resource-stability-contract.md)：公共链路的容量、调度、恢复与验收约束（AGENTS.md 引用）
+- [构建环境与 Web 能力矩阵](generated-build-capabilities.md)：由 `scripts/generate-build-capabilities.js` 自动生成，勿手改表格
+- [动作与外设目标契约](generated-action-target-contracts.md)：由 `scripts/generate-action-contracts.py` 自动生成，勿手改表格
+- `repository-retention-manifest.json`：仓库保留/隔离条目的处置清单（由 retention 门禁校验，勿手改约定）
+
+### 指南与约束
+
+- [工业接口字段参考（AI / DI / DO / AO）](https://fastbee.cn/doc/device/peripherals/adc-input.html)：与源码实现相关的字段、公式和边界（已迁移至设备端文档站）
+- [设备屏幕使用说明](https://fastbee.cn/doc/device/system/screen-panel.html)：touch-editor-r2 编辑工作区使用说明（已迁移至设备端文档站）
+
+触控屏历史实施/部署/验证记录已于 2026-10-13 清理，历史见 git 记录。
+
+### 设备配置样例（根目录 JSON）
+
+以下示例配置保持 `enabled: false`，用于字段和结构参考，不是可直接部署的完整配置：
+
+- `ads1115-example-20261002.json`：ADS1115 电压采集外设示例
+- `ads1115-scan-example-20261004.json`：ADS1115 四路输入扫描示例
+- `mcp23017-disabled-example-20261003.json`：MCP23017 I²C 总线与复位引脚示例
+- `rtc-ntp-writeback-disabled-example-20261004.json`：RTC 网络同步后复制的规则示例
+
+
 ## 唯一配置入口
 
 | 设备 / 历史端口 | 构建环境 | 配置来源 | 配置范围 |
@@ -38,15 +72,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-config-bundle
 1. 每台设备只更新上表中的唯一配置，不新增日期或“临时”配置副本。manifest 中的原来源路径仅记录历史，不作为第二套配置入口。
 2. 修改公开配置后执行 `node scripts/validate-device-config-examples.js` 和 `node scripts/validate-project-hygiene.js`，检查 JSON、脱敏、关联引用及配置差异。
 3. 改变字段、外设类型、规则或板级参数时同步说明及对应测试；构建和设备验收按实际影响范围执行。
-4. `ecm50a-s3-f16r8/` 与 `waveshare-esp32s3-touch-lcd4/` 保留硬件说明和历史记录，运行 JSON 已移除；不得在这些目录重新维护配置。
+4. `ecm50a-s3-f16r8/` 与 `waveshare-esp32s3-touch-lcd4/` 的硬件说明和历史记录已于 2026-10-15 随 docs 精简移除，历史见 git 记录；触控 RGB 变体构建链说明并入 `scripts/README.md` 的 `build-screen-variant.ps1` 条目。不得在 docs 下重建这两块板卡的第二套配置入口。
 5. 通用外设片段、协议模板和专项例子用于独立功能说明，不是某台设备的完整配置副本；保留在对应专题中。
 
 ## 专项说明
 
 - [通用 I²C 外设配置与验收](generic-i2c-peripherals/README.md)
-- [通用外设能力扩展计划](generic-peripheral-extension-plan.md)
-- [StamPLC 资料核对记录](stamplc/README.md)
-- [工业 AI / DI / DO / AO 字段参考](industrial-io-guide.md)
-- [触控屏使用说明](touch-screen-user-guide.md)
+- [工业 AI / DI / DO / AO 字段参考](https://fastbee.cn/doc/device/peripherals/adc-input.html)（已迁移至设备端文档站）
+- [触控屏使用说明](https://fastbee.cn/doc/device/system/screen-panel.html)（已迁移至设备端文档站）
 - [设备测试与发布流程](https://fastbee.cn/doc/device/deploy/testing.html)
 - [外设配置说明](https://fastbee.cn/doc/device/peripherals/)

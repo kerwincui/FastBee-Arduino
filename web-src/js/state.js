@@ -64,6 +64,10 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         }
         var modalNavSeq = expectedNavSeq === undefined ? (this._pageNavSeq || 0) : expectedNavSeq;
         await this._loadModals();
+        // B6: peripheral-modal lives in the lazy peripheral-modals package.
+        if (modalId === 'peripheral-modal' && typeof PageLoader.loadPeripheralModals === 'function') {
+            await PageLoader.loadPeripheralModals();
+        }
         // The template request may outlive the page that initiated it. Keep the
         // cached template, but never mount a modal into a newer page context.
         if (modalNavSeq !== (this._pageNavSeq || 0)) return null;
@@ -251,13 +255,13 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     },
 
     getDeveloperModeDisabledText() {
-        return (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('dc-dev-mode-disabled-tip') : '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
+        return '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
     },
 
     guardDeveloperModeAction() {
         if (this.isDeveloperModeEnabled()) return true;
         if (typeof Notification !== 'undefined') {
-            var title = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('dc-dev-mode-title') : '开发环境功能';
+            var title = '开发环境功能';
             Notification.warning(this.getDeveloperModeDisabledText(), title);
         }
         return false;
@@ -371,6 +375,30 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     // ============ 全局事件委托 ============
     setupGlobalEventDelegation() {
         const self = this;
+        // config-tab 方向键导航（roving tabindex）：←→ 移动，Home/End 跳首尾。
+        document.addEventListener('keydown', (e) => {
+            var isNav = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End';
+            var isActivate = e.key === 'Enter' || e.key === ' ';
+            if (!isNav && !isActivate) return;
+            var tab = e.target && e.target.closest ? e.target.closest('.config-tab') : null;
+            if (!tab || tab.classList.contains('tab-disabled')) return;
+            if (isActivate) {
+                e.preventDefault();
+                var pageEl0 = tab.closest('[id$="-page"]');
+                if (pageEl0) self.showConfigTab(pageEl0.id, tab.getAttribute('data-tab'));
+                return;
+            }
+            var tabs = Array.prototype.slice.call(
+                (tab.closest('.config-tabs') || document).querySelectorAll('.config-tab:not(.tab-disabled)'));
+            if (tabs.length < 2) return;
+            e.preventDefault();
+            var pos = tabs.indexOf(tab);
+            var next = e.key === 'Home' ? 0
+                : e.key === 'End' ? tabs.length - 1
+                : e.key === 'ArrowRight' ? (pos + 1) % tabs.length
+                : (pos + tabs.length - 1) % tabs.length;
+            tabs[next].focus();
+        });
         // 全局事件委托 - 替代内联 onclick
         document.addEventListener('click', (e) => {
             // 处理 config-tab 点击（动态加载页面的 tab 切换）
@@ -529,7 +557,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                         content.innerHTML = '';
                         var loadDiv = document.createElement('div');
                         loadDiv.className = 'dc-empty';
-                        loadDiv.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('common-loading') : '加载中...';
+                        loadDiv.textContent = '加载中...';
                         content.appendChild(loadDiv);
                         var self = this;
                         setTimeout(function() {
@@ -539,7 +567,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                                 content.innerHTML = '';
                                 var errDiv = document.createElement('div');
                                 errDiv.className = 'dc-empty u-text-danger';
-                                errDiv.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('state-module-load-fail') : '模块加载失败，请刷新页面重试';
+                                errDiv.textContent = '模块加载失败，请刷新页面重试';
                                 content.appendChild(errDiv);
                             }
                         }, 1000);
@@ -572,7 +600,10 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         const page = document.getElementById(pageId);
         if (!page) return;
         page.querySelectorAll('.config-tab').forEach(t => {
-            t.classList.toggle('active', t.getAttribute('data-tab') === tabId);
+            const selected = t.getAttribute('data-tab') === tabId;
+            t.classList.toggle('active', selected);
+            t.setAttribute('aria-selected', selected ? 'true' : 'false');
+            t.setAttribute('tabindex', selected ? '0' : '-1');
         });
         page.querySelectorAll('.config-content').forEach(c => c.classList.remove('active'));
         const target = page.querySelector(`#${tabId}`);
@@ -926,23 +957,22 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         const titleKey = `page-title-${normalizedPage}`;
         const titleEl = document.getElementById('page-title');
-        var _t = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t.bind(i18n) : function(k) { return k; };
         var _pageTitleMap = {
-            'page-title-dashboard': _t('state-page-dashboard') !== 'state-page-dashboard' ? _t('state-page-dashboard') : '设备监控仪表盘',
-            'page-title-protocol': _t('state-page-protocol') !== 'state-page-protocol' ? _t('state-page-protocol') : '通信协议',
-            'page-title-network': _t('state-page-network') !== 'state-page-network' ? _t('state-page-network') : '网络设置',
-            'page-title-device': _t('state-page-device') !== 'state-page-device' ? _t('state-page-device') : '设备配置',
-            'page-title-system': _t('state-page-system') !== 'state-page-system' ? _t('state-page-system') : '系统监控',
-            'page-title-logs': _t('state-page-logs') !== 'state-page-logs' ? _t('state-page-logs') : '设备日志',
-            'page-title-gpio': _t('state-page-gpio') !== 'state-page-gpio' ? _t('state-page-gpio') : 'GPIO配置',
-            'page-title-peripheral': _t('state-page-peripherals') !== 'state-page-peripherals' ? _t('state-page-peripherals') : '外设配置',
-            'page-title-periph-exec': _t('state-page-periph-exec') !== 'state-page-periph-exec' ? _t('state-page-periph-exec') : '外设执行',
+            'page-title-dashboard': '设备监控仪表盘',
+            'page-title-protocol': '通信协议',
+            'page-title-network': '网络设置',
+            'page-title-device': '设备配置',
+            'page-title-system': '系统监控',
+            'page-title-logs': '设备日志',
+            'page-title-gpio': 'GPIO配置',
+            'page-title-peripheral': '外设配置',
+            'page-title-periph-exec': '外设执行',
             'page-title-screen-panel': '设备屏幕',
-            'page-title-users': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
-            'page-title-device-control': _t('state-page-fullscreen') !== 'state-page-fullscreen' ? _t('state-page-fullscreen') : '设备大屏',
-            'page-title-rule-script': _t('state-page-rule-scripts') !== 'state-page-rule-scripts' ? _t('state-page-rule-scripts') : '规则脚本',
-            'page-title-admin': _t('state-page-users') !== 'state-page-users' ? _t('state-page-users') : '用户管理',
-            'page-title-features': _t('state-page-features') !== 'state-page-features' ? _t('state-page-features') : '功能配置'
+            'page-title-users': '用户管理',
+            'page-title-device-control': '设备大屏',
+            'page-title-rule-script': '规则脚本',
+            'page-title-admin': '用户管理',
+            'page-title-features': '功能配置'
         };
         if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;
 

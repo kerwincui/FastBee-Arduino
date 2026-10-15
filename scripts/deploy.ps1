@@ -23,6 +23,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ─── penv 环境守卫 ────────────────────────────────────────────────
+# 固定 PlatformIO penv 到 PATH 最前，清除外部 Python 覆盖，防止旧版
+# mingw64/Git 自带的 Python 运行时或 DLL 抢占导致 pio 子进程随机失败。
+# 共享实现见 scripts/lib/pio-runner.ps1（deploy 系三脚本复用）。
+$script:PioRunnerPath = Join-Path $PSScriptRoot "lib\pio-runner.ps1"
+if (-not (Test-Path -LiteralPath $script:PioRunnerPath)) {
+    throw "Shared pio runner not found: $script:PioRunnerPath"
+}
+. $script:PioRunnerPath
+Initialize-PioRunner
+$script:PenvDir = Join-Path $env:USERPROFILE ".platformio\penv"
+$script:PenvScripts = Join-Path $script:PenvDir "Scripts"
+
 # 平台检测：$IsWindows 在 PowerShell 7+ 内置，Windows PowerShell 5.1 中不存在（默认 true）
 $IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 
@@ -106,21 +119,31 @@ function Kill-StaleProcesses {
     if (-not $IsWin) { return }
 
     $killed = 0
+    # 仅清理与本仓库 .pio 路径相关的进程，避免误杀其他工作区的编译。
+    $ownPioRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ".pio")).TrimEnd('\')
     # 进程名称列表：esptool、PlatformIO python、xtensa 工具链（gcc/ar/ld 等）
     $procNames = @('esptool', 'python', 'xtensa-esp-elf-gcc', 'xtensa-esp-elf-g++', 'xtensa-esp-elf-ar', 'xtensa-esp-elf-ld')
     foreach ($name in $procNames) {
         Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
             # python 仅清理 .platformio 路径下的，避免误杀用户进程
-            if ($name -eq 'python' -and ($_.Path -notlike '*\.platformio*')) { return }
+            if ($name -eq 'python') {
+                if ($_.Path -notlike '*\.platformio*') { return }
+                # penv python 同样用于本仓长期任务（monitor-device-candidate.py、
+                # 串口监视等），其解释器路径也含 .platformio。仅当命令行确属构建
+                # 活动（platformio/scons/.pio 构建树）才清理，防止误杀观测窗口。
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if (-not $cmdLine -or $cmdLine -notmatch '-m platformio|platformio\.py|scons|[\\/]\.pio[\\/]') { return }
+            }
             Write-Host "  Killing stale $name (PID $($_.Id))" -ForegroundColor Yellow
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             $killed++
         }
     }
 
-    # 清理从 .pio/build/ 目录运行的任意进程（如 native 测试产物 program.exe）
+    # 清理从本仓库 .pio/build/ 目录运行的任意进程（如 native 测试产物 program.exe）。
+    # 匹配必须命中本仓库绝对路径前缀，其他工作区的同名进程不受影响。
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and ($_.Path -like '*\.pio*build*')
+        $_.Path -and ($_.Path.StartsWith($ownPioRoot, [System.StringComparison]::OrdinalIgnoreCase))
     } | ForEach-Object {
         Write-Host "  Killing stale build output $($_.ProcessName) (PID $($_.Id))" -ForegroundColor Yellow
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -550,39 +573,15 @@ function Test-DeviceWebAssets {
         throw "Deployed Web health check failed after 8 attempts: $healthUri"
     }
 
-    $paths = @(
-        '/',
-        '/pages/fragments/device-ota.html',
-        '/css/main.css',
-        '/js/modules/device-ota.js.gz'
-    )
-
-    Write-Host "[VerifyWeb] Checking deployed Web resources at $baseUri" -ForegroundColor Cyan
-    foreach ($path in $paths) {
-        $uri = "$baseUri$path"
-        $resourceReady = $false
-        $lastResourceError = 'no successful HTTP 200 response'
-        for ($attempt = 1; $attempt -le 4; $attempt++) {
-            try {
-                $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 5
-                if ($response.StatusCode -eq 200) {
-                    Write-Host "  [OK] $path -> $($response.StatusCode)" -ForegroundColor Green
-                    $resourceReady = $true
-                    break
-                }
-                $lastResourceError = "HTTP $($response.StatusCode)"
-            }
-            catch {
-                $lastResourceError = $_.Exception.Message
-                if ($attempt -lt 4) {
-                    Write-Host "  [WAIT] $path unavailable (attempt $attempt/4), retrying..." -ForegroundColor DarkGray
-                    Start-Sleep -Seconds 2
-                }
-            }
-        }
-        if (-not $resourceReady) {
-            throw "Deployed Web resource check failed: $uri ($lastResourceError)"
-        }
+    # 资源可用性巡检委托给 device-web-smoke.ps1（同一实现，避免两处清单漂移）。
+    $smokeScript = Join-Path $PSScriptRoot "device-web-smoke.ps1"
+    if (-not (Test-Path -LiteralPath $smokeScript)) {
+        throw "device-web-smoke.ps1 not found: $smokeScript"
+    }
+    Write-Host "[VerifyWeb] Delegating Web resource smoke check to device-web-smoke.ps1 ($baseUri)" -ForegroundColor Cyan
+    & $smokeScript -BaseUrl $baseUri -TimeoutSec 15
+    if ($LASTEXITCODE -ne 0) {
+        throw "Deployed Web smoke check failed (device-web-smoke.ps1 exit $LASTEXITCODE): $baseUri"
     }
 }
 

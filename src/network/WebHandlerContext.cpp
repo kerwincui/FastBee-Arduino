@@ -996,6 +996,8 @@ String WebHandlerContext::readFile(const String& path) {
     }
 
     // 审计 P2-1：同 FileUtils::readFile 的文件读取闸门（超限/低 DRAM/reserve）
+    // 保留 Serial 直出（D5 白名单）：本分支为文件大小/低 DRAM 门控，
+    // 与文件顶部 ets_printf 注释同属 OOM 邻接路径（实测堆分配 panic）。
     size_t fileSize = file.size();
     if (fileSize > FastBee::MemoryBudget::FILE_READ_MAX_SIZE) {
         Serial.printf("[WebCtx] readFile rejects %s: size %u exceeds cap\n",
@@ -1004,6 +1006,7 @@ String WebHandlerContext::readFile(const String& path) {
         return "";
     }
     if (FastBee::MemoryBudget::dramFree() < fileSize + 8192U) {
+        // D5 白名单：低 DRAM 门控分支，保留 Serial 直出（同上）。
         Serial.printf("[WebCtx] readFile rejects %s: DRAM too low\n", path.c_str());
         file.close();
         return "";

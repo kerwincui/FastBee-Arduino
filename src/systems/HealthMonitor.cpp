@@ -59,6 +59,7 @@ HealthMonitor::HealthMonitor()
     : lastCheckTime(0),
       lastStackLogTime(0),
       lastMetricsLogTime(0),
+      lastFullStackLogTime(0),
       heapWatermark(UINT32_MAX),
       consecutiveLowMemCount(0),
       consecutiveFragmentationCriticalCount(0),
@@ -99,7 +100,7 @@ void HealthMonitor::loadPersistedMqttsDowngrade() {
     if (disabledByMemory) {
         _mqttDisabledForMemory = true;
         _mqttStoppedForMemory = true;
-        Serial.println("[MEMRECOVER] restored persisted MQTT disable (memory pressure)");
+        LOG_INFO("[MEMRECOVER] restored persisted MQTT disable (memory pressure)");
     }
 
     if (!(mqtt["downgraded_by_memory"] | false)) {
@@ -121,7 +122,7 @@ void HealthMonitor::loadPersistedMqttsDowngrade() {
     FastBee::RuntimeFeatureManager::instance().setRuntimeDisabled(
         "mqtts", "内存压力：TLS 已暂停，禁止明文回退");
 
-    Serial.printf("[MEMRECOVER] historical plaintext downgrade blocked (TLS port=%u)\n",
+    LOG_WARNINGF("[MEMRECOVER] historical plaintext downgrade blocked (TLS port=%u)",
                   (unsigned)_mqttsOriginalPort);
     downgradeMqttsToMqtt();
 #endif
@@ -158,13 +159,14 @@ void HealthMonitor::clearMqttMemoryOverrideState() {
     }
     if (hadMemoryOverride) {
         FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("mqtts");
-        Serial.println("[MEMRECOVER] cleared MQTT memory override after explicit Web configuration");
+        LOG_INFO("[MEMRECOVER] cleared MQTT memory override after explicit Web configuration");
     }
 #endif
 }
 
 bool HealthMonitor::initialize() {
     running = true;
+    _healthStartMs = millis();
     // A previous boot may have persisted a TLS->plain-MQTT downgrade. Load
     // that marker before the first health sample so the state API and the
     // recovery path remain truthful across restarts.
@@ -177,6 +179,13 @@ bool HealthMonitor::initialize() {
 void HealthMonitor::shutdown() {
     running = false;
     LOG_INFO("Health Monitor: Shutdown");
+}
+
+uint32_t HealthMonitor::millisSinceHealthStart() {
+    if (_healthStartMs == 0) {
+        _healthStartMs = millis();
+    }
+    return (uint32_t)(millis() - _healthStartMs);
 }
 
 void HealthMonitor::update() {
@@ -215,6 +224,9 @@ void HealthMonitor::update() {
     if (currentTime - lastStackLogTime >= 60000UL) {
         logTaskStackWatermarks();
         lastStackLogTime = currentTime;
+        // 全任务栈水位周期采样（D6 阶段一）：复用 60s 节奏进入，实际采样
+        // 间隔由方法内 FULL_STACK_SAMPLE_INTERVAL_MS（≥5 min）门控约束。
+        logFullTaskStackWatermarks();
     }
     // 关键指标摘要：每 60 秒串口输出一次
     if (currentTime - lastMetricsLogTime >= 60000UL) {
@@ -421,6 +433,7 @@ void HealthMonitor::checkCriticalMemory() {
     if (checkHeap < EMERGENCY_DRAM_THRESHOLD) {
         if (_emergencySince == 0) {
             _emergencySince = millis();
+            // 保留 Serial 直出（D5 白名单）：EMERGENCY 为 DRAM<4KB 的 OOM 邻接路径，与 NewOverride 同策略不经过 LoggerSystem。
             Serial.printf("[MEMRECOVER] EMERGENCY: DRAM=%lu < 4KB, immediate full recovery\n",
                           (unsigned long)checkHeap);
             // 立即执行 SEVERE 恢复（如果还没做）
@@ -430,6 +443,7 @@ void HealthMonitor::checkCriticalMemory() {
             _mqttStoppedForMemory = true;
             disableMqttForMemory();
             uint32_t dramAfterRecovery = FastBee::MemoryBudget::dram8Free();
+            // 保留 Serial 直出（D5 白名单）：EMERGENCY 为 DRAM<4KB 的 OOM 邻接路径，与 NewOverride 同策略不经过 LoggerSystem。
             Serial.printf("[MEMRECOVER] EMERGENCY complete: DRAM=%lu (gained %ld bytes), Web stays available\n",
                           (unsigned long)dramAfterRecovery,
                           (long)dramAfterRecovery - (long)dramBeforeRecovery);
@@ -439,13 +453,15 @@ void HealthMonitor::checkCriticalMemory() {
             unsigned long emergencyDuration = millis() - _emergencySince;
             if (emergencyDuration >= EMERGENCY_REBOOT_DELAY_MS &&
                 !SystemRebooter::isScheduled()) {
-                if (millis() < 120000UL) {
+                if (millisSinceHealthStart() < 120000UL) {
                     static unsigned long lastEmergencyBootLoopWarn = 0;
                     if (millis() - lastEmergencyBootLoopWarn > 30000UL) {
+                        // 保留 Serial 直出（D5 白名单）：EMERGENCY 为 DRAM<4KB 的 OOM 邻接路径，与 NewOverride 同策略不经过 LoggerSystem。
                         Serial.println("[MEMRECOVER] Skip EMERGENCY reboot: recent boot (<120s), possible boot loop.");
                         lastEmergencyBootLoopWarn = millis();
                     }
                 } else {
+                    // 保留 Serial 直出（D5 白名单）：EMERGENCY 为 DRAM<4KB 的 OOM 邻接路径，与 NewOverride 同策略不经过 LoggerSystem。
                     Serial.printf("[MEMRECOVER] EMERGENCY stuck %lus (DRAM=%lu largest=%lu), "
                                   "recovery ineffective, rebooting before OOM abort\n",
                                   (unsigned long)(emergencyDuration / 1000),
@@ -468,7 +484,7 @@ void HealthMonitor::checkCriticalMemory() {
         // 开始 CRITICAL 计时（首次进入）
         if (_criticalStartTime == 0) {
             _criticalStartTime = millis();
-            Serial.printf("[MEMRECOVER] CRITICAL DRAM detected: dram=%lu threshold=%lu, starting recovery timer\n",
+            LOG_ERRORF("[MEMRECOVER] CRITICAL DRAM detected: dram=%lu threshold=%lu, starting recovery timer",
                           (unsigned long)checkHeap, (unsigned long)criticalThreshold);
         }
         unsigned long criticalDuration = millis() - _criticalStartTime;
@@ -484,7 +500,7 @@ void HealthMonitor::checkCriticalMemory() {
 
         // 确保 SEVERE 恢复措施已执行（兜底：等级可能跳过 SEVERE 直达 CRITICAL）
         if (!_mqttsMemoryDowngrade && !_modbusStoppedForMemory && !_periphExecPausedForMemory) {
-            Serial.println("[MEMRECOVER] SEVERE fallback: executing recovery from CRITICAL path");
+            LOG_WARNING("[MEMRECOVER] SEVERE fallback: executing recovery from CRITICAL path");
             performMemoryRecovery(MemoryGuardLevel::WARN, MemoryGuardLevel::CRITICAL);
         }
 
@@ -494,40 +510,40 @@ void HealthMonitor::checkCriticalMemory() {
             FastBee::mqttMemoryDeadlineReached(millis(), _mqttDisableRetryAtMs)) {
             _mqttDisabledForMemory = true;
             _mqttStoppedForMemory = true;
-            Serial.printf("[MEMRECOVER] === CRITICAL %lus: pausing MQTT for this boot ===\n",
+            LOG_ERRORF("[MEMRECOVER] === CRITICAL %lus: pausing MQTT for this boot ===",
                           (unsigned long)(criticalDuration / 1000));
             disableMqttForMemory();
-            Serial.println("[MEMRECOVER]   MQTT can resume after stable memory recovery; user configuration retained");
+            LOG_INFO("[MEMRECOVER]   MQTT can resume after stable memory recovery; user configuration retained");
         }
 #endif
 
         // 90s: 安全重启（boot loop 保护 + 恢复轨迹总结）
         if (criticalDuration >= CRITICAL_REBOOT_DELAY_MS && !SystemRebooter::isScheduled()) {
             // 重启循环保护：启动 < 120s 不重启，防止 boot loop
-            if (millis() < 120000UL) {
+            if (millisSinceHealthStart() < 120000UL) {
                 static unsigned long lastBootLoopWarn = 0;
                 if (millis() - lastBootLoopWarn > 30000UL) {
-                    Serial.println("[MEMRECOVER] Skip reboot: recent boot (<120s), possible boot loop. Web stays available.");
+                    LOG_WARNING("[MEMRECOVER] Skip reboot: recent boot (<120s), possible boot loop. Web stays available.");
                     lastBootLoopWarn = millis();
                 }
                 return;  // 不重启，保持 Web 可用
             }
 
             // 输出恢复轨迹总结
-            Serial.println("[MEMRECOVER] === Recovery summary before reboot ===");
-            Serial.printf("[MEMRECOVER]   Uptime: %lus, CRITICAL duration: %lus\n",
+            LOG_WARNING("[MEMRECOVER] === Recovery summary before reboot ===");
+            LOG_ERRORF("[MEMRECOVER]   Uptime: %lus, CRITICAL duration: %lus",
                           (unsigned long)(millis() / 1000),
                           (unsigned long)(criticalDuration / 1000));
-            Serial.printf("[MEMRECOVER]   Actions taken: %s%s%s%s%s\n",
+            LOG_INFOF("[MEMRECOVER]   Actions taken: %s%s%s%s%s",
                           _mqttsMemoryDowngrade ? "MQTTS paused(SEVERE) " : "",
                           _modbusStoppedForMemory ? "Modbus stopped " : "",
                           _periphExecPausedForMemory ? "PeriphExec paused " : "",
                           _optionalPeripheralsSuspendedForMemory ? "Optional peripherals suspended " : "",
                           _mqttStoppedForMemory ? "MQTT paused " : "");
-            Serial.printf("[MEMRECOVER]   DRAM: current=%lu largest=%lu\n",
+            LOG_INFOF("[MEMRECOVER]   DRAM: current=%lu largest=%lu",
                           (unsigned long)checkHeap,
                           (unsigned long)currentHealth.dramLargestBlock);
-            Serial.printf("[MEMRECOVER]   Reboot reason: DRAM<%luKB for %lus, all recovery exhausted\n",
+            LOG_WARNINGF("[MEMRECOVER]   Reboot reason: DRAM<%luKB for %lus, all recovery exhausted",
                           (unsigned long)(criticalThreshold / 1024),
                           (unsigned long)(criticalDuration / 1000));
 
@@ -567,6 +583,65 @@ void HealthMonitor::logTaskStackWatermarks() {
     else LOG_DEBUG(buf);
 }
 
+// D6 阶段一：全任务栈水位周期采样。仅在 update() 的 60s 节奏内被调用，采样
+// 间隔由 FULL_STACK_SAMPLE_INTERVAL_MS（≥5 min）强制约束——uxTaskGetSystemState
+// 遍历全部 TCB 会短暂暂停调度器（2026-10-13 计划复评硬性约束）。复用既有全量
+// 快照采集的静态容量（CAPACITY=48）、free8/blk8 门控与 30s 冷却，低内存时自动
+// 跳过。函数体自身无分配（无 String/new/malloc），输出走栈上缓冲 + 既有
+// 日志路径，不新增任务；采样在内存/冷却门控内做约 2-3KB 有界瞬态分配。
+void HealthMonitor::logFullTaskStackWatermarks() {
+    const unsigned long now = millis();
+    if (now - lastFullStackLogTime < FULL_STACK_SAMPLE_INTERVAL_MS) return;
+    lastFullStackLogTime = now;  // 门控通过即推进；采样因内存压力被跳过时也不频繁重试
+
+    // observe-only（对应 API ipcMode=observe-only）：周期路径不发起 IPC 身份
+    // 请求，只读既有采集槽，避免与显式诊断 POST 竞争 IPC 资源。
+    auto sample = FastBee::captureTaskStackSnapshot(isMemorySevere() || isMemoryCritical(), false);
+    if (sample.status != FastBee::TaskStackCaptureStatus::Observed) {
+        char reason[96];
+        snprintf(reason, sizeof(reason), "Health: full stack sample skipped: %s",
+                 FastBee::taskStackCaptureReason(sample.status));
+        LOG_DEBUG(reason);
+        return;
+    }
+
+    uint32_t lowCount = 0;
+    uint32_t minHwm = UINT32_MAX;
+    for (uint32_t i = 0; i < sample.count; ++i) {
+        const FastBee::TaskStackEntry& entry = sample.entries[i];
+        if (entry.highWaterBytes < minHwm) minHwm = entry.highWaterBytes;
+        if (entry.highWaterBytes >= FULL_STACK_LOW_WATERMARK_BYTES) continue;
+        ++lowCount;
+        char buf[112];
+        snprintf(buf, sizeof(buf),
+                 "Health: task stack low: num=%lu prio=%lu state=%lu hwm=%luB",
+                 (unsigned long)entry.taskNumber,
+                 (unsigned long)entry.priority,
+                 (unsigned long)entry.state,
+                 (unsigned long)entry.highWaterBytes);
+        if (entry.highWaterBytes < 512UL) LOG_ERROR(buf);
+        else LOG_WARNING(buf);
+    }
+
+    char summary[128];
+    if (lowCount == 0) {
+        snprintf(summary, sizeof(summary),
+                 "Health: full stack sample ok: tasks=%lu minHwm=%luB took=%luus",
+                 (unsigned long)sample.count,
+                 (unsigned long)minHwm,
+                 (unsigned long)sample.captureDurationUs);
+        LOG_DEBUG(summary);
+    } else {
+        snprintf(summary, sizeof(summary),
+                 "Health: full stack sample: %lu/%lu tasks <1KB, minHwm=%luB took=%luus",
+                 (unsigned long)lowCount,
+                 (unsigned long)sample.count,
+                 (unsigned long)minHwm,
+                 (unsigned long)sample.captureDurationUs);
+        LOG_WARNING(summary);
+    }
+}
+
 // ── MemGuard 等级判断 ────────────────────────────────────────────────
 
 void HealthMonitor::updateMemoryGuardLevel() {
@@ -594,7 +669,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
     // 此期间不基于 largestBlock / 碎片率 主动提升到 SEVERE/CRITICAL（仅告警），
     // 避免在系统尚未稳定时误触发永久降级导致主循环卡死。
     // freeHeap 绝对值低的强降级仍然保留——那是真正的危险信号。
-    const bool inStartupGrace = (millis() < 90000UL);
+    const bool inStartupGrace = (millisSinceHealthStart() < 90000UL);
 
     // freeHeap 初始等级使用与 checkCriticalMemory 相同的动态 CRITICAL 下限。
     // 经典 ESP32 完整外设配置的实测稳定基线约 14KB，低于旧固定 16KB
@@ -627,7 +702,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastGraceWarnCrit > 10000UL) {
                 lastGraceWarnCrit = now;
-                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip CRITICAL)\n",
+                LOG_INFOF("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip CRITICAL)",
                               (unsigned long)(now / 1000), (unsigned long)largestBlock,
                               (unsigned)guardCriticalLargestThreshold);
             }
@@ -636,7 +711,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastSkipCritLog > 60000UL) {
                 lastSkipCritLog = now;
-                Serial.printf("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN\n",
+                LOG_WARNINGF("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN",
                               (unsigned long)largestBlock,
                               (unsigned)guardCriticalLargestThreshold,
                               (unsigned)freeHeap);
@@ -649,7 +724,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastElevCritLog > 60000UL) {
                 lastElevCritLog = now;
-                Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to CRITICAL\n",
+                LOG_ERRORF("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to CRITICAL",
                               (unsigned long)largestBlock,
                               (unsigned)guardCriticalLargestThreshold);
             }
@@ -662,7 +737,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastGraceWarnSev > 10000UL) {
                 lastGraceWarnSev = now;
-                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip SEVERE)\n",
+                LOG_INFOF("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip SEVERE)",
                               (unsigned long)(now / 1000), (unsigned long)largestBlock,
                               (unsigned)guardSevereLargestThreshold);
             }
@@ -671,7 +746,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastSkipSevLog > 60000UL) {
                 lastSkipSevLog = now;
-                Serial.printf("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN\n",
+                LOG_WARNINGF("[MEMGUARD] largestBlock=%lu<%uB but freeHeap=%u healthy, capping at WARN",
                               (unsigned long)largestBlock,
                               (unsigned)guardSevereLargestThreshold,
                               (unsigned)freeHeap);
@@ -684,7 +759,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastElevSevLog > 60000UL) {
                 lastElevSevLog = now;
-                Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to SEVERE\n",
+                LOG_WARNINGF("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to SEVERE",
                               (unsigned long)largestBlock,
                               (unsigned)guardSevereLargestThreshold);
             }
@@ -700,21 +775,21 @@ void HealthMonitor::updateMemoryGuardLevel() {
             uint32_t now = millis();
             if (now - lastGraceWarnFrag > 10000UL) {
                 lastGraceWarnFrag = now;
-                Serial.printf("[MEMGUARD] startup-grace(%lus): frag=%d%% largest=%lu (skip elevation)\n",
+                LOG_INFOF("[MEMGUARD] startup-grace(%lus): frag=%d%% largest=%lu (skip elevation)",
                               (unsigned long)(now / 1000),
                               (int)currentHealth.heapFragmentation,
                               (unsigned long)largestBlock);
             }
         } else if (newLevel == MemoryGuardLevel::NORMAL && !heapHealthyForFrag) {
             newLevel = MemoryGuardLevel::WARN;
-            Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
+            LOG_WARNINGF("[MEMGUARD] High fragmentation (%d%%), elevating to WARN",
                           (int)currentHealth.heapFragmentation);
         } else if (newLevel == MemoryGuardLevel::WARN &&
                    largestBlock < guardSevereLargestThreshold &&
                    !heapHealthyForFrag) {
             // 修复M：freeHeap 健康时碎片化不再升到 SEVERE（同 largestBlock 反证）
             newLevel = MemoryGuardLevel::SEVERE;
-            Serial.printf("[MEMGUARD] High fragmentation (%d%%) + small block=%lu, elevating to SEVERE\n",
+            LOG_WARNINGF("[MEMGUARD] High fragmentation (%d%%) + small block=%lu, elevating to SEVERE",
                           (int)currentHealth.heapFragmentation, (unsigned long)largestBlock);
         }
     }
@@ -827,7 +902,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
 
     // 等级变化时执行降级/恢复措施
     if (newLevel != _currentLevel) {
-        Serial.printf("[MEMGUARD] Level changed: %d -> %d (heap=%u frag=%d%%)\n",
+        LOG_INFOF("[MEMGUARD] Level changed: %d -> %d (heap=%u frag=%d%%)",
                       (int)_currentLevel, (int)newLevel, freeHeap,
                       (int)currentHealth.heapFragmentation);
         MemoryGuardLevel oldLevel = _currentLevel;
@@ -891,7 +966,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
         if (guardCriticalDuration >= GUARD_CRITICAL_STUCK_MS &&
             !SystemRebooter::isScheduled()) {
             // 重启循环保护：启动 < 120s 不重启，防止 boot loop
-            if (millis() < 120000UL) {
+            if (millisSinceHealthStart() < 120000UL) {
                 return;
             }
             // 重启前健康自检：若堆实际已回到安全水位（等级状态机未及降回
@@ -900,7 +975,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
             // 因降级迟滞死锁被误重启。
             if (currentHealth.dramLargestBlock >= guardCriticalLargestThreshold &&
                 freeHeap >= criticalThreshold) {
-                Serial.printf("[MEMGUARD] CRITICAL stuck %lus but heap recovered (largest=%lu heap=%lu), force-downgrading instead of reboot\n",
+                LOG_ERRORF("[MEMGUARD] CRITICAL stuck %lus but heap recovered (largest=%lu heap=%lu), force-downgrading instead of reboot",
                               (unsigned long)(guardCriticalDuration / 1000),
                               (unsigned long)currentHealth.dramLargestBlock,
                               (unsigned long)freeHeap);
@@ -918,14 +993,14 @@ void HealthMonitor::updateMemoryGuardLevel() {
             // 重启后会在分钟内重新碎回（.34 实测 7156B/90s），重启无用且会
             // 陷入 12 分钟无限重启环。保持降载存活，等流量间歇时自愈
             //（实测无流量 5 分钟后 blk8 18420 自恢复）。
-            if (millis() < GUARD_REBOOT_LOOP_WINDOW_MS) {
+            if (millisSinceHealthStart() < GUARD_REBOOT_LOOP_WINDOW_MS) {
                 PreRestartSnapshot prevSnap;
                 if (RestartDiagnostics::getLastSnapshot(prevSnap) &&
                     prevSnap.restartReason == static_cast<uint8_t>(RestartReason::MEMORY_COMPACTION)) {
                     static uint32_t lastLoopWarnMs = 0;
                     if (millis() - lastLoopWarnMs > 60000UL) {
                         lastLoopWarnMs = millis();
-                        Serial.printf("[MEMGUARD] CRITICAL stuck %lus but previous reboot was also compaction; suppressing reboot to avoid loop (largest=%lu frag=%d%% heap=%lu)\n",
+                        LOG_ERRORF("[MEMGUARD] CRITICAL stuck %lus but previous reboot was also compaction; suppressing reboot to avoid loop (largest=%lu frag=%d%% heap=%lu)",
                                       (unsigned long)(guardCriticalDuration / 1000),
                                       (unsigned long)currentHealth.dramLargestBlock,
                                       (int)currentHealth.heapFragmentation,
@@ -934,7 +1009,7 @@ void HealthMonitor::updateMemoryGuardLevel() {
                     return;
                 }
             }
-            Serial.printf("[MEMGUARD] CRITICAL stuck %lus (largest=%lu frag=%d%% heap=%lu), scheduling reboot to defragment\n",
+            LOG_ERRORF("[MEMGUARD] CRITICAL stuck %lus (largest=%lu frag=%d%% heap=%lu), scheduling reboot to defragment",
                           (unsigned long)(guardCriticalDuration / 1000),
                           (unsigned long)currentHealth.dramLargestBlock,
                           (int)currentHealth.heapFragmentation,
@@ -965,7 +1040,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             features.clearRuntimeDisabled("fileLogging");
             logger.enableFileLogging(features.shouldEnable("fileLogging"));
             _degradationActive = false;
-            Serial.println("[MEMGUARD] Restored: logLevel & fileLogging");
+            LOG_INFO("[MEMGUARD] Restored: logLevel & fileLogging");
             // 恢复 MQTT 上报频率
 #if FASTBEE_ENABLE_MQTT
             {
@@ -973,7 +1048,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
                 ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
                 if (pm) {
                     pm->setMqttMinReportInterval(0);
-                    Serial.println("[MEMGUARD] MQTT report interval restore requested");
+                    LOG_INFO("[MEMGUARD] MQTT report interval restore requested");
                 }
             }
 #endif
@@ -1004,9 +1079,9 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             PeriphExecScheduler* scheduler = execMgr.getScheduler();
             if (scheduler) scheduler->setMemoryPaused(false);
             _periphExecPausedForMemory = false;
-            Serial.println("[MEMRECOVER] WARN: PeriphExec workers/timers resumed (pressure eased)");
+            LOG_WARNING("[MEMRECOVER] WARN: PeriphExec workers/timers resumed (pressure eased)");
         } else {
-            Serial.println("[MEMRECOVER] WARN: PeriphExec worker restore pending; keeping scheduler paused");
+            LOG_WARNING("[MEMRECOVER] WARN: PeriphExec worker restore pending; keeping scheduler paused");
         }
     }
 
@@ -1021,7 +1096,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
     if (newLevel >= MemoryGuardLevel::WARN) {
         if (logger.getLogLevel() < LOG_WARNING) {  // 仅在当前级别更低（更详细）时调整
             logger.setLogLevel(LOG_WARNING);
-            Serial.println("[MEMGUARD] WARN: log level -> WARNING");
+            LOG_WARNING("[MEMGUARD] WARN: log level -> WARNING");
         }
     }
 
@@ -1029,7 +1104,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
     if (newLevel >= MemoryGuardLevel::SEVERE) {
         if (logger.isFileLoggingRequested()) {
             logger.enableFileLogging(false);
-            Serial.println("[MEMGUARD] SEVERE: file logging disabled");
+            LOG_WARNING("[MEMGUARD] SEVERE: file logging disabled");
         }
         // 强制关闭所有 SSE 客户端：释放 lwip TCP 缓冲区，避免 Web 请求无法应答
         // 仅在从低级别升级到 SEVERE/CRITICAL 的跳变时触发一次
@@ -1039,7 +1114,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             SSERouteHandler* sse = wcm ? wcm->getSseRouteHandler() : nullptr;
             if (sse) {
                 size_t closed = sse->closeAllClients();
-                Serial.printf("[MEMGUARD] SEVERE: closed %u SSE clients to reclaim memory\n",
+                LOG_WARNINGF("[MEMGUARD] SEVERE: closed %u SSE clients to reclaim memory",
                               (unsigned)closed);
             }
         }
@@ -1051,7 +1126,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             if (pm) {
                 uint32_t interval = (newLevel == MemoryGuardLevel::CRITICAL) ? 30000 : 10000;
                 pm->setMqttMinReportInterval(interval);
-                Serial.printf("[MEMGUARD] MQTT report interval requested -> %lu ms\n", (unsigned long)interval);
+                LOG_INFOF("[MEMGUARD] MQTT report interval requested -> %lu ms", (unsigned long)interval);
             }
         }
 #endif
@@ -1069,7 +1144,7 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
     if (newLevel == MemoryGuardLevel::CRITICAL) {
         if (logger.getLogLevel() < LOG_ERROR) {
             logger.setLogLevel(LOG_ERROR);
-            Serial.println("[MEMGUARD] CRITICAL: log level -> ERROR");
+            LOG_ERROR("[MEMGUARD] CRITICAL: log level -> ERROR");
         }
     }
 }
@@ -1087,7 +1162,7 @@ void HealthMonitor::proactiveCompactCheck() {
     uint8_t frag = currentHealth.heapFragmentation;
     if (frag < PROACTIVE_COMPACT_THRESHOLD) return;
 
-    Serial.printf("[MEMGUARD] Proactive defrag: frag=%d%% (threshold=%d%%)\n",
+    LOG_INFOF("[MEMGUARD] Proactive defrag: frag=%d%% (threshold=%d%%)",
                   frag, PROACTIVE_COMPACT_THRESHOLD);
 
     // 轻量整理: 仅清日志缓存 + ConfigStorage 缓存 (不关闭 SSE 连接)
@@ -1120,7 +1195,7 @@ void HealthMonitor::compactMemory() {
         SSERouteHandler* sse = wcm ? wcm->getSseRouteHandler() : nullptr;
         if (sse && sse->clientCount() > 0) {
             size_t closed = sse->closeAllClients();
-            Serial.printf("[MEMGUARD] Closed %u SSE clients for defragmentation\n",
+            LOG_INFOF("[MEMGUARD] Closed %u SSE clients for defragmentation",
                           (unsigned)closed);
             // 给 lwIP 短暂时间释放 TCP PCB
             delay(50);
@@ -1134,7 +1209,7 @@ void HealthMonitor::compactMemory() {
 
     const size_t largestAfter = FastBee::MemoryBudget::dram8Largest();
     const uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
-    Serial.printf("[MEMGUARD] Compaction result: dram=%lu->%lu largest=%lu->%lu (delta=%+d)\n",
+    LOG_INFOF("[MEMGUARD] Compaction result: dram=%lu->%lu largest=%lu->%lu (delta=%+d)",
                   (unsigned long)dramBefore,
                   (unsigned long)dramAfter,
                   (unsigned long)largestBefore,
@@ -1143,7 +1218,7 @@ void HealthMonitor::compactMemory() {
 
     // 记录碎片化事件用于重启后诊断
     if (largestAfter <= largestBefore) {
-        Serial.println("[MEMGUARD] Compaction did not improve largest block — relying on reboot watchdog");
+        LOG_WARNING("[MEMGUARD] Compaction did not improve largest block — relying on reboot watchdog");
     }
 }
 
@@ -1415,6 +1490,7 @@ String HealthMonitor::getMetricsJson() {
 // ── 定期串口输出关键指标摘要 ─────────────────────────────────────────
 void HealthMonitor::logMetricsSummary() {
     // 迁移后 dram/blk 均为 8BIT 口径，不再需要单独输出 free8/total_blk
+    // 保留 Serial 直出（D5 白名单）：稳定性工具链从串口解析 [METRICS] 原始行，须保持无前缀直出。
     Serial.printf("[METRICS] heap=%lu min=%lu dram8=%lu blk8=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
         (unsigned long)currentHealth.freeHeap,
         (unsigned long)currentHealth.minFreeHeap,
@@ -1450,7 +1526,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
     uint8_t fragPercent = (dramBefore > 0)
         ? calculateHeapFragmentationPercent(currentHealth.dramFreeHeap, currentHealth.dramLargestBlock)
         : 0;
-    Serial.printf("[MEMRECOVER] === SEVERE recovery triggered === dram=%lu largest=%lu frag=%d%%\n",
+    LOG_WARNINGF("[MEMRECOVER] === SEVERE recovery triggered === dram=%lu largest=%lu frag=%d%%",
                   (unsigned long)dramBefore,
                   (unsigned long)currentHealth.dramLargestBlock,
                   (int)fragPercent);
@@ -1469,7 +1545,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
 
     // Step 0: 确保 TLS 所需连续内存（P0 优化）
     if (!currentHealth.dramLargestBlock) {
-        Serial.println("[MEMRECOVER] WARN: dramLargestBlock=0, TLS suspension required before handshake");
+        LOG_WARNING("[MEMRECOVER] WARN: dramLargestBlock=0, TLS suspension required before handshake");
     }
     ensureTLSContiguousMemory();
 
@@ -1492,7 +1568,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
             // Plain-MQTT devices must not show a permanent, unrelated MQTTS
             // warning after a transient severe-memory event.
             featureMgr.setRuntimeDisabled("mqtts", "内存压力：TLS 已暂停，禁止明文回退");
-            Serial.println("[MEMRECOVER] Step 1/3: pausing MQTTS without changing transport security");
+            LOG_INFO("[MEMRECOVER] Step 1/3: pausing MQTTS without changing transport security");
             mqtt = {};
             downgradeMqttsToMqtt();
         }
@@ -1507,7 +1583,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
     if (pm && !_modbusStoppedForMemory) {
         auto modbusLease = pm->acquireModbusHandler(pdMS_TO_TICKS(100));
         if (modbusLease && modbusLease->isRunning()) {
-            Serial.println("[MEMRECOVER] Step 2/3: Modbus stopped (was running)");
+            LOG_INFO("[MEMRECOVER] Step 2/3: Modbus stopped (was running)");
             pm->stopModbus();
             _modbusStoppedForMemory = true;
         }
@@ -1521,7 +1597,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
         PeriphExecManager& execMgr = PeriphExecManager::getInstance();
         PeriphExecScheduler* scheduler = execMgr.getScheduler();
         if (!_periphExecPausedForMemory && scheduler) {
-            Serial.println("[MEMRECOVER] Step 3/3: PeriphExec timers paused");
+            LOG_INFO("[MEMRECOVER] Step 3/3: PeriphExec timers paused");
             scheduler->setMemoryPaused(true);
             _periphExecPausedForMemory = true;
         }
@@ -1534,7 +1610,7 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
             // Pausing timers alone leaves the resident worker stacks allocated.
             // Retry until every worker acknowledges exit.
             if (!execMgr.suspendWorkersForMemory()) {
-                Serial.println("[MEMRECOVER] PeriphExec worker shutdown pending; will retry");
+                LOG_INFO("[MEMRECOVER] PeriphExec worker shutdown pending; will retry");
             }
         }
 #endif
@@ -1558,18 +1634,18 @@ void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuard
                 suspended > UINT16_MAX ? UINT16_MAX : suspended);
             _optionalPeripheralsSuspendedForMemory = suspended > 0;
             if (suspended > 0) {
-                Serial.printf("[MEMRECOVER] Optional peripherals suspended: %u\n",
+                LOG_INFOF("[MEMRECOVER] Optional peripherals suspended: %u",
                               (unsigned)_memorySuspendedPeripheralCount);
             }
         } else {
-            Serial.printf("[MEMRECOVER] Optional peripherals retained: dram=%lu largest=%lu\n",
+            LOG_INFOF("[MEMRECOVER] Optional peripherals retained: dram=%lu largest=%lu",
                           (unsigned long)remainingDram, (unsigned long)remainingLargest);
         }
     }
 #endif
 
     uint32_t dramAfter = FastBee::MemoryBudget::dram8Free();
-    Serial.printf("[MEMRECOVER] === SEVERE recovery complete === dram=%lu (gained %ld bytes)\n",
+    LOG_WARNINGF("[MEMRECOVER] === SEVERE recovery complete === dram=%lu (gained %ld bytes)",
                   (unsigned long)dramAfter, (long)(dramAfter - dramBefore));
 }
 
@@ -1590,7 +1666,7 @@ void HealthMonitor::downgradeMqttsToMqtt() {
         if (auto mqtt = pm->acquireMQTTClient()) mqtt->setStoppedByMemory(true);
         pm->stopMQTT(); // Manager drains the in-flight worker before deleting TLS.
     }
-    Serial.println("[MEMRECOVER] MQTTS paused; scheme, port and enabled preserved");
+    LOG_INFO("[MEMRECOVER] MQTTS paused; scheme, port and enabled preserved");
 #endif
 }
 
@@ -1605,7 +1681,7 @@ void HealthMonitor::restoreMqttsAfterMemory() {
         !doc["mqtt"].is<JsonObject>() || !FastBee::mqttRequiresTls(doc["mqtt"]) ||
         !(doc["mqtt"]["enabled"] | true)) {
         _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER] TLS recovery requires confirmed enabled secure configuration");
+        LOG_WARNING("[MEMRECOVER] TLS recovery requires confirmed enabled secure configuration");
         return;
     }
     JsonVariantConst cfg = doc["mqtt"];
@@ -1613,7 +1689,7 @@ void HealthMonitor::restoreMqttsAfterMemory() {
     const uint32_t requestedPort = historical ? FastBee::mqttLegacySecurePort(cfg) : (cfg["port"] | 1883U);
     if (!requestedPort || requestedPort > UINT16_MAX) {
         _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
-        Serial.println("[MEMRECOVER] TLS recovery metadata incomplete; explicit configuration required");
+        LOG_WARNING("[MEMRECOVER] TLS recovery metadata incomplete; explicit configuration required");
         return;
     }
     FastBeeFramework* fw = FastBeeFramework::getInstance();
@@ -1642,7 +1718,7 @@ void HealthMonitor::restoreMqttsAfterMemory() {
     if (ready && confirmReady()) return;
     _mqttsRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
     if (!queued) features.setRuntimeDisabled("mqtts", "TLS 恢复待重试，禁止明文回退");
-    Serial.println("[MEMRECOVER] TLS recovery pending; configuration preserved, no plaintext fallback");
+    LOG_WARNING("[MEMRECOVER] TLS recovery pending; configuration preserved, no plaintext fallback");
 #endif
 }
 
@@ -1684,9 +1760,9 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
     if (_currentLevel >= MemoryGuardLevel::SEVERE) {
         if (_periphExecPausedForMemory && !execMgr.areWorkersSuspendedForMemory()) {
             if (execMgr.suspendWorkersForMemory()) {
-                Serial.println("[MEMRECOVER]   PeriphExec workers fully suspended after retry");
+                LOG_INFO("[MEMRECOVER]   PeriphExec workers fully suspended after retry");
             } else {
-                Serial.println("[MEMRECOVER]   PeriphExec worker shutdown still pending");
+                LOG_INFO("[MEMRECOVER]   PeriphExec worker shutdown still pending");
             }
         }
     } else if (workersSuspended || _periphExecPausedForMemory) {
@@ -1696,9 +1772,9 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
             PeriphExecScheduler* scheduler = execMgr.getScheduler();
             if (scheduler) scheduler->setMemoryPaused(false);
             _periphExecPausedForMemory = false;
-            Serial.println("[MEMRECOVER]   PeriphExec workers/timers restored after retry");
+            LOG_INFO("[MEMRECOVER]   PeriphExec workers/timers restored after retry");
         } else {
-            Serial.println("[MEMRECOVER]   PeriphExec worker restore still pending");
+            LOG_INFO("[MEMRECOVER]   PeriphExec worker restore still pending");
         }
     }
 #endif
@@ -1721,7 +1797,7 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
                 _mqttRestoreRetryAtMs = 0;
                 _mqttStoppedForMemory = false;
                 mqtt->setStoppedByMemory(false);
-                Serial.println("[MEMRECOVER]   MQTT handler already usable; cleared degraded state");
+                LOG_INFO("[MEMRECOVER]   MQTT handler already usable; cleared degraded state");
             } else {
                 mqtt = {}; // A stopped client must not block its own replacement.
                 const bool restartQueued = pm && pm->restartMQTTDeferred();
@@ -1731,10 +1807,10 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
                     _mqttRestoreRetryAtMs = 0;
                     _mqttStoppedForMemory = false;
                     restored->setStoppedByMemory(false);
-                    Serial.println("[MEMRECOVER]   MQTT restart queued and client ready; cleared degraded state");
+                    LOG_INFO("[MEMRECOVER]   MQTT restart queued and client ready; cleared degraded state");
                 } else {
                     _mqttRestoreRetryAtMs = now + MQTT_MEMORY_CONFIG_RETRY_MS;
-                    Serial.println("[MEMRECOVER]   WARN: MQTT deferred restart rejected or client not ready; keeping degraded state");
+                    LOG_WARNING("[MEMRECOVER]   WARN: MQTT deferred restart rejected or client not ready; keeping degraded state");
                 }
             }
         }
@@ -1754,7 +1830,7 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
                 _modbusRestoreRetryAtMs = 0;
                 _modbusStoppedForMemory = false;
                 FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("modbus");
-                Serial.println("[MEMRECOVER]   Modbus handler confirmed running; cleared degraded state");
+                LOG_INFO("[MEMRECOVER]   Modbus handler confirmed running; cleared degraded state");
                 return;
             }
         }
@@ -1774,7 +1850,7 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
             _modbusRestoreRetryAtMs = 0;
             _modbusStoppedForMemory = false;
             FastBee::RuntimeFeatureManager::instance().clearRuntimeDisabled("modbus");
-            Serial.println("[MEMRECOVER]   Modbus has no enabled targets; cleared degraded state in idle mode");
+            LOG_INFO("[MEMRECOVER]   Modbus has no enabled targets; cleared degraded state in idle mode");
             return;
         }
 
@@ -1783,10 +1859,10 @@ void HealthMonitor::reconcilePendingMemoryRecovery() {
 
         if (pm->restartModbusDeferred()) {
             _modbusRestoreRetryAtMs = now + MODBUS_MEMORY_RETRY_MS;
-            Serial.println("[MEMRECOVER]   Modbus handler still down; queued another deferred restart");
+            LOG_INFO("[MEMRECOVER]   Modbus handler still down; queued another deferred restart");
         } else {
             _modbusRestoreRetryAtMs = now + MODBUS_MEMORY_RETRY_MS;
-            Serial.println("[MEMRECOVER]   WARN: Modbus deferred restart rejected; keeping degraded state");
+            LOG_WARNING("[MEMRECOVER]   WARN: Modbus deferred restart rejected; keeping degraded state");
         }
     }
 #endif
@@ -1797,7 +1873,7 @@ void HealthMonitor::restoreMemoryRecovery() {
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
 
-    Serial.println("[MEMRECOVER] === NORMAL: restoring services ===");
+    LOG_INFO("[MEMRECOVER] === NORMAL: restoring services ===");
 
     auto& featureMgr = FastBee::RuntimeFeatureManager::instance();
     featureMgr.clearRuntimeDisabled("fileLogging");
@@ -1826,11 +1902,11 @@ void HealthMonitor::restoreMemoryRecovery() {
             // handler was actually rebuilt and started.
             _modbusRestorePendingForMemory = true;
             _modbusRestoreRetryAtMs = millis() + MODBUS_MEMORY_RETRY_MS;
-            Serial.println("[MEMRECOVER]   Modbus restart queued; waiting for handler confirmation");
+            LOG_INFO("[MEMRECOVER]   Modbus restart queued; waiting for handler confirmation");
         } else {
             _modbusRestorePendingForMemory = true;
             _modbusRestoreRetryAtMs = millis() + MODBUS_MEMORY_RETRY_MS;
-            Serial.println("[MEMRECOVER]   WARN: Modbus restart could not be queued; keeping degraded state");
+            LOG_WARNING("[MEMRECOVER]   WARN: Modbus restart could not be queued; keeping degraded state");
         }
     }
 #endif
@@ -1848,9 +1924,9 @@ void HealthMonitor::restoreMemoryRecovery() {
                 scheduler->setMemoryPaused(false);
             }
             _periphExecPausedForMemory = false;
-            Serial.println("[MEMRECOVER]   PeriphExec workers/timers resumed");
+            LOG_INFO("[MEMRECOVER]   PeriphExec workers/timers resumed");
         } else {
-            Serial.println("[MEMRECOVER]   PeriphExec worker restore deferred; timers remain paused");
+            LOG_INFO("[MEMRECOVER]   PeriphExec worker restore deferred; timers remain paused");
         }
     }
 
@@ -1865,7 +1941,7 @@ void HealthMonitor::restoreMemoryRecovery() {
             _optionalPeripheralsSuspendedForMemory = false;
         }
         if (restored > 0) {
-            Serial.printf("[MEMRECOVER]   Optional peripherals restored: %u\n",
+            LOG_INFOF("[MEMRECOVER]   Optional peripherals restored: %u",
                           (unsigned)restored);
         }
     }
@@ -1875,7 +1951,7 @@ void HealthMonitor::restoreMemoryRecovery() {
 #if FASTBEE_ENABLE_MQTT
     const bool mqttRecoveryAllowed = refreshMqttRecoveryAdmission();
     if (_mqttDisabledForMemory) {
-        Serial.println("[MEMRECOVER]   MQTT stays DISABLED (config: enabled=false), user must re-enable manually");
+        LOG_WARNING("[MEMRECOVER]   MQTT stays DISABLED (config: enabled=false), user must re-enable manually");
         // 不重置 _mqttDisabledForMemory，不重启 MQTT
         _mqttRestorePendingForMemory = false;
         _mqttRestoreRetryAtMs = 0;
@@ -1888,14 +1964,14 @@ void HealthMonitor::restoreMemoryRecovery() {
             _mqttRestoreRetryAtMs = 0;
             _mqttStoppedForMemory = false;
             restored->setStoppedByMemory(false);
-            Serial.println("[MEMRECOVER]   MQTT restart queued and client ready; cleared degraded state");
+            LOG_INFO("[MEMRECOVER]   MQTT restart queued and client ready; cleared degraded state");
         } else {
             // Keep the memory-stop marker visible until a later health cycle
             // can queue a successful rebuild.  Clearing it here used to make
             // REST/SSE report recovery while MQTT remained absent.
             _mqttRestorePendingForMemory = true;
             _mqttRestoreRetryAtMs = millis() + MQTT_MEMORY_CONFIG_RETRY_MS;
-            Serial.println(restartQueued
+            LOG_INFO(restartQueued
                 ? "[MEMRECOVER]   WARN: MQTT restart queued but client not ready; keeping degraded state"
                 : "[MEMRECOVER]   WARN: MQTT restart could not be queued; keeping degraded state");
         }
@@ -1915,7 +1991,7 @@ void HealthMonitor::restoreMemoryRecovery() {
                                 _mqttRestorePendingForMemory ||
                                 _optionalPeripheralsSuspendedForMemory ||
                                 (_mqttsMemoryDowngrade && !_mqttDisabledForMemory && !_mqttRecoveryBlockedForStorage);
-    Serial.println(_mqttRecoveryBlockedForStorage
+    LOG_INFO(_mqttRecoveryBlockedForStorage
         ? "[MEMRECOVER] === MQTT admission storage unavailable; restart required ==="
         : restorePending
         ? "[MEMRECOVER] === NORMAL restore pending (will retry) ==="
@@ -1940,16 +2016,16 @@ void HealthMonitor::ensureTLSContiguousMemory() {
     // 检查最大连续块是否满足 TLS 握手需求
     if (largestBlock >= tlsRequired) return;  // 已满足，直接返回
 
-    Serial.printf("[TLS-RESERVE] WARN: Largest contiguous DRAM=%u < %u required for TLS handshake\n",
+    LOG_WARNINGF("[TLS-RESERVE] WARN: Largest contiguous DRAM=%u < %u required for TLS handshake",
                   largestBlock, tlsRequired);
 
     // 再次触发内存回收（应该已经执行过了，但作为兜底）
     if (largestBlock < 16384U) {  // 小于 16KB，暂停 TLS，保留安全传输意图
-        Serial.println("[TLS-RESERVE] CRITICAL: Insufficient contiguous memory (<16KB), pausing TLS");
+        LOG_ERROR("[TLS-RESERVE] CRITICAL: Insufficient contiguous memory (<16KB), pausing TLS");
 
         if (!_mqttsMemoryDowngrade) {
             downgradeMqttsToMqtt();
-            Serial.println("[TLS-RESERVE] MQTTS paused due to TLS memory pressure; plaintext fallback forbidden");
+            LOG_WARNING("[TLS-RESERVE] MQTTS paused due to TLS memory pressure; plaintext fallback forbidden");
         }
     }
 #endif
@@ -1968,6 +2044,6 @@ void HealthMonitor::disableMqttForMemory() {
         if (auto mqtt = pm->acquireMQTTClient()) mqtt->setStoppedByMemory(true);
         pm->stopMQTT();
     }
-    Serial.println("[MEMRECOVER] MQTT paused for critical memory; enabled and credentials preserved");
+    LOG_WARNING("[MEMRECOVER] MQTT paused for critical memory; enabled and credentials preserved");
 #endif
 }

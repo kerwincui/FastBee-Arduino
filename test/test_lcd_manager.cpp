@@ -818,13 +818,14 @@ static void test_source_peripheral_manager_persists_contrast() {
 }
 
 static void test_source_route_handler_parses_contrast_on_add_and_update() {
-    std::string content = readLcdSrcFile("src/network/handlers/PeripheralRouteHandler.cpp");
+    std::string content = readLcdSrcFile("src/core/PeripheralParamApply.cpp");
     if (content.empty()) {
-        TEST_IGNORE_MESSAGE("PeripheralRouteHandler.cpp not readable, skipping source check");
+        TEST_IGNORE_MESSAGE("PeripheralParamApply.cpp not readable, skipping source check");
         return;
     }
 
     // 新增与更新两条路由都必须解析 contrast，否则 Web 端保存后参数丢失
+    //（参数应用已下沉 core 侧，add/update 两条链各自赋值一次）
     int occurrences = 0;
     size_t pos = 0;
     const std::string needle = "config.params.lcd.contrast";
@@ -834,8 +835,8 @@ static void test_source_route_handler_parses_contrast_on_add_and_update() {
     }
     TEST_ASSERT_TRUE_MESSAGE(occurrences >= 2,
                              "both add and update routes must assign lcd contrast");
-    TEST_ASSERT_TRUE_MESSAGE(srcContains(content, "getParamInt(request, \"contrast\""),
-                             "route handler must read the contrast request param");
+    TEST_ASSERT_TRUE_MESSAGE(srcContains(content, "intValue(\"contrast\""),
+                             "route param apply must read the contrast form field");
 }
 
 // ============================================================

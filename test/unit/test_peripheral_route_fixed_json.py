@@ -235,13 +235,21 @@ class PeripheralRouteFixedJsonTests(unittest.TestCase):
                                       SUPPORT / '.pio/libdeps/native/ArduinoJson/src'))
         if not (library / 'ArduinoJson.h').is_file():
             raise RuntimeError('Registered ArduinoJson headers required')
-        source_path = ROOT / 'src/network/handlers/PeripheralRouteHandler.cpp'
+        # The pure mapping/preflight helpers moved into core units; the frozen
+        # wire oracle still describes the same bodies, now read from there.
+        source_paths = (
+            ROOT / 'src/network/handlers/PeripheralRouteHandler.cpp',
+            ROOT / 'src/core/PeripheralRouteMapper.cpp',
+            ROOT / 'src/core/PeripheralPreflightRouteSupport.cpp',
+        )
+        source_path = source_paths[0]
         oracle_path = CPP / 'peripheral_route_fixed_json_oracle.inc'
         harness_path = CPP / 'peripheral_route_fixed_json_harness.cpp.in'
         ownership_path = CPP / 'peripheral_mcp_ownership_regression.inc'
         deferred_path = CPP / 'peripheral_deferred_string_regression.inc'
         support_oracle_path = CPP / 'peripheral_deferred_string_oracle.inc'
-        source, oracle = source_path.read_text(encoding='utf-8'), oracle_path.read_text(encoding='utf-8')
+        source = '\n'.join(p.read_text(encoding='utf-8') for p in source_paths)
+        oracle = oracle_path.read_text(encoding='utf-8')
         if hashlib.sha256(oracle_path.read_bytes()).hexdigest() != 'b1e2e7c99a38cc43d24c31be33a30ae06cfda56a03b8ee88f0f93c419aaca9a3':
             raise AssertionError('Original peripheral route oracle changed')
         if hashlib.sha256(support_oracle_path.read_bytes()).hexdigest() != '886900b1c5d176efa7d26b794668097ea180d97546cde35785d7c7e292d02792':
@@ -273,6 +281,13 @@ class PeripheralRouteFixedJsonTests(unittest.TestCase):
             '                if (!allocatePreflightWorkspace(ctx, request, workspace)) return;\n'
             '                FastBee::PreflightResult& preflightResult = *workspace;\n' + resource_anchor)
         current = {name: definition(source, name) for name in names}
+        # The core units keep default arguments in their header declarations;
+        # the frozen oracle carries them on the definition. Normalize that
+        # split so the byte-exact body comparison stays meaningful.
+        current['addAnalogInputParams'] = current['addAnalogInputParams'].replace(
+            'bool includeAdvanced)', 'bool includeAdvanced = true)', 1)
+        current['addPreflightResponse'] = current['addPreflightResponse'].replace(
+            'const char* message)', 'const char* message = nullptr)', 1)
         for name in names:
             if current[name] != draft[name]:
                 raise AssertionError('Production body must contain the reviewed scalar rewrite exactly: ' + name)
@@ -299,7 +314,7 @@ class PeripheralRouteFixedJsonTests(unittest.TestCase):
         support += [definition(planner, name) for name in
                     ('preflightIssueCodeName', 'preflightSeverityName', 'resourceKindName')]
         support += ['}', definition(source, 'sameText'), definition(source, 'bytesToHex'),
-                    'template <typename TJson>\n' + definition(source, 'addPassiveBuzzerFlag')]
+                    definition(source, 'addPassiveBuzzerFlag')]
         support += [definition(read, name) for name in ('addUartRuntime', 'addEncoderReading', 'isAnalogInputConfigType')]
         for namespace, source_bodies in (
                 ('LegacySupport', [definition(original_support, name) for name in support_reference]),
@@ -335,7 +350,7 @@ class PeripheralRouteFixedJsonTests(unittest.TestCase):
                  ROOT / 'include/network/FixedJsonField.h',
                  ROOT / 'include/network/JsonDocumentResponse.h', mock, helper, shared_serializer)
         cls.inputs = sorted(local_includes(seeds, roots) | {
-            Path(__file__), source_path, oracle_path, harness_path, ownership_path,
+            Path(__file__), *source_paths, oracle_path, harness_path, ownership_path,
             deferred_path, support_oracle_path, *support_paths})
         cls.inputs += sorted(library.rglob('*.h')) + sorted(library.rglob('*.hpp'))
         cls.hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in cls.inputs}

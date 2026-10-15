@@ -1,5 +1,6 @@
 import { test, expect, env, waitForDeviceReady } from '../fixtures/base.fixture';
 import { enableOptionalUiFeatures } from '../fixtures/optional-features.fixture';
+import { uiScreenshotPath } from '../evidence-paths';
 
 /** 带重试的 page.goto（设备可能临时不可达） */
 async function gotoWithRetry(page: import('@playwright/test').Page, maxRetries = 3) {
@@ -60,7 +61,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     await gotoWithRetry(page);
     await expect(page.locator('#login-page')).toBeVisible();
     // 截图存档
-    await page.screenshot({ path: 'test-results/ui/UI-001-login.png', fullPage: true });
+    await page.screenshot({ path: uiScreenshotPath('UI-001-login.png'), fullPage: true });
     // 登录卡片居中
     const loginPage = page.locator('#login-page');
     const box = await loginPage.boundingBox();
@@ -102,7 +103,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
 
   test('UI-004: 仪表盘卡片布局', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
-    await authPage.screenshot({ path: 'test-results/ui/UI-004-dashboard.png', fullPage: true });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-004-dashboard.png'), fullPage: true });
     // 检查卡片存在
     const cards = authPage.locator('#dashboard-page .stat-card, #dashboard-page .resource-card, #dashboard-page .info-card');
     const count = await cards.count();
@@ -116,7 +117,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     await authPage.waitForTimeout(2000);
     const table = authPage.locator('#users-page .fb-table');
     if (await table.isVisible()) {
-      await authPage.screenshot({ path: 'test-results/ui/UI-005-table.png' });
+      await authPage.screenshot({ path: uiScreenshotPath('UI-005-table.png') });
       await expect(table).toBeVisible();
     }
   });
@@ -148,6 +149,78 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       expect(metrics.rowDisplay).toBe('block');
       expect(metrics.labeledCells).toBe(metrics.cellCount);
     }
+  });
+
+  test('UI-005F: 360/390/430 设备配置页键值表无横向溢出', async ({ authPage, navigateTo }) => {
+    const deviceMenu = authPage.locator('.menu-item[data-page="device"]');
+    test.skip((await deviceMenu.count()) === 0, '设备未提供设备配置页面');
+    await navigateTo('device');
+    await authPage.locator('#device-page').waitFor({ state: 'visible' });
+
+    for (const width of [360, 390, 430]) {
+      await authPage.setViewportSize({ width, height: 900 });
+      const metrics = await authPage.evaluate(() => {
+        const page = document.getElementById('device-page') as HTMLElement;
+        const fluidTables = Array.from(page.querySelectorAll('.fb-table--fluid')) as HTMLElement[];
+        return {
+          pageOverflow: page.scrollWidth > page.clientWidth + 1,
+          fluidCount: fluidTables.length,
+          fluidOverflow: fluidTables.some((table) => table.scrollWidth > table.clientWidth + 1),
+          minWidths: fluidTables.map((table) => getComputedStyle(table).minWidth),
+        };
+      });
+      expect(metrics.pageOverflow, `${width}px 设备配置页不应横向溢出`).toBeFalsy();
+      expect(metrics.fluidCount, `${width}px 设备配置页应有无 thead 键值表`).toBeGreaterThan(0);
+      expect(metrics.fluidOverflow, `${width}px 键值表不应横向溢出`).toBeFalsy();
+      expect(metrics.minWidths.every((w) => w === '0px'), `${width}px 键值表 min-width 应为 0`).toBeTruthy();
+    }
+  });
+
+  test('UI-005G: 设备配置 Tab 键盘可达与 ARIA 语义', async ({ authPage, navigateTo }) => {
+    const deviceMenu = authPage.locator('.menu-item[data-page="device"]');
+    test.skip((await deviceMenu.count()) === 0, '设备未提供设备配置页面');
+    await navigateTo('device');
+    const tabs = authPage.locator('#device-page .config-tabs [role="tab"]');
+    await expect(tabs.first()).toBeVisible();
+    const tabCount = await tabs.count();
+    expect(tabCount).toBeGreaterThanOrEqual(2);
+
+    // ARIA 语义完整
+    await expect(authPage.locator('#device-page .config-tabs')).toHaveAttribute('role', 'tablist');
+    for (let i = 0; i < tabCount; i++) {
+      const tab = tabs.nth(i);
+      await expect(tab).toHaveAttribute('aria-selected', i === 0 ? 'true' : 'false');
+      await expect(tab).toHaveAttribute('aria-controls', await tab.getAttribute('data-tab') as string);
+      const panelId = await tab.getAttribute('aria-controls') as string;
+      await expect(authPage.locator('#' + panelId)).toHaveAttribute('role', 'tabpanel');
+    }
+    // 选中态可聚焦，其余 tabindex=-1
+    await expect(tabs.first()).toHaveAttribute('tabindex', '0');
+    await expect(tabs.nth(1)).toHaveAttribute('tabindex', '-1');
+
+    // 显式聚焦选中 tab 后方向键移动焦点
+    await tabs.first().focus();
+    const focusedDataTab = await authPage.evaluate(() =>
+      (document.activeElement as HTMLElement)?.getAttribute?.('data-tab') || '');
+    expect(focusedDataTab).toBe('dev-basic');
+    await authPage.keyboard.press('ArrowRight');
+    const afterRight = await authPage.evaluate(() =>
+      (document.activeElement as HTMLElement)?.getAttribute?.('data-tab') || '');
+    expect(afterRight).toBe('dev-ntp');
+    // 焦点移动不切换选中
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+    // Enter 激活聚焦的 tab
+    await authPage.keyboard.press('Enter');
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await expect(tabs.nth(1)).toHaveAttribute('tabindex', '0');
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'false');
+    // Home 跳回首 tab，End 跳到尾 tab
+    await authPage.keyboard.press('Home');
+    expect(await authPage.evaluate(() =>
+      (document.activeElement as HTMLElement)?.getAttribute?.('data-tab') || '')).toBe('dev-basic');
+    await authPage.keyboard.press('End');
+    expect(await authPage.evaluate(() =>
+      (document.activeElement as HTMLElement)?.getAttribute?.('data-tab') || '')).toBe('dev-advanced');
   });
 
   test('UI-005B: 窄屏表格操作使用可访问菜单', async ({ authPage, navigateTo }) => {
@@ -419,6 +492,9 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       const pending = loader._loadingPages.modals;
       if (pending) await pending.catch(() => {});
       if (!loader._loadedPages.modals) await loader.loadModals();
+      const pendingPeriph = loader._loadingPages['peripheral-modals'];
+      if (pendingPeriph) await pendingPeriph.catch(() => {});
+      if (!loader._loadedPages['peripheral-modals']) await loader.loadPeripheralModals();
       const modalHtml = Object.values(loader._modalTemplates).join('\n');
       if (!modalHtml.includes('id="peripheral-modal"')) {
         throw new Error('Cannot prepare controlled modal response');
@@ -426,6 +502,8 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       document.getElementById('peripheral-modal')?.remove();
       delete loader._loadedPages.modals;
       delete loader._loadingPages.modals;
+      delete loader._loadedPages['peripheral-modals'];
+      delete loader._loadingPages['peripheral-modals'];
       loader._modalTemplates = {};
       loader._modalHosts = {};
       const originalFetch = window.fetch;
@@ -439,7 +517,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
         return Promise.resolve().then(task);
       };
       window.fetch = function(input: RequestInfo | URL, init?: RequestInit) {
-        if (String(input).includes('/pages/modals.html')) {
+        if (String(input).includes('/pages/modals.html') || String(input).includes('/pages/peripheral-modals.html')) {
           (window as any).__modalFetchCount++;
           return new Promise<Response>((resolve) => {
             setTimeout(() => resolve(new Response(modalHtml, {
@@ -457,7 +535,8 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     });
     try {
       await expect(authPage.locator('#peripheral-modal')).toBeVisible({ timeout: 45_000 });
-      expect(await authPage.evaluate(() => (window as any).__modalFetchCount)).toBe(1);
+      // B6 两包拆分：基础包 + peripheral-modals 包各请求一次，双击不得重复（加载去重）。
+      expect(await authPage.evaluate(() => (window as any).__modalFetchCount)).toBe(2);
     } finally {
       await authPage.evaluate(() => {
         (window as any).AppState.hideModal('peripheral-modal');
@@ -596,7 +675,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
 
   test('UI-008: 表单标签对齐', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
-    await authPage.screenshot({ path: 'test-results/ui/UI-008-forms.png', fullPage: true });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-008-forms.png'), fullPage: true });
     const labels = authPage.locator('#device-page label');
     const count = await labels.count();
     expect(count).toBeGreaterThan(0);
@@ -616,7 +695,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     const buttons = authPage.locator('#network-page .fb-btn, #network-page button');
     const count = await buttons.count();
     expect(count).toBeGreaterThan(0);
-    await authPage.screenshot({ path: 'test-results/ui/UI-010-buttons.png' });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-010-buttons.png') });
   });
 
   // ========== 响应式布局 ==========
@@ -625,7 +704,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     await authPage.setViewportSize({ width: 1920, height: 1080 });
     await navigateTo('dashboard');
     await authPage.waitForLoadState('networkidle');
-    await authPage.screenshot({ path: 'test-results/ui/UI-011-1920x1080.png', fullPage: true });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-011-1920x1080.png'), fullPage: true });
     await expect(authPage.locator('#app-container')).toBeVisible();
   });
 
@@ -633,7 +712,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     await authPage.setViewportSize({ width: 1366, height: 768 });
     await navigateTo('dashboard');
     await authPage.waitForLoadState('networkidle');
-    await authPage.screenshot({ path: 'test-results/ui/UI-012-1366x768.png', fullPage: true });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-012-1366x768.png'), fullPage: true });
     await expect(authPage.locator('#app-container')).toBeVisible();
   });
 
@@ -641,7 +720,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     await authPage.setViewportSize({ width: 1024, height: 768 });
     await navigateTo('dashboard');
     await authPage.waitForLoadState('networkidle');
-    await authPage.screenshot({ path: 'test-results/ui/UI-013-1024x768.png', fullPage: true });
+    await authPage.screenshot({ path: uiScreenshotPath('UI-013-1024x768.png'), fullPage: true });
     await expect(authPage.locator('#app-container')).toBeVisible();
   });
 
@@ -656,7 +735,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       if (await themeToggle.isVisible()) {
         await themeToggle.click();
         await authPage.waitForTimeout(1000);
-        await authPage.screenshot({ path: 'test-results/ui/UI-014-dark-theme.png' });
+        await authPage.screenshot({ path: uiScreenshotPath('UI-014-dark-theme.png') });
       }
     }
   });
@@ -671,7 +750,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       if (await themeToggle.isVisible()) {
         await themeToggle.click();
         await authPage.waitForTimeout(1000);
-        await authPage.screenshot({ path: 'test-results/ui/UI-015-light-theme.png' });
+        await authPage.screenshot({ path: uiScreenshotPath('UI-015-light-theme.png') });
       }
     }
   });
@@ -686,7 +765,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     if (await langSelect.isVisible()) {
       await langSelect.selectOption('en');
       await page.waitForTimeout(1000);
-      await page.screenshot({ path: 'test-results/ui/UI-016-login-en.png' });
+      await page.screenshot({ path: uiScreenshotPath('UI-016-login-en.png') });
       // 切回中文
       await langSelect.selectOption('zh-CN');
       await page.waitForTimeout(1000);
@@ -787,7 +866,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       const menu = authPage.locator('#user-dropdown-menu, .user-dropdown-menu, [class*="dropdown-menu"]').first();
       if (await menu.isVisible()) {
         await expect(menu).toBeVisible();
-        await authPage.screenshot({ path: 'test-results/ui/UI-024-dropdown.png' });
+        await authPage.screenshot({ path: uiScreenshotPath('UI-024-dropdown.png') });
       }
     }
   });
@@ -873,7 +952,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     for (const menuPage of pages) {
       await navigateTo(menuPage);
       await authPage.waitForTimeout(500);
-      await authPage.screenshot({ path: `test-results/ui/UI-026-${menuPage}.png`, fullPage: true });
+      await authPage.screenshot({ path: uiScreenshotPath(`UI-026-${menuPage}.png`), fullPage: true });
     }
   });
 
@@ -1072,7 +1151,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
 
           if (width !== 360) {
             await authPage.screenshot({
-              path: `test-results/ui/UI-027E-${pageSpec.name}-${width}.png`,
+              path: uiScreenshotPath(`UI-027E-${pageSpec.name}-${width}.png`),
               fullPage: true,
             });
           }
@@ -1116,5 +1195,43 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
       const text = await footer.textContent();
       console.log(`页脚: ${text?.substring(0, 100)}`);
     }
+  });
+
+  test('UI-031: 模态框键盘闭环与 ARIA 属性 @quick', async ({ authPage, navigateTo }) => {
+    await navigateTo('peripheral');
+    await waitForPeripheralPageReady(authPage);
+    const addBtn = authPage.locator('#add-peripheral-btn');
+    test.skip(!(await addBtn.isVisible()), '当前设备不允许新增外设');
+    await addBtn.click();
+    const modal = authPage.locator('#peripheral-modal');
+    await expect(modal).toBeVisible();
+    // ARIA 语义完整
+    await expect(modal).toHaveAttribute('role', 'dialog');
+    await expect(modal).toHaveAttribute('aria-modal', 'true');
+    const labelledby = await modal.getAttribute('aria-labelledby');
+    expect(labelledby).toBeTruthy();
+    await expect(authPage.locator(`#${labelledby}`)).toHaveCount(1);
+    // 打开后焦点进入弹窗
+    const focusInside = () => authPage.evaluate(() => {
+      const modalEl = document.getElementById('peripheral-modal');
+      return !!modalEl && modalEl.contains(document.activeElement);
+    });
+    expect(await focusInside()).toBe(true);
+    // 正向 Tab 循环不逃逸
+    for (let i = 0; i < 15; i++) {
+      await authPage.keyboard.press('Tab');
+    }
+    expect(await focusInside()).toBe(true);
+    // 反向 Shift+Tab 循环不逃逸
+    for (let i = 0; i < 15; i++) {
+      await authPage.keyboard.press('Shift+Tab');
+    }
+    expect(await focusInside()).toBe(true);
+    // Escape 关闭且焦点还原到触发按钮
+    await authPage.keyboard.press('Escape');
+    await expect(modal).not.toBeVisible();
+    const focusRestored = await authPage.evaluate(() =>
+      !!document.activeElement && document.activeElement.id === 'add-peripheral-btn');
+    expect(focusRestored).toBe(true);
   });
 });

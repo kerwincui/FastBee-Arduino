@@ -158,7 +158,7 @@
                 statusText = '附属能力受限';
                 statusClass = 'status-badge status-badge-warning';
             } else if (selected && f.active !== false) {
-                statusText = f.onDemand ? '已准入 · 按需使用' : '已准入 · 实例状态未确认';
+                statusText = f.onDemand ? '已准入 · 按需使用' : '已准入';
             } else if (selected) {
                 statusText = '启用状态待确认';
                 statusClass = 'status-badge status-badge-warning';
@@ -168,69 +168,13 @@
             }
 
             var stateReason = f.runtimeDisableReason || (limitedChild && limitedChild.runtimeDisableReason);
-            var instanceBadge = '';
-            if (!locked && ['driver_initialization', 'service_lifecycle', 'execution_activity', 'static_resource', 'owner_lifetime', 'transport_allocation'].includes(f.instanceScope)) {
-                var instanceText = '';
-                var instanceWarning = false;
-                var driverScope = f.instanceScope === 'driver_initialization';
-                var lifecycleLabels = {allocated: '实例已分配', running: '实例运行中', stopped: '实例已停止', retiring: '实例退出中'};
-                var ownerLabels = {allocated: '管理器已创建', retiring: '管理器销毁中', owner_absent: '管理器未创建'};
-                var tlsLabels = {allocated: 'TLS 对象已分配', retiring: 'TLS 对象释放中', stopped: 'TLS 对象未分配'};
-                if (f.instanceScope === 'transport_allocation' && f.instanceObserved === true &&
-                    f.initializedInstances === undefined && Object.prototype.hasOwnProperty.call(tlsLabels, f.instanceState)) {
-                    instanceText = tlsLabels[f.instanceState];
-                    instanceWarning = f.instanceState === 'retiring';
-                } else if (f.instanceScope === 'owner_lifetime' && f.instanceObserved === true &&
-                    f.initializedInstances === undefined && Object.prototype.hasOwnProperty.call(ownerLabels, f.instanceState)) {
-                    instanceText = ownerLabels[f.instanceState];
-                    instanceWarning = f.instanceState === 'retiring';
-                } else if (f.instanceScope === 'static_resource' && f.instanceObserved === false &&
-                    f.instanceState === 'unobserved' && f.instanceReason === 'no_dedicated_instance' &&
-                    f.initializedInstances === undefined) {
-                    instanceText = '静态资源 · 无独立实例';
-                } else if (f.instanceScope === 'execution_activity' && f.instanceObserved === true &&
-                    f.initializedInstances === undefined && ['running', 'idle'].includes(f.instanceState)) {
-                    instanceText = f.instanceState === 'running' ? '命令正在执行' : '当前无命令执行';
-                    instanceWarning = f.instanceState === 'running' && (!selected || f.active === false);
-                } else if (driverScope && f.instanceObserved === true && f.instanceState === 'initialized' &&
-                    Number.isInteger(f.initializedInstances) && f.initializedInstances > 0 && f.initializedInstances <= 65535) {
-                    instanceText = '驱动已初始化 × ' + f.initializedInstances;
-                    instanceWarning = !selected || f.active === false;
-                } else if (driverScope && f.instanceObserved === true && f.instanceState === 'not_initialized' && f.initializedInstances === 0) {
-                    instanceText = '驱动未初始化';
-                } else if (f.instanceScope === 'service_lifecycle' && f.instanceObserved === true && f.initializedInstances === undefined &&
-                    Object.prototype.hasOwnProperty.call(lifecycleLabels, f.instanceState)) {
-                    instanceText = lifecycleLabels[f.instanceState];
-                    instanceWarning = f.instanceState === 'retiring' ||
-                        (f.instanceState !== 'stopped' && (!selected || f.active === false));
-                } else if (f.instanceObserved === true && f.instanceState === 'cleanup_pending') {
-                    instanceText = '实例清理待重试'; instanceWarning = true;
-                } else if (f.instanceObserved === false && f.instanceState === 'busy') {
-                    instanceText = '实例观测忙'; instanceWarning = true;
-                } else if (f.instanceObserved === false && f.instanceState === 'unobserved') {
-                    instanceText = '实例状态未确认';
-                }
-                if (instanceText) {
-                    var reasons = {not_compiled: '未编译', no_dedicated_instance: '无独立实例',
-                        shared_execution_owner: '共用执行服务', observer_not_registered: '观察者尚未建立',
-                        owner_snapshot_unavailable: '服务尚未提供快照', synchronization_unavailable: '同步条件未就绪',
-                        backend_unavailable: '后端不可用', invalid_snapshot: '快照不一致', observation_busy: '服务正在处理'};
-                    var reason = Object.prototype.hasOwnProperty.call(reasons, f.instanceReason) ? reasons[f.instanceReason] : '';
-                    if ((f.instanceObserved === true || f.instanceScope === 'static_resource') &&
-                        statusText === '已准入 · 实例状态未确认') statusText = '已准入';
-                    instanceBadge = '<br><span class="status-badge status-badge-' +
-                        (instanceWarning ? 'warning' : 'neutral') + '" title="' + escapeHtml((reason ? reason + '；' : '') +
-                        '管理器创建不代表服务运行，TLS 对象分配不证明握手或证书验证；实例观测不等于物理工作正常，也不代表内存已释放或实测占用；已停止仍可保留资源。') + '">' +
-                        escapeHtml(instanceText) + '</span>';
-                }
-            }
             var statusTitle = ' title="' + escapeHtml(locked ? lockLabel :
                 (stateReason ? stateReason + '；' : '') +
                 '准入不代表实例已初始化；Flash/RAM 为静态估算，不是实测占用。') + '"';
 
             return '<tr' + rowClass + ' data-feature-key="' + escapeHtml(f.key) + '">' +
                 '<td>' + escapeHtml(f.name) + '</td>'
-                + '<td class="feature-state"><span class="' + statusClass + '"' + statusTitle + '>' + statusText + '</span>' + instanceBadge + '</td>'
+                + '<td class="feature-state"><span class="' + statusClass + '"' + statusTitle + '>' + statusText + '</span></td>'
                 + '<td class="feature-resource" data-feature-resource="flash">' + (f.flashKB || 0) + 'KB</td>'
                 + '<td class="feature-resource" data-feature-resource="ram">' + formatRam(f.ramB) + '</td>'
                 + '<td class="feature-dependency" data-feature-resource="dependency">' + escapeHtml(dep || '-') + '</td>'
@@ -313,7 +257,7 @@
         // 功能配置的备份/迁移统一走设备配置页（高级配置）的配置转移模块，
         // 本页不再提供重复的导入/导出入口
 
-        applyFeatureConfig() {
+        async applyFeatureConfig() {
             if (!this._featureDirty) return;
             
             // WP-91: Web 控制面自锁保护 - 检查是否关闭了 webServer
@@ -329,7 +273,7 @@
                     '3. 或连接串口发送 AT 命令恢复\n\n' +
                     '确定要关闭 Web 服务吗？';
                 
-                if (!confirm(confirmMsg)) {
+                if (!await FBConfirm({ title: '应用功能配置', message: confirmMsg, danger: true })) {
                     var saveBtn = document.getElementById('features-save-btn');
                     if (saveBtn) saveBtn.disabled = false;
                     return;
@@ -361,7 +305,7 @@
                     }
                 })
                 .catch(function() {
-                    Notification.error(t('common-save-retry', '保存失败，请重试'));
+                    Notification.error('保存失败，请重试');
                     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并重启'; }
                 });
         },

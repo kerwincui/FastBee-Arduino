@@ -38,6 +38,7 @@
 #include "systems/SystemRebooter.h"
 #include "screen/ScreenRuntime.h"
 #include "screen/ScreenBacklight.h"
+#include "screen/ScreenThemeVocabulary.h"
 #if FASTBEE_ENABLE_REMOTE_RESOURCES
 #include "protocols/RemoteResourceManager.h"
 #endif
@@ -722,7 +723,7 @@ void ScreenPanelManager::makeDefaultConfig(JsonDocument& out) {
     bottomNav.add("home");
     JsonObject page = out["pages"].to<JsonArray>().add<JsonObject>();
     page["id"] = "home";
-    page["title"] = "Home";
+    page["title"] = "首页";
     page["layoutId"] = "mixed-grid";
     page["layoutMode"] = "template";
     page["logicalWidth"] = 480;
@@ -881,7 +882,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
         error = "config.settings.themeId must be a string";
         return false;
     }
-    if (!oneOf(theme, {"dark", "light", "high-contrast"})) {
+    if (!FastBee::Screen::isKnownScreenThemeId(theme.c_str())) {
         error = "config.settings.themeId is unsupported";
         return false;
     }
@@ -902,7 +903,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
             !boundedString(background["presetId"], 16, true,
                            "config.settings.background.presetId", error)) return false;
         backgroundPreset = background["presetId"].as<String>();
-        if (!oneOf(backgroundPreset, {"solid", "grid", "soft-gradient"})) {
+        if (!FastBee::Screen::isKnownScreenBackgroundPresetId(backgroundPreset.c_str())) {
             error = "config.settings.background.presetId is unsupported";
             return false;
         }
@@ -991,7 +992,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
         normalizedPage["rotation"] = rotation;
         if (!page["themeId"].isNull()) {
             if (!page["themeId"].is<const char*>() ||
-                !oneOf(page["themeId"].as<String>(), {"dark", "light", "high-contrast"})) {
+                !FastBee::Screen::isKnownScreenThemeId(page["themeId"].as<String>().c_str())) {
                 error = pagePath + ".themeId is unsupported";
                 return false;
             }
@@ -1007,7 +1008,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
             if (!onlyKeys(background, backgroundKeys, pagePath + ".background", error) ||
                 !boundedString(background["presetId"], 16, true,
                                pagePath + ".background.presetId", error) ||
-                !oneOf(background["presetId"].as<String>(), {"solid", "grid", "soft-gradient"})) {
+                !FastBee::Screen::isKnownScreenBackgroundPresetId(background["presetId"].as<String>().c_str())) {
                 if (error.isEmpty()) error = pagePath + ".background.presetId is unsupported";
                 return false;
             }
@@ -1473,6 +1474,10 @@ bool ScreenPanelManager::validateAndBindReferences(JsonDocument& normalized,
                 JsonDocument value;
                 if (FastBee::RemoteResourceManager::instance().getValue(
                         sourceRef, value.to<JsonObject>())) return true;
+                // Cold start: accept sources declared by the active
+                // configuration even before the first fetch lands.
+                if (FastBee::RemoteResourceManager::instance().knowsConfiguredSource(
+                        sourceRef)) return true;
 #endif
                 error = String("Unknown sourceRef '") + sourceRef + "'";
                 return false;

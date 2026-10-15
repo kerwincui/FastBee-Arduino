@@ -62,7 +62,12 @@ test.describe('Generic peripheral published Web integration', () => {
     await navigateTo('peripheral');
     // Modal templates share the serialized static asset queue with modules.
     // Cache them before holding the save script so the test can open the form.
-    await authPage.evaluate(() => (window as any).AppState._loadModals());
+    // B6 two-package split: cache both the base package and the peripheral
+    // editor package, otherwise the form open queues behind the held script.
+    await authPage.evaluate(async () => {
+      await (window as any).AppState._loadModals();
+      await (window as any).PageLoader.loadPeripheralModals();
+    });
     let releaseSaveModule: () => void = () => {};
     const saveModuleReady = new Promise<void>(resolve => { releaseSaveModule = resolve; });
     let moduleRequests = 0;

@@ -122,7 +122,7 @@
     </div>
 
     <!-- ========== 设备编辑弹窗 ========== -->
-    <div id="modbus-device-edit-modal" class="modal">
+    <div id="modbus-device-edit-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modbus-edit-modal-title">
         <div class="modal-content fb-max-w-modal">
             <div class="modal-header">
                 <h3 id="modbus-edit-modal-title">编辑子设备</h3>
@@ -289,7 +289,7 @@
     </div>
 
     <!-- ========== 设备控制弹窗 ========== -->
-    <div id="modbus-device-ctrl-modal" class="modal">
+    <div id="modbus-device-ctrl-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modbus-ctrl-modal-title">
         <div class="modal-content u-modal-content-720">
             <div class="modal-header">
                 <h3 id="modbus-ctrl-modal-title">设备控制</h3>
@@ -375,10 +375,6 @@
                                 <span class="motor-status-label">计数</span>
                                 <span class="motor-status-value" id="motor-cur-count">--</span>
                             </div>
-                            <div class="motor-status-item">
-                                <span class="motor-status-label">本窗口最近控制报告</span>
-                                <span class="motor-status-value" id="modbus-ctrl-motor-report" role="status">报告状态未确认；平台接收未确认</span>
-                            </div>
                         </div>
                     </div>
                     <!-- 参数设置区 -->
@@ -440,10 +436,10 @@
 </form>
 
 <!-- 轮询任务编辑模态框 -->
-<div id="task-edit-modal" class="modal">
+<div id="task-edit-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="task-edit-modal-title">
     <div class="modal-content fb-max-w-modal-sm">
         <div class="modal-header">
-            <h3>编辑子设备</h3>
+            <h3 id="task-edit-modal-title">编辑子设备</h3>
             <button type="button" class="modal-close"
                 data-action="_closeTaskEditModal">&times;</button>
         </div>
@@ -492,10 +488,10 @@
 </div>
 
 <!-- 寄存器映射配置模态框 -->
-<div id="mapping-modal" class="modal">
+<div id="mapping-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="mapping-modal-title">
     <div class="modal-content u-modal-content-800">
         <div class="modal-header">
-            <h3>寄存器映射配置</h3>
+            <h3 id="mapping-modal-title">寄存器映射配置</h3>
             <button type="button" class="modal-close"
                 data-action="closeMappingModal">&times;</button>
         </div>

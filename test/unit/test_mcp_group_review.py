@@ -9,6 +9,7 @@ import unittest
 from test_io_expander_manager import ROOT, SOURCE, function
 
 ROUTE = (ROOT / 'src/network/handlers/PeripheralRouteHandler.cpp').read_text(encoding='utf-8')
+ROUTE += '\n' + (ROOT / 'src/core/PeripheralPreflightRouteSupport.cpp').read_text(encoding='utf-8')
 
 
 class McpGroupReviewTests(unittest.TestCase):

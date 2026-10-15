@@ -80,8 +80,10 @@ class WebSecurityUxContractTests(unittest.TestCase):
 
     def test_peripheral_roots_are_balanced_and_duplicate_script_is_not_published(self):
         self.assertEqual(PERIPHERAL_HTML.count("<div"), PERIPHERAL_HTML.count("</div>"))
-        self.assertIn("const STANDALONE_ROOT_JS = [];", BUILD_MODULES)
-        self.assertIn("notification.js is already part of chunk-2-app.js", BUILD_MODULES)
+        # Standalone root-JS publishing was removed; the root js/ cleaner keeps
+        # only app chunks, and notification.js must stay merged into chunk-2-app.js.
+        self.assertNotIn("STANDALONE_ROOT_JS", BUILD_MODULES)
+        self.assertIn("notification.js 已并入 chunk-2-app.js", BUILD_MODULES)
 
     def test_runtime_managed_peripheral_types_stay_out_of_create_select(self):
         self.assertIn("item.configurable !== false && item.implemented !== false", PERIPHERALS)

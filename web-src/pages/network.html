@@ -172,14 +172,14 @@
                 </div>
             </div>
 
-            <div class="config-tabs">
-                <div class="config-tab active" data-tab="base">基本配置</div>
-                <div class="config-tab" data-tab="ap-config">热点配置</div>
-                <div class="config-tab" data-tab="advance">高级配置</div>
+            <div class="config-tabs" role="tablist">
+                <div class="config-tab active" data-tab="base" role="tab" aria-selected="true" aria-controls="base" tabindex="0">基本配置</div>
+                <div class="config-tab" data-tab="ap-config" role="tab" aria-selected="false" aria-controls="ap-config" tabindex="-1">热点配置</div>
+                <div class="config-tab" data-tab="advance" role="tab" aria-selected="false" aria-controls="advance" tabindex="-1">高级配置</div>
             </div>
 
             <!-- 基本配置 -->
-            <div id="base" class="config-content active">
+            <div id="base" class="config-content active" role="tabpanel">
                 <!-- 联网方式 + WiFi选择并排布局 -->
                 <div class="config-form-grid fb-mb-3">
                     <div class="config-form-column">
@@ -348,7 +348,7 @@
             </div>
 
             <!-- 热点配置 -->
-            <div id="ap-config" class="config-content">
+            <div id="ap-config" class="config-content" role="tabpanel">
                 <!-- 热点参数配置表单 -->
                 <form id="ap-form" class="fb-form">
                     <div class="config-form-grid">
@@ -432,7 +432,7 @@
             </div>
 
             <!-- 高级配置 -->
-            <div id="advance" class="config-content">
+            <div id="advance" class="config-content" role="tabpanel">
                 <form id="advanced-form" class="fb-form">
                     <!-- IP配置 -->
                     <h4 class="fb-section-title">静态IP配置</h4>

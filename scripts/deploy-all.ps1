@@ -56,6 +56,8 @@ $IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
 . (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
+. (Join-Path $PSScriptRoot "lib\pio-runner.ps1")
+Initialize-PioRunner
 
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUTF8 = "1"
@@ -85,7 +87,7 @@ function Get-PioPython {
 
 function Get-EsptoolPorts {
     # Parse `pio device list --json-output`; return { port, description } objects
-    $raw = & pio device list --json-output 2>$null
+    $raw = Invoke-PioRunner -Args @('device', 'list', '--json-output') 2>$null
     $json = ($raw | Out-String) | ConvertFrom-Json
     $result = @()
     foreach ($item in @($json)) {
@@ -119,8 +121,8 @@ if ($SkipBuild) {
     Write-Step "SkipBuild requested, reusing existing image"
 } else {
     Write-Step "Building environment '$Env' (firmware + filesystem)"
-    & pio run -e $Env
-    if ($LASTEXITCODE -ne 0) { throw "Build failed for environment '$Env' (exit $LASTEXITCODE)" }
+    $buildExit = Invoke-PioRunner -Args @('run', '-e', $Env)
+    if ($buildExit -ne 0) { throw "Build failed for environment '$Env' (exit $buildExit)" }
 }
 
 if (-not (Test-Path -LiteralPath $factoryImage -PathType Leaf)) {

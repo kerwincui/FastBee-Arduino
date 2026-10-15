@@ -7,8 +7,9 @@
 #include <memory>
 #include <string>
 #include <vector>
-#define LOG_INFO(...) ((void)0)
-#define LOG_WARNING(...) ((void)0)
+struct HarnessLogSink { template<class... T> static void use(const T&...) {} };
+#define LOG_INFO(...) HarnessLogSink::use(__VA_ARGS__)
+#define LOG_WARNING(...) HarnessLogSink::use(__VA_ARGS__)
 #define pdMS_TO_TICKS(value) (value)
 unsigned delays = 0, clientTouches = 0;
 unsigned configReads = 0, reboots = 0;
@@ -28,7 +29,7 @@ template<class F> bool updateJsonConfig(const char*, F update) {
 }
 }
 namespace FileSystem { const char* PROTOCOL_CONFIG_FILE = "fixture-only"; }
-struct { template<class... T> void printf(const char*, T...) {} void println(const char*) {} } Serial;
+[[maybe_unused]] struct { template<class... T> void printf(const char*, T...) {} void println(const char*) {} } Serial;
 struct ConfigStorage {
     static ConfigStorage& getInstance() { static ConfigStorage value; return value; }
     bool loadProtocolSection(const char*, JsonDocument&) { ++configReads; return true; }

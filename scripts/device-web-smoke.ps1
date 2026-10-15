@@ -6,6 +6,11 @@
     Requests the complete set of public Web pages with a bounded interval between
     requests. This catches missing LittleFS assets and low-memory page failures
     without requiring a browser or changing device state.
+
+    Environment pitfall: in shells spawned from Git Bash, Get-Command curl.exe
+    can match both the mingw64 curl and C:\Windows\System32\curl.exe, returning
+    an array whose .Source joins into an invalid space-separated path. The curl
+    resolution below therefore forces a single result and prefers System32.
 #>
 
 [CmdletBinding()]
@@ -112,9 +117,14 @@ $pages = @(
     "/pages/fragments/protocol-mqtt.html"
 )
 
-$curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue
-if (-not $curl) { $curl = Get-Command curl -CommandType Application -ErrorAction Stop }
-$curlPath = $curl.Source
+# Get-Command can return multiple curl.exe applications at once (see the header
+# note); collapse to a single command and prefer the System32 curl.
+$curlCandidates = @(Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue)
+if ($curlCandidates.Count -eq 0) { $curlCandidates = @(Get-Command curl -CommandType Application -ErrorAction Stop) }
+$system32Curl = Join-Path $env:SystemRoot "System32\curl.exe"
+$curl = @($curlCandidates | Where-Object { $_.Source -ieq $system32Curl } | Select-Object -First 1)
+if ($curl.Count -eq 0) { $curl = @($curlCandidates | Select-Object -First 1) }
+$curlPath = $curl[0].Source
 $nullSink = if ($env:OS -eq "Windows_NT") { "NUL" } else { "/dev/null" }
 $rows = New-Object System.Collections.Generic.List[object]
 $displayBaseUrl = Get-SafeEndpointLabel -Url $BaseUrl

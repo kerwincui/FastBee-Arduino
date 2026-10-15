@@ -162,9 +162,12 @@ void FastBee::FeatureBudgetRegistry::runChecks() {
             FastBee::MemoryBudget::dram8Free() / 1024U;  // MALLOC_CAP_8BIT 真实 DRAM 口径
         if (free8Kb < budget.minFree8Kb) {
             FastBee::FeatureBudgetRegistryAccess::deny(budget.name);
+            // D5 白名单：boot 一次性启动准入轨迹（仅 initialize() STEP2.2 调用），
+            // 发布构建 LOG_INFO 被剔除，迁移后无法定位功能被内存预算禁用的原因。
             Serial.printf("[BUDGET] %s disabled: free8=%luKB < need=%uKB\n",
                           budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
         } else {
+            // 同上：与 disabled 行成对出现，保持启动预算轨迹完整可比对。
             Serial.printf("[BUDGET] %s ok: free8=%luKB >= need=%uKB\n",
                           budget.name, (unsigned long)free8Kb, budget.minFree8Kb);
         }
@@ -196,9 +199,12 @@ void FastBee::FeatureBudgetRegistry::recheck() {
             }
         }
         if (firstAtRisk) {
-            Serial.printf("[BUDGET-RECHECK] diagnostic: free8=%luKB below %s startup budget (%uKB); active features retained\n",
-                          (unsigned long)free8Kb, firstAtRisk->name,
-                          firstAtRisk->minFree8Kb);
+            // 运行期周期诊断（HealthMonitor 任务内，LoggerSystem 已就绪），
+            // 非 boot 准入轨迹亦非 OOM 邻接路径，按 D5 规则迁移 LOG_WARNINGF
+            // （WARNING 级别在发布构建中不被 FASTBEE_STRIP_INFO_LOGS 剔除）。
+            LOG_WARNINGF("[BUDGET-RECHECK] diagnostic: free8=%luKB below %s startup budget (%uKB); active features retained",
+                         (unsigned long)free8Kb, firstAtRisk->name,
+                         firstAtRisk->minFree8Kb);
         }
     }
     // Keep the runtime status view synchronized with the immutable startup
@@ -283,11 +289,14 @@ bool FastBeeFramework::initialize() {
     ets_printf("  Build: %s %s\n", __DATE__, __TIME__);
     ets_printf("========================================\n\n");
 
+    // D5 白名单：以下 [STEPn]/[Boot] 启动进度与计时日志保留 Serial 直出——
+    // 它们是发布构建中唯一的启动可见轨迹（LOG_INFO 被 FASTBEE_STRIP_INFO_LOGS
+    // 编译期剔除），迁移后将无法在发布固件中定位启动卡死位置。
     // 步骤1: 初始化配置存储（Logger 之前，只能用 Serial）
     stepStart = millis();
     Serial.println("[STEP1] Initializing Config Storage...");
     if (!ConfigStorage::getInstance().initialize()) {
-        Serial.println("[FATAL] Failed to initialize config storage!");
+        LOG_ERROR("[FATAL] Failed to initialize config storage!");
         return false;
     }
     unsigned long configStorageMs = millis() - stepStart;
@@ -309,7 +318,7 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP2.6] Initializing FeatureToggle Engine...");
     if (!FastBee::FeatureToggleEngine::instance().initialize()) {
-        Serial.println("[FATAL] Failed to initialize FeatureToggle!");
+        LOG_ERROR("[FATAL] Failed to initialize FeatureToggle!");
         return false;
     }
     unsigned long featureToggleMs = millis() - stepStart;
@@ -319,7 +328,7 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP2] Initializing Logger System...");
     if (!LOGGER.initialize()) {
-        Serial.println("[FATAL] Failed to initialize logger system!");
+        LOG_ERROR("[FATAL] Failed to initialize logger system!");
         return false;
     }
     LOGGER.setLogLevel(LOG_INFO);  // 默认 INFO，随后从 device.json 覆盖
@@ -383,7 +392,7 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP2.5] Initializing PeripheralManager...");
     if (!PeripheralManager::getInstance().initialize()) {
-        Serial.println("[STEP2.5] WARN: Peripheral manager init failed");
+        LOG_WARNING("[STEP2.5] WARN: Peripheral manager init failed");
     } else {
         Serial.println("[STEP2.5] Peripheral manager OK");
     }
@@ -396,7 +405,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP3] Creating HTTP server...");
     server.reset(new AsyncWebServer(80));
     if (!server) {
-        Serial.println("[STEP3] FATAL: Failed to create HTTP server");
+        LOG_ERROR("[STEP3] FATAL: Failed to create HTTP server");
         return false;
     }
     Serial.printf("[Boot] AsyncWebServer: %lu ms\n", millis() - stepStart);
@@ -410,7 +419,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP4-E] Initializing UserManager...");
     userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
-        Serial.println("[STEP4-E] FATAL: Failed to initialize user manager");
+        LOG_ERROR("[STEP4-E] FATAL: Failed to initialize user manager");
         return false;
     }
     Serial.println("[STEP4-E] User manager OK");
@@ -419,7 +428,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP5-E] Initializing AuthManager...");
     authManager.reset(new AuthManager(userManager.get(), nullptr));
     if (!authManager || !authManager->initialize()) {
-        Serial.println("[STEP5-E] FATAL: Failed to initialize auth manager!");
+        LOG_ERROR("[STEP5-E] FATAL: Failed to initialize auth manager!");
         return false;
     }
     Serial.println("[STEP5-E] Auth manager OK");
@@ -432,7 +441,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP6-E] Initializing WebConfigManager (routes only)...");
     webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
-        Serial.println("[STEP6-E] FATAL: Failed to init web config manager");
+        LOG_ERROR("[STEP6-E] FATAL: Failed to init web config manager");
         return false;
     }
     // NetworkManager 尚未创建，暂不注入，在步骤7-E中注入
@@ -444,13 +453,13 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP7-E] Creating NetworkManager...");
     network.reset(new FBNetworkManager(server.get()));
     if (!network) {
-        Serial.println("[STEP7-E] FATAL: Failed to create network manager");
+        LOG_ERROR("[STEP7-E] FATAL: Failed to create network manager");
         return false;
     }
 
     // 初始化网络（会从 network.json 加载配置；STA 扫描/连接由 update() 异步推进）
     if (!network->initialize()) {
-        Serial.println("[STEP7-E] WARN: Network initialization returned false");
+        LOG_WARNING("[STEP7-E] WARN: Network initialization returned false");
     }
 
     // 回注 NetworkManager 到 WebConfigManager
@@ -464,7 +473,7 @@ bool FastBeeFramework::initialize() {
         if (eth->isConnected()) {
             Serial.printf("[STEP7-E] Ethernet Connected! IP: %s\n", eth->localIP().toString().c_str());
         } else {
-            Serial.println("[STEP7-E] WARN: Ethernet link down");
+            LOG_WARNING("[STEP7-E] WARN: Ethernet link down");
         }
     } else
 #endif
@@ -473,7 +482,7 @@ bool FastBeeFramework::initialize() {
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         Serial.printf("[STEP7-E] AP Mode IP: %s\n", WiFi.softAPIP().toString().c_str());
     } else {
-        Serial.println("[STEP7-E] WARN: Network not connected");
+        LOG_WARNING("[STEP7-E] WARN: Network not connected");
     }
     Serial.printf("[Boot] NetworkManager: %lu ms\n", networkMs);
     LOG_BOOT_HEAP("NetworkManager");
@@ -482,7 +491,7 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP7.5-E] Starting web server...");
     if (!webConfig->start()) {
-        Serial.println("[STEP7.5-E] FATAL: Failed to start web server");
+        LOG_ERROR("[STEP7.5-E] FATAL: Failed to start web server");
         return false;
     }
     Serial.printf("[Boot] WebServer start: %lu ms\n", millis() - stepStart);
@@ -495,7 +504,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP4] Creating NetworkManager...");
     network.reset(new FBNetworkManager(server.get()));
     if (!network) {
-        Serial.println("[STEP4] FATAL: Failed to create network manager");
+        LOG_ERROR("[STEP4] FATAL: Failed to create network manager");
         return false;
     }
 
@@ -522,7 +531,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP5] Initializing UserManager...");
     userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
-        Serial.println("[STEP5] FATAL: Failed to initialize user manager");
+        LOG_ERROR("[STEP5] FATAL: Failed to initialize user manager");
         return false;
     }
     Serial.println("[STEP5] User manager OK");
@@ -531,7 +540,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP6] Initializing AuthManager...");
     authManager.reset(new AuthManager(userManager.get(), nullptr));
     if (!authManager || !authManager->initialize()) {
-        Serial.println("[STEP6] FATAL: Failed to initialize auth manager!");
+        LOG_ERROR("[STEP6] FATAL: Failed to initialize auth manager!");
         return false;
     }
     Serial.println("[STEP6] Auth manager OK");
@@ -543,13 +552,13 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP7] Initializing WebConfigManager...");
     webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
-        Serial.println("[STEP7] FATAL: Failed to init web config manager");
+        LOG_ERROR("[STEP7] FATAL: Failed to init web config manager");
         return false;
     }
     webConfig->setNetworkManager(network.get());
     // 启动 HTTP 服务器（监听端口 80）
     if (!webConfig->start()) {
-        Serial.println("[STEP7] FATAL: Failed to start web server");
+        LOG_ERROR("[STEP7] FATAL: Failed to start web server");
         return false;
     }
     Serial.printf("[Boot] WebConfigManager: %lu ms\n", millis() - stepStart);
@@ -575,7 +584,7 @@ bool FastBeeFramework::initialize() {
             if (bleProvisioner->begin(false)) {
                 Serial.println("[STEP7.6] BLE provisioning auto-started (AP mode)");
             } else {
-                Serial.println("[STEP7.6] WARN: BLE provisioning auto-start failed");
+                LOG_WARNING("[STEP7.6] WARN: BLE provisioning auto-start failed");
             }
         }
     } else {
@@ -589,7 +598,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP8] Initializing OTAManager...");
     ota.reset(new OTAManager(server.get()));
     if (!ota || !ota->initialize()) {
-        Serial.println("[STEP8] FATAL: Failed to initialize OTA manager");
+        LOG_ERROR("[STEP8] FATAL: Failed to initialize OTA manager");
         return false;
     }
     // 注入 Web 上下文，供 OTARouteHandler 委托 begin/upload/cancel 等请求
@@ -606,7 +615,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP9] Initializing TaskManager...");
     taskManager.reset(new TaskManager());
     if (!taskManager || !taskManager->initialize()) {
-        Serial.println("[STEP9] FATAL: Failed to initialize task manager");
+        LOG_ERROR("[STEP9] FATAL: Failed to initialize task manager");
         return false;
     }
     Serial.printf("[Boot] TaskManager: %lu ms\n", millis() - stepStart);
@@ -617,7 +626,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP10] Initializing HealthMonitor...");
     healthMonitor.reset(new HealthMonitor());
     if (!healthMonitor || !healthMonitor->initialize()) {
-        Serial.println("[STEP10] FATAL: Failed to initialize health monitor");
+        LOG_ERROR("[STEP10] FATAL: Failed to initialize health monitor");
         return false;
     }
     Serial.printf("[Boot] HealthMonitor: %lu ms\n", millis() - stepStart);
@@ -636,7 +645,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP11] Initializing ProtocolManager...");
     protocolManager.reset(new ProtocolManager());
     if (!protocolManager || !protocolManager->initialize()) {
-        Serial.println("[STEP11] FATAL: Failed to initialize protocol manager");
+        LOG_ERROR("[STEP11] FATAL: Failed to initialize protocol manager");
         return false;
     }
     Serial.printf("[Boot] ProtocolManager: %lu ms\n", millis() - stepStart);
@@ -703,7 +712,7 @@ bool FastBeeFramework::initialize() {
     // 带载启动保护：worker 池预分配 3×20KB 栈 + 配置加载，水位过低时先等待恢复
     waitForSafeBootHeap("STEP11.5");
     if (!PeriphExecManager::getInstance().initialize()) {
-        Serial.println("[STEP11.5] WARN: Periph exec manager init failed");
+        LOG_WARNING("[STEP11.5] WARN: Periph exec manager init failed");
     } else {
         Serial.println("[STEP11.5] Periph exec manager OK");
     }
@@ -1095,6 +1104,8 @@ bool FastBeeFramework::initialize() {
         });
 #endif  // FASTBEE_ENABLE_MODBUS
 
+        // D5 白名单：以下 [STEP11.5]~[STEP13] 与结尾 banner 同属启动进度/计时轨迹，
+        // rationale 见 initialize() 开头（原 286 行）注释，距此约 800 行故就近重申。
         Serial.println("[STEP11.5] Protocol callbacks injected into PeriphExecManager");
     }
 #endif
@@ -1111,7 +1122,7 @@ bool FastBeeFramework::initialize() {
         // 带载启动保护：配置加载会 FS::open + JSON 解析，水位过低时先等待恢复
         waitForSafeBootHeap("STEP11.6");
         if (!RuleScriptManager::getInstance().initialize()) {
-            Serial.println("[STEP11.6] WARN: Rule script manager init failed");
+            LOG_WARNING("[STEP11.6] WARN: Rule script manager init failed");
         } else {
             Serial.println("[STEP11.6] Rule script manager OK");
         }
@@ -1148,7 +1159,7 @@ bool FastBeeFramework::initialize() {
     stepStart = millis();
     Serial.println("[STEP12] Adding system tasks...");
     if (!addSystemTasks()) {
-        Serial.println("[STEP12] WARN: Failed to add some system tasks");
+        LOG_WARNING("[STEP12] WARN: Failed to add some system tasks");
     }
     Serial.printf("[Boot] addSystemTasks: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("addSystemTasks");
@@ -1158,7 +1169,7 @@ bool FastBeeFramework::initialize() {
     if (!healthMonitor->isSystemHealthy()) {
         char buf[160];
         healthMonitor->getHealthReport(buf, sizeof(buf));
-        Serial.printf("[STEP13] WARN: %s\n", buf);
+        LOG_WARNINGF("[STEP13] WARN: %s", buf);
     }
     Serial.println("[STEP13] Health check completed");
 

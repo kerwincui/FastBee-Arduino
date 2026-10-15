@@ -227,7 +227,7 @@ void PeriphExecScheduler::checkTimers() {
         if (_webReserveSuspended) {
             _webReserveSuspendedSince = millis() - WEB_RESERVE_HEARTBEAT_ALLOW_MS;
         }
-        Serial.println("[PeriphExec] Memory-pause heartbeat allow: timers run once");
+        LOG_INFO("[PeriphExec] Memory-pause heartbeat allow: timers run once");
         // 不 return：本次检查放行，保持 _memoryPressurePaused=true，下次检查继续暂停
     }
 

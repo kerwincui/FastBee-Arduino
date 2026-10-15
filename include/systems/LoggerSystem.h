@@ -99,6 +99,9 @@ public:
     void flushBuffer();
     // Called from the main-loop task scheduler, never a logging producer.
     void flushBufferIfDue();
+    // 最近一次日志缓冲实际落盘的 millis() 时间戳（0 表示尚未落盘）。
+    // PointHistory 据此把周期落盘合并进同一 Flash 写窗口。
+    uint32_t lastFlashWriteMs() const { return _lastFlashWriteMs.load(); }
 
     // ── 诊断最近日志（内存环形，不随 flush 清空）───────────────────────────
     // 将最近日志按时间顺序（最旧在前）拷贝到 out，每行以 '\n' 结尾，
@@ -217,6 +220,7 @@ private:
     // cleanup at the end of a const diagnostic snapshot holding the same lock.
     mutable std::unique_ptr<LogRingBuffer> _ringBuffer;
     std::atomic<SemaphoreHandle_t> _logMutex{nullptr};
+    std::atomic<uint32_t> _lastFlashWriteMs{0};
     // Temporary PSRAM-board drain task: bit 0 owns the single slot; bit 1
     // prevents new submissions during destruction. No permanent task stack.
     static constexpr uint32_t LOG_FLUSH_TASK_ACTIVE = 1;

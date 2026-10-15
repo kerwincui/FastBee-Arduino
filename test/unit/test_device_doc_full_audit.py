@@ -34,7 +34,7 @@ class DeviceDocFullAuditTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             payload = json.loads(report.read_text(encoding="utf-8"))
-            self.assertEqual(payload["documents"], 184)
+            self.assertEqual(payload["documents"], 187)
             self.assertEqual(payload["reviewedDocuments"], payload["documents"])
             self.assertIs(payload["passed"], True)
             self.assertEqual(payload["issues"], [])

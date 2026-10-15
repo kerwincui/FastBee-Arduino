@@ -26,6 +26,7 @@ const FORBIDDEN_TRACKED = [
     /^docs\/\.device-config-backups\//,
     /^scripts\/build-size-report\.json$/,
     /^docs\/superpowers\//,
+    /^\.superpowers\//,
     /^docs\/knowledge-experience-index\.md$/,
     /^DEBUG-TEST-GUIDE\.md$/,
     /^test\/browser\/debug_[^/]+\.js$/,

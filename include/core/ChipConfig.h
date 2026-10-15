@@ -330,3 +330,14 @@ static inline uint32_t chipGetDramTotalKb() {
   static const uint8_t CHIP_TOUCH_PINS[] = {};
   static const uint8_t CHIP_TOUCH_PIN_COUNT = 0;
 #endif
+
+// ========== S3 双核 IPC 任务归属快照 ==========
+// 依赖私有 esp_ipc API，仅在 S3 双核且启用 trace facility 时可用。
+// configNUMBER_OF_CORES/configUSE_TRACE_FACILITY 分别由 sdkconfig 的
+// CONFIG_FREERTOS_NUMBER_OF_CORES/CONFIG_FREERTOS_USE_TRACE_FACILITY 导出，
+// 此处只使用 sdkconfig 宏，目标相关门槛集中收口，应用模块不再散落芯片目标宏。
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && (CONFIG_FREERTOS_NUMBER_OF_CORES + 0) == 2 && (CONFIG_ESP_IPC_ENABLE + 0) && (CONFIG_FREERTOS_USE_TRACE_FACILITY + 0)
+  #define CHIP_HAS_S3_IPC_OWNER_SNAPSHOT 1
+#else
+  #define CHIP_HAS_S3_IPC_OWNER_SNAPSHOT 0
+#endif

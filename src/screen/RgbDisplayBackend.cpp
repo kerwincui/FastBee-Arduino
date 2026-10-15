@@ -445,6 +445,7 @@ public:
         portEXIT_CRITICAL(&scanLock);
         // Counts measure scan progress, not physical display acceptance or an
         // exact underrun count. No allocations/file logging in either callback.
+        // （D5 白名单：扫描回调内禁止分配与文件日志，保留 Serial 直出）
         Serial.printf("[RGBSCAN] ms=%lu vsync=%lu frames=%lu interval_us=%lu..%lu internal=%u largest=%u\n",
             static_cast<unsigned long>(nowMs - _scanReportedAt),
             static_cast<unsigned long>(current.vsyncs - _scanLastVsyncs),

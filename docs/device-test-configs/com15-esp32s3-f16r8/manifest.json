@@ -3,14 +3,15 @@
   "preparedAt": "2026-10-05",
   "timezone": "Asia/Shanghai",
   "deviceId": "com15-esp32s3-f16r8",
-  "status": "DEVICE_FLASH_SNAPSHOT_SANITIZED_PENDING_RELEASE",
+  "status": "R1_WRITTEN_VERIFIED_MONITORING_IN_PROGRESS",
   "deploymentAllowed": false,
   "source": {
     "path": "docs/ecm50a-s3-f16r8",
     "format": "directory",
     "configurationMeaning": "All public runtime configurations reconciled with verified full-flash snapshot; credentials redacted; original enablement retained; no new candidate deployed",
     "originalPublicPath": "docs/ecm50a-s3-f16r8",
-    "observedSnapshot": ".device-config-backups/four-device-20261005/com15-esp32s3-f16r8/14c19fc152d8/serial-r1/extracted"
+    "observedSnapshot": ".device-config-backups/four-device-20261005/com15-esp32s3-f16r8/14c19fc152d8/serial-r1/extracted",
+    "observedSnapshotLost": "2026-10-15 file lost, see preservation.incident20261015"
   },
   "target": {
     "environment": "esp32s3-F16R8",
@@ -41,11 +42,11 @@
     "staAddressCurrent": false
   },
   "release": {
-    "candidateId": null,
-    "sourceSha256": null,
+    "candidateId": "four-device-20261015-r1",
+    "sourceSha256": "e7a3a4d74cd2e7c34f1b47bc91c8dcff3510c72149aff122636957a977cd4811",
     "sourceStable": null,
-    "firmwareSha256": null,
-    "webSha256": null,
+    "firmwareSha256": "1efe9dbba2841f5209c189be4767a9bb1bdc8cf4532efa45275885b67dd0eeb0",
+    "webSha256": "0495eee88170e65f402ef58c948b19eaca1a2193bfb4028de9305b1994b006be",
     "precheckReport": null,
     "nineEnvironmentReport": null,
     "rgbBuildReport": null
@@ -173,7 +174,7 @@
     "localSnapshotReconciliation": true
   },
   "preservation": {
-    "privateRoot": ".device-config-backups/four-device-20261005/com15-esp32s3-f16r8/<verified-mac>/<unique-attempt>/",
+    "privateRoot": ".device-config-backups/four-device-20261015/com15-esp32s3-f16r8/<verified-mac>/<unique-attempt>/",
     "backupReport": "artifacts/four-device-com15-snapshot-20261005-r1/report.json",
     "backupSha256": "3b50ac8b2e0b38d732df96e6b583ee9f585624c60e409d154f6043b88198d07f",
     "backupVerified": true,
@@ -191,9 +192,16 @@
       "all unrelated non-www files"
     ],
     "rollback": "Use the same device verified full-flash snapshot and per-region deployment report; verify identity, partition and active slot before restore.",
-    "currentSnapshot": ".device-config-backups/four-device-20261005/com15-esp32s3-f16r8/14c19fc152d8/serial-r1/extracted",
+    "currentSnapshot": ".device-config-backups/four-device-20261015/com15-esp32s3-f16r8/14c19fc152d8/candidate-20261015-r1-r2",
     "backupScope": "full 16MiB flash; stream MD5 and independent flash MD5 verified; 91 extracted files",
-    "previousHttpEvidence": "artifacts/four-device-http-discovery-20261005-r1/report.json"
+    "previousHttpEvidence": "artifacts/four-device-http-discovery-20261005-r1/report.json",
+    "incident20261015": {
+      "event": "Parallel session mistakenly deleted the entire .device-config-backups/four-device-20261005/ tree on 2026-10-15 21:40-21:49; unrecoverable",
+      "lostScope": "Pre-deployment snapshots, 2026-10-05 verified full-flash backups, and candidate-20261015-r1-r1 private snapshots",
+      "historicalFieldsStatus": "backupReport/backupSha256 retained as historical record; referenced files lost 2026-10-15",
+      "currentAnchor": "Post-incident resampled candidate-state filesystem snapshot (live-filesystem-before.bin/json); does not contain pre-deployment state",
+      "bindingNote": "binding.json/identity.json regeneration in progress under the new anchor tree"
+    }
   },
   "load": {
     "healthIntervalSeconds": 30,
@@ -217,16 +225,16 @@
     "identity": "BOOTLOADER_IDENTITY_VERIFIED",
     "backup": "FULL_FLASH_VERIFIED",
     "schemaCapabilityPinsResources": "PENDING",
-    "firmwareWriteVerify": "NOT_RUN",
-    "filesystemWriteVerify": "NOT_RUN",
-    "configReadback": "NOT_RUN",
-    "rebootRecovery": "NOT_RUN",
-    "desktopWeb": "NOT_RUN",
+    "firmwareWriteVerify": "R1_WRITTEN_VERIFIED",
+    "filesystemWriteVerify": "R1_WRITTEN_VERIFIED",
+    "configReadback": "FS_PRESERVED_MD5_VERIFIED_AND_BINDING_FINGERPRINTED",
+    "rebootRecovery": "OBSERVED_ONLINE_SAME_MAC",
+    "desktopWeb": "WEB_SMOKE_120_120_PASS_API_2_FEATURE_GATED",
     "mobileWeb": "NOT_RUN",
     "physical": "NOT_RUN",
-    "exploration2h": "NOT_RUN",
+    "exploration2h": "IN_PROGRESS",
     "mixed24h": "NOT_RUN",
     "soak168h": "NOT_RUN",
-    "evidenceRoot": "artifacts/four-device-com15-snapshot-20261005-r1"
+    "evidenceRoot": "artifacts/four-device-deployment-20261015-r1-r1"
   }
 }

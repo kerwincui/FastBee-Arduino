@@ -174,6 +174,7 @@ bool LoggerSystem::initialize() {
     initialized = true;
 
     // 检查文件系统状态
+    // 保留 Serial 直出（D5 白名单）：LoggerSystem 初始化自检，不经过自身日志路径。
     if (isFileLoggingRequested()) {
         size_t total = LittleFS.totalBytes();
         size_t used = LittleFS.usedBytes();
@@ -203,6 +204,7 @@ bool LoggerSystem::initialize() {
     // 启用 ESP-IDF 日志捕获
     if (espLogCaptureEnabled) {
         enableEspLogCapture(true);
+        // 保留 Serial 直出（D5 白名单）：LoggerSystem 初始化自检，不经过自身日志路径。
         Serial.println("[Logger] ESP-IDF log capture enabled");
     }
 
@@ -533,6 +535,8 @@ void LoggerSystem::flushBufferInternal() {
     _ringBuffer->readPos = _ringBuffer->writePos;
     _ringBuffer->lastFlushMs = millis();
     logFile.close();
+    // 记录实际落盘时间，PointHistory 借此把周期落盘合并进同一 Flash 写窗口。
+    _lastFlashWriteMs.store(_ringBuffer->lastFlushMs);
 
     // 检查文件大小（现有的 rotate 逻辑）
     checkLogFileSize();
@@ -595,6 +599,8 @@ void LoggerSystem::flushTask(void* context) {
         logger->unlockLogFiles();
     }
     if (attempted) {
+        // 保留 Serial 直出（D5 白名单）：flush 任务栈指标，避免在 flush 任务内
+        // 递归经过 LoggerSystem（互斥锁已被该任务持有/竞争）。
         Serial.printf("[LOG_FLUSH_METRICS] elapsed=%lu stackFree=%lu\n",
                       millis() - started,
                       static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
@@ -954,6 +960,7 @@ int LoggerSystem::espLogCallback(const char* format, va_list args) {
     }
 
     // 同时输出到原始串口（保持串口输出）
+    // 保留 Serial 直出（D5 白名单）：此处即 ESP-IDF 日志的串口透传出口。
     if (originalEspLogFunc) {
         // 重新创建 va_list 因为已经被使用过了
         return Serial.printf("%s\n", buffer);

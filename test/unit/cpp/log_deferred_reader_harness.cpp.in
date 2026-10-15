@@ -13,6 +13,15 @@
 using namespace std::chrono_literals;
 std::atomic<bool> failAllocation{false};
 std::atomic<void*> allocatedJob{nullptr};
+// The throwing form must be replaced too: without it, throwing-new expressions
+// in the exe (std::thread/shared_ptr internals, non-SSO strings) resolve to
+// libstdc++-6.dll's operator new while operator delete below free()s from the
+// exe's CRT — a cross-domain free the Windows heap reports as 0xC0000374.
+void* operator new(std::size_t bytes) {
+    void* ptr=std::malloc(bytes);
+    if(!ptr) throw std::bad_alloc();
+    return ptr;
+}
 void* operator new(std::size_t bytes, const std::nothrow_t&) noexcept {
     if (failAllocation.load()) return nullptr;
     void* ptr=std::malloc(bytes);assert(!allocatedJob.load());allocatedJob=ptr;return ptr;
@@ -21,6 +30,7 @@ void operator delete(void* ptr) noexcept {
     void* expected=ptr;allocatedJob.compare_exchange_strong(expected,nullptr);std::free(ptr);
 }
 void operator delete(void* ptr,std::size_t) noexcept{::operator delete(ptr);}
+void operator delete(void* ptr,const std::nothrow_t&) noexcept{::operator delete(ptr);}
 
 struct Client {
     std::atomic<bool> live{true};std::atomic<uint32_t> rxTimeout{3};

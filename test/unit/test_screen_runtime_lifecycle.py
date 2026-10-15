@@ -21,6 +21,8 @@ PERIPHERAL_SOURCE = ROOT / "src/core/PeripheralManager.cpp"
 PERIPHERAL_HEADER = ROOT / "include/core/PeripheralConfig.h"
 PERIPHERAL_PERSISTENCE = ROOT / "src/core/PeripheralManagerPersistence.cpp"
 PERIPHERAL_ROUTE = ROOT / "src/network/handlers/PeripheralRouteHandler.cpp"
+PERIPHERAL_ROUTE_MAPPER = ROOT / "src/core/PeripheralRouteMapper.cpp"
+PERIPHERAL_PARAM_APPLY = ROOT / "src/core/PeripheralParamApply.cpp"
 FRAMEWORK_SOURCE = ROOT / "src/core/FastBeeFramework.cpp"
 FEATURE_SOURCE = ROOT / "src/core/RuntimeFeatureManager.cpp"
 SPI_SOURCE = ROOT / "src/screen/SpiTftDisplayBackend.cpp"
@@ -297,12 +299,14 @@ int main(){
             'FastBee::setFixedJsonField(params, "controlBuzzerMask", display.controlBuzzerMask)', persistence
         )
         self.assertIn("LOAD_DISPLAY_EXTRA(controlBuzzerMask, 0, 255)", persistence)
+        route_serializer = PERIPHERAL_ROUTE_MAPPER.read_text(encoding="utf-8")
+        route_params = PERIPHERAL_PARAM_APPLY.read_text(encoding="utf-8")
         self.assertIn(
-            'FastBee::setFixedJsonField(params, "controlBuzzerMask", display.controlBuzzerMask)', route
+            'FastBee::setFixedJsonField(params, "controlBuzzerMask", display.controlBuzzerMask)', route_serializer
         )
-        self.assertIn("READ_DISPLAY_EXTRA(controlBuzzerMask, 0, 255)", route)
+        self.assertIn("READ_DISPLAY_EXTRA(controlBuzzerMask, 0, 255)", route_params)
         self.assertIn(
-            'controlBuzzerMask && control != "ch32v003"', route
+            'controlBuzzerMask && control != "ch32v003"', route_params
         )
 
     def test_saved_layout_is_refreshed_but_display_change_requires_restart(self):
@@ -326,7 +330,9 @@ int main(){
         self.assertIn("MALLOC_CAP_SPIRAM", RUNTIME_SOURCE.read_text(encoding="utf-8"))
 
     def test_renderer_exposes_rotation_icons_and_restart_warning(self):
-        runtime = RUNTIME_SOURCE.read_text(encoding="utf-8")
+        runtime = (RUNTIME_SOURCE.read_text(encoding="utf-8") + "\n"
+
+                   + (ROOT / "src/screen/StripeRenderer.h").read_text(encoding="utf-8"))
         self.assertIn("mapScreenRect(", runtime)
         self.assertIn("screenRectContains(rect, x, y)", runtime)
         self.assertNotIn("card.forecastCount", runtime)
@@ -364,6 +370,24 @@ int main(){
         self.assertIn("if (!clearStatus())", touch)
         for rotation in ("case 1:", "case 2:", "case 3:"):
             self.assertIn(rotation, touch)
+
+    def test_render_and_touch_faults_drive_a_bounded_onscreen_indicator(self):
+        runtime = RUNTIME_SOURCE.read_text(encoding="utf-8")
+        device = DEVICE_SOURCE.read_text(encoding="utf-8")
+        header = (ROOT / "src/screen/StripeRenderer.h").read_text(encoding="utf-8")
+        self.assertIn("renderFaultFirstMs = now;", runtime)
+        self.assertIn("now - renderFaultFirstMs > 5000U", runtime)
+        self.assertIn("device.touchError().length() > 0", runtime)
+        self.assertIn("renderer.render(*snapshot, confirmationCardId, error, faultFlags)", runtime)
+        self.assertIn("renderedFaultFlags = faultFlags;", runtime)
+        self.assertIn("if (faultFlags != renderedFaultFlags) forceRender = true;", runtime)
+        self.assertIn('_touchError = "SCREEN_TOUCH_COMMUNICATION_FAILED";', device)
+        self.assertIn("bool ScreenDevice::serviceTouch(uint32_t nowMs)", device)
+        self.assertIn("drawFaultIndicator", header)
+        self.assertIn("SCREEN_FAULT_RENDER_RETRY", header)
+        self.assertIn("SCREEN_FAULT_TOUCH", header)
+        self.assertIn('labels[count++] = "渲染异常";', header)
+        self.assertIn('labels[count++] = "触摸异常";', header)
 
 
 if __name__ == "__main__":

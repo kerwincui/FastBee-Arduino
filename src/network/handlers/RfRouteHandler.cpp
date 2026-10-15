@@ -8,6 +8,7 @@
 #if FASTBEE_ENABLE_RF_LEARN
 
 #include "network/handlers/RfRouteHandler.h"
+#include "network/handlers/HandlerUtils.h"
 #include "network/WebHandlerContext.h"
 #include "peripherals/drivers/RFLearnDriver.h"
 #include <ArduinoJson.h>
@@ -16,21 +17,6 @@ namespace {
 const char* rfLearnStateName(RfLearnState state) {
     switch (state) { case RfLearnState::LEARNING: return "learning"; case RfLearnState::CAPTURED: return "captured";
         case RfLearnState::TIMEOUT: return "timeout"; default: return "idle"; }
-}
-int rfKeyErrorStatus(const String& error) {
-    if (error == "RF_KEY_NOT_FOUND") return 404;
-    if (error.startsWith("RF_KEYS_") && error != "RF_KEYS_LIMIT") return 503;
-    return 400;
-}
-bool rfUnsignedParameter(const String& text, uint32_t low, uint32_t high, uint32_t& out) {
-    if (text.isEmpty() || text.length() > 5) return false;
-    uint32_t value = 0;
-    for (size_t i = 0; i < text.length(); ++i) {
-        if (text[i] < '0' || text[i] > '9') return false;
-        value = value * 10 + static_cast<uint32_t>(text[i] - '0');
-    }
-    if (value < low || value > high) return false;
-    out = value; return true;
 }
 }
 
@@ -92,7 +78,7 @@ void RfRouteHandler::handleLearnStart(AsyncWebServerRequest* request)
 
     uint32_t timeoutMs = 10000;
     if (request->hasParam("timeoutMs", true)) {
-        if (!rfUnsignedParameter(request->getParam("timeoutMs", true)->value(), 1000, 60000, timeoutMs)) {
+        if (!HandlerUtils::parseUnsignedRangeParam(request->getParam("timeoutMs", true)->value(), 1000, 60000, timeoutMs)) {
             ctx->sendError(request, 400, "timeoutMs必须为1000~60000的整数"); return;
         }
     }
@@ -133,12 +119,9 @@ void RfRouteHandler::handleListKeys(AsyncWebServerRequest* request)
     if (!rf.getSnapshot(snapshot) || (!snapshot.keysLoaded && !rf.loadKeyMap()) || !rf.getKeySnapshot(keys, count)) {
         ctx->sendError(request, 503, "RF按键库暂不可用"); return;
     }
-    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)count) +
-                  ",\"keys\":" + keys + "}}";
-    const size_t expected = sizeof("{\"success\":true,\"data\":{\"count\":") - 1 +
-        String((int)count).length() + sizeof(",\"keys\":") - 1 + keys.length() + 2;
-    if (resp.length() != expected) { ctx->sendError(request, 503, "RF按键库响应内存不足"); return; }
-    request->send(200, "application/json", resp);
+    if (!HandlerUtils::sendRemoteKeyListEnvelope(request, keys, count)) {
+        ctx->sendError(request, 503, "RF按键库响应内存不足"); return;
+    }
 }
 
 void RfRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
@@ -153,15 +136,15 @@ void RfRouteHandler::handleSaveKey(AsyncWebServerRequest* request)
     String name = request->getParam("name", true)->value();
     String code = request->getParam("code", true)->value();
     uint32_t bits = 24, pulse = 350;
-    if ((request->hasParam("bits", true) && !rfUnsignedParameter(request->getParam("bits", true)->value(), 12, 32, bits)) ||
-        (request->hasParam("pulse", true) && !rfUnsignedParameter(request->getParam("pulse", true)->value(), 80, 2000, pulse))) {
+    if ((request->hasParam("bits", true) && !HandlerUtils::parseUnsignedRangeParam(request->getParam("bits", true)->value(), 12, 32, bits)) ||
+        (request->hasParam("pulse", true) && !HandlerUtils::parseUnsignedRangeParam(request->getParam("pulse", true)->value(), 80, 2000, pulse))) {
         ctx->sendError(request, 400, "RF按键bits须为12~32，pulse须为80~2000的整数"); return;
     }
     name.trim();
 
     String err;
     if (!RFLearnDriver::getInstance().upsertKey(name, code, bits, pulse, err)) {
-        ctx->sendError(request, rfKeyErrorStatus(err), err.length() ? err : String("保存失败"));
+        ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(err, "RF", nullptr), err.length() ? err : String("保存失败"));
         return;
     }
     ctx->sendSuccess(request, "按键已保存");
@@ -180,7 +163,7 @@ void RfRouteHandler::handleDeleteKey(AsyncWebServerRequest* request)
     name.trim();
     String error;
     if (!RFLearnDriver::getInstance().deleteKey(name, &error)) {
-        ctx->sendError(request, rfKeyErrorStatus(error), error);
+        ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(error, "RF", nullptr), error);
         return;
     }
     ctx->sendSuccess(request, "按键已删除");
@@ -192,7 +175,7 @@ void RfRouteHandler::handleClearKeys(AsyncWebServerRequest* request)
     if (!ctx->requireDeveloperMode(request)) return;
 
     String error;
-    if (!RFLearnDriver::getInstance().clearKeys(&error)) { ctx->sendError(request, rfKeyErrorStatus(error), error); return; }
+    if (!RFLearnDriver::getInstance().clearKeys(&error)) { ctx->sendError(request, HandlerUtils::remoteKeyErrorStatus(error, "RF", nullptr), error); return; }
     ctx->sendSuccess(request, "已清除全部按键");
 }
 

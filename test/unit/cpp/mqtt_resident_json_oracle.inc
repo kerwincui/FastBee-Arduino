@@ -1,4 +1,5 @@
 // Frozen complete original methods before the 45-write refactor.
+// Re-frozen 2026-10-14 for D9: publishDeviceInfo staging-buffer rewrite.
 
 bool MQTTClient::publishDeviceInfo() {
     if (isConnectionTestOnly()) return false;
@@ -6,7 +7,7 @@ bool MQTTClient::publishDeviceInfo() {
         return false;
     }
 
-    // 内存保护：该函数需要约 2KB 内部 DRAM 分配（JsonDocument + String payload）。
+    // 内存保护：该函数需要约 2KB 内部 DRAM 分配（JsonDocument + 发布暂存/回退缓冲）。
     if (!mqttHasInternalDram(30000, 4096, "publishDeviceInfo")) {
         return false;
     }
@@ -34,7 +35,7 @@ bool MQTTClient::publishDeviceInfo() {
 
     // 经纬度
     doc["longitude"] = config.longitude;
-    doc["latitude"]  = config.latitude;
+    doc["latitude"] = config.latitude;
 
     // 可选字段：非空/非零时才包含
     if (!config.iccid.isEmpty()) {
@@ -58,14 +59,25 @@ bool MQTTClient::publishDeviceInfo() {
         summary["chip"] = ESP.getChipModel();
     }
 
-    String payload;
-    serializeJson(doc, payload);
-
     // 获取完整主题用于日志输出
     const MqttPublishTopic& pt = config.publishTopics[infoTopicIdx];
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
 
-    bool ok = publishToTopic((size_t)infoTopicIdx, payload);
+    // 序列化直写固定发布暂存缓冲（静态存储，非任务栈）；summary 超容
+    // （>511B，大 payload 路径）或池耗尽时回退既有 String 动态分配路径。
+    const size_t jsonSize = measureJson(doc);
+    bool ok = false;
+    MqttPublishBufferGuard staging;
+    if (staging.held() && jsonSize < MQTT_PUBLISH_STAGING_CAPACITY) {
+        const size_t written = serializeJson(doc, staging.buffer, MQTT_PUBLISH_STAGING_CAPACITY);
+        if (written == jsonSize) {
+            ok = publishToTopic((size_t)infoTopicIdx, staging.buffer, written);
+        }
+    } else {
+        String payload;
+        serializeJson(doc, payload);
+        ok = publishToTopic((size_t)infoTopicIdx, payload);
+    }
 
     LOG_INFO(ok ? "MQTT: Published device info" : "MQTT: Failed to publish device info");
 

@@ -398,9 +398,9 @@
         },
 
         // ============ 切换用户状态（启用/禁用）============
-        toggleUserStatus(username, enable) {
+        async toggleUserStatus(username, enable) {
             const confirmMsg = enable ? '确定要启用用户' : '确定要禁用用户';
-            if (!confirm(`${confirmMsg} ${username} 吗？`)) return;
+            if (!await FBConfirm({ title: enable ? '启用用户' : '停用用户', message: `${confirmMsg} ${username} 吗？`, danger: !enable })) return;
 
             apiPost('/api/users/update', { username, enabled: enable ? 'true' : 'false' })
                 .then(res => {
@@ -419,8 +419,8 @@
         },
 
         // ============ 解锁用户 ============
-        unlockUser(username) {
-            if (!confirm(`确定要解锁账户 ${username} 吗？`)) return;
+        async unlockUser(username) {
+            if (!await FBConfirm({ title: '解锁账户', message: `确定要解锁账户 ${username} 吗？` })) return;
             apiPost('/api/users/unlock-account', { username })
                 .then(res => {
                     if (res && res.success) {
@@ -434,8 +434,8 @@
         },
 
         // ============ 删除用户 ============
-        deleteUser(username) {
-            if (!confirm(`确定要删除用户 ${username} 吗？`)) return;
+        async deleteUser(username) {
+            if (!await FBConfirm({ title: '删除用户', message: `确定要删除用户 ${username} 吗？该操作不可恢复。`, danger: true, requireCheck: true, checkLabel: '我已确认该用户不再需要访问此设备' })) return;
 
             apiDelete('/api/users/' + encodeURIComponent(username))
                 .then(res => {

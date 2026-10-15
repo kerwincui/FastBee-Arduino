@@ -100,7 +100,13 @@ function Kill-StaleProcesses {
     $procNames = @('esptool', 'python', 'xtensa-esp-elf-gcc', 'xtensa-esp-elf-g++', 'xtensa-esp-elf-ar', 'xtensa-esp-elf-ld')
     foreach ($name in $procNames) {
         Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($name -eq 'python' -and ($_.Path -notlike '*.platformio\*')) { return }
+            if ($name -eq 'python') {
+                if ($_.Path -notlike '*.platformio\*') { return }
+                # 与 deploy.ps1 同一口径：penv python 也可能在跑本仓长期任务
+                # （monitor-device-candidate.py 等），仅清理命令行确属构建活动的进程。
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if (-not $cmdLine -or $cmdLine -notmatch '-m platformio|platformio\.py|scons|[\\/]\.pio[\\/]') { return }
+            }
             Write-Host "  Killing stale $name (PID $($_.Id))" -ForegroundColor Yellow
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             $killed++

@@ -7,7 +7,7 @@ const baseURL = `http://${host}:${port}`;
 export default defineConfig({
   testDir: './suites',
   testMatch: /33-constrained-request-contract\.spec\.ts/,
-  outputDir: './test-results/constrained-requests',
+  outputDir: '../../artifacts/test-results/constrained-requests',
   fullyParallel: false,
   workers: 1,
   retries: 0,

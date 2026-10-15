@@ -19,8 +19,10 @@ class ConfigImportConfirmationTests(unittest.TestCase):
 
     def test_routes_require_immediate_disk_commit(self):
         source = (ROOT/'src/network/handlers/SystemRouteHandler.cpp').read_text(encoding='utf-8')
-        block = source[source.index('server->on("/api/config/transfer/import",'):]
-        block = block[:block.index('#endif')]
+        # D2 重构后业务下沉到 handle* 方法：覆盖 import/import-begin/import-chunk 三个处理器
+        start = source.index('void SystemRouteHandler::handleConfigTransferImport(')
+        end = source.index('#endif // FASTBEE_ENABLE_CONFIG_TRANSFER', start)
+        block = source[start:end]
         self.assertEqual(block.count('configStorage.saveImportedJSONConfig(path, importedConfig)'), 2)
         self.assertNotIn('configStorage.saveJSONConfig(path, importedConfig)', block)
         self.assertIn('doc["saved"] = index == total - 1;', block)

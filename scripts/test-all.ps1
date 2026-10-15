@@ -1,4 +1,9 @@
-﻿[CmdletBinding()]
+﻿# FastBee 统一测试矩阵入口。
+# 默认 Checks=static,native,build；build 阶段与 CI（.github/workflows/ci.yml
+# firmware-build）同口径：每个环境依次执行 pio run、pio run --target buildfs
+# 和 node scripts/test-build-artifacts.js --env=<env> --current-build 产物校验。
+# 需要只编译固件的快路径时传 -SkipFs，跳过 LittleFS 构建与产物校验。
+[CmdletBinding()]
 param(
     [ValidateSet("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak", "browser-quick", "browser", "all")]
     [string[]]$Checks = @("static", "native", "build"),
@@ -45,6 +50,7 @@ param(
     [switch]$RequireMqttConnected,
     [switch]$CleanArtifacts,
     [switch]$SkipBuildForArtifacts,
+    [switch]$SkipFs,
     [string]$DeviceSerial = "",
     [switch]$BrowserHeaded,
     [switch]$ContinueOnError
@@ -60,6 +66,7 @@ $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $script:RootBoundParameters = @{} + $PSBoundParameters
 Set-Location $ProjectDir
 . (Join-Path $PSScriptRoot "firmware-build-lock.ps1")
+. (Join-Path $PSScriptRoot "lib\pio-runner.ps1")
 
 # 非 Windows 平台规范化路径分隔符
 if (-not $IsWin) {
@@ -304,10 +311,20 @@ function Invoke-NativeTests {
 }
 
 function Invoke-BuildMatrix {
-    # Build environments one by one to avoid long-running timeout
+    # C8: pre-flight penv platformio core pin check (scripts/platformio-core-pin.json)
+    Assert-PioCoreVersion
+    # Build environments one by one to avoid long-running timeout. Keep local
+    # parity with CI: each environment also builds the LittleFS image and
+    # validates the current build artifacts (ci.yml firmware-build). -SkipFs
+    # restores the fast firmware-only path.
     foreach ($envName in $Environments) {
         $args = @("pio", "run", "-e", $envName, "--silent")
         Invoke-External $args
+        if ($SkipFs) {
+            continue
+        }
+        Invoke-External @("pio", "run", "-e", $envName, "--target", "buildfs", "--silent")
+        Invoke-External @("node", (Join-Path "scripts" "test-build-artifacts.js"), "--env=$envName", "--current-build")
     }
 }
 

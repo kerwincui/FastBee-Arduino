@@ -33,8 +33,13 @@ class StagedMemoryRecoveryTests(unittest.TestCase):
 #define FASTBEE_ENABLE_MODBUS 1
 #define FASTBEE_ENABLE_PERIPH_EXEC 1
 #define pdMS_TO_TICKS(x) (x)
+template<class... T> void logSink(const char*, T...) {}
+#define LOG_INFO(...) logSink(__VA_ARGS__)
+#define LOG_INFOF(...) logSink(__VA_ARGS__)
+#define LOG_WARNING(...) logSink(__VA_ARGS__)
+#define LOG_WARNINGF(...) logSink(__VA_ARGS__)
 enum class MemoryGuardLevel {NORMAL,WARN,SEVERE,CRITICAL};
-struct {template<class... T>void printf(const char*,T...){}void println(const char*){}} Serial;
+[[maybe_unused]] struct {template<class... T>void printf(const char*,T...){}void println(const char*){}} Serial;
 uint32_t liveFree=22000,liveLargest=8000,modbusGain=2000,workerGain=10000;
 uint32_t blockAfterWorkers=10000;
 unsigned suspensionCalls=0;

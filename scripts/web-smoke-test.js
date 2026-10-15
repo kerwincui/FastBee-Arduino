@@ -52,7 +52,6 @@ const REQUIRED_GZIP_ASSETS = [
     'js/modules/periph-exec-templates.js.gz',
     'js/modules/network.js.gz',
     'js/modules/feature-config.js.gz',
-    'js/modules/admin-bundle.js.gz',
     'js/modules/peripherals.js.gz',
     'js/modules/peripheral-save.js.gz',
     'js/modules/peripheral-io.js.gz',
@@ -66,6 +65,8 @@ const REQUIRED_GZIP_ASSETS = [
     'pages/fragments/peripheral-io.html.gz'
 ];
 const RETIRED_ASSETS = [
+    'js/modules/admin-bundle.js',
+    'js/modules/admin-bundle.js.gz',
     'js/modules/files.js',
     'js/modules/files.js.gz',
     'js/modules/peripheral-board.js',
@@ -526,8 +527,12 @@ function checkBootTimingRegressionGuards() {
     // 页面预加载应延迟5000ms，间隔1200ms（降低低内存设备上的并发突发，避免连接超时）
     assert(sessionJs.includes('delayMs: 1200'), 'page preload interval should be 1200ms');
     assert(sessionJs.includes('}, 5000)'), 'page preload should be delayed 5000ms');
-    // modals加载应延迟3000ms
-    assert(sessionJs.includes('}, 3000)'), 'modals loading should be delayed 3000ms');
+    // B6 两包拆分后模态框不再随会话预取（按需加载，未打开弹窗的会话少一次请求）；
+    // 外设编辑器模板包首次打开时串行懒加载。
+    assert(!sessionJs.includes('_loadModals'), 'modals must not be prefetched during session init (B6 on-demand loading)');
+    const pageLoaderJsForModals = read('web-src/js/page-loader.js');
+    assert(typeof pageLoaderJsForModals === 'string' && pageLoaderJsForModals.includes('loadPeripheralModals'),
+        'PageLoader must expose loadPeripheralModals for the peripheral editor lazy package');
 
     // 页面片段加载必须带退避重试（设备繁忙/堆压力下偶发连接超时）
     const pageLoaderJs = read('web-src/js/page-loader.js');
@@ -605,11 +610,6 @@ function checkNetworkNotificationRegressionGuards() {
     assert(networkJs.includes('_isDnsError'), 'network.js should have _isDnsError helper');
     assert(networkJs.includes('DNS resolution failed'), 'loadNetworkStatus should log DNS errors');
 
-    const i18nZhPath = path.join(ROOT_DIR, 'web-src', 'i18n', 'i18n-zh-CN.js');
-    if (fs.existsSync(i18nZhPath)) {
-        const i18nZh = fs.readFileSync(i18nZhPath, 'utf8');
-        assert(!i18nZh.includes("'wifi-save-ok': 'WiFi配置保存成功"), 'i18n zh wifi-save-ok should not say WiFi配置保存成功');
-    }
 
     // 2025-06 修复: 4G 蜂窝面板应包含访问方式提示
     const networkHtml = read('web-src/pages/network.html');
@@ -637,7 +637,7 @@ function checkWifiSecurityRegressionGuards() {
     assert(networkHtml.includes('value="wpa2"'), 'wifi-security select must have wpa2 option');
     assert(networkHtml.includes('data-i18n="wifi-security-wpa2"') ||
         /<option[^>]*value="wpa2"[^>]*>\s*WPA2\s*<\/option>/.test(networkHtml),
-        'wifi-security wpa2 option must have i18n key or a visible fallback label');
+        'wifi-security wpa2 option must have a visible fallback label');;
     assert(networkHtml.includes('selected') && networkHtml.includes('wpa2'), 'wpa2 should be the default security option');
 
     const networkJs = read('web-src/modules/runtime/network.js');

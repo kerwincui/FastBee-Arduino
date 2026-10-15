@@ -341,6 +341,24 @@ function Merge-PreservedConfiguration {
                 }
             }
         }
+        # An enabled Seniverse weather source is unusable without its API key;
+        # the public bundle redacts it, so restore the key by matching source id.
+        $sourceWeather = Get-PropertyValue $preserved["protocol.json"] "weatherSources"
+        $targetWeather = Get-PropertyValue $Docs["protocol.json"] "weatherSources"
+        if ($null -ne $sourceWeather -and $null -ne $targetWeather) {
+            foreach ($targetSource in @($targetWeather)) {
+                $targetId = [string](Get-PropertyValue $targetSource "id")
+                if ([string]::IsNullOrWhiteSpace($targetId)) { continue }
+                foreach ($sourceSource in @($sourceWeather)) {
+                    if ([string](Get-PropertyValue $sourceSource "id") -ne $targetId) { continue }
+                    $apiKey = Get-PropertyValue $sourceSource "apiKey"
+                    if ($null -ne $apiKey -and -not [string]::IsNullOrWhiteSpace([string]$apiKey)) {
+                        Set-PropertyValue $targetSource "apiKey" ([string]$apiKey)
+                    }
+                    break
+                }
+            }
+        }
     }
 
     foreach ($name in @("auth.json", "users.json")) {

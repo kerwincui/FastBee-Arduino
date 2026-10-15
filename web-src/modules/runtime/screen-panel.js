@@ -850,7 +850,7 @@
             return page;
         },
 
-        _spGenerateThreeScreenTemplate() {
+        async _spGenerateThreeScreenTemplate() {
             var model = this._spEnsureModel();
             var limits = this._spLimits();
             if (limits.maxPages < 4 || limits.maxCards < 5) {
@@ -858,7 +858,7 @@
                 return;
             }
             var hasContent = model.config.pages.length > 1 || model.config.pages.some(function(page) { return page.cards.length > 0; });
-            if (hasContent && !window.confirm('替换当前草稿为起始界面？保存后生效。')) return;
+            if (hasContent && !await FBConfirm({ message: '替换当前草稿？保存后生效。' })) return;
 
             var current = this._spCurrentPage();
             var size = this._spReferenceSize(current);
@@ -873,7 +873,7 @@
             this._spSetMessage('起始界面已生成', 'success');
         },
 
-        _spAddPage() {
+        async _spAddPage() {
             var model = this._spEnsureModel();
             var limits = this._spLimits();
             if (model.config.pages.length >= limits.maxPages) { this._spSetMessage('页面数量已达上限', 'error'); return; }
@@ -889,7 +889,7 @@
                 this._spSetMessage('组件超限，请删除组件或添加空白页', 'error');
                 return;
             }
-            var title = window.prompt('页面名称', newPage.title);
+            var title = await FBConfirm({ input: { label: '页面名称', value: newPage.title } });
             if (title === null) return;
             newPage.title = title.trim().slice(0, 64) || newPage.title;
             this._spLayoutTemplatePage(newPage, model.config);
@@ -900,9 +900,9 @@
             });
         },
 
-        _spRenamePage() {
+        async _spRenamePage() {
             var page = this._spCurrentPage();
-            var title = window.prompt('页面名称', page.title);
+            var title = await FBConfirm({ input: { label: '页面名称', value: page.title } });
             if (title === null) return;
             title = title.trim().slice(0, 64);
             if (!title || title === page.title) return;
@@ -958,14 +958,14 @@
             }
         },
 
-        _spDeletePage() {
+        async _spDeletePage() {
             var model = this._spEnsureModel();
             var page = this._spCurrentPage();
             if (model.config.pages.length <= 1) {
                 this._spSetMessage('至少保留一个页面', 'error');
                 return;
             }
-            if (!window.confirm('删除“' + page.title + '”？其中组件会一并移除。')) return;
+            if (!await FBConfirm({ message: '删除“' + page.title + '”？其中组件会一并移除。', danger: true })) return;
             this._spMutate(function(config) {
                 config.pages = config.pages.filter(function(item) { return item.id !== page.id; });
                 config.pages.forEach(function(item) {
@@ -1157,9 +1157,9 @@
             });
         },
 
-        _spApplyTemplate() {
+        async _spApplyTemplate() {
             var page = this._spCurrentPage();
-            if (page.cards.length > 0 && !window.confirm('按模板重新排版？绑定内容保留。')) return;
+            if (page.cards.length > 0 && !await FBConfirm({ message: '按模板重新排版？绑定保留。' })) return;
             this._spMutate(() => { page.layoutMode = 'template'; this._spLayoutTemplatePage(page); });
         },
 
@@ -1176,9 +1176,9 @@
             this._spMarkDirty();
         },
 
-        _spResetDraft() {
+        async _spResetDraft() {
             var model = this._spEnsureModel();
-            if ((model.dirty || model.weatherDirty || model.historyDirty) && !window.confirm('撤销全部未保存修改？')) return;
+            if ((model.dirty || model.weatherDirty || model.historyDirty) && !await FBConfirm({ message: '撤销未保存修改？', danger: true })) return;
             if (model.configConflict) {
                 model.revision = model.configConflict.revision;
                 model.savedConfig = normalizeConfig(model.configConflict.config);

@@ -33,6 +33,23 @@ const CRITICAL_REGRESSION_CONTRACTS = [
         }
     },
     {
+        name: 'web menu traversal exempts only navigation-window read-only aborts',
+        files: {
+            'test/unit/test_menu_cancellation_evidence.py': [
+                'def test_navigation_aborted_reads_exemption_keeps_real_failures'
+            ],
+            'scripts/lib/menu-cancellation-evidence.mjs': [
+                'export function isNavigatedAbortedRead(',
+                'GOVERNOR_TIMEOUT_ABORT_EXCLUSION_MS'
+            ],
+            'scripts/test-web-device-menus.mjs': [
+                'isNavigatedAbortedRead(',
+                'report.navigatedAborted.push(',
+                'navigation = { at:'
+            ]
+        }
+    },
+    {
         name: 'Basic finite responses bound real write failures without empty-send or duplicate-ACK progress',
         files: {
             'test/unit/test_web_basic_progress.py': [
@@ -224,11 +241,31 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             "def test_null_timer_remains_unknown",
             "def test_scheduler_not_started_never_calls_permanent_getters",
             "def test_smp_idle_api_unavailable_is_honest",
-            "def test_dangling_dynamic_handle_is_not_dereferenced"
+            "def test_dangling_dynamic_handle_is_not_dereferenced",
+            "def test_full_scan_callers_are_explicit_post_and_gated_health_sampler"
         ],
         "test/unit/cpp/task_stack_snapshot_harness.cpp.in": [
             "pcTaskGetName(void*) { std::abort(); }",
             "uxTaskGetTaskNumber(void*) { std::abort(); }"
+        ]
+    }
+},
+{
+    "name": "periodic full task-stack sampler is interval-gated observe-only and zero-allocation",
+    "files": {
+        "test/unit/test_task_stack_periodic_sampling.py": [
+            "class TaskStackPeriodicSamplingTests",
+            "def test_interval_gate_fires_once_per_window",
+            "def test_millis_wraparound_keeps_interval_gate",
+            "def test_low_watermark_tasks_reported_with_severity",
+            "def test_memory_pressure_skips_scan_and_advances_gate",
+            "def test_sampler_source_is_observe_only_zero_alloc_and_gated"
+        ],
+        "test/unit/cpp/task_stack_periodic_sampling_harness.cpp.in": [
+            "assert(!explicitRequest)",
+            "assert(INTERVAL >= 300000UL && INTERVAL <= 600000UL);",
+            "INTERNAL_MEMORY_BUDGET",
+            "assert(sdkCalls == 0 && monitor.lastFullStackLogTime == 0)"
         ]
     }
 },
@@ -684,13 +721,16 @@ const CRITICAL_REGRESSION_CONTRACTS = [
                 'UI-005C: OTA 和配置导入复用统一文件选择控件',
                 'UI-005D: 窄屏 CRUD 表格与操作菜单不产生横向溢出',
                 'UI-005E: 所有可见菜单页在 360/390/430 下无页面溢出且 DOM 有界',
+                'UI-005F: 360/390/430 设备配置页键值表无横向溢出',
+                'UI-005G: 设备配置 Tab 键盘可达与 ARIA 语义',
                 'UI-007A: 模态框连续开关 20 次关闭即销毁且 DOM 不增长',
                 'UI-007B: Modbus 分片弹窗按需挂载并在关闭后销毁',
                 'UI-007C: 模态模板未预取时首次点击会续接且并发只请求一次',
                 'UI-007D: 360px 长动态内容模态框无横向溢出 @quick',
                 'UI-007E: 模态模板延迟返回时切页不得挂载旧页面弹窗 @quick',
                 'UI-025A: 重复切页不累积隐藏 DOM 且回访按钮可用',
-                'UI-025B: 重复进入设备大屏不累积 document 监听器 @quick'
+                'UI-025B: 重复进入设备大屏不累积 document 监听器 @quick',
+                'UI-031: 模态框键盘闭环与 ARIA 属性 @quick'
             ],
             'test/browser/suites/22-feature-config.spec.ts': [
                 'FCFG-004A: 功能状态资源依赖和开关同一行直接显示 @quick'
@@ -735,7 +775,27 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             'scripts/test-device-discovery.js': [
                 'the same device must be merged across passes and MAC casing',
                 'the latest pass must replace stale device data',
-                'MAC prefix filtering must ignore case and separator style'
+                'MAC prefix filtering must ignore case and separator style',
+                'separator-less 12-hex and prefix MAC filters must match the colon-separated device MAC'
+            ]
+        }
+    },
+    {
+        name: 'screen panel status text maps error codes and network values to Chinese',
+        files: {
+            'test/unit/test_screen_panel_status_text.py': [
+                'class ScreenPanelStatusTextTests',
+                'def test_async_exec_error_codes_map_to_chinese',
+                'def test_network_status_values_map_to_chinese',
+                'def test_unknown_machine_codes_fall_back_to_readable_text',
+                'def test_human_readable_text_passthrough',
+                'def test_renderer_and_default_page_use_the_mapping'
+            ],
+            'include/screen/PanelStatusText.h': [
+                'inline const char* panelErrorText(const char* error)',
+                'inline const char* panelNetworkStatusText(const char* status)',
+                'return machineCode ? "未知错误" : error;',
+                'return machineCode ? "未知状态" : status;'
             ]
         }
     },
@@ -749,6 +809,187 @@ const CRITICAL_REGRESSION_CONTRACTS = [
             ],
             'test/browser/suites/15-ui-regression.spec.ts': [
                 'UI-026A: 外设配置只展示外设配置'
+            ]
+        }
+    },
+    {
+        name: 'modbus oneshot structured results stay inside the fixed 32-slot buffer',
+        files: {
+            'test/unit/test_modbus_oneshot_bounds.py': [
+                'class ModbusOneShotBoundsTests',
+                'def test_production_oneshot_bounds_matrix',
+                'OneShotResult ModbusHandler::readRegistersOnce(',
+                'modbus_oneshot_bounds_production.inc'
+            ],
+            'test/unit/cpp/modbus_oneshot_bounds_harness.cpp': [
+                'FW-P0-01',
+                'uint16_t before[16];',
+                '0xA5A5',
+                'raw.length() == static_cast<size_t>((125 * 2 + 5) * 2)',
+                '_readRangeInto(8, 3, 0, 125, box.buf, 125, 0, 0xFF)',
+                'semaphoreAvailable = false',
+                'MODBUS_EX_ILLEGAL_DATA_VALUE'
+            ]
+        }
+    },
+    {
+        name: 'point history periodic flush coalesces into the logger flash write window with wrap-safe timing',
+        files: {
+            'include/core/PointHistory.h': [
+                'FLUSH_DEADLINE_MS = 180000',
+                'FLUSH_COALESCE_MIN_MS = 120000',
+                'PEER_WRITE_WINDOW_MS = 2000'
+            ],
+            'src/core/PointHistory.cpp': [
+                'LoggerSystem::getInstance().lastFlashWriteMs()',
+                'elapsed(now, _firstDirtyAt, FLUSH_COALESCE_MIN_MS)'
+            ],
+            'include/systems/LoggerSystem.h': [
+                'uint32_t lastFlashWriteMs() const',
+                'std::atomic<uint32_t> _lastFlashWriteMs{0}'
+            ],
+            'src/systems/LoggerSystem.cpp': ['_lastFlashWriteMs.store(_ringBuffer->lastFlushMs)'],
+            'test/unit/test_point_history_persistence.py': [
+                'def test_dirty_data_rides_recent_log_flush_only_inside_coalesce_window',
+                'def test_flush_windows_survive_millis_wraparound'
+            ],
+            'test/unit/cpp/point_history_persistence_harness.cpp': [
+                'static void coalesce()',
+                'static void wraparound()',
+                'uint32_t lastFlashWriteMs() const { return peerFlashWriteMs; }'
+            ]
+        }
+    },
+    {
+        name: 'screen large-font tiers use wqy16 at rect.h>=120 and degrade pixel-exact without the face',
+        files: {
+            'src/screen/StripeRenderer.h': [
+                'static constexpr uint8_t renderedTier(uint8_t scale)',
+                'if (large) font = u8g2_font_wqy16_t_gb2312;',
+                'rect.h >= 120 ? 3 : rect.h >= 74 ? 2 : 1',
+                'rect.h >= 120 ? 4 : 1'
+            ],
+            'include/core/FeatureFlags.h': ['#define FASTBEE_SCREEN_LARGE_FONT 0'],
+            'platformio.ini': ['-DFASTBEE_SCREEN_LARGE_FONT=1'],
+            'test/unit/test_screen_font_raster.py': [
+                'for(int scale : {1,2,3,4})',
+                '-DFASTBEE_SCREEN_LARGE_FONT=1", "-DHARNESS_LARGE_FONT=1'
+            ],
+            'test/unit/test_screen_renderer_raster.py': [
+                'void largeFont()',
+                'def test_large_font_tiers_thresholds_and_stripe_compatibility'
+            ]
+        }
+    },
+    {
+        name: 'motor adjust and numeric plus/minus hold auto-repeat cadence, boost and stop paths',
+        files: {
+            'test/unit/test_touch_screen_interactions.py': [
+                'def test_plus_minus_hold_auto_repeat',
+                'REPEAT_START_MS=600,REPEAT_INTERVAL_MS=150,REPEAT_FAST_AFTER_MS=2000',
+                'assert(c.motorPulseInput==100+10*100+4*1000&&taps==0);'
+            ],
+            'src/screen/ScreenRuntime.cpp': [
+                'constexpr uint32_t REPEAT_START_MS = 600;',
+                'gesture.repeatNextMs += REPEAT_INTERVAL_MS;',
+                '!gesture.tapCancelled && !gesture.repeated && gesture.tapTarget'
+            ]
+        }
+    },
+    {
+        name: 'unused CSS rule stripping keeps referenced selectors and trims capability-excluded styles',
+        files: {
+            'scripts/test-web-css-strip.js': [
+                'stripUnreferencedCssRules',
+                'fixture must keep',
+                'fixture must strip',
+                'stripped main.css must keep ${needle}',
+                '@keyframes cardAppear'
+            ],
+            'scripts/build-web-modules.js': [
+                'function getCssReferenceCorpus',
+                'RUNTIME_SUB_DIR_CAPABILITY_RULES',
+                'CSS strip (${relPath})'
+            ]
+        }
+    },
+    {
+        name: 'MQTT publish path uses fixed slot/pool buffers without whole-payload String copies',
+        files: {
+            'test/unit/test_mqtt_publish_staging_contract.py': [
+                'class MqttPublishStagingContractTests',
+                'def test_flush_path_publishes_slot_bytes_without_string_copy',
+                'def test_staging_buffer_is_static_pool_guarded_not_task_stack',
+                'def test_oversize_payload_rejected_not_truncated'
+            ],
+            'src/protocols/MQTTClient.cpp': [
+                'const char* pendingBytes = _pendingReportSlot.payload;',
+                'struct MqttPublishBufferGuard',
+                'const bool bypassTransform = prepared ||'
+            ],
+            'test/unit/cpp/mqtt_report_queue_harness.cpp.in': ['if(mode=="consecutive_distinct")']
+        }
+    },
+    {
+        name: 'P0 peripheral setup reaches real initializers for the five previously unreachable types and fails closed otherwise',
+        files: {
+            'test/unit/test_peripheral_lifecycle_capability_contract.py': [
+                'class PeripheralLifecycleCapabilityContractTests',
+                'def test_setup_reaches_real_initializers_instead_of_teardown',
+                'def test_teardown_is_symmetric_for_special_peripherals',
+                'def test_touch_fails_closed_until_real_semantics_exist'
+            ]
+        }
+    },
+    {
+        name: 'P0 protocol hot-restart lifecycle uses leases and deferred destroy instead of use-after-free',
+        files: {
+            'test/unit/test_mqtt_client_lease.py': [
+                'class MqttClientLeaseTests',
+                'class MqttClientLeaseIntegrationTests',
+                'def test_busy_restart_cannot_trigger_reboot_fallback',
+                'def test_all_production_callers_use_scoped_admission'
+            ],
+            'test/unit/test_modbus_memory_recovery.py': [
+                'class ModbusMemoryRecoveryTests',
+                'bool ProtocolManager::restartModbusDeferred()',
+                'IdleNoEnabledTargets,DeferredBusy'
+            ],
+            'src/protocols/ProtocolManager.cpp': [
+                'Modbus restart deferred; active handler lease',
+                'ModbusRestartResult::DeferredBusy',
+                'PeriphExecManager::getInstance().setModbusReadCallback(nullptr);',
+                'modbusHandler.reset();'
+            ]
+        }
+    },
+    {
+        name: 'P0 web XSS sinks stay text-only in dashboard, fullscreen and notification renderers',
+        files: {
+            'test/unit/test_web_security_ux_contract.py': [
+                'class WebSecurityUxContractTests',
+                'def test_dashboard_and_fullscreen_use_node_renderers_for_device_strings',
+                'def test_notifications_have_no_html_mode_or_inner_html_sink',
+                'def test_feature_developer_mode_renderer_does_not_replace_global_method'
+            ],
+            'test/browser/suites/27-web-security-lifecycle.spec.ts': [
+                'WEB-SEC-001',
+                'WEB-SEC-002',
+                'WEB-SEC-003',
+                'WEB-SEC-004',
+                'data-web-xss'
+            ]
+        }
+    },
+    {
+        name: 'P0 high-risk endpoints keep auth, developer-mode, confirmation and allowlist guards',
+        files: {
+            'test/unit/test_sec_p0_security_contract.py': [
+                'class SecP0SecurityContractTests',
+                'def test_periph_exec_run_requires_auth_and_developer_mode_before_execution',
+                'def test_factory_reset_requires_auth_confirmation_and_password_before_mutation',
+                'def test_transfer_endpoints_share_a_fixed_non_sensitive_allowlist',
+                'def test_file_save_blocks_every_direct_config_write'
             ]
         }
     }
@@ -1064,8 +1305,16 @@ function validateHostRegressionRegistration(issues, summary) {
         while ((match = pattern.exec(command)) !== null) nested.push(expandNpmScript(match[1], seen));
         return `${command} ${nested.join(' ')}`;
     };
-    const staticCommands = expandNpmScript('test:static');
-    const hostCommands = expandNpmScript('test');
+    const staticChecksManifest = require('./static-checks.manifest.js');
+    const expandManifestCommand = (command, seen = new Set()) => {
+        const nested = [];
+        const pattern = /\bnpm\s+run\s+([A-Za-z0-9:_-]+)/g;
+        let match;
+        while ((match = pattern.exec(command)) !== null) nested.push(expandNpmScript(match[1], seen));
+        return `${command} ${nested.join(' ')}`;
+    };
+    const staticCommands = staticChecksManifest.map((entry) => expandManifestCommand(entry.command)).join(' ');
+    const hostCommands = `${expandNpmScript('test')} ${staticCommands}`;
     const regressionCommands = expandNpmScript('test:regression');
 
     const validators = fs.readdirSync(path.join(ROOT_DIR, 'scripts'))
@@ -1077,7 +1326,7 @@ function validateHostRegressionRegistration(issues, summary) {
     validators.forEach((name) => {
         const wrapper = wrappedValidators.get(name);
         if (!staticCommands.includes(`scripts/${name}`) && !(wrapper && staticCommands.includes(wrapper))) {
-            issues.push(`package.json: test:static does not register scripts/${name}`);
+            issues.push(`scripts/static-checks.manifest.js: test:static does not register scripts/${name}`);
         }
     });
 

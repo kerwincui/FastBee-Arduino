@@ -33,15 +33,17 @@ def function_body(source, signature):
     raise AssertionError("unterminated C++ function matching {!r}".format(signature))
 
 
+# D2 重构后 lambda 业务下沉到 handle* 方法；按处理器函数体截取
+ROUTE_HANDLERS = {
+    "/api/config/transfer/import": "handleConfigTransferImport",
+    "/api/config/transfer/import-chunk": "handleConfigTransferImportChunk",
+    "/api/files/save": "handleSaveFile",
+}
+
+
 def route_block(path):
-    marker = 'server->on("{}", HTTP_POST'.format(path)
-    start = SYSTEM_ROUTE.find(marker)
-    if start < 0:
-        raise AssertionError("missing POST route {}".format(path))
-    end = SYSTEM_ROUTE.find("server->on(", start + len(marker))
-    if end < 0:
-        end = len(SYSTEM_ROUTE)
-    return SYSTEM_ROUTE[start:end]
+    signature = r"void SystemRouteHandler::" + ROUTE_HANDLERS[path] + r"\(AsyncWebServerRequest\* request\)"
+    return function_body(SYSTEM_ROUTE, signature)
 
 
 def assert_rejects_with_409(test_case, route, helper, argument):

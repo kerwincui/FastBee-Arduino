@@ -24,7 +24,7 @@ const interTestDelay = parseInt(process.env.INTER_TEST_DELAY_MS || '500', 10);
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: './test-results/quick',
+  outputDir: '../../artifacts/test-results/quick',
   ...constrainedDevicePolicy,
   forbidOnly: !!process.env.CI,
   timeout: 60_000,    // 45s下beforeEach/fixture偶发超限（设备清理恢复期负载），放宽到60s

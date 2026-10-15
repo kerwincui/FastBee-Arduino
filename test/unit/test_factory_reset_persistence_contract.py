@@ -47,9 +47,11 @@ class FactoryResetPersistenceContractTests(unittest.TestCase):
             "bool ConfigStorage::deleteJSONConfigGenerations(",
             "bool ConfigStorage::loadJSONConfig(",
         )
-        route_start = SYSTEM_ROUTE.index('/api/system/factory-reset')
-        route_end = SYSTEM_ROUTE.index("// Config", route_start)
-        cls.web_reset = SYSTEM_ROUTE[route_start:route_end]
+        # D2 重构后 factory-reset 业务下沉到 handleFactoryReset 方法体
+        cls.web_reset = braced_block(
+            SYSTEM_ROUTE,
+            "void SystemRouteHandler::handleFactoryReset(AsyncWebServerRequest* request)",
+        )
         cls.exec_reset = braced_block(
             EXECUTOR, "case ExecActionType::ACTION_SYS_FACTORY_RESET:"
         )

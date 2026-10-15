@@ -19,7 +19,11 @@ const context = {
     document: {getElementById: id => nodes.get(id) || null},
     apiPost: async (url, payload) => { calls.push({url, payload}); return handler(url, payload); },
     apiGet: async (url, payload) => { calls.push({url, payload}); return handler(url, payload); },
-    confirm: () => true, clearInterval, setInterval, Date, TextEncoder, window: {}
+    confirm: () => true,
+    // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean|string|null>）；utils.js 把
+    // 实现挂在 window 上，而模块内为裸调用，此处顶层桩与原 confirm 桩同语义（确认）。
+    FBConfirm: async (opts) => opts && opts.input ? (opts.input.value ?? '') : true,
+    clearInterval, setInterval, Date, TextEncoder, window: {}
 };
 vm.runInNewContext(fs.readFileSync(path.join(root, 'web-src/js/utils.js'), 'utf8'), context);
 vm.runInNewContext(fs.readFileSync(path.join(root, 'web-src/modules/runtime/peripheral-io.js'), 'utf8'), context);

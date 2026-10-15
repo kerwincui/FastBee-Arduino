@@ -252,6 +252,14 @@
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0
+        },
+        {
+          "targetPeriphId": "modbus:0",
+          "actionType": 18,
+          "actionValue": "{\"ctrl\":[{\"d\":0,\"c\":0,\"a\":\"toggle\"}]}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
         }
       ],
       "protocolType": 0,

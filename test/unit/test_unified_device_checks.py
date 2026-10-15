@@ -47,6 +47,17 @@ try { Test-MatrixCapability ($checks | Where-Object name -eq 'modbus-status') $n
         self.assertIn('system-status', result['disabled'])
         self.assertIn('peripherals', result['disabled'])
 
+    def test_feature_gated_checks_stay_plain_matrix_entries(self):
+        matrix = json.loads((ROOT / 'scripts/device-api-test-matrix.json').read_text(encoding='utf-8'))
+        checks = {check['name']: check for check in matrix['checks']}
+        for name in ('users', 'periph-exec-controls'):
+            with self.subTest(check=name):
+                self.assertNotIn('allowedStatuses', checks[name])
+                self.assertNotIn('allowedMessages', checks[name])
+        smoke = (ROOT / 'scripts/smoke-test-device.ps1').read_text(encoding='utf-8')
+        self.assertIn('skipped (feature-gated)', smoke)
+        self.assertIn('[switch]$RequireEnabledFeatures', smoke)
+
     def test_hardware_thresholds_preserve_manual_overrides(self):
         result = self.run_ps(r'''
 $ErrorActionPreference = 'Stop'

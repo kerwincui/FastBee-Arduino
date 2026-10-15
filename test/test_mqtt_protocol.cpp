@@ -2819,8 +2819,8 @@ void test_mqtt_old_methods_removed() {
 
     // 6. HTML 中应有刷新状态按钮
     TEST_ASSERT_TRUE_MESSAGE(html.find("refreshMqttStatus") != std::string::npos &&
-                             html.find("mqtt-refresh-btn") != std::string::npos,
-        "HTML must contain refreshMqttStatus action and mqtt-refresh-btn i18n key");
+                             html.find("刷新状态") != std::string::npos,
+        "HTML must contain refreshMqttStatus action and 刷新状态 button text");
     TestLog::step("HTML refresh status button present");
 
     // 7. i18n 键应已更新：mqtt-refresh-btn 存在，mqtt-test-conn-btn 移除
@@ -5150,7 +5150,7 @@ void test_modbus_transparent_report_json_hex_coexistence() {
     const size_t binaryPublish = functionBody.find(
         "mqttClient.publish(fullTopic.c_str(), buf, byteLen", hexValidation);
     const size_t textPublish = functionBody.find(
-        "publishToTopic((size_t)reportTopicIdx, payload)", binaryPublish);
+        "publishToTopic((size_t)reportTopicIdx, payload, payloadLength)", binaryPublish);
     TEST_ASSERT_TRUE_MESSAGE(
         jsonCheck != std::string::npos && jsonTextBypass != std::string::npos &&
         hexValidation != std::string::npos && binaryPublish != std::string::npos &&

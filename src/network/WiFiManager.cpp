@@ -60,13 +60,11 @@ bool WiFiManager::connectToWiFi() {
     {
         uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (dramFree < WIFI_CONNECT_MIN_DRAM) {
-            Serial.printf("[WiFi] connectToWiFi: DRAM too low (dram=%lu < %lu), skipping\n",
-                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
-            LOG_WARNINGF("[WiFi] DRAM too low for WiFi.begin (dram=%lu need=%lu)",
+            LOG_WARNINGF("[WiFi] connectToWiFi: DRAM too low (dram=%lu < %lu), skipping",
                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
             return false;
         }
-        Serial.printf("[WiFi] connectToWiFi: DRAM OK (dram=%lu)\n", (unsigned long)dramFree);
+        LOG_INFOF("[WiFi] connectToWiFi: DRAM OK (dram=%lu)", (unsigned long)dramFree);
     }
     // 多 SSID 择优逻辑：如果配置了 networks 列表，扫描并选择最佳网络
     String targetSSID = wifiConfig.staSSID;
@@ -139,10 +137,10 @@ bool WiFiManager::connectToWiFi() {
     WiFi.begin(targetSSID.c_str(), targetPassword.c_str());
     staInitialized = true;  // 标记STA已初始化
 
-    Serial.printf("[WiFi] Connecting: ssid=%s ip_mode=%s timeout=%lums\n",
-                  targetSSID.c_str(),
-                  (wifiConfig.ipConfigType == IPConfigType::STATIC) ? "STATIC" : "DHCP",
-                  (unsigned long)wifiConfig.connectTimeout);
+    LOG_INFOF("[WiFi] Connecting: ssid=%s ip_mode=%s timeout=%lums",
+              targetSSID.c_str(),
+              (wifiConfig.ipConfigType == IPConfigType::STATIC) ? "STATIC" : "DHCP",
+              (unsigned long)wifiConfig.connectTimeout);
 
     char buffer[100];
     snprintf(buffer, sizeof(buffer), "Connecting to WiFi: %s", targetSSID.c_str());
@@ -267,13 +265,13 @@ bool WiFiManager::startAPMode() {
     LOG_INFO("WiFiManager: AP mode started: " + apSSID);
     LOG_INFO("WiFiManager: AP IP: " + statusInfo.apIPAddress);
     // 密码仅打印长度，避免串口日志泄露凭据
-    Serial.printf("[WiFi] AP Started: ssid=%s pwd=***(len=%d) ip=%s ch=%d hidden=%d max_conn=%d\n",
-                  apSSID.c_str(),
-                  wifiConfig.apPassword.length(),
-                  statusInfo.apIPAddress.c_str(),
-                  wifiConfig.apChannel,
-                  wifiConfig.apHidden,
-                  wifiConfig.apMaxConnections);
+    LOG_INFOF("[WiFi] AP Started: ssid=%s pwd=***(len=%d) ip=%s ch=%d hidden=%d max_conn=%d",
+              apSSID.c_str(),
+              wifiConfig.apPassword.length(),
+              statusInfo.apIPAddress.c_str(),
+              wifiConfig.apChannel,
+              wifiConfig.apHidden,
+              wifiConfig.apMaxConnections);
 
     // AP 模式关闭省电：默认省电模式会让 AP 缓存帧等待 DTIM 周期，
     // 增加客户端请求延迟（实测 AP 省电下 Web 响应延迟翻倍）。
@@ -551,6 +549,7 @@ void WiFiManager::updateStatusInfo() {
 void WiFiManager::handleWiFiEvent(arduino_event_id_t event, const arduino_event_info_t& info) {
     // 注意：此函数运行在 arduino_events 任务栈上，必须保持轻量
     // 禁止使用 LOGGER 日志宏（内部有 256 字节栈缓冲区），统一用 Serial.printf
+    // （D5 白名单：事件任务栈上禁用 LOG_*，下同，不再逐处标注）
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
             Serial.printf("[WiFi] STA connected: %s ch=%d bssid=%s\n",
@@ -697,8 +696,8 @@ void WiFiManager::attemptReconnect() {
     {
         uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (dramFree < WIFI_RECONN_MIN_DRAM) {
-            Serial.printf("[WiFi] attemptReconnect: DRAM too low (dram=%lu < %lu), deferring\n",
-                          (unsigned long)dramFree, (unsigned long)WIFI_RECONN_MIN_DRAM);
+            LOG_WARNINGF("[WiFi] attemptReconnect: DRAM too low (dram=%lu < %lu), deferring",
+                         (unsigned long)dramFree, (unsigned long)WIFI_RECONN_MIN_DRAM);
             // 延迟重连而非失败，等内存回收后再试
             return;
         }
@@ -836,7 +835,7 @@ BandDiagnosis WiFiManager::diagnoseBandMismatch(const String& ssid) {
     int numFound = WiFi.scanNetworks(false, true, false, 300);
     if (numFound <= 0) {
         WiFi.scanDelete();
-        Serial.printf("[WiFi-Diag] Scan returned 0 networks (driver reset done)\n");
+        LOG_WARNINGF("[WiFi-Diag] Scan returned 0 networks (driver reset done)");
         return BandDiagnosis::NOT_FOUND;
     }
 
@@ -858,35 +857,35 @@ BandDiagnosis WiFiManager::diagnoseBandMismatch(const String& ssid) {
             }
 
             // 输出详细诊断信息
-            Serial.printf("[WiFi-Diag] Found '%s' BSSID=%s ch=%d band=%s RSSI=%d enc=%d\n",
-                          ssid.c_str(), WiFi.BSSIDstr(i).c_str(),
-                          ch, band, (int)rssi, (int)WiFi.encryptionType(i));
+            LOG_INFOF("[WiFi-Diag] Found '%s' BSSID=%s ch=%d band=%s RSSI=%d enc=%d",
+                      ssid.c_str(), WiFi.BSSIDstr(i).c_str(),
+                      ch, band, (int)rssi, (int)WiFi.encryptionType(i));
         }
     }
     WiFi.scanDelete();
 
     if (matchCount == 0) {
-        Serial.printf("[WiFi-Diag] SSID '%s' not found in %d scanned networks\n",
-                      ssid.c_str(), numFound);
+        LOG_WARNINGF("[WiFi-Diag] SSID '%s' not found in %d scanned networks",
+                     ssid.c_str(), numFound);
         LOG_WARNING("WiFiManager: Band diagnosis - target SSID not found in scan");
         return BandDiagnosis::NOT_FOUND;
     }
 
     if (has5GHz && !has24GHz) {
-        Serial.printf("[WiFi-Diag] ERROR: '%s' only broadcasts on 5GHz (ch>14). "
-                      "ESP32 only supports 2.4GHz (ch 1-14).\n", ssid.c_str());
+        LOG_ERRORF("[WiFi-Diag] ERROR: '%s' only broadcasts on 5GHz (ch>14). "
+                     "ESP32 only supports 2.4GHz (ch 1-14).", ssid.c_str());
         LOG_ERROR("WiFiManager: Network only supports 5GHz but device only supports 2.4GHz!");
         return BandDiagnosis::ONLY_5GHZ;
     }
 
     if (has24GHz && has5GHz) {
-        Serial.printf("[WiFi-Diag] '%s' has both 2.4GHz and 5GHz bands (dual-band OK)\n",
-                      ssid.c_str());
+        LOG_INFOF("[WiFi-Diag] '%s' has both 2.4GHz and 5GHz bands (dual-band OK)",
+                     ssid.c_str());
         return BandDiagnosis::MIXED_BAND;
     }
 
     // has24GHz && !has5GHz
-    Serial.printf("[WiFi-Diag] '%s' is on 2.4GHz — band is compatible\n", ssid.c_str());
+    LOG_INFOF("[WiFi-Diag] '%s' is on 2.4GHz — band is compatible", ssid.c_str());
     return BandDiagnosis::BAND_OK;
 }
 

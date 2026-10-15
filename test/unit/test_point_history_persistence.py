@@ -47,6 +47,12 @@ class PointHistoryPersistenceTests(unittest.TestCase):
     def test_continuous_sampling_flushes_at_deadline_without_idle_writes(self):
         self.scenario('deadline')
 
+    def test_dirty_data_rides_recent_log_flush_only_inside_coalesce_window(self):
+        self.scenario('coalesce')
+
+    def test_flush_windows_survive_millis_wraparound(self):
+        self.scenario('wraparound')
+
     def test_sample_arriving_during_write_remains_dirty_and_is_saved_next(self):
         self.scenario('during_write')
 

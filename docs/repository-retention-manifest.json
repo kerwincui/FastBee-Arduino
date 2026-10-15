@@ -13,6 +13,24 @@
   },
   "entries": [
     {
+      "path": "pelican-ride.html",
+      "classification": "unrelated-demo-page",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "根目录误提交的无引用演示页（19.5 KB），与固件无关；全仓零引用，按计划 A9 删除"
+    },
+    {
+      "path": "tmp-live-protocol.json",
+      "classification": "private-live-device-config",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "在线设备 protocol 配置导出，含非空 username/clientId 字段；按计划 A9 移入被忽略的 .device-config-backups/ 保管，不入公开目录"
+    },
+    {
       "path": ".pio",
       "classification": "generated-cache",
       "status": "retain-generated",
@@ -45,88 +63,203 @@
       "retention": "classify-per-run-before-clean"
     },
     {
+      "path": "managed_components",
+      "classification": "generated-cache",
+      "status": "retain-generated",
+      "owner": "firmware-build",
+      "tracked": false,
+      "retention": "restorable-from-dependencies.lock",
+      "reason": "ESP-IDF 组件管理器输出（约 550 MB / 4275 文件，曾占跟踪字节 94.6%）；2026-10-15 经 E1 隔离克隆九环境验证当前构建不消费该目录后停止跟踪，已加入 .gitignore；dependencies.lock 逐组件钉死版本+哈希，如需复原可由组件管理器重建"
+    },
+    {
       "path": "scripts/web-test-lightweight.js",
       "classification": "legacy-invalid-script",
-      "status": "quarantine-pending",
+      "status": "removed",
       "owner": "web-quality",
-      "tracked": true,
-      "replacement": ["npm run test:web-assets", "npm run test:e2e:offline"],
-      "syntaxExemption": true,
-      "reviewAfter": "one-release-cycle"
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代入口 npm run test:web-assets / test:e2e:offline；首行 # 注释导致的语法非法随删除消除",
+      "replacement": [
+        "npm run test:web-assets",
+        "npm run test:e2e:offline"
+      ]
     },
     {
       "path": "scripts/web-browser-test.ps1",
       "classification": "legacy-wrapper",
-      "status": "quarantine-pending",
+      "status": "removed",
       "owner": "web-quality",
-      "tracked": true,
-      "replacement": ["scripts/run-browser-tests.ps1", "npm run test:e2e:device"],
-      "reviewAfter": "long-task-metrics-migrated-plus-one-release-cycle"
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：旧浏览器 runner（Selenium），全仓零引用；替代 scripts/run-browser-tests.ps1 与 npm run test:e2e:device；其首屏/资源/longtask 性能采集无消费方，随删除下线，等价观测由 Playwright 标准用例计时承担",
+      "replacement": [
+        "scripts/run-browser-tests.ps1",
+        "npm run test:e2e:device"
+      ]
     },
     {
       "path": "scripts/web-browser-test.js",
       "classification": "legacy-runner",
-      "status": "quarantine-pending",
+      "status": "removed",
       "owner": "web-quality",
-      "tracked": true,
-      "replacement": ["scripts/run-browser-tests.ps1", "npm run test:e2e:device"],
-      "reviewAfter": "long-task-metrics-migrated-plus-one-release-cycle"
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：旧浏览器 runner（Selenium），全仓零引用；替代 scripts/run-browser-tests.ps1 与 npm run test:e2e:device；其首屏/资源/longtask 性能采集无消费方，随删除下线，等价观测由 Playwright 标准用例计时承担",
+      "replacement": [
+        "scripts/run-browser-tests.ps1",
+        "npm run test:e2e:device"
+      ]
     },
     {
       "path": "scripts/web-access-check.js",
       "classification": "legacy-device-check",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/device-web-smoke.ps1", "scripts/smoke-test-device.ps1"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/device-web-smoke.ps1 / smoke-test-device.ps1",
+      "replacement": [
+        "scripts/device-web-smoke.ps1",
+        "scripts/smoke-test-device.ps1"
+      ]
     },
     {
       "path": "scripts/check-api-health.ps1",
       "classification": "legacy-device-check",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/smoke-test-device.ps1"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/smoke-test-device.ps1",
+      "replacement": [
+        "scripts/smoke-test-device.ps1"
+      ]
     },
     {
       "path": "scripts/net-check.ps1",
       "classification": "legacy-network-tool",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/test-device-discovery.js"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/test-device-discovery.js",
+      "replacement": [
+        "scripts/test-device-discovery.js"
+      ]
     },
     {
       "path": "scripts/net-discovery.ps1",
       "classification": "legacy-network-tool",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/test-device-discovery.js"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/test-device-discovery.js",
+      "replacement": [
+        "scripts/test-device-discovery.js"
+      ]
     },
     {
       "path": "scripts/serial_capture.py",
       "classification": "legacy-serial-tool",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/serial-diagnostics.py", "scripts/smoke-test-device.ps1"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/serial-diagnostics.py / smoke-test-device.ps1",
+      "replacement": [
+        "scripts/serial-diagnostics.py",
+        "scripts/smoke-test-device.ps1"
+      ]
     },
     {
       "path": "scripts/serial_monitor.py",
       "classification": "legacy-serial-tool",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "device-acceptance",
-      "tracked": true,
-      "replacement": ["scripts/serial-diagnostics.py", "scripts/smoke-test-device.ps1"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 scripts/serial-diagnostics.py / smoke-test-device.ps1",
+      "replacement": [
+        "scripts/serial-diagnostics.py",
+        "scripts/smoke-test-device.ps1"
+      ]
     },
     {
       "path": "scripts/test-esp32c3.ps1",
       "classification": "legacy-board-runner",
-      "status": "needs-owner",
+      "status": "removed",
       "owner": "firmware-build",
-      "tracked": true,
-      "replacement": ["npm run test:firmware -- esp32c3-F4R0", "scripts/deploy.ps1"]
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用；替代 npm run test:firmware -- esp32c3-F4R0 / scripts/deploy.ps1",
+      "replacement": [
+        "npm run test:firmware -- esp32c3-F4R0",
+        "scripts/deploy.ps1"
+      ]
+    },
+    {
+      "path": "scripts/compare-test-timing.js",
+      "classification": "legacy-timing-tool",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用（仅自身头注释提及）"
+    },
+    {
+      "path": "scripts/test-boot-script-transport.cjs",
+      "classification": "legacy-test-script",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
+    },
+    {
+      "path": "scripts/test-device-login-stack.mjs",
+      "classification": "legacy-test-script",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
+    },
+    {
+      "path": "scripts/test-panel-history-device.mjs",
+      "classification": "legacy-test-script",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
+    },
+    {
+      "path": "scripts/audit-mdns-observation.py",
+      "classification": "legacy-audit-script",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
+    },
+    {
+      "path": "scripts/recommend-env.ps1",
+      "classification": "legacy-env-tool",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
+    },
+    {
+      "path": "scripts/test-motor-travel-settings-browser.cjs",
+      "classification": "legacy-test-script",
+      "status": "removed",
+      "owner": "repository-maintainers",
+      "tracked": false,
+      "removedAt": "2026-10-14",
+      "reason": "按计划 A10 删除：全仓零引用"
     },
     {
       "path": "scripts/diagnose-and-recover-c6.ps1",
@@ -134,7 +267,9 @@
       "status": "retain",
       "owner": "device-acceptance",
       "tracked": true,
-      "replacement": ["none-until-recovery-flow-is-integrated"]
+      "replacement": [
+        "none-until-recovery-flow-is-integrated"
+      ]
     },
     {
       "path": "scripts/run-stability-tests.ps1",
@@ -142,7 +277,9 @@
       "status": "retain",
       "owner": "device-acceptance",
       "tracked": true,
-      "consumers": ["test/unit/test_fleet_acceptance_contract.py"]
+      "consumers": [
+        "test/unit/test_fleet_acceptance_contract.py"
+      ]
     },
     {
       "path": "images/case-device-modbus.png",
@@ -151,7 +288,7 @@
       "owner": "documentation",
       "tracked": true,
       "canonical": "images/device.png",
-      "reviewAfter": "one-release-cycle"
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device.png",
@@ -159,7 +296,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/device_01.png",
@@ -167,7 +306,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/device_07.png",
@@ -175,7 +316,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/device_11.png",
@@ -183,7 +326,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/device_12.png",
@@ -191,7 +336,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/case-esp32c3.png",
@@ -199,7 +346,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/case-esp32c6.png",
@@ -207,7 +356,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/case-ecm50a.png",
@@ -215,7 +366,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/case-puzhong.png",
@@ -223,7 +376,9 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/case-weixue.png",
@@ -231,70 +386,311 @@
       "status": "retain",
       "owner": "documentation",
       "tracked": true,
-      "consumers": ["README.md"]
+      "consumers": [
+        "README.md"
+      ]
     },
     {
       "path": "images/device_02.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_03.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_04.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_05.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_06.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_08.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_09.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/device_10.png",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
     },
     {
       "path": "images/qq.jpg",
       "classification": "unreferenced-asset",
       "status": "needs-owner",
       "owner": "documentation",
-      "tracked": true
+      "tracked": true,
+      "reviewAfter": "2026-11-13"
+    },
+    {
+      "path": "dist/firmware/all-latest",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1",
+        "scripts/flash-release.ps1",
+        "scripts/test-build-artifacts-validator.js"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32-F4R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32-F8R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32-F8R8",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32c3-F4R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32c6-F4R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32c6-F8R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32s3-F8R0",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32s3-F8R8",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32s3-F16R8",
+      "classification": "release-evidence",
+      "status": "retain-generated",
+      "owner": "release-engineering",
+      "tracked": false,
+      "retention": "current-release-chain-evidence",
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/build-all-artifacts.ps1",
+        "scripts/collect-artifacts.ps1"
+      ]
+    },
+    {
+      "path": "dist/firmware/esp32-F4R0-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 合并镜像目录，2026-08-26 后由 all-latest 发布链取代，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32c3-F4R0-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 合并镜像目录，2026-08-26 后由 all-latest 发布链取代，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32c6-F4R0-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 合并镜像目录，2026-08-26 后由 all-latest 发布链取代，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32s3-F16R8-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 合并镜像目录，2026-08-26 后由 all-latest 发布链取代，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32s3-F8R4-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 合并镜像目录（F8R4 命名已退役），零引用"
+    },
+    {
+      "path": "dist/firmware/esp32c3-ble",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "BLE 实验构建产物，非发布矩阵环境，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32-F8R4",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "F8R4 命名已退役（README 明示），非发布矩阵环境，零引用"
+    },
+    {
+      "path": "dist/firmware/esp32s3-F8R4",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "F8R4 命名已退役（README 明示），非发布矩阵环境，零引用"
+    },
+    {
+      "path": "dist/firmware/final-20260910",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "2026-09-10 定点快照，发布链已由 all-latest 取代，零引用"
+    },
+    {
+      "path": "dist/firmware/current-unified",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "旧版 unified 汇总目录，由 all-latest 取代，零引用"
+    },
+    {
+      "path": "dist/firmware/screen-panel-three-target",
+      "classification": "legacy-release-output",
+      "status": "removed",
+      "owner": "release-engineering",
+      "tracked": false,
+      "removedAt": "2026-10-13",
+      "reason": "触屏三目标实验产物，未入发布链，零引用"
     }
   ]
 }

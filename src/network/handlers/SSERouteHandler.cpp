@@ -159,7 +159,7 @@ size_t SSERouteHandler::closeAllClients() {
     if (closed > 0) {
         _stats.forcedClosedClients += static_cast<uint32_t>(closed);
         _stats.lastForcedCloseAtMs = now;
-        Serial.printf("[SSE] Force-closed %u clients (memory pressure)\n", (unsigned)closed);
+        LOG_WARNINGF("[SSE] Force-closed %u clients (memory pressure)", (unsigned)closed);
     }
     return closed;
 }

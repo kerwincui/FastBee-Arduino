@@ -36,6 +36,7 @@ bool fastbeeNeoPixelProjectPinRetained(uint8_t pin) {
 }
 #define LOG_WARNINGF(...) (++shutdownWarnings)
 #define LOG_WARNING(...) (++shutdownWarnings)
+#define LOG_ERROR(...) (++shutdownWarnings)
 std::atomic<bool>& ioShutdownRequested();
 unsigned long millis() { return ioNow; }
 enum class GPIOState { STATE_UNDEFINED, STATE_LOW, STATE_HIGH };

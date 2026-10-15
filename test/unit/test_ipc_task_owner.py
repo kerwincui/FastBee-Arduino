@@ -47,9 +47,15 @@ class IpcTaskOwnerTests(unittest.TestCase):
         code = code.replace('// @route@', definition(cls.sources[-1].read_text(encoding='utf8'),
                             'void setupTaskStackSnapshotRoute('))
         driver.write_text(code, encoding='utf8')
-        for variant, flags in (('s3', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1']),
-                ('single', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1', '-DconfigNUMBER_OF_CORES=1']),
-                ('no_trace', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1', '-DconfigUSE_TRACE_FACILITY=0']),
+        ipc_gate = ['-DCONFIG_FREERTOS_NUMBER_OF_CORES=2', '-DCONFIG_FREERTOS_USE_TRACE_FACILITY=1',
+                    '-DCONFIG_ESP_IPC_ENABLE=1']
+        for variant, flags in (('s3', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1', *ipc_gate]),
+                ('single', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1', '-DconfigNUMBER_OF_CORES=1',
+                    '-DCONFIG_FREERTOS_NUMBER_OF_CORES=1', '-DCONFIG_FREERTOS_USE_TRACE_FACILITY=1',
+                    '-DCONFIG_ESP_IPC_ENABLE=1']),
+                ('no_trace', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32S3=1', '-DconfigUSE_TRACE_FACILITY=0',
+                    '-DCONFIG_FREERTOS_NUMBER_OF_CORES=2', '-DCONFIG_FREERTOS_USE_TRACE_FACILITY=0',
+                    '-DCONFIG_ESP_IPC_ENABLE=1']),
                 ('c3', ['-DESP_PLATFORM=1', '-DCONFIG_IDF_TARGET_ESP32C3=1']), ('host', [])):
             binary = directory / (variant + '.exe')
             result = subprocess.run([compiler, '-std=c++17', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror',

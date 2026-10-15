@@ -287,9 +287,9 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
                         if (deserializeJson(usersDoc, uf) == DeserializationError::Ok) {
                             JsonObject sec = usersDoc["security"];
                             if (!sec.isNull()) {
-                                fileCfg["maxLoginAttempts"]       = sec["maxLoginAttempts"] | 5;
-                                fileCfg["loginLockoutTime"]       = sec["loginLockoutTime"] | 300000UL;
-                                fileCfg["minPasswordLength"]      = sec["minPasswordLength"] | 6;
+                                fileCfg["maxLoginAttempts"] = sec["maxLoginAttempts"] | 5;
+                                fileCfg["loginLockoutTime"] = sec["loginLockoutTime"] | 300000UL;
+                                fileCfg["minPasswordLength"] = sec["minPasswordLength"] | 6;
                                 fileCfg["requireStrongPasswords"] = sec["requireStrongPasswords"] | false;
                             }
                         }
@@ -316,9 +316,9 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     doc["data"]["ntpServer2"] = "cn.pool.ntp.org";
     doc["data"]["timezone"] = "CST-8";
     doc["data"]["syncInterval"] = 3600;
-    doc["data"]["maxLoginAttempts"]       = 5;
-    doc["data"]["loginLockoutTime"]       = 300000;
-    doc["data"]["minPasswordLength"]      = 6;
+    doc["data"]["maxLoginAttempts"] = 5;
+    doc["data"]["loginLockoutTime"] = 300000;
+    doc["data"]["minPasswordLength"] = 6;
     doc["data"]["requireStrongPasswords"] = false;
     HandlerUtils::sendJsonStream(request, doc);
 }

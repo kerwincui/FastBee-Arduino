@@ -60,17 +60,20 @@ flowchart LR
 
 ### 2. 从源码编译和烧录
 
-安装 VS Code + PlatformIO，连接开发板后在项目根目录执行：
+前置依赖：Node.js 20+ 和 PlatformIO（VS Code 插件或 PlatformIO Core 命令行）。全新克隆不含生成好的 `data/www/*.gz`，构建时会用 `terser` 等本地依赖自动生成 Web 资源，因此先在项目根目录执行 `npm ci`：
 
 ```powershell
-# 构建、生成 Web 资源、上传 LittleFS 和固件
+# 首次克隆或 package-lock.json 变更后：安装 Web 构建依赖
+npm ci
+
+# 构建、生成 Web 资源、上传 LittleFS 和固件（连接开发板后执行）
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -Port <serial-port>
 
 # 只构建，不烧录
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -BuildOnly
 ```
 
-常用参数：`-Env` 选择环境，`-Port` 指定串口，`-Monitor` 烧录后打开串口，`-SkipFs`/`-SkipFirmware` 跳过某一部分，`-SkipWeb` 跳过 Web 资源生成。也可以直接使用 `pio run -e <环境>`，但发布时必须同时更新 LittleFS 与固件。
+常用参数：`-Env` 选择环境，`-Port` 指定串口，`-Monitor` 烧录后打开串口，`-SkipFs`/`-SkipFirmware` 跳过某一部分，`-SkipWeb` 跳过 Web 资源生成。也可以直接使用 `pio run -e <环境>`，但发布时必须同时更新 LittleFS 与固件。注意上传 LittleFS 会重写整个文件系统分区；升级已配置的设备时使用 `-SkipFs` 保留配置，或先在 Web 控制台导出备份。
 
 ### 3. 首次配置
 
@@ -95,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
   </tr>
 </table>
 
-## 五、案例展示
+## 案例展示
 
 以下是 FastBee-Arduino 在不同芯片和硬件平台上的实际应用案例。
 
@@ -138,7 +141,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
 
 更多案例请查看 [示例教程](https://fastbee.cn/doc/device/examples/) 目录。
 
-## 六、预定义环境
+## 预定义环境
 
 完整且唯一的当前发布表见前文[支持的构建环境](#支持的构建环境)，由 `platformio.ini` 与构建矩阵门禁共同核对，不再按 Lite/Standard/Full 划分。
 
@@ -149,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R8 -B
 
 > 功能对比详表与分区表见 [版本对比](https://fastbee.cn/doc/device/getting-started/edition-comparison.html)。
 
-## 七、项目结构
+## 功能生效条件
 
 ```text
 compiled（编译进固件）
@@ -208,8 +211,11 @@ src/core/          核心框架、外设管理、规则引擎
 src/network/       WiFi、Web、网络适配器和 API 路由
 src/protocols/     MQTT、Modbus RTU
 src/peripherals/   传感器、显示、RF/RFID 等驱动
+src/screen/        屏幕运行时、面板管理和 RGB/SPI 显示后端
 src/security/      认证、用户和密码哈希
 src/systems/       配置、日志、健康监控和任务服务
+src/utils/         文件、JSON、字符串和时间等通用工具
+include/           与 src/ 按同名模块对应的头文件
 web-src/           Web 前端源码
 data/config/       LittleFS 默认配置
 data/www/          自动生成的 gzip-only Web 发布资源（不要直接编辑）

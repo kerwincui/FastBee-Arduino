@@ -282,9 +282,9 @@
             this._rfDeleteKey(name);
         },
 
-        _rfDeleteKey(name) {
+        async _rfDeleteKey(name) {
             var self = this;
-            if (!confirm('确定删除按键 "' + name + '" 吗？')) return;
+            if (!await FBConfirm({ title: '删除按键', message: '确定删除按键 "' + name + '" 吗？', danger: true })) return;
             apiPost('/api/rf/keys/delete', { name: name })
                 .then(function(res) {
                     if (res && res.success) {
@@ -299,10 +299,10 @@
                 });
         },
 
-        _rfClearKeys() {
+        async _rfClearKeys() {
             if (!this.guardDeveloperModeAction()) return;
             var self = this;
-            if (!confirm('确定清除全部 RF 按键吗？该操作不可恢复。')) return;
+            if (!await FBConfirm({ title: '清除全部按键', message: '确定清除全部 RF 按键吗？该操作不可恢复。', danger: true, requireCheck: true, checkLabel: '我已确认不再需要任何 RF 按键配置' })) return;
             apiPost('/api/rf/keys/clear', {})
                 .then(function(res) {
                     if (res && res.success) {

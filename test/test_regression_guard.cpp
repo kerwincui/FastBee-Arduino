@@ -4693,14 +4693,14 @@ void test_regression_mqtt_queued_report_publish_failure_retries() {
         "memcpy(_pendingReportSlot.payload, slot.payload", pendingEncodingCopyPos);
     size_t ringClearPos = process.find("slot.clear()", pendingCopyPos);
     size_t pendingPayloadPos = process.find(
-        "const String pendingPayload(_pendingReportSlot.payload", ringClearPos);
+        "const char* pendingBytes = _pendingReportSlot.payload;", ringClearPos);
     size_t encodingBranchPos = process.find(
         "_pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX",
         pendingPayloadPos);
     size_t rawPublishPos = process.find(
-        "publishModbusRtuReport(pendingPayload)", encodingBranchPos);
+        "publishModbusRtuReport(pendingBytes, pendingLength)", encodingBranchPos);
     size_t textPublishPos = process.find(
-        "publishReportData(pendingPayload)", rawPublishPos);
+        "publishReportData(pendingBytes, pendingLength)", rawPublishPos);
     size_t publishGuardPos = process.find("if (!publishOk)", textPublishPos);
     size_t retryBreakPos = process.find("break;", publishGuardPos);
     size_t pendingClearPos = process.find("_pendingReportSlot.clear()", retryBreakPos);

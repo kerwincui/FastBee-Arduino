@@ -6,10 +6,14 @@ const {
   mergeDiscoveredDevice,
   normalizeMac,
   parseDeviceStatus,
-} = require('../test/e2e/helpers/discover-devices');
+} = require('../test/helpers/discover-devices');
 
 assert.strictEqual(normalizeMac('d4-e9-f4-01-02-03'), 'D4:E9:F4:01:02:03');
 assert.strictEqual(normalizeMac('  D4:E9:F4  '), 'D4:E9:F4');
+assert.strictEqual(normalizeMac('146393902f64'), '14:63:93:90:2F:64');
+assert.strictEqual(normalizeMac('146393902F64'), '14:63:93:90:2F:64');
+assert.strictEqual(normalizeMac('14-63-93-90-2f-64'), '14:63:93:90:2F:64');
+assert.strictEqual(normalizeMac('14:63:93:90:2f:64'), '14:63:93:90:2F:64');
 
 const parsed = parseDeviceStatus('192.168.5.55', JSON.stringify({
   success: true,
@@ -56,5 +60,28 @@ assert.deepStrictEqual(
   ['192.168.5.19'],
   'MAC prefix filtering must ignore case and separator style'
 );
+
+const colonMacDevice = {
+  ip: '192.168.5.20',
+  mac: '14:63:93:90:2F:64',
+  ssid: '',
+  rssi: null,
+  uptimeMs: 1,
+};
+const macFilterForms = [
+  '146393902f64',
+  '146393902F64',
+  '14-63-93-90-2f-64',
+  '14:63:93:90:2f:64',
+  '14:63:93',
+  '14-63-93',
+];
+for (const filter of macFilterForms) {
+  assert.deepStrictEqual(
+    filterAndSortDevices([colonMacDevice], filter).map(device => device.ip),
+    ['192.168.5.20'],
+    `separator-less 12-hex and prefix MAC filters must match the colon-separated device MAC (${filter})`
+  );
+}
 
 console.log('FastBee device discovery contracts OK');

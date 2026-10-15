@@ -14,9 +14,13 @@ MANAGER_CPP = "\n".join(
         "src/core/PeripheralManagerPersistence.cpp",
     )
 )
-ROUTE_CPP = (
-    ROOT / "src/network/handlers/PeripheralRouteHandler.cpp"
-).read_text(encoding="utf-8")
+ROUTE_CPP = "\n".join(
+    (ROOT / path).read_text(encoding="utf-8")
+    for path in (
+        "src/network/handlers/PeripheralRouteHandler.cpp",
+        "src/core/PeripheralRouteMapper.cpp",
+    )
+)
 
 
 def function_body(source: str, signature: str) -> str:

@@ -190,7 +190,7 @@
             var key = source === 'sensor' ? '_masterTasks' : '_modbusDevices';
             var original = this[key];
             if (!Array.isArray(original) || !Number.isInteger(idx) || idx < 0 || idx >= original.length) return false;
-            if (!confirm('确定要删除此设备并保存配置？')) return false;
+            if (!await FBConfirm({ title: '删除 Modbus 设备', message: '确定要删除此设备并保存配置？', danger: true })) return false;
             var form = document.getElementById('modbus-rtu-form');
             var wasInert = form && form.inert;
             this._modbusDeletePending = true;

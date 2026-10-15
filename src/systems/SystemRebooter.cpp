@@ -4,6 +4,7 @@
  */
 #include "systems/SystemRebooter.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
 #include "core/PeripheralManager.h"
@@ -33,10 +34,10 @@ void SystemRebooter::scheduleReboot(const char* reason, unsigned long delayMs, R
     _restartReason = restartReason;
     _scheduled = true;
 
-    Serial.printf("[REBOOTER] Scheduled reboot in %lums [%s]: %s\n",
-                  (unsigned long)delayMs,
-                  RestartDiagnostics::getRestartReasonString(restartReason),
-                  _reason);
+    LOG_WARNINGF("[REBOOTER] Scheduled reboot in %lums [%s]: %s",
+                 (unsigned long)delayMs,
+                 RestartDiagnostics::getRestartReasonString(restartReason),
+                 _reason);
 }
 
 void SystemRebooter::scheduleConfigReboot(const char* reason, unsigned long delayMs) {
@@ -45,7 +46,7 @@ void SystemRebooter::scheduleConfigReboot(const char* reason, unsigned long dela
 
 void SystemRebooter::cancelScheduledReboot() {
     if (_scheduled) {
-        Serial.printf("[REBOOTER] Cancelled scheduled reboot: %s\n", _reason);
+        LOG_INFOF("[REBOOTER] Cancelled scheduled reboot: %s", _reason);
         _scheduled = false;
         _rebootAt = 0;
         _reason[0] = '\0';
@@ -74,7 +75,7 @@ void SystemRebooter::update() {
         }
 #endif
         if (!skipHistorySave && !FastBee::PointHistory::instance().flushNow(2000)) {
-            Serial.println("[REBOOTER] Recent point history could not be saved");
+            LOG_WARNING("[REBOOTER] Recent point history could not be saved");
 #if FASTBEE_ENABLE_SCREEN_PANEL
             if (panelRestart) {
                 ScreenPanelManager::instance().notifyRestartSaveFailure();
@@ -84,9 +85,10 @@ void SystemRebooter::update() {
         }
 #endif
 
+        // 保留 Serial 直出（D5 白名单）：重启执行点横幅，确保最后日志落串口。
         Serial.println("[REBOOTER] ============================================");
         Serial.printf("[REBOOTER] Executing reboot: %s\n", _reason);
-        Serial.println("[REBOOTER] ============================================");
+
         Serial.flush();
 
 #if FASTBEE_ENABLE_STORAGE_CACHE
@@ -99,7 +101,7 @@ void SystemRebooter::update() {
         // The expander stays powered across an MCU restart. Confirm configured
         // startup levels before resetting, without waiting for a busy I2C bus.
         if (!PeripheralManager::getInstance().shutdownIoExpanders()) {
-            Serial.println("[REBOOTER] IO_SHUTDOWN_UNCONFIRMED: physical output state not confirmed");
+            LOG_ERROR("[REBOOTER] IO_SHUTDOWN_UNCONFIRMED: physical output state not confirmed");
         }
 
         // 保存重启前状态快照到 RTC 内存

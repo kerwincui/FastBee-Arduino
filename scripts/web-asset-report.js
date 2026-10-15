@@ -162,7 +162,6 @@ function createWebAssetReport(options = {}) {
 function createSourceAssetReport() {
     const sourceTargets = [
         path.join(ROOT_DIR, 'web-src', 'js'),
-        path.join(ROOT_DIR, 'web-src', 'i18n'),
         path.join(ROOT_DIR, 'web-src', 'modules'),
         path.join(ROOT_DIR, 'web-src', 'pages'),
         path.join(ROOT_DIR, 'web-src', 'css')

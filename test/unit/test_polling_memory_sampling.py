@@ -50,7 +50,11 @@ struct FastBeeFramework {
 };
 struct { template<class... T> void warningf(const char*,T...){} template<class... T> void infof(const char*,T...){}
  void warning(const char*){} void info(const char*){} } LOGGER;
-struct { void println(const char*){} } Serial;
+#define LOG_INFO(msg) LOGGER.info(msg)
+#define LOG_INFOF(...) LOGGER.infof(__VA_ARGS__)
+#define LOG_WARNING(msg) LOGGER.warning(msg)
+#define LOG_WARNINGF(...) LOGGER.warningf(__VA_ARGS__)
+[[maybe_unused]] struct { void println(const char*){} } Serial;
 struct PeriphExecScheduler {
  bool _memoryPressurePaused=false, _webReserveSuspended=false;
  uint32_t _memoryPressurePausedSince=1, _webReserveSuspendedSince=1;

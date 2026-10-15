@@ -45,9 +45,11 @@
             });
         },
 
-        _deviceConfigStatus(message) {
-            const el = document.getElementById('device-config-load-status');
-            if (el) el.textContent = message;
+        _deviceConfigStatus(message, kind) {
+            // 页面顶部状态行已移除；加载结果通过通知提示，成功时静默。
+            if (kind === 'error' && typeof Notification !== 'undefined' && Notification.warning) {
+                Notification.warning(message);
+            }
         },
 
         _deviceConfigSelect(id, value) {
@@ -212,7 +214,6 @@
             const sequence = this._deviceConfigLoadSequence = (this._deviceConfigLoadSequence || 0) + 1;
             this._deviceConfigReady = false;
             this._deviceConfigButtons();
-            this._deviceConfigStatus('正在加载设备配置…');
             clearTimeout(this._deviceHardwareTimer);
             this._deviceHardwareTimer = setTimeout(() => {
                 if (this._deviceConfigActive(epoch)) this._loadDeviceHardwareInfo({ noCache: options.noCache === true });
@@ -244,11 +245,10 @@
                     this._setValue('dev-sec-min-pwd-len', d.minPasswordLength !== undefined ? String(d.minPasswordLength) : '6');
                     this._setValue('dev-sec-require-strong', d.requireStrongPasswords ? '1' : '0');
                     this._deviceConfigReady = true;
-                    this._deviceConfigStatus('配置已加载');
                 })
                 .catch(err => {
                     if (this._deviceConfigActive(epoch) && sequence === this._deviceConfigLoadSequence && !isExpectedAbort(err)) {
-                        this._deviceConfigStatus('加载失败：' + (err.message || err) + '，请点击重新加载');
+                        this._deviceConfigStatus('加载设备配置失败：' + (err.message || err) + '，请刷新页面重试', 'error');
                     }
                 }).finally(() => this._deviceConfigButtons());
         },
@@ -527,8 +527,8 @@
             // Legacy firmware without quality fields cannot prove a sync event.
             const timeLabels = {
                 rtc_unverified: t('dc-time-quality-rtc', 'RTC启动时间（未校准）'),
-                synced_tls: t('dc-time-quality-tls', '已同步（TLS来源，非精度保证）'),
-                synced_unverified: t('dc-time-quality-unverified', '已同步（来源未认证）'),
+                synced_tls: t('dc-time-quality-tls', '已同步'),
+                synced_unverified: t('dc-time-quality-unverified', '已同步'),
                 stale: t('dc-time-quality-stale', '时间已失鲜，待重新同步'),
                 clock_changed: t('dc-time-quality-changed', '时钟发生未跟踪变化'),
                 invalid: t('dc-time-quality-invalid', '系统时间无效'),
@@ -593,11 +593,11 @@
             return !!value;
         },
 
-        restartDevice() {
+        async restartDevice() {
             if (this._deviceCommandPending) return;
             const delay = document.getElementById('dev-restart-delay')?.value || '3';
             const btn = document.getElementById('dev-restart-btn');
-            if (!confirm(t('dc-reboot-confirm', '确定要重启设备？将在') + ' ' + delay + ' ' + t('dc-reboot-confirm-suffix', '秒后重启。'))) return;
+            if (!await FBConfirm({ title: '重启设备', message: t('dc-reboot-confirm', '确定要重启设备？将在') + ' ' + delay + ' ' + t('dc-reboot-confirm-suffix', '秒后重启。') })) return;
             if (btn) { btn.disabled = true; btn.innerHTML = t('dc-reboot-sending', '… 处理中...'); }
 
             this._deviceCommandPending = true;
@@ -631,7 +631,7 @@
                 });
         },
 
-        factoryReset() {
+        async factoryReset() {
             if (this._deviceCommandPending) return;
             const confirmInput = document.getElementById('dev-factory-confirm');
             const passwordInput = document.getElementById('dev-factory-password');
@@ -651,7 +651,7 @@
                 return;
             }
 
-            if (!confirm(t('dc-reset-warning', '警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！'))) {
+            if (!await FBConfirm({ title: '恢复出厂设置', message: t('dc-reset-warning', '警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！'), danger: true, requireCheck: true, checkLabel: '我已备份必要数据，确认清除全部用户配置' })) {
                 if (confirmInput) confirmInput.value = '';
                 return;
             }
@@ -708,7 +708,7 @@
             }
         },
 
-        toggleDeveloperMode() {
+        async toggleDeveloperMode() {
             if (this._deviceCommandPending) return;
             const enabled = this.isDeveloperModeEnabled();
             const passwordInput = document.getElementById('dev-mode-password');
@@ -722,7 +722,7 @@
             const confirmText = enabled
                 ? t('dc-dev-mode-disable-confirm', '确定要禁用开发环境功能吗？')
                 : t('dc-dev-mode-enable-confirm', '确定要启用开发环境功能吗？');
-            if (!confirm(confirmText)) return;
+            if (!await FBConfirm({ title: '开发环境模式', message: confirmText, danger: true })) return;
 
             if (btn) {
                 btn.disabled = true;
@@ -862,7 +862,7 @@
             if (uploadBtn) uploadBtn.disabled = false;
         },
 
-        startOTAUpload() {
+        async startOTAUpload() {
             const input = document.getElementById('dev-ota-file');
             const uploadBtn = document.getElementById('dev-ota-upload-btn');
             const progressWrap = document.getElementById('dev-ota-progress-wrap');
@@ -876,7 +876,7 @@
             }
 
             const file = input.files[0];
-            if (!confirm(t('dc-ota-confirm-upload', '确认上传固件「') + file.name + t('dc-ota-confirm-upload-suffix', '」并升级？升级过程中设备将重启，请勿断电。'))) return;
+            if (!await FBConfirm({ title: '固件上传升级', message: t('dc-ota-confirm-upload', '确认上传固件「') + file.name + t('dc-ota-confirm-upload-suffix', '」并升级？升级过程中设备将重启，请勿断电。'), danger: true })) return;
 
             if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.innerHTML = t('dc-ota-uploading', '上传中...'); }
             if (progressWrap) progressWrap.classList.remove('is-hidden');

@@ -307,12 +307,13 @@
                 configuredModbusDevices.length > 0 || this._buildMonitorGroupsFromModbus().length > 0;
             if (hasAnyControls) {
                 html += '<div class="fb-card dc-header-card"><div class="fb-card-header fb-card-header-actions-only dc-header-card-inner">';
-                html += '<div class="dc-header-actions">';
+                html += '<div class="dc-header-group dc-header-group-left">';
                 var _sidChecked = localStorage.getItem('dc_show_sid') === '1';
                 html += '<label class="dc-sid-toggle"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + '>\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-out-btn" title="Ctrl+-">-</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-reset-btn" title="Ctrl+0">100%</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-in-btn" title="Ctrl++">+</button>';
+                html += '</div><div class="dc-header-group dc-header-group-right">';
                 html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">刷新</button>';
                 html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">重置布局</button>';
                 html += '<button class="dc-btn-sm dc-btn-fullscreen" id="dc-fullscreen-btn" title="Ctrl+F">全屏</button>';
@@ -484,10 +485,10 @@
             html += '<span id="dc-motor-run-' + devIdx + '" class="motor-run-badge motor-run-idle">--</span>';
             html += '<button class="dc-motor-refresh motor-refresh-btn" data-dev="' + devIdx + '" title="刷新">&#x21bb;</button>';
             html += '</div></div><div class="motor-status-grid">';
-            html += '<div class="motor-status-item"><span class="motor-status-label">设定速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">单次脉冲</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">脉冲数</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">计数</span><span class="motor-status-value" id="dc-motor-count-' + devIdx + '">--</span></div>';
             html += '<div class="motor-status-item"><span class="motor-status-label">最近指令</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">本页最近控制报告</span><span class="motor-status-value" id="dc-motor-report-' + devIdx + '" role="status">报告状态未确认；平台接收未确认</span></div>';
             html += '</div></div>';
             return html;
         },

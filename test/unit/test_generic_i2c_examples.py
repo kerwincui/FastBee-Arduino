@@ -162,17 +162,13 @@ class GenericI2cExamplesTests(unittest.TestCase):
                     self.assertEqual(action["actionValue"], "")
         self.assertEqual(measured, set(units))
 
-    def test_docs_link_examples_and_cover_every_release_environment(self):
+    def test_docs_link_examples(self):
         readme = (EXAMPLES / "README.md").read_text(encoding="utf-8")
         index = (ROOT / "docs/README.md").read_text(encoding="utf-8")
-        matrix = (EXAMPLES / "compatibility.md").read_text(encoding="utf-8")
         ini = (ROOT / "platformio.ini").read_text(encoding="utf-8")
         expected = set(re.findall(r"^\[env:(esp32(?:c3|c6|s3)?-F\d+R\d+)\]$", ini, re.M))
-        rows = re.findall(r"^\| `(esp32(?:c3|c6|s3)?-F\d+R\d+)` \|", matrix, re.M)
         self.assertEqual(len(expected), 9)
-        self.assertEqual(len(rows), len(set(rows)))
-        self.assertEqual(set(rows), expected)
-        for name in ("peripherals.json", "periph_exec.json", "compatibility.md"):
+        for name in ("peripherals.json", "periph_exec.json"):
             self.assertIn(f"]({name})", readme)
         self.assertIn("](generic-i2c-peripherals/README.md)", index)
 

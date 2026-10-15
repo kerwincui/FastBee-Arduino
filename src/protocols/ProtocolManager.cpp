@@ -626,7 +626,7 @@ void ProtocolManager::handle() {
         unsigned long now = millis();
         if (now - lastWarnMs > 10000) {
             lastWarnMs = now;
-            Serial.printf("[PROTO] Heap low (%lu), skipping heavy protocol handlers\n", (unsigned long)freeHeap);
+            LOG_WARNINGF("[PROTO] Heap low (%lu), skipping heavy protocol handlers", (unsigned long)freeHeap);
         }
         return;
     }

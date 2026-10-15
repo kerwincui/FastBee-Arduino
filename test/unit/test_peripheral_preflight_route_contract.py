@@ -9,7 +9,16 @@ ROOT = Path(__file__).resolve().parents[2]
 HEADER = (ROOT / "include/network/handlers/PeripheralRouteHandler.h").read_text(
     encoding="utf-8"
 )
-SOURCE = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(
+# Core mapping/preflight/param units first so body extraction anchors on the
+# definitions that precede their route-layer call sites.
+SOURCE = ""
+for route_core_path in (
+    "src/core/PeripheralRouteMapper.cpp",
+    "src/core/PeripheralPreflightRouteSupport.cpp",
+    "src/core/PeripheralParamApply.cpp",
+):
+    SOURCE += (ROOT / route_core_path).read_text(encoding="utf-8") + "\n"
+SOURCE += (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(
     encoding="utf-8"
 )
 SOURCE += (ROOT / "src/network/handlers/PeripheralCatalogRoutes.cpp").read_text(encoding="utf-8")

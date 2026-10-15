@@ -1,5 +1,6 @@
 #include "systems/OtaSelfCheck.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/LoggerSystem.h"
 #include <esp_ota_ops.h>
 
 namespace {
@@ -27,22 +28,22 @@ void OtaSelfCheck::begin() {
     _begun = true;
     const esp_partition_t* running = esp_ota_get_running_partition();
     if (!running) {
-        Serial.println("[OTA] Running partition unavailable; confirmation state unknown");
+        LOG_ERROR("[OTA] Running partition unavailable; confirmation state unknown");
         return;
     }
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
     const esp_err_t error = esp_ota_get_state_partition(running, &state);
     if (error != ESP_OK) {
-        Serial.printf("[OTA] Cannot observe running image state: 0x%x\n", error);
+        LOG_ERRORF("[OTA] Cannot observe running image state: 0x%x", error);
         return;
     }
     if (!requiresConfirmation(state)) return;
     _pending = true;
     _bootMs = static_cast<uint32_t>(millis());
-    Serial.printf("[OTA] Unconfirmed image (partition=%s state=%d): "
-                  "application confirmation window %lus\n",
-                  running->label, static_cast<int>(state),
-                  static_cast<unsigned long>(OTA_SELF_CHECK_MS / 1000));
+    LOG_WARNINGF("[OTA] Unconfirmed image (partition=%s state=%d): "
+                 "application confirmation window %lus",
+                 running->label, static_cast<int>(state),
+                 static_cast<unsigned long>(OTA_SELF_CHECK_MS / 1000));
 }
 
 void OtaSelfCheck::handle() {
@@ -59,14 +60,14 @@ void OtaSelfCheck::handle() {
     if (error == ESP_OK) {
         _confirmed = true;
         _pending = false;
-        Serial.println("[OTA] Application image confirmed by SDK");
+        LOG_INFO("[OTA] Application image confirmed by SDK");
         return;
     }
-    Serial.printf("[OTA] Confirmation attempt %u/%u failed: 0x%x; image remains unconfirmed\n",
-                  static_cast<unsigned>(_confirmationAttempts),
-                  static_cast<unsigned>(OTA_CONFIRM_MAX_ATTEMPTS), error);
+    LOG_WARNINGF("[OTA] Confirmation attempt %u/%u failed: 0x%x; image remains unconfirmed",
+                 static_cast<unsigned>(_confirmationAttempts),
+                 static_cast<unsigned>(OTA_CONFIRM_MAX_ATTEMPTS), error);
     if (_confirmationAttempts == OTA_CONFIRM_MAX_ATTEMPTS) {
-        Serial.println("[OTA] Confirmation retries exhausted; pending state retained, no automatic restart");
+        LOG_ERROR("[OTA] Confirmation retries exhausted; pending state retained, no automatic restart");
     }
 }
 
@@ -78,18 +79,18 @@ void OtaSelfCheck::markInvalidAndRollback(const char* reason) {
     const esp_partition_t* running = esp_ota_get_running_partition();
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
     if (!running) {
-        Serial.println("[OTA] Fatal init: running partition unavailable; no rollback or restart attempted");
+        LOG_ERROR("[OTA] Fatal init: running partition unavailable; no rollback or restart attempted");
         return;
     }
     const esp_err_t stateError = esp_ota_get_state_partition(running, &state);
     if (stateError != ESP_OK) {
-        Serial.printf("[OTA] Fatal init: state read failed 0x%x; no rollback or restart attempted\n", stateError);
+        LOG_ERRORF("[OTA] Fatal init: state read failed 0x%x; no rollback or restart attempted", stateError);
         return;
     }
     if (!requiresConfirmation(state)) {
         _pending = false;
-        Serial.printf("[OTA] Fatal init: image state %d is not awaiting confirmation; no rollback attempted\n",
-                      static_cast<int>(state));
+        LOG_ERRORF("[OTA] Fatal init: image state %d is not awaiting confirmation; no rollback attempted",
+                     static_cast<int>(state));
         return;
     }
     _pending = true;
@@ -100,10 +101,11 @@ void OtaSelfCheck::markInvalidAndRollback(const char* reason) {
     // before this call so evidence also survives an unexpected SDK reset.
     const esp_err_t error = esp_ota_mark_app_invalid_rollback();
     if (error != ESP_OK) {
-        Serial.printf("[OTA] Rollback invalidation failed 0x%x; no automatic restart, image remains unconfirmed\n", error);
+        LOG_ERRORF("[OTA] Rollback invalidation failed 0x%x; no automatic restart, image remains unconfirmed", error);
         return;
     }
     _pending = false;
+    // 保留 Serial 直出（D5 白名单）：OTA 回滚重启执行点的最后一条日志，确保落串口。
     Serial.println("[OTA] Rollback invalidation accepted; restarting to the selected fallback image");
     delay(500);
     ESP.restart();

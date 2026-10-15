@@ -8,34 +8,54 @@
 
         closePeripheralResources() {
             this._periphResourceRequest = null;
-            this._periphResourceDialog?.remove();
+            const dialog = this._periphResourceDialog;
             this._periphResourceDialog = null;
+            if (!dialog) return;
+            if (typeof this.hideModal === 'function') this.hideModal(dialog);
+            else dialog.remove();
         },
 
         openPeripheralResources() {
             this.closePeripheralResources();
-            const dialog = document.createElement('dialog');
-            const title = document.createElement('h3');
+            const overlay = document.createElement('div');
+            overlay.className = 'modal';
+            overlay.id = 'peripheral-resources-modal';
+            const content = document.createElement('div');
+            content.className = 'modal-content';
+            const header = document.createElement('div');
+            header.className = 'modal-header';
+            const title = document.createElement('h2');
+            title.className = 'modal-title';
             title.textContent = '配置与运行资源';
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'modal-close-btn';
+            closeBtn.textContent = '×';
+            closeBtn.setAttribute('aria-label', '关闭');
+            header.append(title, closeBtn);
+            const body = document.createElement('div');
+            body.className = 'modal-body';
             const note = document.createElement('p');
+            note.className = 'field-hint';
             note.textContent = '运行记录仅覆盖部分受管租约；未探测硬件，不能据此认定引脚空闲。点击刷新读取一次。';
             const result = document.createElement('pre');
-            result.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto';
+            result.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto;margin:0;font-size:12px;line-height:1.6';
             result.setAttribute('role', 'status');
+            body.append(note, result);
+            const footer = document.createElement('div');
+            footer.className = 'modal-footer';
             const refresh = document.createElement('button');
+            refresh.type = 'button';
+            refresh.className = 'fb-btn fb-btn-primary';
             refresh.textContent = '刷新快照';
             refresh.addEventListener('click', () => this.refreshPeripheralResources());
-            const close = document.createElement('button');
-            close.textContent = '关闭';
-            close.addEventListener('click', () => this.closePeripheralResources());
-            dialog.addEventListener('cancel', (event) => { event.preventDefault(); this.closePeripheralResources(); });
-            dialog.append(title, note, result, refresh, close);
-            document.body.appendChild(dialog);
-            this._periphResourceDialog = dialog;
-            dialog.showModal();
+            footer.appendChild(refresh);
+            content.append(header, body, footer);
+            overlay.appendChild(content);
+            document.body.appendChild(overlay);
+            this._periphResourceDialog = overlay;
+            this.showModal(overlay);
             this.refreshPeripheralResources();
         },
-
         async refreshPeripheralResources() {
             const dialog = this._periphResourceDialog;
             if (!dialog) return;
@@ -641,7 +661,7 @@
                     this._setPeripheralIoError('通道或设置值无效'); return;
                 }
             } else if (!['prepare', 'enable', 'disable', 'stop'].includes(action)) return;
-            if (action === 'enable' && !confirm('确认接线与负载安全，并启用本次 PCA9685 输出？')) return;
+            if (action === 'enable' && !await FBConfirm({ title: '启用 PCA9685 输出', message: '确认接线与负载安全，并启用本次 PCA9685 输出？', danger: true })) return;
             // Consume browser confirmation before sending. An unknown response
             // must not offer the same initialization token for replay.
             this._periphPcaReview = null;
@@ -740,7 +760,7 @@
 
         async resetPeripheralEncoder() {
             if (this._periphIoType !== 43 || !this._periphIoId || this._periphIoBusy || this._periphIoBlocked) return;
-            if (!confirm('确定将编码器累计计数清零吗？')) return;
+            if (!await FBConfirm({ title: '编码器清零', message: '确定将编码器累计计数清零吗？该操作不可恢复。', danger: true })) return;
             this._setPeripheralIoBusy(true);
             this._setPeripheralIoError('');
             try {
@@ -893,8 +913,8 @@
                 this._setPeripheralIoError('文件内容不能超过 4096 bytes');
                 return;
             }
-            if (normalized === 'delete-file' && !confirm('确定删除 SD 沙箱中的 ' + path + ' 吗？')) return;
-            if (normalized === 'recover' && !confirm('检查 SD 介质和接线后重新挂载？不会重放之前失败的文件操作，也不保证文件已落盘。')) return;
+            if (normalized === 'delete-file' && !await FBConfirm({ title: '删除 SD 文件', message: '确定删除 SD 沙箱中的 ' + path + ' 吗？该操作不可恢复。', danger: true })) return;
+            if (normalized === 'recover' && !await FBConfirm({ title: '重新挂载 SD', message: '检查 SD 介质和接线后重新挂载？不会重放之前失败的文件操作，也不保证文件已落盘。' })) return;
             const session = this._periphIoSession;
             this._setPeripheralIoBusy(true);
             this._setPeripheralIoError('');
@@ -982,7 +1002,7 @@
                 return;
             }
             if (needsKey && !this.guardDeveloperModeAction()) return;
-            if (action === 'write-block' && !confirm('确定写入 RFID 数据块 ' + block + ' 并执行写后校验吗？')) return;
+            if (action === 'write-block' && !await FBConfirm({ title: '写入 RFID 数据块', message: '确定写入 RFID 数据块 ' + block + ' 并执行写后校验吗？', danger: true })) return;
             this._setPeripheralIoBusy(true);
             this._setPeripheralIoError('');
             try {
@@ -1187,7 +1207,7 @@
                 payload.action = 'set-running';
                 payload.running = action === 'start' ? 1 : 0;
             }
-            if (action === 'stop' && !confirm('确定暂停 DS1302 计时吗？')) return;
+            if (action === 'stop' && !await FBConfirm({ title: '暂停 DS1302 计时', message: '确定暂停 DS1302 计时吗？' })) return;
             const session = this._periphIoSession;
             this._setPeripheralIoBusy(true);
             this._setPeripheralIoError('');

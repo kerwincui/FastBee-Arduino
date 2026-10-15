@@ -51,17 +51,20 @@ Open the [online flasher](https://fastbee.cn/doc/device/deploy/esp32-flasher.htm
 
 ### Build and Flash from Source
 
-Install VS Code with PlatformIO, connect the board, and run from the repository root:
+Prerequisites: Node.js 20+ and PlatformIO (the VS Code extension or the PlatformIO Core CLI). A fresh clone does not contain the generated `data/www/*.gz` assets; the build regenerates them with local dependencies such as `terser`, so run `npm ci` in the repository root first:
 
 ```powershell
-# Build Web assets, upload LittleFS, and flash firmware
+# After the first clone or any package-lock.json change: install web build dependencies
+npm ci
+
+# Build Web assets, upload LittleFS, and flash firmware (with the board connected)
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -Port <serial-port>
 
 # Build only
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -BuildOnly
 ```
 
-Useful switches include `-Monitor`, `-SkipFs`, `-SkipFirmware`, and `-SkipWeb`. A release deployment must keep firmware and LittleFS assets in sync.
+Useful switches include `-Monitor`, `-SkipFs`, `-SkipFirmware`, and `-SkipWeb`. A release deployment must keep firmware and LittleFS assets in sync. Uploading LittleFS rewrites the entire filesystem partition; when upgrading a configured device, use `-SkipFs` to keep its configuration or export a backup from the Web console first.
 
 ### First-Boot Configuration
 
@@ -134,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl h
 powershell -ExecutionPolicy Bypass -File scripts\run-device-fleet-tests.ps1 -DeviceConfig <local-fleet-config.json> -BrowserTests:$false
 ```
 
-The default `test-all.ps1` run performs static/host checks, native tests, and all nine firmware builds. Device checks require an explicit STA URL and the `unified` profile. Host and artifact validation does not prove the LittleFS/configuration content installed on hardware, so verify filesystem data, migration, and reboot recovery separately.
+The default `test-all.ps1` run performs static/host checks, native tests, and all nine firmware builds; each environment also builds the LittleFS image and runs the current-build artifact validation, matching the CI firmware matrix (`-SkipFs` keeps the fast firmware-only path). Device checks require an explicit STA URL and the `unified` profile. Host and artifact validation does not prove the LittleFS/configuration content installed on hardware, so verify filesystem data, migration, and reboot recovery separately.
 
 ## Project Structure
 

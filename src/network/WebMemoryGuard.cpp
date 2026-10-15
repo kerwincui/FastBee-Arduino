@@ -51,6 +51,7 @@ void WebMemoryGuardMiddleware::maintain() {
     // 状态迁移日志用 Serial.printf 而非 LOG_WARNINGF：MEMGUARD CRITICAL 降级
     // 会抬高日志等级，FORCE-RECOVER/re-ACTIVE 迁移被吞导致死环不可见
     // （2026-08-24 .34 取证：迁移分支条件均保证 free8>=11KB，printf 安全）
+    // （D5 白名单：内存守卫临界路径，保持 Serial.printf 直出）
 
     // ── 状态机：带迟滞的触发 / 恢复（free8 与 blk8 双维度）──
     if (!active_) {

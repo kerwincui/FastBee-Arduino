@@ -433,7 +433,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                                 this._renderPeripheralActionButton('edit', periph.id, '编辑', 'fb-btn-primary') +
                                 this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? '禁用' : '启用', periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
                                 this._renderPeripheralActionButton('delete', periph.id, '删除', 'fb-btn-danger') +
-                                (diagnosticButton ? '<details class="peripheral-more"><summary class="fb-btn fb-btn-sm">更多</summary>' + diagnosticButton + '</details>' : '') +
+                                diagnosticButton +
                             '</div></td></tr>';
                     });
                     tbody.innerHTML = html;
@@ -1608,9 +1608,9 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
             this.openPeripheralModal(true, id);
         },
 
-        deletePeripheral(id) {
+        async deletePeripheral(id) {
             if (!this.guardDeveloperModeAction()) return;
-            if (!confirm(t('peri-delete-confirm', '确定要删除外设') + ' ' + id + ' 吗？')) return;
+            if (!await FBConfirm({ message: t('peri-delete-confirm', '确定要删除外设') + ' ' + id + ' 吗？', danger: true })) return;
             apiDelete('/api/peripherals/', { id: id })
                 .then(res => {
                     if (res && res.success) {
@@ -1671,7 +1671,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                 var payload = { id: id };
                 if (status.data.groupActivation === true) {
                     if (isEnabled) {
-                        if (!confirm('整组禁用将停止所有通道，并尝试将输出恢复为各自配置的初始电平。确认负载与接线后继续？')) return;
+                        if (!await FBConfirm({ message: '整组禁用将停止所有通道并恢复初始电平。确认负载与接线后继续？', danger: true })) return;
                     } else {
                         const selected = await this._selectMcpGroupChannels(id, getter);
                         if (!selected) return;
@@ -1714,7 +1714,7 @@ const t = (typeof window.t === 'function') ? window.t : (key, defaultValue) => d
                         var warningText = confirmationIssues.map(function(issue) {
                             return issue.message || issue.code || String(issue);
                         }).join('\n') || '该外设将使用有风险或共享的板卡资源。';
-                        if (!confirm('启用前预检提示：\n' + warningText + '\n\n确认接线与资源影响后继续启用？')) return;
+                        if (!await FBConfirm({ message: '预检提示：\n' + warningText + '\n\n确认接线与资源影响后继续启用？', danger: true })) return;
                         payload.acknowledgements = acknowledgements;
                     }
                 }

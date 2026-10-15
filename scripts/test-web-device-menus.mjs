@@ -3,7 +3,7 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isIntentionalHealthCancellation } from './lib/menu-cancellation-evidence.mjs';
+import { isIntentionalHealthCancellation, isNavigatedAbortedRead } from './lib/menu-cancellation-evidence.mjs';
 import { isReadOnlyBatch, isReadOnlyMotorStatus } from './lib/read-only-device-requests.mjs';
 import { waitForMainShellStyles } from './lib/browser-main-style-check.mjs';
 import { safeObservationError, safeObservationEvents, safeObservationCaptureStats } from './lib/safe-observer-error.mjs';
@@ -13,10 +13,10 @@ const base = process.argv[2];
 const output = path.resolve(process.argv[3] || 'artifacts/web-device-menus');
 if (!base || !/^https?:\/\//.test(base)) throw new Error('Provide device HTTP(S) origin');
 fs.mkdirSync(output, { recursive: true });
-const report = { base, at: new Date().toISOString(), passed: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], requestFailures: [], intentionalCancellations: [], apiIntegrity: [], viewports: [], safeObservationEvents, safeObservationCaptureStats };
+const report = { base, at: new Date().toISOString(), passed: false, mutations: [], readOnlyPosts: [], pageErrors: [], httpErrors: [], requestFailures: [], intentionalCancellations: [], navigatedAborted: [], apiIntegrity: [], viewports: [], safeObservationEvents, safeObservationCaptureStats };
 const browser = await chromium.launch({ headless: true });
 const pendingEvidence = new Set();
-let closing = false, generation = 0, sessionLost = false;
+let closing = false, generation = 0, sessionLost = false, navigation = null;
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
   const page = await context.newPage();
@@ -34,9 +34,11 @@ try {
   });
   page.setDefaultTimeout(25000);
   const requestGeneration = new WeakMap();
+  const requestStartedAt = new WeakMap();
   page.on('pageerror', error => report.pageErrors.push(safeObservationError(error, 'pageerror')));
   page.on('request', request => {
     requestGeneration.set(request, generation);
+    requestStartedAt.set(request, Date.now());
     const route = new URL(request.url()).pathname;
     if (isStatusRead(request)) report.readOnlyPosts.push({ method: request.method(), route, action: 'readStatus' });
     else if (isBatchRead(request)) report.readOnlyPosts.push({ method: request.method(), route, action: 'batchGet' });
@@ -89,9 +91,14 @@ try {
     if (closing) return;
     const reason = request.failure()?.errorText;
     const route = new URL(request.url()).pathname;
-    if (route !== '/api/health' && reason === 'net::ERR_ABORTED' && requestGeneration.get(request) < generation) return;
+    const at = Date.now();
+    if (isNavigatedAbortedRead(request, reason, requestGeneration.get(request), generation, navigation, at, requestStartedAt.get(request))) {
+      report.navigatedAborted.push({ route, method: request.method(), requestGeneration: requestGeneration.get(request),
+        navigationTarget: navigation?.targetPage || null, at });
+      return;
+    }
     report.requestFailures.push({ route, method: request.method(),
-      reason: reason === 'net::ERR_ABORTED' ? reason : safeObservationError(reason, 'request'), at: Date.now() });
+      reason: reason === 'net::ERR_ABORTED' ? reason : safeObservationError(reason, 'request'), at });
   });
   const bootStart = Date.now();
   await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -114,8 +121,11 @@ try {
   });
   await page.locator('#username').fill(process.env.FASTBEE_USERNAME || 'admin');
   await page.locator('#password').fill(process.env.FASTBEE_PASSWORD || 'admin123');
+  const loginNavigationAt = Date.now();
+  navigation = { at: loginNavigationAt, until: loginNavigationAt + 3000, generation, targetPage: 'app' };
   await page.locator('#login-button').click();
   await page.locator('#app-container').waitFor({ state: 'visible', timeout: 45000 });
+  navigation.until = Math.max(navigation.until, Date.now() + 1500);
   report.mainShellStyle = await waitForMainShellStyles(page);
   report.loginMs = Date.now() - bootStart;
   await page.waitForFunction(() => window.AppState?._featureStatusReady === true, { timeout: 30000 });
@@ -133,6 +143,8 @@ try {
         if (width <= 768 && !(await page.locator('#sidebar').evaluate(e => e.classList.contains('expanded'))))
           await page.locator('#sidebar-toggle').click();
         generation++;
+        const navigationAt = Date.now();
+        navigation = { at: navigationAt, until: navigationAt + 3000, generation, targetPage: menu };
         await page.locator(`.menu-item[data-page="${menu}"]`).click();
         await page.waitForFunction(id => {
           const e = document.getElementById(id + '-page');
@@ -141,6 +153,7 @@ try {
           return !Array.from(e.querySelectorAll('*')).some(el => visible(el) && (
             (el.children.length === 0 && /^\s*(加载中|正在加载|Loading)(\.|…|\s)*$/i.test(el.textContent)) || el.classList.contains('loading-spinner')));
         }, menu, { timeout: 30000 });
+        navigation.until = Math.max(navigation.until, Date.now() + 1500);
         await page.waitForTimeout(1000);
         result.content = await page.locator('#' + menu + '-page').evaluate(e => ({ textLength: e.innerText.trim().length, controls: e.querySelectorAll('button,input,select,a').length, moduleLoading: e.dataset.moduleLoading === 'true' }));
         result.horizontalOverflow = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - innerWidth));

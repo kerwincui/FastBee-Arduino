@@ -24,6 +24,9 @@ public:
     bool getWeatherTestStatus(const String& id, JsonObject out);
     void appendChoices(JsonArray sources, JsonArray controls);
     bool getValue(const String& ref, JsonObject value);
+    // True when the active configuration declares this weather source,
+    // even before the first fetch populates runtime snapshots.
+    bool knowsConfiguredSource(const String& ref);
     void getConfig(JsonObject out);
     bool saveConfig(JsonVariantConst submitted, String& error);
     void getScreenWeather(JsonObject out);

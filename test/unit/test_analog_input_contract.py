@@ -19,6 +19,8 @@ ROUTE_CPP = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in (
     "src/network/handlers/PeripheralRouteHandler.cpp",
     "src/network/handlers/PeripheralReadRoutes.cpp",
     "src/network/handlers/PeripheralRouteReadSupport.h",
+    "src/core/PeripheralRouteMapper.cpp",
+    "src/core/PeripheralParamApply.cpp",
 ))
 MANAGER_CPP = "\n".join(
     (ROOT / path).read_text(encoding="utf-8")
@@ -57,8 +59,8 @@ class AnalogInputContractTests(unittest.TestCase):
         self.assertRegex(ROUTE_CPP, r"isAnalogInput(?:Config|Peripheral)Type\(config(?:->|\.)type\)")
         self.assertIn('FastBee::setFixedJsonField(params, "sampleCount",', ROUTE_CPP)
         self.assertIn('FastBee::setFixedJsonField(params, "filterMode",', ROUTE_CPP)
-        self.assertIn('getParamInt(request, "sampleCount"', ROUTE_CPP)
-        self.assertIn('getParamInt(request, "filterMode"', ROUTE_CPP)
+        self.assertIn('intValue("sampleCount"', ROUTE_CPP)
+        self.assertIn('intValue("filterMode"', ROUTE_CPP)
         self.assertIn("isAdcInputType(config.type)", MANAGER_CPP)
         self.assertIn('params["sampleCount"]', MANAGER_CPP)
         self.assertIn('params["filterMode"]', MANAGER_CPP)
@@ -82,7 +84,10 @@ class AnalogInputContractTests(unittest.TestCase):
             "adc-raw-min",
             "adc-raw-max",
         )
-        modal = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8")
+        modal = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("web-src/pages/modals.html", "web-src/pages/peripheral-modals.html")
+        )
         for element_id in required_ids:
             self.assertIn('id="' + element_id + '"', modal)
         for field in (
@@ -153,7 +158,10 @@ class AnalogInputContractTests(unittest.TestCase):
         self.assertIn('remark\\\":\\\"quality', PROTOCOL_CPP)
 
     def test_di_options_round_trip_and_simple_defaults(self):
-        modal = (ROOT / "web-src/pages/modals.html").read_text(encoding="utf-8")
+        modal = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("web-src/pages/modals.html", "web-src/pages/peripheral-modals.html")
+        )
         for element_id in (
             "gpio-input-mode",
             "gpio-invert-logic",

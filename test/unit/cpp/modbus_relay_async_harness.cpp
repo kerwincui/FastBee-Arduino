@@ -16,11 +16,20 @@ static bool notified = false, createSucceeds = true, allocationFails = false;
 static void (*pendingTask)(void*) = nullptr;
 static void* pendingArgument = nullptr;
 static int pauses = 0, calls = 0, deletedTasks = 0;
+// The throwing form must be replaced too: without it, throwing-new expressions
+// in the exe (make_shared control blocks, non-SSO strings) resolve to
+// libstdc++-6.dll's operator new while the deletes below free() from the exe's
+// CRT — a cross-domain free the Windows heap reports as 0xC0000374.
+void* operator new(size_t size) {
+    if (void* p = std::malloc(size)) return p;
+    throw std::bad_alloc();
+}
 void* operator new(size_t size, const std::nothrow_t&) noexcept {
     return allocationFails ? nullptr : std::malloc(size);
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
 SemaphoreHandle_t xSemaphoreCreateCounting(int, int) { return &slot; }
 int xSemaphoreTake(SemaphoreHandle_t s, int timeout) {
     assert(timeout == 0);

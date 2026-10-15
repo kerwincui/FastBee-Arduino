@@ -2,21 +2,16 @@
 <div id="device-page" class="page page-layout-flat">
     <div class="fb-card">
         <div class="fb-card-body">
-            <div class="config-tabs">
-                <div class="config-tab active" data-tab="dev-basic">基本信息
+            <div class="config-tabs" role="tablist" aria-label="设备配置分区">
+                <div class="config-tab active" data-tab="dev-basic" role="tab" aria-selected="true" aria-controls="dev-basic" tabindex="0">基本信息
                 </div>
-                <div class="config-tab" data-tab="dev-ntp">NTP时间</div>
-                <div class="config-tab" data-tab="dev-ota">OTA升级</div>
-                <div class="config-tab" data-tab="dev-advanced">高级配置</div>
-            </div>
-
-            <div class="fb-flex-wrap fb-mb-2">
-                <span id="device-config-load-status" role="status" aria-live="polite">正在加载设备配置…</span>
-                <button type="button" class="fb-btn fb-btn-sm" data-action="loadDeviceConfig">重新加载</button>
+                <div class="config-tab" data-tab="dev-ntp" role="tab" aria-selected="false" aria-controls="dev-ntp" tabindex="-1">NTP时间</div>
+                <div class="config-tab" data-tab="dev-ota" role="tab" aria-selected="false" aria-controls="dev-ota" tabindex="-1">OTA升级</div>
+                <div class="config-tab" data-tab="dev-advanced" role="tab" aria-selected="false" aria-controls="dev-advanced" tabindex="-1">高级配置</div>
             </div>
 
             <!-- 基本信息 tab -->
-            <div id="dev-basic" class="config-content active">
+            <div id="dev-basic" class="config-content active" role="tabpanel">
                 <form id="device-basic-form" class="fb-form">
                     <!-- 硬件信息卡片 - 页面顶部整行展示（两列布局） -->
                     <div class="fb-panel fb-border-default fb-mb-3">
@@ -28,7 +23,7 @@
                         <div class="fb-card-body fb-panel-body">
                             <div class="fb-flex-wrap-off">
                                 <div class="u-flex-1-min-280">
-                                    <table class="fb-table fb-w-full fb-fs-13">
+                                    <table class="fb-table fb-table--fluid fb-w-full fb-fs-13">
                                         <tbody>
                                             <tr>
                                                 <td class="u-table-label-cell">芯片型号</td>
@@ -46,7 +41,7 @@
                                     </table>
                                 </div>
                                 <div class="u-flex-1-min-280">
-                                    <table class="fb-table fb-w-full fb-fs-13">
+                                    <table class="fb-table fb-table--fluid fb-w-full fb-fs-13">
                                         <tbody>
                                             <tr>
                                                 <td class="u-table-label-cell">Flash大小</td>
@@ -122,7 +117,7 @@
             </div>
 
             <!-- NTP时间 tab -->
-            <div id="dev-ntp" class="config-content">
+            <div id="dev-ntp" class="config-content" role="tabpanel">
                 <!-- 当前时间显示 -->
                 <div class="fb-panel">
                     <div class="fb-card-header fb-panel-header u-header-between-wrap">
@@ -132,7 +127,7 @@
                         </button>
                     </div>
                     <div class="fb-card-body fb-panel-body">
-                        <table class="fb-table fb-w-full fb-fs-13">
+                        <table class="fb-table fb-table--fluid fb-w-full fb-fs-13">
                             <tbody>
                                 <tr>
                                     <td class="fb-text-gray fb-w-120">日期时间</td>
@@ -210,7 +205,7 @@
             </div>
 
             <!-- OTA 升级 tab（使用统一的 device-ota 分片模块） -->
-            <div id="dev-ota" class="config-content">
+            <div id="dev-ota" class="config-content" role="tabpanel">
                 <!-- 分片加载失败时保留一个可用的本地升级入口 -->
                 <div id="dev-ota-inline-panel" class="fb-panel">
                     <div class="fb-card-body" style="padding:14px 18px">
@@ -236,7 +231,7 @@
             </div>
 
             <!-- 高级配置 tab -->
-            <div id="dev-advanced" class="config-content">
+            <div id="dev-advanced" class="config-content" role="tabpanel">
                 <!-- 系统操作区 -->
                 <div class="u-flex-wrap-gap-20" style="margin-bottom:16px">
                     <!-- 开发环境功能 -->

@@ -53,4 +53,5 @@ may target a pin reassigned after rollback. That state requires controlled reboo
 The patch is applied only by the existing serialized build hook, never by the
 unit tests to shared libdeps. `test_neopixel_transport.py` uses a temporary copy
 and SDK doubles. Physical color, power, RMT competition and timing still require
-device acceptance. See `docs/system-improvement-neopixel-transport-20261004.md`.
+device acceptance (acceptance record `docs/system-improvement-neopixel-transport-20261004.md`
+was removed in the 2026-10-13 docs cleanup; see git history).

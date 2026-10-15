@@ -10,6 +10,7 @@
 using String = std::string;
 #define LOG_INFO(...) ((void)0)
 #define LOG_WARNING(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
 static uint32_t clockMs = 10000;
 static bool beginAllocationFails = false;
 static unsigned initializationFailures = 0;

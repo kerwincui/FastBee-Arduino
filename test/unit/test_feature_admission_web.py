@@ -37,7 +37,8 @@ function row(change = {}, children = []) {
 }
 const cases = {
   admission() {
-    assert(row().includes('已准入 · 实例状态未确认'));
+    assert(row().includes('已准入'));
+    assert(!row().includes('实例状态未确认'));
     assert(!row().includes('运行中'));
     assert(row({onDemand:true}).includes('已准入 · 按需使用'));
     assert(row({userEnabled:false, active:false}).includes('用户未启用'));
@@ -90,33 +91,29 @@ const cases = {
     const known = {instanceScope:'driver_initialization', instanceObserved:true,
       instanceState:'initialized', initializedInstances:2};
     let html = row(known);
-    assert(html.includes('驱动已初始化 × 2') && !html.includes('已准入 · 实例状态未确认'));
-    assert(html.includes('不等于物理工作正常') && html.includes('不代表内存已释放'));
+    assert(html.includes('已准入') && !html.includes('实例状态未确认'));
+    assert(!html.includes('驱动已初始化') && !html.includes('实例已停止'));
+    assert(!html.includes('不等于物理工作正常'));
     assert(row({...known, onDemand:true}).includes('已准入 · 按需使用'));
     assert(row({...known, userEnabled:false, active:false}).includes('用户未启用'));
-    assert(row({...known, userEnabled:false, active:false}).includes('驱动已初始化 × 2'));
     assert(row({...known, savedUserEnabled:false}).includes('待保存 · 启用'));
     assert(row({...known, requiresRestart:true, bootEnabled:false}).includes('重启后启用'));
     assert(row({...known, active:false, runtimeDisabled:true}).includes('运行受限'));
-    assert(row({...known, instanceState:'not_initialized', initializedInstances:0}).includes('驱动未初始化'));
-    assert(row({...known, instanceState:'cleanup_pending'}).includes('实例清理待重试'));
-    assert(row({...known, instanceState:'busy', instanceObserved:false}).includes('实例观测忙'));
-    assert(!row({...known, compiled:false}).includes('驱动已初始化'));
+    assert(!row({...known, compiled:false}).includes('已准入'));
   },
   invalid_instances() {
     const known = {instanceScope:'driver_initialization', instanceObserved:true,
       instanceState:'initialized', initializedInstances:2};
     for (const count of [undefined,null,0,-1,1.5,65536,'2','<img src=x>',NaN,Infinity]) {
       const html = row({...known, initializedInstances:count});
-      assert(!html.includes('驱动已初始化') && html.includes('实例状态未确认'));
+      assert(html.includes('已准入') && !html.includes('实例状态未确认'));
       assert(!html.includes('<img'));
     }
     for (const change of [{instanceScope:'physical_health'}, {instanceObserved:'true'},
       {instanceState:'__proto__'}, {instanceState:'constructor'}, {instanceState:'<img src=x>'},
       {instanceState:'not_initialized', initializedInstances:1}]) {
       const html = row({...known, ...change});
-      assert(html.includes('实例状态未确认') && !html.includes('<img'));
-      assert(!html.includes('驱动已初始化') && !html.includes('驱动未初始化'));
+      assert(html.includes('已准入') && !html.includes('<img'));
     }
   },
   lifecycle() {
@@ -125,15 +122,14 @@ const cases = {
       stopped:'实例已停止', retiring:'实例退出中'})) {
       const value = {...service, instanceState};
       const html = row(value);
-      assert(html.includes(label) && !html.includes('驱动已初始化'));
-      assert(!html.includes('已准入 · 实例状态未确认'));
-      assert(html.includes('已停止仍可保留资源') && html.includes('不是实测占用'));
+      assert(!html.includes(label) && !html.includes('驱动已初始化'));
+      assert(!html.includes('实例状态未确认'));
+      assert(!html.includes('已停止仍可保留资源'));
       assert(row({...value, userEnabled:false, active:false}).includes('用户未启用'));
-      assert(row({...value, userEnabled:false, active:false}).includes(label));
       assert(row({...value, savedUserEnabled:false}).includes('待保存 · 启用'));
       assert(row({...value, requiresRestart:true, bootEnabled:false}).includes('重启后启用'));
       assert(row({...value, active:false, runtimeDisabled:true}).includes('运行受限'));
-      assert(!row({...value, compiled:false}).includes(label));
+      assert(!row({...value, compiled:false}).includes('已准入'));
     }
   },
   invalid_lifecycle() {
@@ -142,7 +138,7 @@ const cases = {
       {instanceObserved:'true'}, {instanceState:'constructor'}, {instanceState:'__proto__'},
       {instanceState:'<img src=x>'}, ...[0,1,null,'1'].map(initializedInstances=>({initializedInstances}))]) {
       const html = row({...service,...change});
-      assert(html.includes('实例状态未确认') && !html.includes('实例运行中'));
+      assert(html.includes('已准入') && !html.includes('实例运行中'));
       assert(!html.includes('<img') && !html.includes('function Object'));
     }
     assert(!row({...service, instanceState:'initialized', initializedInstances:1}).includes('驱动已初始化'));
@@ -154,7 +150,7 @@ const cases = {
       owner_snapshot_unavailable:'服务尚未提供快照', synchronization_unavailable:'同步条件未就绪',
       backend_unavailable:'后端不可用', invalid_snapshot:'快照不一致'})) {
       const html = row({...unknown,instanceReason,initializedInstances:8});
-      assert(html.includes(label) && html.includes('实例状态未确认'));
+      assert(!html.includes(label) && !html.includes('实例状态未确认'));
       assert(!html.includes('× 8') && !html.includes('实例已停止'));
     }
     for (const instanceReason of ['<img src=x onerror=alert(1)>"','constructor','__proto__']) {
@@ -162,17 +158,17 @@ const cases = {
       assert(!html.includes('<img') && !html.includes('function Object'));
     }
     const busy = row({...unknown,instanceState:'busy',instanceReason:'observation_busy',initializedInstances:8});
-    assert(busy.includes('实例观测忙') && !busy.includes('× 8'));
+    assert(!busy.includes('实例观测忙') && !busy.includes('× 8'));
   },
   static_and_execution_scope() {
     const staticResource = {instanceScope:'static_resource', instanceObserved:false,
       instanceState:'unobserved', instanceReason:'no_dedicated_instance'};
-    assert(row(staticResource).includes('静态资源 · 无独立实例'));
+    assert(!row(staticResource).includes('静态资源 · 无独立实例'));
     assert(!row({...staticResource, instanceObserved:true}).includes('静态资源 · 无独立实例'));
     assert(!row({...staticResource, initializedInstances:0}).includes('静态资源 · 无独立实例'));
     const execution = {instanceScope:'execution_activity', instanceObserved:true};
-    assert(row({...execution, instanceState:'running'}).includes('命令正在执行'));
-    assert(row({...execution, instanceState:'idle'}).includes('当前无命令执行'));
+    assert(!row({...execution, instanceState:'running'}).includes('命令正在执行'));
+    assert(!row({...execution, instanceState:'idle'}).includes('当前无命令执行'));
     assert(!row({...execution, instanceState:'stopped'}).includes('实例已停止'));
     assert(!row({...execution, instanceState:'running', initializedInstances:1}).includes('命令正在执行'));
     assert(row({...execution, instanceState:'running', savedUserEnabled:false}).includes('待保存 · 启用'));
@@ -192,7 +188,7 @@ const cases = {
     const scope = {instanceScope:'owner_lifetime', instanceObserved:true};
     for (const [state, label] of Object.entries({allocated:'管理器已创建', retiring:'管理器销毁中', owner_absent:'管理器未创建'})) {
       const html = row({...scope, instanceState:state});
-      assert(html.includes(label) && html.includes('管理器创建不代表服务运行'));
+      assert(!html.includes(label) && !html.includes('管理器创建不代表服务运行'));
       assert(!html.includes('实例运行中') && !html.includes('驱动已初始化'));
       assert(!row({...scope, instanceState:state, initializedInstances:1}).includes(label));
       assert(!row({...scope, instanceState:state, instanceObserved:false}).includes(label));
@@ -207,7 +203,7 @@ const cases = {
     const scope = {instanceScope:'transport_allocation', instanceObserved:true};
     for (const [state, label] of Object.entries({allocated:'TLS 对象已分配', retiring:'TLS 对象释放中', stopped:'TLS 对象未分配'})) {
       const html = row({...scope, instanceState:state});
-      assert(html.includes(label) && html.includes('TLS 对象分配不证明握手或证书验证'));
+      assert(!html.includes(label) && !html.includes('TLS 对象分配不证明握手或证书验证'));
       assert(!row({...scope, instanceState:state, initializedInstances:0}).includes(label));
     }
     assert(!row({...scope,instanceState:'running'}).includes('实例运行中'));

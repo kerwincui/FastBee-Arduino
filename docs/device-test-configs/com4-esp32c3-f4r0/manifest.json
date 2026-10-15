@@ -3,14 +3,15 @@
   "preparedAt": "2026-10-06",
   "timezone": "Asia/Shanghai",
   "deviceId": "com4-esp32c3-f4r0",
-  "status": "R7_WRITTEN_VERIFIED_MDNS_DISABLED_WEB_BUSINESS_FAILED",
+  "status": "R1_WRITTEN_VERIFIED_MONITORING_IN_PROGRESS",
   "deploymentAllowed": false,
   "source": {
     "path": "docs/esp32c3-deployment-config.json",
     "format": "fastbee-config-bundle/files[].content",
     "configurationMeaning": "Original verified full-flash snapshot plus verified r7 deployment and mDNS-only filesystem maintenance; credentials redacted; Web/business acceptance failed",
     "originalPublicPath": "docs/esp32c3-deployment-config.json",
-    "observedSnapshot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/serial-r2/extracted"
+    "observedSnapshot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/serial-r2/extracted",
+    "observedSnapshotLost": "2026-10-15 file lost, see preservation.incident20261015"
   },
   "target": {
     "environment": "esp32c3-F4R0",
@@ -41,11 +42,11 @@
     "staAddressCurrent": false
   },
   "release": {
-    "candidateId": "ordinary-three-device-20261005-r7-r1",
-    "sourceSha256": "228f7380b56fea540342c67f9d3ec5658ade219cec516c098b381340b82b5d6a",
+    "candidateId": "four-device-20261015-r1",
+    "sourceSha256": "e7a3a4d74cd2e7c34f1b47bc91c8dcff3510c72149aff122636957a977cd4811",
     "sourceStable": true,
-    "firmwareSha256": "aae9244dbe57f67d6f65547add87c3e0a6541b580ba0a2daca8df705446a8048",
-    "webSha256": "b8a08e33c22103f5fc90ac34eb939b7832b99a1ee6167c7dc6f38f28e08d39e5",
+    "firmwareSha256": "dc423d80a9c10ff333916ed20eed1d0166d24973e05e62c34eb1d16f6abc2baa",
+    "webSha256": "8bb5fd42267ff855815afc05ae55f95126623a7d23529e7f9946b56e3e33b0eb",
     "precheckReport": null,
     "nineEnvironmentReport": null,
     "rgbBuildReport": null
@@ -153,7 +154,7 @@
     "localSnapshotReconciliation": true
   },
   "preservation": {
-    "privateRoot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/<verified-mac>/<unique-attempt>/",
+    "privateRoot": ".device-config-backups/four-device-20261015/com4-esp32c3-f4r0/<verified-mac>/<unique-attempt>/",
     "backupReport": "artifacts/four-device-com4-snapshot-20261005-r2/report.json",
     "backupSha256": "60d8f23ddf7b51917fcf1aee6405539bf5e94ed10e61bc09b0f2182c0fc19721",
     "backupVerified": true,
@@ -171,11 +172,18 @@
       "all unrelated non-www files"
     ],
     "rollback": "Use the same device verified full-flash snapshot and per-region deployment report; verify identity, partition and active slot before restore.",
-    "currentSnapshot": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/serial-r2/extracted",
+    "currentSnapshot": ".device-config-backups/four-device-20261015/com4-esp32c3-f4r0/146393902f64/candidate-20261015-r1-r3",
     "backupScope": "full 4MiB flash; stream MD5 and independent flash MD5 verified; 60 extracted files",
     "previousAttemptReports": [
       "artifacts/four-device-com4-snapshot-20261005-r1/report.json"
-    ]
+    ],
+    "incident20261015": {
+      "event": "Parallel session mistakenly deleted the entire .device-config-backups/four-device-20261005/ tree on 2026-10-15 21:40-21:49; unrecoverable",
+      "lostScope": "Pre-deployment snapshots, 2026-10-05 verified full-flash backups, and candidate-20261015-r1-r1 private snapshots",
+      "historicalFieldsStatus": "backupReport/backupSha256/previousAttemptReports retained as historical record; referenced files lost 2026-10-15",
+      "currentAnchor": "Post-incident resampled candidate-state filesystem snapshot (live-filesystem-before.bin/json); does not contain pre-deployment state",
+      "bindingNote": "binding.json/identity.json regeneration in progress under the new anchor tree"
+    }
   },
   "load": {
     "healthIntervalSeconds": 30,
@@ -199,17 +207,17 @@
     "identity": "BOOTLOADER_IDENTITY_VERIFIED",
     "backup": "FULL_FLASH_VERIFIED",
     "schemaCapabilityPinsResources": "PENDING",
-    "firmwareWriteVerify": "R7_WRITTEN_VERIFIED",
-    "filesystemWriteVerify": "R7_AND_MDNS_CONFIG_ONLY_WRITTEN_VERIFIED",
-    "configReadback": "RAW_EXPORTS_MATCH_MDNS_FILESYSTEM_COMPACT_LIMITED",
-    "rebootRecovery": "NOT_RUN",
-    "desktopWeb": "MENU_SCOPE_FAIL",
-    "mobileWeb": "MENU_SCOPE_FAIL",
+    "firmwareWriteVerify": "R1_WRITTEN_VERIFIED",
+    "filesystemWriteVerify": "R1_WRITTEN_VERIFIED",
+    "configReadback": "FS_PRESERVED_MD5_VERIFIED_AND_BINDING_FINGERPRINTED",
+    "rebootRecovery": "OBSERVED_ONLINE_SAME_MAC",
+    "desktopWeb": "WEB_SMOKE_108_108_PASS_API_2_FEATURE_GATED",
+    "mobileWeb": "NOT_RUN",
     "physical": "NOT_RUN",
-    "exploration2h": "NOT_RUN",
+    "exploration2h": "IN_PROGRESS",
     "mixed24h": "NOT_RUN",
     "soak168h": "NOT_RUN",
-    "evidenceRoot": "artifacts/com4-r7-independent-review-20261005-r1"
+    "evidenceRoot": "artifacts/four-device-deployment-20261015-r1-r1"
   },
   "latestMaintenance": {
     "mode": "MDNS_CONFIG_ONLY",
@@ -222,16 +230,28 @@
     "applicationWritten": false,
     "filesystemSha256": "2bc0469d43fade4b604108e16206a7ff90eba1cd726bc5cff6a689e5cd4c2e47",
     "sourceDirectory": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/mdns-r7-r1",
+    "sourceDirectoryLost": "2026-10-15 file lost, see preservation.incident20261015",
     "sourceManifest": ".device-config-backups/four-device-20261005/com4-esp32c3-f4r0/146393902f64/mdns-r7-r1/configuration-change-manifest.json",
+    "sourceManifestLost": "2026-10-15 file lost, see preservation.incident20261015",
     "changedPaths": ["network.json:/enableMDNS", "features.json:/features/mdns/enabled"],
     "freshBackupScope": "FILESYSTEM_AND_OTADATA_NOT_FULL_FLASH_OR_OLD_APPLICATION",
     "historicalFullFlashBackupOnly": "artifacts/four-device-com4-snapshot-20261005-r2/report.json",
+    "historicalFullFlashBackupOnlyLost": "2026-10-15 referenced full-flash backup lost (report file itself still present), see preservation.incident20261015",
     "configurationProofComplete": false,
     "networkProtocolFullRawEquivalenceProved": false,
     "businessAcceptance": false,
     "ruleObservationReport": "artifacts/com4-mdns-rule-results-ordinary-r7-mdns-r2/COM4/report.json",
     "menuReport": "artifacts/four-device-menu-results-20261005-ordinary-r7-mdns-off-r1/COM4/report.json",
     "menuDiagnosticReport": "artifacts/four-device-menu-mqtt-diagnostic-results-20261005-ordinary-r7-mdns-off-r1/COM4/report.json",
-    "s11Complete": false
+    "s11Complete": false,
+    "candidate20261015r1": {
+      "deploymentReport": "artifacts/four-device-deployment-20261015-r1-r1/com4-esp32c3-f4r0/deployment.json",
+      "written": true,
+      "verified": true,
+      "preservedFileCount": 8,
+      "privateSnapshot": ".device-config-backups/four-device-20261015/com4-esp32c3-f4r0/146393902f64/candidate-20261015-r1-r3/",
+      "monitorOutput": "artifacts/four-device-monitor-20261015-r1/com4-esp32c3-f4r0",
+      "postDeployStaAddress": "192.168.5.41"
+    }
   }
 }

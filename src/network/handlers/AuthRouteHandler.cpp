@@ -111,6 +111,7 @@ void loginTask(void* arg) {
     const uint32_t usedStackBytes = freeStackBytes < LOGIN_TASK_STACK_BYTES
         ? LOGIN_TASK_STACK_BYTES - static_cast<uint32_t>(freeStackBytes)
         : 0U;
+    // 保留 Serial 直出（D5 白名单）：登录处理栈指标原始行，保持无前缀格式。
     Serial.printf("[LOGIN_METRICS] stack=%lu free=%lu used=%lu bytes\n",
                   (unsigned long)LOGIN_TASK_STACK_BYTES,
                   (unsigned long)freeStackBytes,

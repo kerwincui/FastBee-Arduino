@@ -20,7 +20,7 @@
   /* Neutral Colors - Ant Design Gray */
   --gray-1: #ffffff; --gray-2: #fafafa; --gray-3: #f5f5f5; --gray-4: #f0f0f0; --gray-5: #d9d9d9; --gray-6: #bfbfbf; --gray-7: #8c8c8c; --gray-8: #595959; --gray-9: #434343; --gray-10: #262626; --gray-11: #1f1f1f; --gray-12: #141414; --gray-13: #000000;
   /* Legacy Slate Variables (for compatibility) */
-  --slate-50: #f5f5f5; --slate-100: #f0f0f0; --slate-200: #d9d9d9; --slate-300: #bfbfbf; --slate-400: #8c8c8c; --slate-500: #595959; --slate-600: #434343; --slate-700: #262626; --slate-800: #1f1f1f; --slate-900: #141414;
+  --slate-50: #f5f5f5; --slate-100: #f0f0f0; --slate-200: #d9d9d9; --slate-300: #bfbfbf; --slate-400: #8c8c8c; --slate-800: #1f1f1f; --slate-900: #141414;
   /* Background Colors - Clean Light Theme */
   --bg-body: #f3f5f7; --bg-body-fallback: #f3f5f7; --bg-card: #ffffff; --bg-sidebar: #0a66e7; --bg-input: #ffffff; --bg-content: #f3f5f7;
   /* Sidebar semantic colors (light default) */
@@ -28,7 +28,7 @@
   /* Glassmorphism Colors */
   --glass-bg: #ffffff; --glass-border: #e6e8eb; --glass-shadow: var(--shadow-sm);
   /* Text Colors - Ant Design Typography */
-  --text-primary: rgba(0, 0, 0, 0.88); --text-secondary: rgba(0, 0, 0, 0.65); --text-tertiary: rgba(0, 0, 0, 0.45); --text-quaternary: rgba(0, 0, 0, 0.25); --text-muted: rgba(0, 0, 0, 0.45); --text-inverse: #ffffff;
+  --text-primary: rgba(0, 0, 0, 0.88); --text-secondary: rgba(0, 0, 0, 0.65); --text-tertiary: rgba(0, 0, 0, 0.45); --text-quaternary: rgba(0, 0, 0, 0.25); --text-muted: rgba(0, 0, 0, 0.55); --text-inverse: #ffffff;
   /* Border Colors */
   --border: #d9d9d9; --border-secondary: #f0f0f0; --border-focus: #1677ff;
   /* Spacing (Tailwind spacing) */
@@ -48,10 +48,10 @@
   /* Primary Colors - Dark Mode */
   --primary: #1677ff; --primary-hover: #4096ff; --primary-active: #0958d9; --primary-light: #111d2c; --primary-bg: #111a2c;
   /* Semantic Colors - Dark Mode */
-  --success: #52c41a; --success-hover: #73d13d; --success-bg: #162312; --success-border: #274916;
-  --warning: #faad14; --warning-hover: #ffc53d; --warning-bg: #2b2111; --warning-border: #594214;
-  --danger: #ff4d4f; --danger-hover: #ff7875; --danger-bg: #2a1215; --danger-border: #58181c;
-  --info: #1677ff; --info-hover: #4096ff; --info-bg: #111d2c;
+  --success: #52c41a; --success-hover: #73d13d; --success-bg: #162312; --success-light: #162312; --success-border: #274916;
+  --warning: #faad14; --warning-hover: #ffc53d; --warning-bg: #2b2111; --warning-light: #2b2111; --warning-border: #594214;
+  --danger: #ff4d4f; --danger-hover: #ff7875; --danger-bg: #2a1215; --danger-light: #2a1215; --danger-border: #58181c;
+  --info: #1677ff; --info-hover: #4096ff; --info-bg: #111d2c; --info-light: #111d2c;
   /* Background Colors - Dark Mode */
   --bg-body: #141414; --bg-body-fallback: #141414; --bg-card: #1a1a1a; --bg-sidebar: #000000; --bg-input: #1f1f1f; --bg-content: #1a1a1a;
   /* Sidebar semantic colors (dark) */
@@ -59,7 +59,7 @@
   /* Glassmorphism Colors - Dark */
   --glass-bg: #1a1a1a; --glass-border: #303030; --glass-shadow: var(--shadow-sm);
   /* Text Colors - Dark Mode */
-  --text-primary: rgba(255, 255, 255, 0.85); --text-secondary: rgba(255, 255, 255, 0.65); --text-tertiary: rgba(255, 255, 255, 0.45); --text-quaternary: rgba(255, 255, 255, 0.25); --text-muted: rgba(255, 255, 255, 0.45);
+  --text-primary: rgba(255, 255, 255, 0.85); --text-secondary: rgba(255, 255, 255, 0.65); --text-tertiary: rgba(255, 255, 255, 0.45); --text-quaternary: rgba(255, 255, 255, 0.25); --text-muted: rgba(255, 255, 255, 0.55);
   /* Border Colors - Dark Mode */
   --border: #424242; --border-secondary: #303030; --border-focus: #1677ff;
   /* Legacy Slate Variables - Dark Mode */
@@ -491,6 +491,8 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
    ============================================ */
 .table-container { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--rounded-lg); }
 .fb-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+/* 无 thead 的键值表（如设备配置页硬件信息）不进滚动容器，窄屏下须允许收缩 */
+.fb-table.fb-table--fluid { min-width: 0; }
 .fb-table th { background: var(--slate-50); padding: var(--space-3) var(--space-4); text-align: left; font-weight: 600; font-size: 12px; color: var(--text-secondary); border-bottom: 1px solid var(--border); white-space: nowrap; }
 .fb-table td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); color: var(--text-primary); min-width: 80px; }
 .fb-table td:first-child { min-width: 100px; }
@@ -677,10 +679,10 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
    16. Message System
    ============================================ */
 .message { padding: var(--space-3) var(--space-5); border-radius: var(--rounded-md); margin-bottom: var(--space-5); }
-.message-error { background: var(--danger-light); color: #721c24; border: 1px solid #f5c6cb; }
-.message-success { background: var(--success-light); color: #155724; border: 1px solid #c3e6cb; }
-.message-info { background: var(--info-light); color: #0c5460; border: 1px solid #bee5eb; }
-.message-warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+.message-error { background: var(--danger-light); color: var(--danger-active); border: 1px solid var(--danger-border); }
+.message-success { background: var(--success-light); color: var(--success-active); border: 1px solid var(--success-border); }
+.message-info { background: var(--info-light); color: var(--info-hover); border: 1px solid var(--info-hover); }
+.message-warning { background: var(--warning-light); color: var(--warning-active); border: 1px solid var(--warning-border); }
 
 /* Info box: 内联提示信息 */
 .fb-info-box { padding: var(--space-3) var(--space-4); border-radius: var(--rounded-md); margin-bottom: var(--space-4); font-size: 13px; line-height: 1.6; }
@@ -760,10 +762,6 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .pe-rule-options .fb-checkbox, .pe-rule-options > .fb-btn { min-width: 0; min-height: 44px; margin: 0; align-self: center; }
 .pe-rule-options > .fb-btn { justify-self: start; }
 .pe-rule-options .is-disabled { color: var(--text-muted); cursor: not-allowed; }
-.peripheral-more { display: inline-flex; }
-.peripheral-more[open] { display: inline-flex; gap: 6px; }
-.peripheral-more > summary { list-style: none; cursor: pointer; }
-.peripheral-more > summary::-webkit-details-marker { display: none; }
 @media (max-width: 600px) { .pe-rule-options { grid-template-columns: 1fr; gap: var(--space-3); } }
 .pe-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); align-items: start; margin-top: var(--space-2); }
 .pe-action-grid > .fb-form-group { margin-bottom: 0; }
@@ -1263,13 +1261,13 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 /* Status Badge */
 .status-badge { display: inline-block; align-items: center; padding: 4px 10px; font-size: 12px; font-weight: 600; border-radius: var(--rounded-full); gap: 4px; text-align: center; transition: var(--transition); }
 .status-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.status-badge-success { background: var(--success-light, var(--success-bg, #f6ffed)); color: var(--success); }
+.status-badge-success { background: var(--success-light, var(--success-bg, #f6ffed)); color: var(--success-active); }
 .status-badge-success::before { background: var(--success); }
-.status-badge-warning { background: var(--warning-light, var(--warning-bg, #fffbe6)); color: var(--warning); }
+.status-badge-warning { background: var(--warning-light, var(--warning-bg, #fffbe6)); color: var(--warning-active); }
 .status-badge-warning::before { background: var(--warning); }
-.status-badge-danger { background: var(--danger-light, var(--danger-bg, #fff2f0)); color: var(--danger); }
+.status-badge-danger { background: var(--danger-light, var(--danger-bg, #fff2f0)); color: var(--danger-active); }
 .status-badge-danger::before { background: var(--danger); }
-.status-badge-info { background: var(--info-light, var(--info-bg, #e6f4ff)); color: var(--info); }
+.status-badge-info { background: var(--info-light, var(--info-bg, #e6f4ff)); color: var(--info-hover); }
 .status-badge-info::before { background: var(--info); }
 .status-badge-neutral { background: var(--gray-3); color: var(--text-secondary); }
 .status-badge-neutral::before { background: var(--gray-7); }
@@ -1891,9 +1889,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-control-flow > .dc-dragging { cursor: grabbing; opacity: 0.85; box-shadow: 0 8px 24px rgba(0,0,0,0.15); z-index: 100; }
 /* Device control header card */
 .dc-header-card { margin-bottom: 15px !important; box-shadow: none !important; width: 100%; box-sizing: border-box; }
-.dc-header-card .dc-header-card-inner { padding: var(--space-3) var(--space-5); }
+.dc-header-card .dc-header-card-inner { padding: var(--space-3) var(--space-5); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; }
 .dc-header-card .dc-header-title { font-size: 16px; font-weight: 600; }
-.dc-header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; width: 100%; min-width: 0; }
+.dc-header-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .dc-sid-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); margin-right: 8px; cursor: pointer; user-select: none; white-space: nowrap; }
 .dc-sid-toggle input { margin: 0; }
 .dc-action-stack { display: inline-flex; flex-direction: column; align-items: center; }
@@ -2128,7 +2126,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 @media (max-width: 640px) {
   .dc-header-card .dc-header-card-inner { padding: var(--space-3); }
-  .dc-header-actions { justify-content: flex-start; gap: 6px; }
+  .dc-header-group { gap: 6px; }
   .dc-sid-toggle { flex: 1 0 100%; margin-right: 0; }
   .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
   .dc-monitor-card { padding: 8px 10px; }

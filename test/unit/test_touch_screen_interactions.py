@@ -109,20 +109,23 @@ int main(){
 
     def test_motor_text_uses_device_speed_precision(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        renderer = (ROOT / 'src/screen/StripeRenderer.h').read_text(encoding='utf-8')
         header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
         types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
-        draw = 'void drawMotor(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card, const PixelRect& rect, const Palette& palette) const' + block(runtime, 'void drawMotor(')
+        draw = 'void drawMotor(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card, const PixelRect& rect, const Palette& palette) const' + block(renderer, 'void drawMotor(')
         self.compile_run(r'''
 #include <Arduino.h>
 #include <array>
 #include <cassert>
 #include <cmath>
 #include "screen/ScreenInteraction.h"
+#include "screen/PanelStatusText.h"
 using namespace FastBee::Screen;
 TYPES
-using PixelRect=ScreenPixelRect;struct Palette{int muted=0,text=0,backgroundAlt=0,cardBorder=0,warning=0,accent=0,card=0;};
+using PixelRect=ScreenPixelRect;struct Palette{int muted=0,text=0,backgroundAlt=0,cardBorder=0,warning=0,accent=0,card=0,success=0,danger=0;};
 constexpr uint16_t rgb565(uint8_t r,uint8_t g,uint8_t b){return ((r&0xf8U)<<8U)|((g&0xfcU)<<3U)|(b>>3U);}
 uint16_t blend565(uint16_t color,uint16_t,uint8_t){return color;}
+uint16_t textOn565(uint16_t){return 0xffff;}
 struct StripeCanvas{std::vector<std::string> labels;void text(int,int,const char* s,int,int,int){labels.push_back(s);}void roundedRect(int,int,int,int,int,int,int){}};
 struct Renderer{bool controlPressed(const ScreenPanelCardSnapshot&,const PixelRect&)const{return false;} DRAW};
 int main(){Renderer r;StripeCanvas c;ScreenPanelCardSnapshot s;s.motorKnown=true;s.motorSpeed=500;s.motorSpeedInput=501;s.motorPulse=1600;s.motorPrecision=1;
@@ -162,6 +165,7 @@ screenExpireMotorFeedback(s,4984);assert(!s.motorUiFeedback[0]);
 #include <cassert>
 #include <cstring>
 #include "screen/ScreenInteraction.h"
+#include "screen/PanelStatusText.h"
 using namespace FastBee::Screen;
 int main(){
  ScreenControlSession s;s.observe(1,1000,30);assert(!s.allows("motor.a"));
@@ -207,21 +211,27 @@ int main(){
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include "screen/ScreenInteraction.h"
+#include "screen/PanelStatusText.h"
 using namespace FastBee::Screen;
 #define LOG_INFOF(...) ((void)0)
 #define LOG_WARNINGF(...) ((void)0)
 struct Logger { template<class... Args> void infof(const char*, Args...) {} } LOGGER;
 size_t strlcpy(char* to,const char* from,size_t n){if(n)snprintf(to,n,"%s",from);return strlen(from);}
 constexpr int MIN_SWIPE_PX=40,TAP_MOVE_PX=14,TAP_MAX_MS=900;
-enum class ScreenVisualType{SLIDER,ACTION};
-struct Card {ScreenVisualType visualType=ScreenVisualType::SLIDER;int numericValue=70;char id[41]="brightness",error[97]{};};
+constexpr unsigned REPEAT_START_MS=600,REPEAT_INTERVAL_MS=150,REPEAT_FAST_AFTER_MS=2000;constexpr int REPEAT_FAST_MULTIPLIER=10;
+enum class ScreenVisualType{SLIDER,ACTION,MOTOR_CONTROL,NUMBER_CONTROL};
+enum class NumericControlHit : uint8_t { NONE = 0, DECREMENT, INCREMENT, EXECUTE };
+struct Card {ScreenVisualType visualType=ScreenVisualType::SLIDER;float numericValue=70;char id[41]="brightness",error[97]{};
+ bool pending=false,motorSpeedDirty=false,motorPulseDirty=false;uint16_t motorSpeedInput=10,motorPulseInput=100,motorSpeedStep=1,motorPulseStep=100;
+ char motorUiFeedback[97]{},controlRef[97]{};float rangeMin=0,rangeMax=100,numericStep=1;uint8_t precision=1;};
 struct Snapshot{std::array<Card,1> cards;unsigned revision=1;uint8_t brightnessPercent=70,activePageIndex=0;};
 struct TouchPoint{uint16_t x,y;bool pressed;};
 GESTURE
 struct Display{struct Caps{bool brightnessContinuous=true;}caps;int calls=0,sleepCalls=0;bool brightnessOk=true,wakeOk=true;uint8_t brightness=70;Caps capabilities(){return caps;}bool setBrightness(uint8_t v){++calls;if(!brightnessOk)return false;brightness=v;return true;}bool setSleep(bool){++sleepCalls;return wakeOk;}};
 struct Device{Display d;Display* display(){return &d;}};
-struct Renderer{struct Rect{int x=0,y=0,w=240,h=100;};String pressed;int hit=0,invalidations=0;void invalidate(){++invalidations;}bool feedbackAllowed=true,actionAllowed=true;Rect cardBounds(Snapshot&,Card&){return {};}int hitTest(Snapshot&,int x,int y){return x>=20&&x<221&&y>=50&&y<100?hit:-1;}int tapTarget(Snapshot& s,int x,int y,const char*){return hitTest(s,x,y)<0?0:(s.cards[0].visualType==ScreenVisualType::SLIDER?1:(x<120?1:2));}int width(){return 480;}int bufferBytes(){return 100;}void closeNavigation(){} void setPressed(const char* id,int=0,int=0){pressed=id?id:"";}bool feedbackHitTest(Snapshot&,int,int){return feedbackAllowed;}template<class S,class C>bool actionHitTest(const S&,const C&,int,int){return actionAllowed;}};
+struct Renderer{using Rect=ScreenPixelRect;String pressed;int hit=0,invalidations=0;void invalidate(){++invalidations;}bool feedbackAllowed=true,actionAllowed=true;Rect cardBounds(Snapshot&,Card&){return Rect{0,0,240,100};}int hitTest(Snapshot&,int x,int y){return x>=20&&x<221&&y>=50&&y<100?hit:-1;}int tapTarget(Snapshot& s,int x,int y,const char*){return hitTest(s,x,y)<0?0:(s.cards[0].visualType==ScreenVisualType::SLIDER?1:(x<120?1:2));}int width(){return 480;}int bufferBytes(){return 100;}void closeNavigation(){} void setPressed(const char* id,int=0,int=0){pressed=id?id:"";}bool feedbackHitTest(Snapshot&,int,int){return feedbackAllowed;}NumericControlHit numericControlHitTest(Snapshot&,Card&,int,int){return NumericControlHit::NONE;}template<class S,class C>bool actionHitTest(const S&,const C&,int,int){return actionAllowed;}};
 int taps=0,pages=0;
 void handleTap(Renderer&,Snapshot&,int,int,char*,size_t,ScreenControlSession*,unsigned){++taps;}
 void changePage(Snapshot&,int){++pages;}
@@ -297,9 +307,10 @@ capture.process({80,70,true},0xffffff00U);capture.process({80,70,false},700U);as
 
     def test_card_blank_areas_and_read_only_cards_are_not_action_targets(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        renderer = (ROOT / 'src/screen/StripeRenderer.h').read_text(encoding='utf-8')
         header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
         types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
-        action = 'bool actionHitTest(const ScreenPanelSnapshot& snapshot, const ScreenPanelCardSnapshot& card, uint16_t x, uint16_t y) const' + block(runtime, 'bool actionHitTest(')
+        action = 'bool actionHitTest(const ScreenPanelSnapshot& snapshot, const ScreenPanelCardSnapshot& card, uint16_t x, uint16_t y) const' + block(renderer, 'bool actionHitTest(')
         self.compile_run(r'''
 #include <algorithm>
 #include <array>
@@ -323,12 +334,16 @@ struct Renderer{
 int main(){
  ScreenPanelSnapshot snapshot; ScreenPanelCardSnapshot card; Renderer r;
  card.kind=ScreenCardKind::DATA; card.visualType=ScreenVisualType::VALUE; assert(!r.actionHitTest(snapshot,card,120,80));
- card.kind=ScreenCardKind::CHART; card.visualType=ScreenVisualType::LINE; assert(!r.actionHitTest(snapshot,card,120,120));
+ card.kind=ScreenCardKind::CHART; card.visualType=ScreenVisualType::LINE;
+ // F6: a trend chart's whole surface selects the nearest plotted sample;
+ // display-only cards keep delegating to their explicit control region.
+ assert(r.actionHitTest(snapshot,card,120,120));
  card.kind=ScreenCardKind::CONTROL; card.visualType=ScreenVisualType::ACTION;
  assert(!r.actionHitTest(snapshot,card,120,40));
  assert(r.actionHitTest(snapshot,card,120,124));
  card.visualType=ScreenVisualType::SWITCH;
- assert(!r.actionHitTest(snapshot,card,60,120));
+ // F4: the whole card is the toggle hot zone, not only the pill.
+ assert(r.actionHitTest(snapshot,card,60,120));
  assert(r.actionHitTest(snapshot,card,420,116));
  r.fixed={16,16,448,448}; card.visualType=ScreenVisualType::MOTOR_CONTROL;
  assert(!r.actionHitTest(snapshot,card,240,72));
@@ -339,6 +354,51 @@ int main(){
  assert(!r.actionHitTest(snapshot,card,forward.x+forward.w+5,forward.y+20));
 }
 '''.replace('__TYPES__', types).replace('__ACTION_METHOD__', action), [ROOT / 'test/mocks', ROOT / 'include'])
+
+    def test_line_chart_tap_writes_nearest_sample_sequence(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
+        types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
+        # The LINE branch of handleContentTap is the wiring between the
+        # gesture state machine and the renderer's nearest-sample mapping:
+        # it must record the tapped sample and consume the tap (no dispatch).
+        branch = block(block(runtime, 'bool handleContentTap('),
+                             'if (card.visualType == ScreenVisualType::LINE)')
+        self.compile_run(r'''
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include "screen/ScreenInteraction.h"
+using FastBee::Screen::ScreenPixelRect;
+TYPES
+struct StubRenderer {
+    int result;
+    int historyTapIndex(const ScreenPanelCardSnapshot&, const ScreenPixelRect&, uint16_t tapX) const {
+        (void)tapX;
+        return result;
+    }
+};
+bool tapChart(StubRenderer& renderer, ScreenPanelCardSnapshot& card,
+              const ScreenPixelRect& bounds, uint16_t x)
+BRANCH
+int main() {
+    ScreenPanelCardSnapshot card{};
+    card.visualType = ScreenVisualType::LINE;
+    card.historyCount = 10;
+    for (int i = 0; i < 10; ++i) card.history[i].sequence = 500 + i;
+    StubRenderer renderer{3};
+    const ScreenPixelRect bounds{16, 16, 280, 300};
+    assert(tapChart(renderer, card, bounds, 200));
+    assert(card.selectedHistorySequence == 503);
+    renderer.result = 0;
+    assert(tapChart(renderer, card, bounds, 100));
+    assert(card.selectedHistorySequence == 500);
+    // No plottable sample: keep the previous selection, still consume the tap.
+    renderer.result = -1;
+    assert(tapChart(renderer, card, bounds, 40));
+    assert(card.selectedHistorySequence == 500);
+}
+'''.replace('TYPES', types).replace('BRANCH', branch), [ROOT / 'test/mocks', ROOT / 'include'])
 
     def test_motor_colors_do_not_bypass_start_guards_or_block_stop(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
@@ -470,7 +530,9 @@ for(unsigned direction=0;direction<2;++direction){
 '''.replace('__TYPES__', types).replace('__MOTOR__', motor).replace('__CONFIRM__', confirm), [ROOT / 'test/mocks', ROOT / 'include'])
 
     def test_trend_motor_and_timeout_taps(self):
-        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        runtime = ((ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8') + '\n'
+
+                   + (ROOT / 'src/screen/StripeRenderer.h').read_text(encoding='utf-8'))
         # Charts are read-only and every control card delegates to an explicit
         # hit region; this prevents outer-card taps from dispatching actions.
         self.assertIn('card.visualType == ScreenVisualType::LINE', runtime)
@@ -530,3 +592,140 @@ int main(){auto& m=ScreenPanelManager::instance();String error;
  assert(m.config["settings"]["brightnessPercent"]==0&&m.config["settings"]["touchBeepEnabled"]==true&&m.config["settings"]["controlConfirmIdleSeconds"]==30);
 }
 '''.replace('PRODUCTION', production), [ROOT / 'test/mocks', json])
+
+    def test_plus_minus_hold_auto_repeat(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        touch = runtime[runtime.rindex('ITouchBackend* touch = device.touch();'):]
+        chain = touch[touch.index('if (sleeping) {'):touch.index('\n        }\n\n        // Retry a touch wake')]
+        retry = touch[touch.index('if (touchWakePending && sleeping &&'):touch.index('const bool requestedRefresh')]
+        chain += '\n' + retry
+        refresh = touch[touch.index('const bool requestedRefresh'):]
+        chain += '\n' + refresh[:refresh.index('#if FASTBEE_SCREEN_WORKER_ISOLATION')]
+        gesture = 'struct TouchGesture' + block(runtime, 'struct TouchGesture') + ';'
+        self.compile_run(r'''
+#include <Arduino.h>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include "screen/ScreenInteraction.h"
+#include "screen/PanelStatusText.h"
+using namespace FastBee::Screen;
+#define LOG_INFOF(...) ((void)0)
+#define LOG_WARNINGF(...) ((void)0)
+struct Logger { template<class... Args> void infof(const char*, Args...) {} } LOGGER;
+size_t strlcpy(char* to,const char* from,size_t n){if(n)snprintf(to,n,"%s",from);return strlen(from);}
+constexpr int MIN_SWIPE_PX=40,TAP_MOVE_PX=14,TAP_MAX_MS=900;
+constexpr unsigned REPEAT_START_MS=600,REPEAT_INTERVAL_MS=150,REPEAT_FAST_AFTER_MS=2000;constexpr int REPEAT_FAST_MULTIPLIER=10;
+enum class ScreenVisualType{SLIDER,ACTION,MOTOR_CONTROL,NUMBER_CONTROL};
+enum class NumericControlHit : uint8_t { NONE = 0, DECREMENT, INCREMENT, EXECUTE };
+struct Card {ScreenVisualType visualType=ScreenVisualType::MOTOR_CONTROL;float numericValue=5;char id[41]="card",error[97]{};
+ bool pending=false,motorSpeedDirty=false,motorPulseDirty=false;uint16_t motorSpeedInput=10,motorPulseInput=100,motorSpeedStep=1,motorPulseStep=100;
+ char motorUiFeedback[97]{},controlRef[97]{};float rangeMin=0,rangeMax=9,numericStep=1;uint8_t precision=0;};
+struct Snapshot{std::array<Card,2> cards;unsigned revision=1;uint8_t brightnessPercent=70,activePageIndex=0;};
+struct TouchPoint{uint16_t x,y;bool pressed;};
+GESTURE
+struct Display{struct Caps{bool brightnessContinuous=true;}caps;Caps capabilities(){return caps;}bool setBrightness(uint8_t){return true;}bool setSleep(bool){return true;}};
+struct Device{Display d;Display* display(){return &d;}};
+struct Renderer{using Rect=ScreenPixelRect;String pressed;int invalidations=0;void invalidate(){++invalidations;}
+ Rect cardBounds(Snapshot&,Card&){return Rect{0,0,448,400};}
+ int hitTest(Snapshot&,int,int y){return y<350?0:1;}
+ int tapTarget(Snapshot&,int,int,const char*){return 1;}
+ int width(){return 480;}int bufferBytes(){return 100;}
+ void closeNavigation(){}void setPressed(const char* id,int=0,int=0){pressed=id?id:"";}
+ bool feedbackHitTest(Snapshot&,int,int){return false;}
+ NumericControlHit numericControlHitTest(Snapshot&,Card&,int x,int y){return y>=420?NumericControlHit::NONE:(x>=224?NumericControlHit::INCREMENT:NumericControlHit::DECREMENT);}
+ template<class S,class C>bool actionHitTest(const S&,const C&,int,int){return true;}};
+int taps=0,pages=0;
+void handleTap(Renderer&,Snapshot&,int,int,char*,size_t,ScreenControlSession*,unsigned){++taps;}
+void changePage(Snapshot&,int){++pages;}
+struct ScreenPanelManager{static ScreenPanelManager& instance(){static ScreenPanelManager m;return m;}bool queueSetting(const String&,unsigned,String&){return true;}void reportApplication(bool,bool,const String&){}};
+struct Harness{
+ Device device;Renderer renderer;Snapshot s;Snapshot* snapshot=&s;TouchGesture gesture;
+ ScreenControlSession controlSession;int updates=0,feedback=0;
+ struct State{std::atomic<bool> refreshRequested{false};}state;
+ bool sleeping=false,brightnessOverridden=false,forceRender=false;uint8_t appliedBrightness=70;
+ bool touchWakePending=false,touchWakeContactDown=false;uint8_t touchWakeAttempts=0;
+ uint32_t touchWakeNextAttemptMs=0,lastInteractionMs=0;
+ unsigned brightnessOverrideRevision=0;char confirmationCardId[41]{};size_t snapshotBytes=100,framebufferBytes=100;
+ void updateRuntimeState(bool,bool,size_t){++updates;}
+ void touchFeedback(unsigned){++feedback;}
+ Harness(){s.cards[1].visualType=ScreenVisualType::NUMBER_CONTROL;}
+ void process(TouchPoint point,unsigned now){CHAIN}
+};
+TouchPoint tp(unsigned x,unsigned y,bool pressed){return TouchPoint{static_cast<uint16_t>(x),static_cast<uint16_t>(y),pressed};}
+const ScreenMotorLayout motorLayout{ScreenPixelRect{0,0,448,400}};
+const ScreenPixelRect pulsePlus=motorLayout.adjust(1,1),pulseMinus=motorLayout.adjust(1,0),pulseSet=motorLayout.adjust(1,2);
+const unsigned PX=pulsePlus.x+pulsePlus.w/2,PY=pulsePlus.y+pulsePlus.h/2;
+const unsigned MX=pulseMinus.x+pulseMinus.w/2,SX=pulseSet.x+pulseSet.w/2;
+void hold(Harness& h,unsigned x,unsigned y,unsigned from,unsigned to){
+ for(unsigned t=from+10;t-from<to-from;t+=10)h.process(tp(x,y,true),t);
+}
+int main(){
+ // A short press still dispatches exactly one tap and arms no repeat.
+ {Harness h;taps=0;h.process(tp(PX,PY,true),1000);hold(h,PX,PY,1000,1290);h.process(tp(PX,PY,false),1290);
+  assert(taps==1&&h.s.cards[0].motorPulseInput==100&&!h.s.cards[0].motorPulseDirty);}
+ // First tick at 600ms, then one step every 150ms; a release inside the
+ // 900ms tap window after a repeat must not double-step.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),0);hold(h,PX,PY,0,590);assert(c.motorPulseInput==100);
+  h.process(tp(PX,PY,true),600);assert(c.motorPulseInput==200&&c.motorPulseDirty);
+  hold(h,PX,PY,600,750);assert(c.motorPulseInput==200);
+  h.process(tp(PX,PY,true),750);assert(c.motorPulseInput==300);
+  hold(h,PX,PY,750,880);assert(c.motorPulseInput==300);
+  h.process(tp(PX,PY,false),880);
+  assert(taps==0&&c.motorPulseInput==300&&h.renderer.pressed.isEmpty());}
+ // Holding past 2s multiplies each step by ten: ten x1 ticks from 600ms to
+ // 1950ms, then four x10 ticks at 4100/4250/4400/4550ms.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),2000);hold(h,PX,PY,2000,4600);h.process(tp(PX,PY,false),4600);
+  assert(c.motorPulseInput==100+10*100+4*1000&&taps==0);}
+ // Decrement clamps at zero instead of underflowing the draft.
+ {Harness h;auto& c=h.s.cards[0];c.motorPulseInput=250;
+  h.process(tp(MX,PY,true),0);hold(h,MX,PY,0,1200);h.process(tp(MX,PY,false),1200);
+  assert(c.motorPulseInput==0);}
+ // Moving past the tap threshold before 600ms disarms the repeat for good.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),0);h.process(tp(PX+20,PY,true),20);hold(h,PX+20,PY,20,1000);h.process(tp(PX+20,PY,false),1000);
+  assert(c.motorPulseInput==100&&taps==0);}
+ // The motor SET button and the numeric EXECUTE region are not repeat
+ // targets; a hold there keeps the single-tap behaviour.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(SX,PY,true),0);hold(h,SX,PY,0,800);h.process(tp(SX,PY,false),800);
+  assert(c.motorPulseInput==100&&taps==1);}
+ {Harness h;taps=0;auto& c=h.s.cards[1];
+  h.process(tp(300,440,true),0);hold(h,300,440,0,800);h.process(tp(300,440,false),800);
+  assert(c.numericValue==5&&taps==1);}
+ // NUMBER_CONTROL + repeats and clamps at the configured range maximum.
+ {Harness h;taps=0;auto& c=h.s.cards[1];
+  h.process(tp(300,380,true),0);hold(h,300,380,0,2000);h.process(tp(300,380,false),2000);
+  assert(taps==0&&c.numericValue==9);}
+ // NUMBER_CONTROL - repeats downward on the same cadence.
+ {Harness h;taps=0;auto& c=h.s.cards[1];
+  h.process(tp(100,380,true),0);hold(h,100,380,0,900);h.process(tp(100,380,false),900);
+  assert(taps==0&&c.numericValue==3);}
+ // A pending motor card ticks without touching the draft and the release
+ // still does not become a tap.
+ {Harness h;taps=0;auto& c=h.s.cards[0];c.pending=true;
+  h.process(tp(PX,PY,true),0);hold(h,PX,PY,0,1000);h.process(tp(PX,PY,false),1000);
+  assert(c.motorPulseInput==100&&taps==0);}
+ // A layout refresh during the contact retires the gesture; the rest of the
+ // hold cannot repeat and the release dispatches nothing.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),0);hold(h,PX,PY,0,700);assert(c.motorPulseInput==200);
+  h.state.refreshRequested=true;h.process(tp(PX,PY,true),720);
+  assert(!h.gesture.down&&h.gesture.suppressUntilRelease);
+  hold(h,PX,PY,720,1200);h.process(tp(PX,PY,false),1200);
+  assert(c.motorPulseInput==200&&taps==0);}
+ // A snapshot revision change mid-hold stops the repeat immediately.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),0);hold(h,PX,PY,0,700);assert(c.motorPulseInput==200);
+  ++h.s.revision;hold(h,PX,PY,700,1200);h.process(tp(PX,PY,false),1200);
+  assert(c.motorPulseInput==200&&taps==0);}
+ // millis() wrap: the 600ms deadline, the 150ms cadence and the release
+ // guard all survive a rollover of the uptime counter.
+ {Harness h;taps=0;auto& c=h.s.cards[0];
+  h.process(tp(PX,PY,true),0xfffffff0U);hold(h,PX,PY,0xfffffff0U,0x300U);h.process(tp(PX,PY,false),0x300U);
+  assert(c.motorPulseInput==300&&taps==0);}
+}
+'''.replace('GESTURE', gesture).replace('CHAIN', chain), [ROOT / 'test/mocks', ROOT / 'include'])

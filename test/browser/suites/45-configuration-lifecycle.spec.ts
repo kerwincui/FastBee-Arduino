@@ -16,7 +16,7 @@ test('old account save cannot close a newer user draft',async({authPage,navigate
 });
 
 test('saving password policy invalidates previously cached user requirements',async({authPage,navigateTo})=>{
- await navigateTo('users');await navigateTo('device');await expect(authPage.locator('#device-config-load-status')).toContainText('配置已加载');
+ await navigateTo('users');await navigateTo('device');await expect(authPage.locator('#dev-id')).toHaveValue('OFFLINE-UI');
  await authPage.evaluate(()=>{const w=window as any;w.__invalidated=[];const old=w.apiInvalidateCache;w.apiInvalidateCache=(key:string)=>{w.__invalidated.push(key);return old(key);};});
  await authPage.locator('[data-tab=dev-advanced]').click();await authPage.locator('#dev-sec-min-pwd-len').fill('12');
  await authPage.route('**/api/device/config',async r=>{if(r.request().method()==='GET')return r.continue();await r.fulfill({json:{success:true}});});

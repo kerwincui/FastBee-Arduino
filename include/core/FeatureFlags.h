@@ -23,6 +23,13 @@
 #ifndef FASTBEE_ENABLE_POINT_HISTORY
 #define FASTBEE_ENABLE_POINT_HISTORY 1
 #endif
+// Larger wqy16 face for big screen cards (text scale tiers 3/4 in
+// StripeRenderer.h). The GB2312 face costs ~150KB Flash, so only the 16MB
+// RGB touch environment enables it; other targets degrade tier 3/4 requests
+// to the wqy12 tiers with zero Flash and pixel changes.
+#ifndef FASTBEE_SCREEN_LARGE_FONT
+#define FASTBEE_SCREEN_LARGE_FONT 0
+#endif
 #if FASTBEE_ENABLE_SCREEN_UI && !FASTBEE_ENABLE_SCREEN_PANEL
 #error "FASTBEE_ENABLE_SCREEN_UI requires FASTBEE_ENABLE_SCREEN_PANEL"
 #endif

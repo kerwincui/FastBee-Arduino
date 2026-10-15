@@ -103,26 +103,24 @@
         <div class="login-card">
             <div class="login-header">
                 <img id="login-logo" class="login-logo-img" data-asset-src="/assets/logo.png" alt="FastBee Logo">
-                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title" data-i18n="login-title">FastBee Arduino</h1>
+                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title">FastBee Arduino</h1>
             </div>
 
             <div class="login-body">
                 <form id="login-form" class="fb-form">
                     <fieldset>
-                        <label for="username" id="username-label" data-i18n="username-label">用户名</label>
-                        <input type="text" id="username" class="" placeholder="请输入用户名"
-                            data-i18n-placeholder="username-placeholder" required>
+                        <label for="username" id="username-label">用户名</label>
+                        <input type="text" id="username" class="" placeholder="请输入用户名" required>
 
-                        <label for="password" class="fb-mt-3" id="password-label" data-i18n="password-label">密码</label>
-                        <input type="password" id="password" class="" placeholder="请输入密码"
-                            data-i18n-placeholder="password-placeholder" required>
+                        <label for="password" class="fb-mt-3" id="password-label">密码</label>
+                        <input type="password" id="password" class="" placeholder="请输入密码" required>
 
                         <label class="fb-checkbox fb-my-3">
                             <input type="checkbox" id="remember">
-                            <span id="remember-label" data-i18n="remember-label">保持登录</span>
+                            <span id="remember-label">保持登录</span>
                         </label>
 
-                        <button type="submit" class="fb-btn fb-btn-primary fb-u-1" id="login-button" data-i18n="login-button">
+                        <button type="submit" class="fb-btn fb-btn-primary fb-u-1" id="login-button">
                             登录系统
                         </button>
                     </fieldset>
@@ -137,44 +135,42 @@
             <!-- 侧边栏 -->
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
-                    <img id="sidebar-logo" data-lazy-src="/assets/logo.png" alt="FastBee Logo">
-                    <h3 id="app-title" data-i18n="app-title">设备管理系统</h3>
+                    <img id="sidebar-logo" data-lazy-src="/assets/logo.png" alt="FastBee Logo" width="28" height="28">
+                    <h3 id="app-title">设备管理系统</h3>
                 </div>
                 <div class="sidebar-menu">
                     <a href="#" class="menu-item active" data-page="dashboard">
-                        <span class="menu-icon">📊</span> <span id="menu-dashboard" data-i18n="menu-dashboard">设备监控</span>
+                        <span class="menu-icon">📊</span> <span id="menu-dashboard">设备监控</span>
                     </a>
                     <a href="#" class="menu-item" data-page="device">
-                        <span class="menu-icon">🛠️</span> <span id="menu-device" data-i18n="menu-device">设备配置</span>
+                        <span class="menu-icon">🛠️</span> <span id="menu-device">设备配置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="network">
-                        <span class="menu-icon">🌐</span> <span id="menu-network" data-i18n="menu-network">网络设置</span>
+                        <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="peripheral">
-                        <span class="menu-icon">🔧</span> <span id="menu-peripheral"
-                            data-i18n="menu-peripheral">外设配置</span>
+                        <span class="menu-icon">🔧</span> <span id="menu-peripheral">外设配置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="periph-exec">
-                        <span class="menu-icon">⚡</span> <span id="menu-periph-exec"
-                            data-i18n="menu-periph-exec">外设执行</span>
+                        <span class="menu-icon">⚡</span> <span id="menu-periph-exec">外设执行</span>
                     </a>
                     <a href="#" class="menu-item" data-page="protocol">
-                        <span class="menu-icon">🔌</span> <span id="menu-protocol" data-i18n="menu-protocol">通信协议</span>
+                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
                     <a href="#" class="menu-item" data-page="screen-panel" style="display:none" aria-hidden="true">
                         <span class="menu-icon">▣</span> <span id="menu-screen-panel">设备屏幕</span>
                     </a>
                     <a href="#" class="menu-item" data-page="device-control" style="display:none" aria-hidden="true">
-                        <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备大屏</span>
+                        <span class="menu-icon">📺</span> <span id="menu-device-control">设备大屏</span>
                     </a>
                     <a href="#" class="menu-item" data-page="rule-script" style="display:none" aria-hidden="true">
-                        <span class="menu-icon">📜</span> <span id="menu-rule-script" data-i18n="menu-rule-script">规则脚本</span>
+                        <span class="menu-icon">📜</span> <span id="menu-rule-script">规则脚本</span>
                     </a>
                     <a href="#" class="menu-item" data-page="logs" style="display:none" aria-hidden="true">
-                        <span class="menu-icon">📜</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
+                        <span class="menu-icon">📜</span> <span id="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="users" style="display:none" aria-hidden="true">
-                        <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
+                        <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="features">
                         <span class="menu-icon">🧩</span> <span id="menu-features">功能配置</span>
@@ -196,22 +192,22 @@
                         <div class="user-dropdown">
                             <button class="user-dropdown-toggle" id="user-dropdown-btn">
                                 <span class="user-avatar">👤</span>
-                                <span class="user-name-text" id="user-name" data-i18n="user-name">管理员</span>
+                                <span class="user-name-text" id="user-name">管理员</span>
                                 <span class="dropdown-arrow">▼</span>
                             </button>
                             <div class="user-dropdown-menu" id="user-dropdown-menu">
                                 <button class="dropdown-item" id="theme-toggle-item">
                                     <span class="item-icon">🌙</span>
-                                    <span data-i18n="theme-toggle">切换主题</span>
+                                    <span>切换主题</span>
                                 </button>
                                 <button class="dropdown-item" id="change-password-btn">
                                     <span class="item-icon">🔑</span>
-                                    <span data-i18n="change-password-btn">修改密码</span>
+                                    <span>修改密码</span>
                                 </button>
                                 <div class="dropdown-divider"></div>
                                 <button class="dropdown-item dropdown-item-danger" id="logout-btn">
                                     <span class="item-icon">🚪</span>
-                                    <span data-i18n="logout-btn">退出登录</span>
+                                    <span>退出登录</span>
                                 </button>
                             </div>
                         </div>
@@ -233,7 +229,7 @@
 
                 <!-- 主应用页脚 -->
                 <div class="app-footer">
-                    <div id="footer-copyright" data-i18n="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
+                    <div id="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
                 </div>
             </div>
         </div>
@@ -291,7 +287,6 @@
             loadSequence(bootChunks, 30);
         }
         window.__fastbeeStartChunks = startChunkLoad;
-        window.__fastbeeLoadZhChunks = function(cb) { if (cb) cb(true); };
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', startChunkLoad, { once: true });
         } else {

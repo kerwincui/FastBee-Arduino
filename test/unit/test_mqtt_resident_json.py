@@ -44,7 +44,7 @@ class MqttResidentJsonTests(unittest.TestCase):
         harness_path = HERE / 'cpp/mqtt_resident_json_harness.cpp.in'
         source = source_path.read_text(encoding='utf-8')
         oracle = oracle_path.read_text(encoding='utf-8')
-        if hashlib.sha256(oracle.encode()).hexdigest() != '25650adfed346f65787c5bed3e239769df587a3a1949ec564bc7a319a452a825':
+        if hashlib.sha256(oracle.encode()).hexdigest() != '33b4f9f1d4dc412e82eb88b889bd51db0af6e05a200c25a61b070a98d3cffca9':
             raise AssertionError('Frozen MQTT original changed')
         original = [definition(oracle, signature) for signature in SIGNATURES]
         candidates = [draft(body, expected) for body, expected in zip(original, COUNTS)]

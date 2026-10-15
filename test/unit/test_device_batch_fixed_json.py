@@ -74,12 +74,12 @@ class DeviceBatchFixedJsonTests(unittest.TestCase):
         sources = [ROOT / ('src/network/handlers/' + name + 'RouteHandler.cpp') for name in ('Device', 'Batch')]
         oracles = [HERE / ('cpp/' + name + '_route_fixed_json_oracle.inc') for name in ('device', 'batch')]
         old = [path.read_text(encoding='utf-8') for path in oracles]
-        expected_hashes = ('66945cfbf3143b5158e73926832abc8e335b692f29eac08fb20ce538115a1127',
-                           '5e9f76970ff19cc3b3f3b73507565b5185c0bf56feb9eb52a28993da9b38ced4')
+        expected_hashes = ('4162801857e97463e7afb79dc1635486fc3d40a06cc6a69d74dd65aeeeb04229',
+                           '99943693fd3c9172ef87a0468cb3594a43c3c9e8cebcc4fe656ff5f7d46d7a84')
         if tuple(hashlib.sha256(text.encode('utf-8')).hexdigest() for text in old) != expected_hashes:
             raise AssertionError('Frozen device/batch pre-sharing oracle changed')
         current = [path.read_text(encoding='utf-8') for path in sources]
-        expected = [share_fixed_fields(text, count) for text, count in zip(old, (71, 40))]
+        expected = [share_fixed_fields(text, count) for text, count in zip(old, (71, 121))]
         expected[0] = expected[0].replace('#include "network/SystemTimeStatus.h"',
             '#include "network/SystemTimeStatus.h"\n#include "network/FixedJsonField.h"', 1)
         for actual, reviewed in zip(current, expected):

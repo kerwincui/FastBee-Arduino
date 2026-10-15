@@ -38,14 +38,29 @@ private:
     void handleSystemRestart(AsyncWebServerRequest* request);
     void handleNetworkConfig(AsyncWebServerRequest* request);
     void handleSaveNetworkConfig(AsyncWebServerRequest* request);
+    void handleNetworkStatus(AsyncWebServerRequest* request);
+    void handleUpdateNetworkConfig(AsyncWebServerRequest* request, JsonVariant& json);
+#if FASTBEE_ENABLE_CONFIG_TRANSFER
+    void handleConfigTransferList(AsyncWebServerRequest* request);
+    void handleConfigTransferExport(AsyncWebServerRequest* request);
+    void handleConfigTransferImport(AsyncWebServerRequest* request);
+    void handleConfigTransferImportBegin(AsyncWebServerRequest* request);
+    void handleConfigTransferImportChunk(AsyncWebServerRequest* request);
+#endif
 #if FASTBEE_ENABLE_FILE_MANAGER
     void handleGetFilesList(AsyncWebServerRequest* request);
+    void handleGetFileContent(AsyncWebServerRequest* request);
+    void handleSaveFile(AsyncWebServerRequest* request);
+    void handleGetFilesystem(AsyncWebServerRequest* request);
 #endif
     void handleGetHealth(AsyncWebServerRequest* request);
     void handleSystemMetrics(AsyncWebServerRequest* request);
     void handleDiagBundle(AsyncWebServerRequest* request);
     void handleWebRuntime(AsyncWebServerRequest* request);
     void handleGetCapabilities(AsyncWebServerRequest* request);
+    void handleFactoryReset(AsyncWebServerRequest* request);
+    void handleGetWebConfig(AsyncWebServerRequest* request);
+    void handleSaveWebConfig(AsyncWebServerRequest* request);
     // void handleGetMemoryProfile(AsyncWebServerRequest* request);  // Disabled
 };
 

@@ -139,6 +139,61 @@ Write-Output 'SIX_RULE_SCRIPT_CONTRACT_CASES_PASS'
                 self.assertEqual([503], check["allowedStatuses"])
                 self.assertEqual([expected_message], check["allowedMessages"])
 
+    def test_feature_gate_contract_strings_and_header(self):
+        self.assertIn("[switch]$RequireEnabledFeatures", SMOKE_SCRIPT)
+        self.assertIn("skipped (feature-gated)", SMOKE_SCRIPT)
+        self.assertIn('-cmatch "disabled by runtime feature config$"', SMOKE_SCRIPT)
+        self.assertIn("-not $RequireEnabledFeatures", SMOKE_SCRIPT)
+        self.assertIn("-not $featureGated", SMOKE_SCRIPT)
+
+        header = SMOKE_SCRIPT.split("[CmdletBinding()]", 1)[0]
+        self.assertIn("SKIPPED(feature-gated)", header)
+        self.assertIn("-RequireEnabledFeatures", header)
+
+    def test_feature_gated_responses_classify_in_powershell(self):
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if executable is None:
+            self.skipTest("PowerShell unavailable for actual smoke semantics")
+        command = r'''
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('scripts/smoke-test-device.ps1',[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'PowerShell AST parse failed'}
+foreach($name in @('Get-ObjectValue','Test-ObjectHasProperty','Test-CheckSemantics','Add-Check')){
+ $definition=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+ . ([scriptblock]::Create($definition.Extent.Text))
+}
+$script:MockResponse=$null
+function Invoke-FastBeeApi { param([string]$Method,[string]$Path,[object]$Body=$null,[switch]$JsonBody) return $script:MockResponse }
+function Try-Login { return $false }
+$RetryCount=0
+$DelayMs=0
+function Invoke-SmokeCase {
+ param([string]$Name,[string]$Json,[bool]$Strict)
+ $script:Results=@()
+ $script:MockResponse=($Json|ConvertFrom-Json)
+ $script:RequireEnabledFeatures=$Strict
+ Add-Check -Name $Name -Method GET -Path '/api/mock'
+ return $script:Results[0]
+}
+$gated='{"success":false,"error":"Device control disabled by runtime feature config","code":503,"timestamp":1}'
+$gatedDefault=Invoke-SmokeCase -Name 'periph-exec-controls' -Json $gated -Strict $false
+$gatedStrict=Invoke-SmokeCase -Name 'users' -Json $gated -Strict $true
+$plainFail=Invoke-SmokeCase -Name 'users' -Json '{"success":false,"error":"boom","code":500}' -Strict $false
+$normalOk=Invoke-SmokeCase -Name 'periph-exec-controls' -Json '{"success":true,"data":{"gpio":{},"system":{}}}' -Strict $false
+if(-not $gatedDefault.Passed){throw 'gated default must be skipped, not failed'}
+if($gatedDefault.Message -notlike 'skipped (feature-gated)*'){throw ('gated default message lost label: '+$gatedDefault.Message)}
+if($gatedDefault.Attempts -ne 1){throw 'gated response must not be retried'}
+if($gatedStrict.Passed){throw 'strict mode must fail gated responses'}
+if($plainFail.Passed){throw 'plain failure must stay failed'}
+if(-not $normalOk.Passed -or $normalOk.Message -ne 'OK'){throw 'normal success semantics changed'}
+Write-Output 'FEATURE_GATE_CLASSIFICATION_CASES_PASS'
+'''
+        result = subprocess.run([executable, '-NoProfile', '-Command', command], cwd=ROOT,
+                                capture_output=True, text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('FEATURE_GATE_CLASSIFICATION_CASES_PASS', result.stdout)
+
     def test_smoke_and_soak_require_exact_optional_error_messages(self):
         for script_name, script in (
             ("smoke", SMOKE_SCRIPT),

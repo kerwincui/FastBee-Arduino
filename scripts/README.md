@@ -25,11 +25,11 @@ node scripts/audit-device-docs.mjs \
 |------|------|----------|
 | `doctor.ps1` | 检查 PlatformIO、Node、Git、串口和 native 工具链，部署或测试前优先运行 | `powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port <serial-port>` |
 | `npm test` | 日常主机回归入口；运行静态门禁、Node/Python 单元测试、配置/UI/内存契约，与 CI 使用同一套清单 | `npm test` |
-| `test-all.ps1` | 发布前统一入口；默认在主机回归后继续运行 native 测试和九个固件环境编译，真机测试必须显式提供 STA 地址 | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1` |
+| `test-all.ps1` | 发布前统一入口；默认在主机回归后继续运行 native 测试和九个固件环境编译，且与 CI 同口径：每个环境追加 LittleFS 构建（`pio run --target buildfs`）和 `test-build-artifacts.js --current-build` 产物校验；仅需固件快路径时传 `-SkipFs` | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1` |
 | `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env <env> -Port <serial-port>` |
 | `build-all-artifacts.ps1` | 为所有版本生成发布固件包和 `manifest.json` | `powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput` |
 | `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env <env> -Port <serial-port>` |
-| `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -RequireNetworkConnected` |
+| `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试；运行期功能被用户 features.json 关闭导致的确定性 503（"disabled by runtime feature config"）默认分类为 SKIPPED(feature-gated) 不计失败，`-RequireEnabledFeatures` 恢复旧的严格判定 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://<device-ip> -Profile unified -RequireNetworkConnected` |
 | `device-web-smoke.ps1` | 按间隔检查发布清单中的全部 Web 资源并输出 CSV，可选强制清单与延迟门槛 | `powershell -ExecutionPolicy Bypass -File scripts\device-web-smoke.ps1 -BaseUrl http://<device-ip> -RequireManifest -Rounds 2 -DelayMs 1000 -TimeoutSec 15 -MaxElapsedMs 5000` |
 | `test-screen-panel-device.mjs` | 实物设备的面板/历史/远程资源能力、鉴权与 API 契约检查；可选保存相同布局验证持久化和版本冲突，不派发外设动作 | `node scripts/test-screen-panel-device.mjs --url=http://<device-ip> --report=artifacts/panel-device.json` |
 | `test-screen-panel-browser-device.mjs` | 实机浏览器导航、配置草稿和桌面/手机截图检查；默认只读。显式 `--exercise-switch` 仅在未绑定显示外设时临时启用面板，最终恢复原开关，不保存布局或执行控制 | `node scripts/test-screen-panel-browser-device.mjs --url=http://<device-ip> --output=artifacts/panel-browser` |
@@ -39,7 +39,13 @@ node scripts/audit-device-docs.mjs \
 | `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收；支持部署后 live fleet JSON。它会登录和注销，因此不属于零 POST 的严格只读监控 | 见下方 8 小时 Web 功能验收命令 |
 | `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://<device-sta-ip> --user admin --pass 123456 --allow-begin` |
 
+npm 脚本入口以 `package.json` 的 `scripts` 字段为准；每个入口必须按 `validate-test-coverage.js` 的登记要求挂进 `test`/`test:host`/`test:static`/`test:contracts` 等链上，否则门禁会报“default host regression does not register”。本文只列常用命令，新增或下线入口时同时更新两处。
+
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
+
+`deploy.ps1` 入口内置 penv 环境守卫：把 `~/.platformio/penv/Scripts` 固定到 PATH 最前并清除 `PYTHONHOME`/`PYTHONPATH`，防止旧版 mingw64/Git 自带的 Python 运行时或 DLL 抢占导致 pio 子进程随机失败（0xC0000135/依赖安装 exit 2）；派生入口（`deploy-config-bundle.ps1`、`deploy-multi-device.ps1`）经嵌套调用同样生效。
+
+penv 的 PlatformIO core 版本钉在 `scripts/platformio-core-pin.json`（当前 6.1.19）：pioarduino platform-espressif32 55.03.38 与 core 6.2.x 组合会在每次 pio 调用时重解析平台 GitHub URL，网络不稳时依赖复核偶发失败（2026-10-14 D11 构建证据），只能以 `PLATFORMIO_OFFLINE=1` 绕行。`deploy.ps1` 系列（经 `scripts/lib/pio-runner.ps1` 的 `Initialize-PioRunner`）、`scripts/test-all.ps1` 构建矩阵与 `npm run test:firmware`（`scripts/run-firmware-tests.js`）都会在构建/部署前断言实际版本与钉版一致，不匹配时直接报错并给出修复命令（`~/.platformio/penv/Scripts/python.exe -m pip install platformio==<钉版>`），不再静默放行。调整钉版时只改 `platformio-core-pin.json` 一处。
 
 `device-fleet.example.json` 中的五组 IP 与串口是当前实验室拓扑示例，不是设备的固定分配，也不声明菜单验收意图。使用 `run-device-fleet-tests.ps1`、`long-term-device-monitor.ps1 -FleetFile` 或 `fleet-stability-monitor.mjs --device-config` 前先生成本次部署的 live fleet 文件；每项必须包含 `label`、`ip`、`profile`、`domain`、`serial`。可选的 `expectedMenus` 是非空菜单名数组：配置后作为硬验收契约，即使设备因 `no-memory` 降级并隐藏菜单也会判定失败；省略时继续按 `/api/system/status` 的运行时功能状态推导菜单，仅用于兼容受限设备、旧清单或探索性监测。正式验收必须根据部署前已确认的 `features.json` 配置意图或部署清单显式生成 `expectedMenus`；不能在故障发生后从已经降级的运行态反推期望集合。用户明确关闭可选菜单时，契约应只列出实际要求的 7 个核心菜单，不能按 S3 等硬件型号强制写成 11 个。
 
@@ -77,6 +83,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-mon
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\long-term-device-monitor.ps1 `
   -DurationHours 72 -IntervalSeconds 60 -HttpTimeoutSec 10 -SerialSeconds 8 `
   -FleetFile $fleetConfig -OutputDir artifacts\long-term-monitor-final-72h
+```
+
+### 候选设备绑定生成
+
+`scripts/monitor-device-candidate.py` 所需的私有 binding（字段与契约见 `docs/device-test-configs/monitoring.md`）由 `scripts/make-candidate-binding.py` 在部署验证完成后生成，不再手工编写。脚本登录一次读取系统信息与各配置导出，按 monitor 的 `config_fingerprint` 同一口径计算配置哈希，冻结 deployment.json 摘要并同时生成 monitor Binding 契约要求的 identity.json（mac/port/deploymentReportSha256/sourceSha256）。binding 与 identity 均以排他方式写入，不覆盖既有证据，重跑须换新输出路径；凭据只经 `FASTBEE_PASSWORD`/`FASTBEE_USERNAME` 环境变量传入，输出为私有材料，不提交、不写入公开样例。
+
+```powershell
+$env:FASTBEE_PASSWORD = '<设备密码>'
+python scripts/make-candidate-binding.py `
+  --device-id <设备ID> --mac <实测MAC> --url http://<设备STA地址> --port-name <串口名> `
+  --deployment-report <deployment.json> --source-sha256 <64位hex> --web-sha256 <64位hex> `
+  --out <私有目录>/binding.json
 ```
 
 ## 测试矩阵
@@ -125,11 +143,11 @@ node test/browser/node_modules/@playwright/test/cli.js test -c test/browser/play
 
 实机有限观察仍使用 `node scripts/test-screen-panel-soak.mjs --url=http://<device-ip> --expected-mac=<mac> --seconds=60 --interval=15 --deployment=<deployment.json> --out=<new-directory>`。这是设备检查入口，不是离线测试命令。它要求 Windows 主机上的字面 IPv4 地址：先无凭据健康检查，再核对同 IP、预期 MAC、`Reachable` 状态的邻居，认证续期也重新核对；身份未知或不符时不发送登录凭据。只允许列出的 GET 和登录/退出所需 POST，无配置写入、重启、Modbus 探测或外设动作。每次输出必须使用不存在的新目录。
 
-观察脚本自动读取部署报告旁的 `soak-observation-plan.json`，也可通过 `--plan=<path>` 指定。提供计划时严格核对目标、部署报告摘要、固件/Web 摘要和配置 revision/hash；没有计划则锁定本轮初始配置。运行中部署报告或配置变化会终止该窗口。实际部署的 Web 文件仍需由版本对应的 `diagnose-live.mjs` 在窗口前后核对，不能仅凭本地报告哈希证明设备资产一致。
+观察脚本自动读取部署报告旁的 `soak-observation-plan.json`，也可通过 `--plan=<path>` 指定。提供计划时严格核对目标、部署报告摘要、固件/Web 摘要和配置 revision/hash；没有计划则锁定本轮初始配置。运行中部署报告或配置变化会终止该窗口。实际部署的 Web 文件仍需由 `device-web-smoke.ps1` 在窗口前后核对发布清单一致性，不能仅凭本地报告哈希证明设备资产一致。
 
 `preflightFailures`、`initializationFailures`、`identityFailures`、`touchFailures`、`transportErrors`、`http429Count` 分别保留；无样本或中断不能算通过。初始化耗时不计入采样窗口，首末实际样本跨度及样本数必须达到覆盖门槛。60 秒内天气没有更新不算失败，长窗口才要求天气和历史序号推进。报告始终保留 `continuous24hStatus=NOT_RUN`、`acceptanceStatus=INCOMPLETE` 及实物触摸/声音/电机等未验证项；有限窗口 PASS 不能替代连续长测或实物验收。
 
-日常代码修改先运行 `npm test`。准备合并或发布时运行 `test-all.ps1` 的默认矩阵；它会复用同一个 `npm test` 清单，再执行 native 与全部固件环境构建。`device-smoke`、`device-soak` 和浏览器真机检查不会使用默认设备地址，必须通过 `-BaseUrl http://<device-sta-ip>` 显式指定 STA 地址，并拒绝 `192.168.4.1`。
+日常代码修改先运行 `npm test`。准备合并或发布时运行 `test-all.ps1` 的默认矩阵；它会复用同一个 `npm test` 清单，再执行 native 与全部固件环境构建，且每个环境与 CI 同口径追加 LittleFS 构建和 `test-build-artifacts.js --current-build` 产物校验（`-SkipFs` 跳过这两项快路径）。`device-smoke`、`device-soak` 和浏览器真机检查不会使用默认设备地址，必须通过 `-BaseUrl http://<device-sta-ip>` 显式指定 STA 地址，并拒绝 `192.168.4.1`。
 
 `device-api-test-matrix.json` 是设备 API 冒烟和稳定性测试共用的检查清单。新增 API 或改变版本裁剪策略时，应同步维护这个文件。
 
@@ -160,6 +178,7 @@ node test/browser/node_modules/@playwright/test/cli.js test -c test/browser/play
 | `collect-artifacts.ps1` | 收集指定环境的固件产物 |
 | `fastbee-artifacts.py` | PlatformIO extra script，生成合并固件和发布文件 |
 | `platformio_ar_wrapper.py`、`platformio-ar-rename-workaround.py` | Windows/PlatformIO ar 工具兼容处理，供构建流程调用 |
+| `build-screen-variant.ps1` | 触控屏 RGB 变体（`esp32s3-F16R8-screen`）唯一构建入口：`-Candidate <名称>-r<N>`，运行 `artifacts/build-<Candidate>.py` 派生构建器；内部固定仓内冻结核心目录 `fastbee-screen-core/` 与候选工程目录 `fastbee-screen-build/`（2026-10-16 由仓外迁入，`.gitignore` 的 `/fastbee-*/` 已覆盖）的 `PLATFORMIO_*` 路径、完全离线模式（`PLATFORMIO_OFFLINE=1`）与 penv 守卫。该目录是独立工具链+冻结 SDK 缓存（体积大、不入 git、须保留），不要用默认 `~/.platformio` 包目录跑该构建。变体要点：`custom_sdkconfig`（XIP from PSRAM、`LCD_RGB_ISR_IRAM_SAFE` 等）要求独立 SDK 编译，SDK 已重编一次并冻结，每轮候选只重编应用层；若冻结目录丢失，须按 pioarduino 55.03.38 / esp-idf v5.5.4 重新安装全部工具包并重走 SDK 重编与基线重验证（r14 基线哈希断言见 `artifacts/rgb-xip40-v12-revalidated-r14.json`）。每轮候选派生 `artifacts/platformio-<Candidate>.ini`（`extends = env:esp32s3-F16R8` 并追加 RGB 宏，须与 canonical 环境新增宏保持同步）与 `artifacts/build-<Candidate>.py`（冻结校验 + 源码镜像 + IRAM 符号证据 + 产物归档），构建报告为 `artifacts/<Candidate>-build.json`；重跑前把上一轮的 `build.json/.log` 移入本轮证据目录，不覆盖不删除。历史板卡说明与验收记录见 `docs/waveshare-esp32s3-touch-lcd4/` 删除前的 git 记录 |
 
 ## Web 资源处理
 

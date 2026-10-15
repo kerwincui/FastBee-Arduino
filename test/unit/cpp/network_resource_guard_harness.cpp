@@ -8,6 +8,15 @@ void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
  if(failResultAllocation && size==sizeof(FastBee::PreflightResult)) return nullptr;
  return (std::malloc)(size);
 }
+// 成组替换规则（test/README.md）：throwing new 与各 delete 形式必须同域，
+// 否则 exe 侧 delete 跨域释放 libstdc++-6.dll 分配，Windows 堆判 0xC0000374。
+void* operator new(std::size_t size) {
+ if(void* p=(std::malloc)(size)) return p;
+ throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { (std::free)(p); }
+void operator delete(void* p, std::size_t) noexcept { (std::free)(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { (std::free)(p); }
 int main() {
  using namespace FastBee;
  WiFiConfig config; String error="stale";

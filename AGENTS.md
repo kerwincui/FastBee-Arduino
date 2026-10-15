@@ -8,7 +8,8 @@
 - 开始修改前检查 `git status --short`，按任务需要阅读相关源码、配置、测试和文档；不要把历史报告当作当前工作区的验证结果。
 - 保留已有未提交修改和其他任务的工作，只修改本次任务相关文件。不要擅自执行 `git reset --hard`、`git checkout --`、`git clean` 或批量清理证据目录。
 - 不要过度优化项目内容。围绕当前需求和已确认的问题做必要修改，优先复用现有实现；避免没有明确收益的重构、抽象、依赖引入及无关优化。
-- 保持项目简洁，不生成无用或重复的文件。优先更新已有文件，临时脚本、草稿和中间产物尽量放在项目外的临时目录；本次会话创建且不属于交付内容、也无需保留为验证证据的临时文件，必须在会话结束前删除。清理仅限本次创建且确认不再需要的文件，保留用户文件、其他任务成果、必要的测试及历史验证证据。
+- 保持项目简洁，不生成无用或重复的文件。优先更新已有文件；本次会话创建且不属于交付内容、也无需保留为验证证据的临时文件，必须在会话结束前删除。清理仅限本次创建且确认不再需要的文件，保留用户文件、其他任务成果、必要的测试及历史验证证据。
+- 项目相关的文件生成（隔离构建目录、工作区快照、临时脚本、草稿和中间产物等）统一放在仓库根目录下，通过 `.gitignore` 配置过滤不提交；不得在 `C:\`、`D:\` 等仓库外路径散落创建（历史反例如 `C:\p11`、`C:\px-rgb20`、`D:\project\fastbee-*`，已于 2026-10-15 清理）。隔离构建目录和工作区快照以 `fastbee-` 开头命名，临时产物放入已忽略的 `tmp/`。
 - “只评估”“只诊断”“审核”按只读任务处理；“修改”“实现”“完善测试”则完成相应实现和验证。已明确授权的常规步骤继续执行，遇到目标设备不明、改动冲突或需要扩大范围时再说明具体阻塞。
 - 用户要求继续完成某份计划时，以该计划及其当前实施记录为工作清单，逐项落实并更新证据；不要只输出方案，也不要把存在实物依赖的项目标成全部完成。
 - 未要求提交或发布时，将结果保留为可审核的本地改动。
@@ -21,20 +22,25 @@ FastBee-Arduino 是面向 ESP32 系列的零代码 Web 物联网固件，通过�
 
 | 路径 | 职责与修改入口 |
 | --- | --- |
-| `src/`、`include/` | 固件实现及对应头文件，按同名模块组织 |
+| `src/`、`include/` | 固件实现及对应头文件，按同名模块组织（`core`、`network`、`peripherals`、`protocols`、`screen`、`security`、`systems`、`utils`） |
 | `src/core/` | 框架、外设管理、执行调度、规则和电机控制服务 |
 | `src/network/`、`src/network/handlers/` | 网络适配、Web 服务和 API 路由 |
 | `src/protocols/`、`src/peripherals/` | MQTT、Modbus RTU 及外设驱动 |
-| `src/screen/`、`src/security/`、`src/systems/` | 屏幕交互、认证、配置存储、日志及健康管理 |
+| `src/screen/`、`src/security/`、`src/systems/`、`src/utils/` | 屏幕交互、认证、配置存储、日志、健康管理和通用工具 |
 | `web-src/` | HTML、JavaScript、CSS、页面模块和中英文文案源码 |
 | `data/config/` | LittleFS 默认配置，不代表在线设备当前配置 |
 | `data/www/` | 自动生成的 Web 发布资源；源资产例外见下文 |
 | `partitions/`、`platformio.ini` | 分区布局、依赖、构建环境和编译能力 |
 | `scripts/` | 构建、资源生成、部署、验证及诊断入口 |
-| `test/unit/`、`test/helpers/`、`test/mocks/` | 主机测试、C++ 测试辅助代码及模拟依赖 |
-| `test/browser/`、`test/e2e/` | Playwright 离线/设备测试和设备测试辅助代码 |
+| `test/` 根目录 `test_*.cpp` | Native 主机测试用例（`run_tests.cpp` 为入口） |
+| `test/unit/`、`test/helpers/`、`test/mocks/`、`test/fixtures/` | 主机测试、C++ 测试辅助代码、模拟依赖及测试数据 |
+| `test/browser/` | Playwright 离线/设备测试（设备发现辅助在 `test/helpers/`） |
 | `docs/` | 公开配置样例、专项设计、改进计划和验收说明 |
-| `.pio/`、`dist/`、`artifacts/` | 构建缓存、发布产物和本地验证证据，不作为业务源码编辑 |
+| `images/` | 文档及 README 引用的图片 |
+| `vendor/` | 仓内固化的第三方源码（如 `esp-idf-rgb-*`），配合 `patches/` 维护 |
+| `managed_components/` | ESP-IDF 组件管理器输出，可由 `dependencies.lock` 恢复，不提交 |
+| `tmp/` | 本地临时产物，不提交 |
+| `.pio/`、`node_modules/`、`dist/`、`artifacts/` | 构建缓存、npm 依赖、发布产物和本地验证证据，不作为业务源码编辑 |
 
 ## 修改原则
 
@@ -45,7 +51,7 @@ FastBee-Arduino 是面向 ESP32 系列的零代码 Web 物联网固件，通过�
 - 修改配置结构、逻辑 ID 或协议字段时保留旧配置兼容；迁移失败不能静默重置用户配置。新增 API 或改变裁剪行为时检查 `scripts/device-api-test-matrix.json` 及相应契约测试。
 - 修改 Web 页面只编辑 `web-src/`，再通过构建脚本生成发布资源。`data/www/assets/logo.png` 与 `data/www/assets/favicon.ico` 是受 Git 跟踪的源资产例外，隔离构建时必须保留。
 - HTML/JS/CSS 发布资源采用 gzip-only 形式，使用现有清单和资源检查流程；不要直接修改生成的 bundle、`.gz` 或 Service Worker 清单来修复问题。
-- 新增或修改界面文案时同步维护 `web-src/i18n/` 的中英文键，并检查窄屏布局、加载状态、失败提示和离页后的异步回调。
+- 界面文案直接以中文硬编码（UTF-8），与现有硬编码文案保持一致；新增或修改文案时检查窄屏布局、加载状态、失败提示和离页后的异步回调。
 - 遵循 `.editorconfig` 和相邻代码风格，避免顺手格式化无关文件。文本使用 UTF-8；C/C++ 以 `.clang-format` 为参考。
 - 依赖或底层库补丁通过现有配置及 `patches/`、补丁脚本维护，不把对 `.pio/`、`node_modules/` 的手工修改作为交付结果。
 
@@ -101,6 +107,8 @@ npx --prefix test/browser playwright install chromium
 
 按改动范围选择检查，命令定义以当前 `package.json`、`test/browser/package.json` 和脚本为准：
 
+**断点续跑原则（2026-10-15 约定）**：测试链、部署流程和其他多步骤脚本在某一步报错时，修复该处问题后从失败步骤继续执行，不要每次从头全量重跑（如 `npm test` 失败于 test:contracts，就修复后先单独重跑对应脚本/套件，确认绿后再视需要补跑后续段；部署四台设备失败于第二台，就修复后从第二台继续，不重复已成功的第一台）。全量重跑只用于最终整体验证或失败根因不明的场合。
+
 | 场景 | 入口 | 验证范围 |
 | --- | --- | --- |
 | 纯文档修改 | `node scripts/check-utf8-text.js AGENTS.md`，将文件参数替换为实际改动路径 | 编码；另检查链接和 diff，不要求固件编译 |
@@ -124,6 +132,7 @@ npx --prefix test/browser playwright install chromium
 
 - 同一工作区的 PlatformIO、Host/Native 回归、Web 资源生成，以及同一设备的串口读写和部署需串行安排；共享构建或设备操作使用 `scripts/firmware-build-lock.ps1`。锁被占用时等待，不删除锁文件或终止其他任务的进程。
 - `deploy.ps1`、`test-all.ps1` 和 Native/固件测试入口已接入锁；直接运行 `npm test`、Web 构建或其他未包锁命令时，在外层获取同一把锁。Web 构建自身的发布锁不能代替整个构建/部署流程的协调。
+- `deploy.ps1` 入口固定 `~/.platformio/penv/Scripts` 到 PATH 最前并清除 `PYTHONHOME`/`PYTHONPATH`（penv 环境守卫），防止旧版 mingw64/Git 运行时抢占导致 pio 子进程随机失败；主机单元测试由 `scripts/run-unit-tests.js` 做同样的编译器运行时前置。
 - 多个任务正在修改源码时，正式构建应固定源码、配置和测试输入并保留摘要。构建期间输入变化，产物不能作为该次发布的有效证据。
 
 手动包锁示例，`try` 内替换为本次需要的命令，并检查每条命令的退出码：
@@ -181,6 +190,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1 -Env esp3
 - 测试、部署和诊断脚本：[scripts/README.md](scripts/README.md)。
 - 公共资源、容量准入及恢复要求：[资源与稳定性验收约束](docs/generic-resource-stability-contract.md)；量化验收门槛：[设备稳定性阈值](scripts/device-stability-thresholds.json)。历史实施记录不作为本次通过证据。
 - 设备样例与私有备份边界：[docs/README.md](docs/README.md)，再按目标板卡查看对应子目录。
-- 系统改进任务：[整体评估与改进计划](docs/system-assessment-and-improvement-plan-20261001.md)及其中链接的最新实施记录、验收清单。
+- 系统改进任务：[项目审计与改进计划](docs/project-audit-and-improvement-plan-20261013.md)（含顺序执行步骤与在途事项接管）；2026-10-01 系统改进计划集群与 2026-10-05 交接文档已于 2026-10-13 清理，历史内容见 git 记录。
 - 持续集成检查：[.github/workflows/ci.yml](.github/workflows/ci.yml)。
 - `AGENTS.md` 文件约定：[OpenAI 官方说明](https://learn.chatgpt.com/docs/agent-configuration/agents-md)。

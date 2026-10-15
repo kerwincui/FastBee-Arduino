@@ -223,6 +223,15 @@ function testSourceContracts() {
         'deploy must hold the lock before process cleanup through artifact repair');
     assert.ok(deployExit < verifyWeb && deployExit < monitor,
         'deploy must release the build lock before HTTP verification and serial monitoring');
+    // Process cleanup must spare penv pythons running long-lived repo tasks
+    // (monitor-device-candidate.py observation windows): only build activity
+    // in the command line may be killed. Regression: deploy once killed three
+    // running 2h observation monitors (2026-10-15).
+    for (const scriptName of ['deploy.ps1', 'build-all-artifacts.ps1']) {
+        const script = fs.readFileSync(path.join(ROOT, 'scripts', scriptName), 'utf8');
+        assert.ok(script.includes('Get-CimInstance Win32_Process') && script.includes('-m platformio|platformio\\.py|scons'),
+            `${scriptName} cleanup must match build activity in the python command line before killing`);
+    }
 
     const config = fs.readFileSync(path.join(ROOT, 'scripts', 'deploy-config-bundle.ps1'), 'utf8');
     const configEnter = config.indexOf('$firmwareLock = Enter-FastBeeFirmwareBuildLock');
@@ -261,7 +270,7 @@ function testSourceContracts() {
 
     const deployAll = fs.readFileSync(path.join(ROOT, 'scripts', 'deploy-all.ps1'), 'utf8');
     const deployAllEnter = deployAll.indexOf('$firmwareLock = Enter-FastBeeFirmwareBuildLock');
-    const deployAllBuild = deployAll.indexOf('& pio run -e $Env', deployAllEnter);
+    const deployAllBuild = deployAll.indexOf("Invoke-PioRunner -Args @('run', '-e', $Env)", deployAllEnter);
     const deployAllFlash = deployAll.indexOf('Start-Job -ScriptBlock', deployAllBuild);
     const deployAllExit = deployAll.indexOf('Exit-FastBeeFirmwareBuildLock', deployAllFlash);
     assert.ok(deployAllEnter >= 0 && deployAllEnter < deployAllBuild && deployAllBuild < deployAllFlash &&
@@ -321,7 +330,8 @@ function testDirectPioEntrantInventory() {
         /run\(\s*['"]pio['"]\s*,\s*\[\s*['"]run['"]/i,
         /command:\s*['"]pio['"][\s\S]{0,160}?args:\s*\[\s*['"]test['"]/i,
         /['"]pio['"]\s*,\s*['"]run['"]/i,
-        /['"]platformio['"]\s*,\s*['"]test['"]/i
+        /['"]platformio['"]\s*,\s*['"]test['"]/i,
+        /Invoke-PioRunner\s+-Args\s+@\(\s*'run'/i
     ];
     const discovered = candidates.filter((name) => {
         const source = fs.readFileSync(path.join(scriptsDir, name), 'utf8');

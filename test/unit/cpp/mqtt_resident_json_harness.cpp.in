@@ -103,6 +103,15 @@ static bool mqttHasInternalDram(uint32_t minimum, uint32_t contiguous, const cha
     assert(minimum == 30000 && contiguous == 4096 && std::string(context) == "publishDeviceInfo");
     record("dram:30000:4096:publishDeviceInfo"); return dramAllowed;
 }
+// D9 staging seam: 与设备一致的容量常量；guard 提供静态 512B 暂存（host 侧始终可用）
+static constexpr size_t MQTT_PUBLISH_STAGING_CAPACITY = 512;
+struct MqttPublishBufferGuard {
+    static char storage[MQTT_PUBLISH_STAGING_CAPACITY];
+    char* buffer = storage;
+    ~MqttPublishBufferGuard() = default;
+    bool held() const { return buffer != nullptr; }
+};
+char MqttPublishBufferGuard::storage[MQTT_PUBLISH_STAGING_CAPACITY];
 class FBNetworkManager {
 public:
     bool connected = false;
@@ -151,6 +160,12 @@ public:
         assert(index == 2 && config.publishTopics.at(index).topicType == MqttTopicType::DEVICE_INFO);
         record("publish:" + std::to_string(index));
         ++activeResult->publications; activeResult->text = std::string(payload);
+        return publishAccepted;
+    }
+    bool publishToTopic(size_t index, const char* payload, size_t length) const {
+        assert(index == 2 && config.publishTopics.at(index).topicType == MqttTopicType::DEVICE_INFO);
+        record("publish:" + std::to_string(index));
+        ++activeResult->publications; activeResult->text = std::string(payload, length);
         return publishAccepted;
     }
     QueueSnapshot getReportQueueSnapshot() const { record("queue-snapshot"); return queue; }

@@ -158,6 +158,34 @@ void ensureFastBeeOtaSubscribeTopic(std::vector<MqttSubscribeTopic>& topics) {
 // 512 字节 × 4 槽 = 2KB DRAM 预分配，与 MqttSlot.payload 尺寸对齐
 FastBee::StringBufferPool<512, 4> g_mqttPublishPool;
 
+// 池本身无线程安全（见 StringBufferPool.h 说明），而发布路径跨 loopTask /
+// 重连任务 / Web 任务 / pexec worker 并发可达，acquire/release 必须在同一
+// 临界区内完成；缓冲本体为静态存储，绝不落在任务栈上。
+static portMUX_TYPE g_mqttPublishPoolMux = portMUX_INITIALIZER_UNLOCKED;
+
+// 发布暂存缓冲容量（与槽环 MQTT_SLOT_MAX_PAYLOAD=512 对齐）
+static constexpr size_t MQTT_PUBLISH_STAGING_CAPACITY = 512;
+
+// RAII 暂存缓冲：构造时从池取槽，析构归还；取不到（耗尽）时 held()==false，
+// 调用方走既有 String 动态分配回退路径。
+struct MqttPublishBufferGuard {
+    char* buffer;
+    MqttPublishBufferGuard() {
+        portENTER_CRITICAL(&g_mqttPublishPoolMux);
+        buffer = g_mqttPublishPool.acquire();
+        portEXIT_CRITICAL(&g_mqttPublishPoolMux);
+    }
+    ~MqttPublishBufferGuard() {
+        if (!buffer) return;
+        portENTER_CRITICAL(&g_mqttPublishPoolMux);
+        g_mqttPublishPool.release(buffer);
+        portEXIT_CRITICAL(&g_mqttPublishPoolMux);
+    }
+    MqttPublishBufferGuard(const MqttPublishBufferGuard&) = delete;
+    MqttPublishBufferGuard& operator=(const MqttPublishBufferGuard&) = delete;
+    bool held() const { return buffer != nullptr; }
+};
+
 
 // Keep the SSE payload self-describing.  The REST status route has the same
 // mapping, but MQTTClient is also the producer for asynchronous status events;
@@ -971,8 +999,16 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     return publishToTopicImpl(topicIndex, message, false);
 }
 
+bool MQTTClient::publishToTopic(size_t topicIndex, const char* message, size_t length) {
+    return publishToTopicImpl(topicIndex, message, length, false);
+}
+
 bool MQTTClient::publishPreparedTopic(size_t topicIndex, const String& message) {
     return publishToTopicImpl(topicIndex, message, true);
+}
+
+bool MQTTClient::publishPreparedTopic(size_t topicIndex, const char* message, size_t length) {
+    return publishToTopicImpl(topicIndex, message, length, true);
 }
 
 bool MQTTClient::queueTopicMessage(size_t topicIndex, const String& message) {
@@ -998,26 +1034,36 @@ bool MQTTClient::queueTopicMessage(size_t topicIndex, const String& message) {
         return rejectInvalidReport();
     const String fullTopic = buildFullTopicWithType(topic.topic, topic.autoPrefix, topic.topicType);
     if (!FastBee::validMqttTopicText(fullTopic, true)) return rejectInvalidReport();
-    String payload;
 #if FASTBEE_ENABLE_RULE_SCRIPT
     if (FastBee::RuntimeFeatureManager::instance().isUserEnabled("ruleScript")) {
+        String payload;
         if (!RuleScriptManager::getInstance().tryApplyReportTransform(0, message, payload, MQTT_SLOT_MAX_PAYLOAD))
             return rejectInvalidReport();
-    } else if (!FastBee::copyCheckedText(payload, message.c_str(), message.length(), MQTT_SLOT_MAX_PAYLOAD)) {
-        return rejectInvalidReport();
+        if (payload.isEmpty() || payload.length() > MQTT_SLOT_MAX_PAYLOAD || fullTopic.length() > UINT16_MAX ||
+            fullTopic.length() + payload.length() + MQTT_MAX_HEADER_SIZE + 2U > mqttClient.getBufferSize()) return rejectInvalidReport();
+        return queueReportDataEncoded(payload.c_str(), static_cast<uint16_t>(payload.length()),
+                                     MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT, static_cast<uint16_t>(topicIndex));
     }
-#else
-    if (!FastBee::copyCheckedText(payload, message.c_str(), message.length(), MQTT_SLOT_MAX_PAYLOAD))
-        return rejectInvalidReport();
 #endif
-    if (payload.isEmpty() || payload.length() > MQTT_SLOT_MAX_PAYLOAD || fullTopic.length() > UINT16_MAX ||
-        fullTopic.length() + payload.length() + MQTT_MAX_HEADER_SIZE + 2U > mqttClient.getBufferSize()) return rejectInvalidReport();
-    return queueReportDataEncoded(payload.c_str(), static_cast<uint16_t>(payload.length()),
+    // 无脚本转换：入口已校验 message 非空、长度不超 512、无内嵌 NUL，
+    // 直接固化原始字节入队，不再经 String 中转复制。
+    if (fullTopic.length() > UINT16_MAX ||
+        fullTopic.length() + message.length() + MQTT_MAX_HEADER_SIZE + 2U > mqttClient.getBufferSize()) return rejectInvalidReport();
+    return queueReportDataEncoded(message.c_str(), static_cast<uint16_t>(message.length()),
                                  MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT, static_cast<uint16_t>(topicIndex));
 }
 
 bool MQTTClient::publishToTopicImpl(size_t topicIndex, const String& message, bool prepared) {
     if (isConnectionTestOnly()) return false;
+    return publishToTopicImpl(topicIndex, message.c_str(), message.length(), prepared);
+}
+
+bool MQTTClient::publishToTopicImpl(size_t topicIndex, const char* message, size_t messageLength, bool prepared) {
+    if (isConnectionTestOnly()) return false;
+    if (!message) {
+        if (messageLength > 0) return false;
+        message = "";
+    }
     RecursiveMutexGuard lock(_publishMutex, 0);
     if (!lock.isLocked() || !isConnected || stopped || topicIndex >= config.publishTopics.size()) {
         return false;
@@ -1051,34 +1097,45 @@ bool MQTTClient::publishToTopicImpl(size_t topicIndex, const String& message, bo
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
     if (!FastBee::validMqttTopicText(fullTopic, true)) return false;
     if (prepared && (pt.topicType == MqttTopicType::OTA_UPGRADE || pt.topicType == MqttTopicType::NTP_SYNC ||
-        message.isEmpty() || message.length() > MQTT_SLOT_MAX_PAYLOAD ||
-        std::memchr(message.c_str(), '\0', message.length()))) return false;
+        messageLength == 0 || messageLength > MQTT_SLOT_MAX_PAYLOAD ||
+        std::memchr(message, '\0', messageLength))) return false;
     const String fastBeeOtaReplyPath =
         "/" + config.deviceNum + "/http/upgrade/reply";
     // OTA acknowledgements are a fixed FastBee protocol contract and must not
     // be rewritten by user report scripts.
+    // 直发路径零拷贝：prepared（入队时已冻结脚本结果）、无脚本及 OTA 契约主题
+    // 均直接引用调用方缓冲发布，不再构造 String payload 整包副本；payload 无
+    // 内嵌 NUL（prepared 路径上方已校验），长度化 publish 与原 c_str() 语义一致。
+    const uint8_t* outBytes = reinterpret_cast<const uint8_t*>(message);
+    size_t outLength = messageLength;
 #if FASTBEE_ENABLE_RULE_SCRIPT
-    String payload = (prepared || !FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript") ||
-                      fullTopic == fastBeeOtaReplyPath ||
-                      pt.topicType == MqttTopicType::OTA_UPGRADE ||
-                      pt.topicType == MqttTopicType::OTA_BINARY)
-        ? message
-        : RuleScriptManager::getInstance().applyReportTransform(0, message);
+    const bool bypassTransform = prepared ||
+        !FastBee::RuntimeFeatureManager::instance().shouldEnable("ruleScript") ||
+        fullTopic == fastBeeOtaReplyPath ||
+        pt.topicType == MqttTopicType::OTA_UPGRADE ||
+        pt.topicType == MqttTopicType::OTA_BINARY;
+    String transformed;  // 仅规则脚本分支填充；直发路径保持空、零堆分配
+    if (!bypassTransform) {
+        transformed = RuleScriptManager::getInstance().applyReportTransform(
+            0, String(message, messageLength));
+        outBytes = reinterpret_cast<const uint8_t*>(transformed.c_str());
+        outLength = transformed.length();
+    }
 #else
-    (void)prepared;
-    String payload = message;
+    (void)fastBeeOtaReplyPath;
 #endif
-    if (prepared && (payload.length() != message.length() ||
-        memcmp(payload.c_str(), message.c_str(), message.length()) != 0)) return false;
-    bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
+    // prepared 的"字节不得被脚本改变"由 bypassTransform 中 prepared 条件结构性保证
+    bool ok = mqttClient.publish(fullTopic.c_str(), outBytes,
+                                 static_cast<unsigned int>(outLength), pt.retain);
 
     // 统一打印 MQTT 上报日志（Serial.printf 避免 LoggerSystem 文件 I/O 在发布路径中加剧栈压力）
-    {
-        String truncatedPayload = payload.length() > 120 ? payload.substring(0, 120) + "..." : payload;
-        Serial.printf("[MQTT] TX ▲ topic=%s len=%u payload=%s result=%s\n",
-                      fullTopic.c_str(), payload.length(), truncatedPayload.c_str(),
-                      ok ? "OK" : "FAIL");
-    }
+    // %.*s 截断打印，不再构造 truncatedPayload String
+    Serial.printf("[MQTT] TX ▲ topic=%s len=%u payload=%.*s%s result=%s\n",
+                  fullTopic.c_str(), static_cast<unsigned int>(outLength),
+                  static_cast<int>(outLength > 120 ? 120 : outLength),
+                  reinterpret_cast<const char*>(outBytes),
+                  outLength > 120 ? "..." : "",
+                  ok ? "OK" : "FAIL");
 
     if (!ok) {
         char buf[80];
@@ -1129,7 +1186,7 @@ bool MQTTClient::publishDeviceInfo() {
         return false;
     }
 
-    // 内存保护：该函数需要约 2KB 内部 DRAM 分配（JsonDocument + String payload）。
+    // 内存保护：该函数需要约 2KB 内部 DRAM 分配（JsonDocument + 发布暂存/回退缓冲）。
     if (!mqttHasInternalDram(30000, 4096, "publishDeviceInfo")) {
         return false;
     }
@@ -1181,14 +1238,25 @@ bool MQTTClient::publishDeviceInfo() {
         FastBee::setFixedJsonField(summary, "chip", ESP.getChipModel());
     }
 
-    String payload;
-    serializeJson(doc, payload);
-
     // 获取完整主题用于日志输出
     const MqttPublishTopic& pt = config.publishTopics[infoTopicIdx];
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
 
-    bool ok = publishToTopic((size_t)infoTopicIdx, payload);
+    // 序列化直写固定发布暂存缓冲（静态存储，非任务栈）；summary 超容
+    // （>511B，大 payload 路径）或池耗尽时回退既有 String 动态分配路径。
+    const size_t jsonSize = measureJson(doc);
+    bool ok = false;
+    MqttPublishBufferGuard staging;
+    if (staging.held() && jsonSize < MQTT_PUBLISH_STAGING_CAPACITY) {
+        const size_t written = serializeJson(doc, staging.buffer, MQTT_PUBLISH_STAGING_CAPACITY);
+        if (written == jsonSize) {
+            ok = publishToTopic((size_t)infoTopicIdx, staging.buffer, written);
+        }
+    } else {
+        String payload;
+        serializeJson(doc, payload);
+        ok = publishToTopic((size_t)infoTopicIdx, payload);
+    }
 
     LOG_INFO(ok ? "MQTT: Published device info" : "MQTT: Failed to publish device info");
 
@@ -1239,6 +1307,15 @@ bool MQTTClient::publishMonitorData() {
 
 bool MQTTClient::publishReportData(const String& payload) {
     if (isConnectionTestOnly()) return false;
+    return publishReportData(payload.c_str(), payload.length());
+}
+
+bool MQTTClient::publishReportData(const char* payload, size_t payloadLength) {
+    if (isConnectionTestOnly()) return false;
+    if (!payload) {
+        if (payloadLength > 0) return false;
+        payload = "";
+    }
     if (!isConnected) {
         return false;
     }
@@ -1275,11 +1352,11 @@ bool MQTTClient::publishReportData(const String& payload) {
         // Keep valid JSON objects/arrays on MQTT's text path; only non-JSON
         // payloads are eligible for strict HEX decoding below.
         const bool payloadIsStructuredJson = mqttPayloadIsStructuredJson(
-            reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length());
+            reinterpret_cast<const uint8_t*>(payload), payloadLength);
         if (payloadIsStructuredJson) break;
 
         // 校验是否为偶数长度且字符集全部为 [0-9a-fA-F]
-        unsigned int hexLen = payload.length();
+        unsigned int hexLen = static_cast<unsigned int>(payloadLength);
         if (hexLen < 8 || (hexLen % 2) != 0) {
             LOG_WARNINGF("MQTT: Modbus raw report must be even-length HEX (len=%u), publish rejected",
                          hexLen);
@@ -1287,7 +1364,7 @@ bool MQTTClient::publishReportData(const String& payload) {
         }
         bool allHex = true;
         for (unsigned int i = 0; i < hexLen; i++) {
-            char c = payload.charAt(i);
+            char c = payload[i];
             bool v = (c >= '0' && c <= '9') ||
                      (c >= 'a' && c <= 'f') ||
                      (c >= 'A' && c <= 'F');
@@ -1313,8 +1390,8 @@ bool MQTTClient::publishReportData(const String& payload) {
             return 0;
         };
         for (unsigned int i = 0; i < byteLen; i++) {
-            buf[i] = (uint8_t)((hexVal(payload.charAt(i * 2)) << 4) |
-                               hexVal(payload.charAt(i * 2 + 1)));
+            buf[i] = (uint8_t)((hexVal(payload[i * 2]) << 4) |
+                               hexVal(payload[i * 2 + 1]));
         }
 
         const uint16_t expectedCrc = mh->calculateCRC(buf, byteLen - 2U);
@@ -1331,14 +1408,17 @@ bool MQTTClient::publishReportData(const String& payload) {
             ok = mqttClient.publish(fullTopic.c_str(), buf, byteLen, pt.retain);
         }
         sentAsBinary = true;
-        Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u hex=%s result=%s\n",
-                      fullTopic.c_str(), byteLen, payload.c_str(), ok ? "OK" : "FAIL");
+        // D5 保留：同文件 1131 行 TX 诊断，Serial.printf 避免 LoggerSystem
+        // 文件 I/O 在发布路径中加剧任务栈压力。
+        Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u hex=%.*s result=%s\n",
+                      fullTopic.c_str(), byteLen, static_cast<int>(payloadLength),
+                      payload, ok ? "OK" : "FAIL");
     } while (false);
 #endif
 
     if (!sentAsBinary) {
         // 非透传模式或已验证的结构化 JSON：按文本发布。
-        ok = publishToTopic((size_t)reportTopicIdx, payload);
+        ok = publishToTopic((size_t)reportTopicIdx, payload, payloadLength);
     }
 
     char logBuf[128];
@@ -1351,7 +1431,12 @@ bool MQTTClient::publishReportData(const String& payload) {
 
 bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
     if (isConnectionTestOnly()) return false;
-    if (!isConnected) return false;
+    return publishModbusRtuReport(hexPayload.c_str(), hexPayload.length());
+}
+
+bool MQTTClient::publishModbusRtuReport(const char* hexPayload, size_t hexLength) {
+    if (isConnectionTestOnly()) return false;
+    if (!hexPayload || hexLength == 0 || !isConnected) return false;
 
     const int reportTopicIdx = findEnabledPublishTopicIndex(MqttTopicType::DATA_REPORT);
     if (reportTopicIdx < 0) {
@@ -1361,10 +1446,10 @@ bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
 
     uint8_t frame[Protocols::MODBUS_BUFFER_SIZE];
     size_t frameLength = 0;
-    if (!decodeModbusRtuHex(hexPayload.c_str(), hexPayload.length(),
+    if (!decodeModbusRtuHex(hexPayload, hexLength,
                             frame, sizeof(frame), frameLength)) {
         LOG_WARNINGF("MQTT: Explicit Modbus RTU report rejected (invalid HEX/CRC, len=%u)",
-                     static_cast<unsigned>(hexPayload.length()));
+                     static_cast<unsigned>(hexLength));
         return false;
     }
 
@@ -1378,6 +1463,7 @@ bool MQTTClient::publishModbusRtuReport(const String& hexPayload) {
         if (!lock.isLocked() || stopped || !isConnected) return false;
         ok = mqttClient.publish(fullTopic.c_str(), frame, frameLength, topic.retain);
     }
+    // D5 保留：TX 诊断同 1131 行 rationale，避免 LoggerSystem 文件 I/O 加剧发布任务栈压力。
     Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u result=%s\n",
                   fullTopic.c_str(), static_cast<unsigned>(frameLength),
                   ok ? "OK" : "FAIL");
@@ -1411,36 +1497,89 @@ bool MQTTClient::publishDeviceEvent(const String& eventId, const String& eventNa
     if (value.isEmpty()) value = eventData;
     if (value.isEmpty()) value = "1";
 
-    // JSON 转义：最小限度处理双引号和反斜杠
-    auto escapeJson = [](const String& s) {
-        String out;
-        out.reserve(s.length() + 4);
-        for (size_t i = 0; i < s.length(); ++i) {
-            char c = s[i];
-            if (c == '"' || c == '\\') {
-                out += '\\';
-                out += c;
-            } else if (c == '\n') {
-                out += "\\n";
-            } else if (c == '\r') {
-                out += "\\r";
-            } else if (c == '\t') {
-                out += "\\t";
-            } else {
-                out += c;
+    // 超长拒绝：转义最大膨胀 2 倍，上界超过暂存容量（512，与槽环上限一致）
+    // 时拒绝发布而非截断 JSON，与池是否可用无关，行为确定。
+    const size_t worstCase = 40U + 2U * (eventId.length() + value.length());
+    if (worstCase > MQTT_PUBLISH_STAGING_CAPACITY) {
+        LOG_WARNINGF("MQTT: DEVICE_EVENT payload exceeds %u bytes, rejected eventId=%s",
+                     (unsigned)MQTT_PUBLISH_STAGING_CAPACITY, eventId.c_str());
+        return false;
+    }
+
+    // JSON 转义（与旧 escapeJson 一致：" \ \n \r \t）直写固定暂存缓冲
+    // （静态存储，非任务栈）；池耗尽时回退原 String 构建路径。
+    MqttPublishBufferGuard staging;
+    size_t stagedLen = 0;
+    String fallbackPayload;  // 仅池耗尽回退路径填充；直发路径保持空、零堆分配
+    const char* eventBytes = nullptr;
+    size_t eventLength = 0;
+    if (staging.held()) {
+        auto appendRaw = [&](const char* text, size_t len) -> bool {
+            if (stagedLen + len > MQTT_PUBLISH_STAGING_CAPACITY) return false;
+            memcpy(staging.buffer + stagedLen, text, len);
+            stagedLen += len;
+            return true;
+        };
+        auto appendEscaped = [&](const String& text) -> bool {
+            for (size_t i = 0; i < text.length(); ++i) {
+                const char c = text[i];
+                bool appended;
+                if (c == '"' || c == '\\') {
+                    appended = appendRaw("\\", 1) && appendRaw(&c, 1);
+                } else if (c == '\n') {
+                    appended = appendRaw("\\n", 2);
+                } else if (c == '\r') {
+                    appended = appendRaw("\\r", 2);
+                } else if (c == '\t') {
+                    appended = appendRaw("\\t", 2);
+                } else {
+                    appended = appendRaw(&c, 1);
+                }
+                if (!appended) return false;
             }
+            return true;
+        };
+        const bool built = appendRaw("[{\"id\":\"", 8) && appendEscaped(eventId) &&
+                           appendRaw("\",\"value\":\"", 11) && appendEscaped(value) &&
+                           appendRaw("\",\"remark\":\"event\"}]", 21);
+        if (!built) {  // 上界已预检，理论不可达；防御性拒绝
+            LOG_WARNINGF("MQTT: DEVICE_EVENT staging overflow, rejected eventId=%s",
+                         eventId.c_str());
+            return false;
         }
-        return out;
-    };
-
-    String payload;
-    payload.reserve(64 + eventId.length() + value.length());
-    payload = "[{\"id\":\"";
-    payload += escapeJson(eventId);
-    payload += "\",\"value\":\"";
-    payload += escapeJson(value);
-    payload += "\",\"remark\":\"event\"}]";
-
+        eventBytes = staging.buffer;
+        eventLength = stagedLen;
+    } else {
+        // 池耗尽回退：保留原 String 构建（转义语义与 appendEscaped 一致）
+        auto escapeJson = [](const String& in) {
+            String out;
+            out.reserve(in.length() + 4);
+            for (size_t i = 0; i < in.length(); ++i) {
+                char c = in[i];
+                if (c == '"' || c == '\\') {
+                    out += '\\';
+                    out += c;
+                } else if (c == '\n') {
+                    out += "\\n";
+                } else if (c == '\r') {
+                    out += "\\r";
+                } else if (c == '\t') {
+                    out += "\\t";
+                } else {
+                    out += c;
+                }
+            }
+            return out;
+        };
+        fallbackPayload.reserve(64 + eventId.length() + value.length());
+        fallbackPayload = "[{\"id\":\"";
+        fallbackPayload += escapeJson(eventId);
+        fallbackPayload += "\",\"value\":\"";
+        fallbackPayload += escapeJson(value);
+        fallbackPayload += "\",\"remark\":\"event\"}]";
+        eventBytes = fallbackPayload.c_str();
+        eventLength = fallbackPayload.length();
+    }
     // 遍历所有启用的 DEVICE_EVENT 类型主题，广播事件
     bool anyPublished = false;
     for (size_t i = 0; i < config.publishTopics.size(); i++) {
@@ -1449,7 +1588,7 @@ bool MQTTClient::publishDeviceEvent(const String& eventId, const String& eventNa
         if (!pt.enabled) continue;
 
         String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
-        bool ok = publishToTopic(i, payload);
+        bool ok = publishToTopic(i, eventBytes, eventLength);
         char evLogBuf[160];
         snprintf(evLogBuf, sizeof(evLogBuf), "MQTT: %s DEVICE_EVENT eventId=%s topic=%s",
                  ok ? "Published" : "Failed to publish", eventId.c_str(), fullTopic.c_str());
@@ -1486,16 +1625,32 @@ bool MQTTClient::publishNtpSync() {
     ntpRequestPending = true;
 
     // 构建 NTP 请求 JSON: {"deviceSendTime": "1592361428000"}
-    JsonDocument doc;
-    doc["deviceSendTime"] = String(ntpDeviceSendTime);
-
-    String payload;
-    serializeJson(doc, payload);
+    // 固定格式且长度有界（20 位数字内），snprintf 直写固定发布暂存缓冲
+    // （静态存储，非任务栈），不再经 JsonDocument + String；池耗尽时回退原路径。
+    MqttPublishBufferGuard staging;
+    int stagedLen = -1;
+    if (staging.held()) {
+        stagedLen = snprintf(staging.buffer, MQTT_PUBLISH_STAGING_CAPACITY,
+                             "{\"deviceSendTime\":\"%llu\"}",
+                             static_cast<unsigned long long>(ntpDeviceSendTime));
+        if (stagedLen <= 0 ||
+            static_cast<size_t>(stagedLen) >= MQTT_PUBLISH_STAGING_CAPACITY) stagedLen = -1;
+    }
 
     const MqttPublishTopic& pt = config.publishTopics[ntpTopicIdx];
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
 
-    bool ok = publishToTopic((size_t)ntpTopicIdx, payload);
+    bool ok = false;
+    if (stagedLen > 0) {
+        ok = publishToTopic((size_t)ntpTopicIdx, staging.buffer,
+                            static_cast<size_t>(stagedLen));
+    } else {
+        JsonDocument doc;
+        doc["deviceSendTime"] = String(ntpDeviceSendTime);
+        String payload;
+        serializeJson(doc, payload);
+        ok = publishToTopic((size_t)ntpTopicIdx, payload);
+    }
     if (!ok) ntpRequestPending = false;
 
     char logBuf[128];
@@ -1723,7 +1878,7 @@ void MQTTClient::handle() {
             // lastErrorCode stayed at 0, so the UI could only say "未连接".
             lastErrorCode = -3;
             LOG_WARNING("MQTT: WiFi disconnected, marking MQTT offline");
-            Serial.println("[MQTT-DBG] WiFi disconnected");
+            LOG_DEBUG("[MQTT-DBG] WiFi disconnected");
             _notifyStatusChange();
         }
         return;
@@ -1770,22 +1925,22 @@ void MQTTClient::handle() {
             if (_wifiClientSecure) _wifiClientSecure->stop();
             if (_externalClient) _externalClient->stop();
             LOG_WARNING("MQTT: Connection lost");
-            Serial.println("[MQTT-DBG] Connection lost, socket stopped");
+            LOG_DEBUG("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件（仅前3次触发，避免无限循环重启）
 #if FASTBEE_ENABLE_PERIPH_EXEC
             if (!isConnectionTestOnly() && reconnectCount <= 3) {
                 PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
             } else {
-                Serial.printf("[MQTT-DBG] Skip EVENT_MQTT_DISCONNECTED (reconnectCount=%lu > 3)\n",
-                              (unsigned long)reconnectCount);
+                LOG_DEBUGF("[MQTT-DBG] Skip EVENT_MQTT_DISCONNECTED (reconnectCount=%lu > 3)",
+                             (unsigned long)reconnectCount);
             }
 #endif
         }
 
         if (!config.autoReconnect) {
             static unsigned long _arWarn = 0;
-            if (millis() - _arWarn > 30000) { _arWarn = millis(); Serial.println("[MQTT-DBG] autoReconnect disabled"); }
+            if (millis() - _arWarn > 30000) { _arWarn = millis(); LOG_DEBUG("[MQTT-DBG] autoReconnect disabled"); }
             return;
         }
 
@@ -1845,7 +2000,7 @@ void MQTTClient::handle() {
             }
             // WiFi 未连接时跳过重连（仅当未使用外部 Client 时检查）
             if (!_externalClient && activeNetworkIsWifi && WiFi.status() != WL_CONNECTED) {
-                Serial.printf("[MQTT-DBG] WiFi not connected (status=%d), skipping reconnect\n", WiFi.status());
+                LOG_DEBUGF("[MQTT-DBG] WiFi not connected (status=%d), skipping reconnect", WiFi.status());
                 return;
             }
             // 调度后台任务执行重连（避免 reconnect() 阻塞 loopTask 7秒+）
@@ -1863,7 +2018,7 @@ void MQTTClient::handle() {
                 }
             } else if (_reconnectRunning) {
                 static unsigned long _rrWarn = 0;
-                if (millis() - _rrWarn > 10000) { _rrWarn = millis(); Serial.println("[MQTT-DBG] Background reconnect still running"); }
+                if (millis() - _rrWarn > 10000) { _rrWarn = millis(); LOG_DEBUG("[MQTT-DBG] Background reconnect still running"); }
             }
         }
     } else {
@@ -1936,7 +2091,7 @@ void MQTTClient::processQueuedCommands() {
 
 void MQTTClient::processQueuedReports() {
     if (isConnectionTestOnly()) return;
-    // 内存保护：publishReportData 构造 String + MQTT publish
+    // 内存保护：MQTT publish 及规则脚本转换仍需可用内部 DRAM
     // 使用 DRAM 内部内存检测（排除 PSRAM），与 mqttHasInternalDram() 保持一致
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 20000) return;
 
@@ -1998,26 +2153,20 @@ void MQTTClient::processQueuedReports() {
         }
 
         if (!_pendingReportSlot.occupied) break;
-        const String pendingPayload(_pendingReportSlot.payload,
-                                    _pendingReportSlot.length);
-        // String allocation failure must not publish a shortened/empty report
-        // and subsequently clear the exact bytes retained in the fixed slot.
-        if (pendingPayload.length() != _pendingReportSlot.length ||
-            memcmp(pendingPayload.c_str(), _pendingReportSlot.payload, _pendingReportSlot.length) != 0) {
-            portENTER_CRITICAL(&_slotMux);
-            incrementQueueCounter(_queueStats.allocationDeferred);
-            portEXIT_CRITICAL(&_slotMux);
-            break;
-        }
+        // 零拷贝发布：消费槽由 _reportConsumerActive 独占（单一消费者），
+        // 直接引用槽内 513B 固定缓冲（静态存储，非任务栈），不再构造 String
+        // 整包副本；也就不存在分配失败降级路径，槽内字节在成功前保持原样。
         portENTER_CRITICAL(&_slotMux);
         incrementQueueCounter(_pendingReportAttempts);
         portEXIT_CRITICAL(&_slotMux);
+        const char* pendingBytes = _pendingReportSlot.payload;
+        const uint16_t pendingLength = _pendingReportSlot.length;
         const bool publishOk =
             _pendingReportSlot.encoding == MqttPayloadEncoding::CONFIGURED_TOPIC_TEXT
-                ? publishPreparedTopic(_pendingReportSlot.topicIndex, pendingPayload)
+                ? publishPreparedTopic(_pendingReportSlot.topicIndex, pendingBytes, pendingLength)
                 : _pendingReportSlot.encoding == MqttPayloadEncoding::MODBUS_RTU_HEX
-                ? publishModbusRtuReport(pendingPayload)
-                : publishReportData(pendingPayload);
+                ? publishModbusRtuReport(pendingBytes, pendingLength)
+                : publishReportData(pendingBytes, pendingLength);
         if (!publishOk) {
             portENTER_CRITICAL(&_slotMux);
             incrementQueueCounter(_queueStats.publishRejected);
@@ -2545,6 +2694,7 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                     mqttClient.publish(redirectTopic.c_str(), message.c_str(), false);
             }
             String truncated = message.length() > 120 ? message.substring(0, 120) + "..." : message;
+            // D5 保留：RX 诊断同 2670 行 rationale，MQTT 回调内避免 LoggerSystem 文件 I/O。
             Serial.printf("[MQTT] Rule redirect: %s -> %s len=%u payload=%s\n",
                           topic, redirectTopic.c_str(), message.length(), truncated.c_str());
             return;
@@ -2644,6 +2794,7 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                         encoding == MqttModbusPayloadEncoding::BINARY
                             ? "BIN->HEX"
                             : "HEX-ASCII";
+                    // D5 保留：RX 诊断同 2670 行 rationale，MQTT 回调内避免 LoggerSystem 文件 I/O。
                     Serial.printf("[MQTT] RX ▼ TRANSPARENT(%s) len=%u hex=%s\n",
                                   encodingName, (unsigned)rawFrameLength, hexStr.c_str());
                     enqueueMsg = "[{\"id\":\"modbus_raw_send\",\"value\":\"" + hexStr + "\"}]";
@@ -2743,7 +2894,7 @@ bool MQTTClient::reconnect() {
         lastErrorCode = -5;
         reconnectCount++;
         LOG_WARNING("[MQTT] MQTTS rejected: 'mqtts' feature disabled in feature settings (TLS needs ~42KB DRAM)");
-        Serial.println("[MQTT] MQTTS rejected: enable 'mqtts' in Feature Settings first (TLS needs ~42KB DRAM)");
+        LOG_ERROR("[MQTT] MQTTS rejected: enable 'mqtts' in Feature Settings first (TLS needs ~42KB DRAM)");
         _notifyStatusChange();
         return false;
     }

@@ -44,7 +44,12 @@ class RfReceiverLifecycleTests(unittest.TestCase):
         lines.remove('#endif // FASTBEE_ENABLE_RF_LEARN')
         (temporary / 'rf_driver.inc').write_text('\n'.join(lines), encoding='utf-8')
         route = cls.inputs[2].read_text(encoding='utf-8')
-        methods = route[route.index('namespace {'):route.index('RfRouteHandler::RfRouteHandler')]
+        utils = (ROOT / 'include/network/handlers/HandlerUtils.h').read_text(encoding='utf-8')
+        methods = ('namespace HandlerUtils {\n'
+                   + cpp_function(utils, 'inline bool parseUnsignedRangeParam(') + '\n'
+                   + cpp_function(utils, 'inline int remoteKeyErrorStatus(') + '\n'
+                   + cpp_function(utils, 'inline bool sendRemoteKeyListEnvelope(') + '\n}\n')
+        methods += route[route.index('namespace {'):route.index('RfRouteHandler::RfRouteHandler')]
         methods += '\n'.join(cpp_function(route, 'void RfRouteHandler::' + name + '(') for name in (
             'handleStatus', 'handleLearnStart', 'handleLearnStatus', 'handleLearnStop',
             'handleListKeys', 'handleSaveKey', 'handleDeleteKey', 'handleClearKeys'))

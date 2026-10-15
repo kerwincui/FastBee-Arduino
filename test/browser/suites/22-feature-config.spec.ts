@@ -97,15 +97,10 @@ async function gotoFeaturesPage(page: Page): Promise<void> {
 }
 
 /**
- * 在页面端按当前 locale 解析期望文案（镜像 feature-config.js 的 t() 回退链：
- * i18n 存在则取 i18n.t(key)，否则返回中文 fallback），避免硬编码中文断言
- * 在英文 locale 残留（如 AUTH-013 切换语言后）时误报
+ * 界面文案已统一硬编码中文（多语言机制已移除），直接返回期望文案。
  */
-async function resolveI18nText(page: Page, key: string, fallback: string): Promise<string> {
-  return page.evaluate(([k, fb]) => {
-    const w = window as unknown as { i18n?: { t?: (key: string) => string } };
-    return (w.i18n && w.i18n.t) ? w.i18n.t(k) : fb;
-  }, [key, fallback]);
+async function resolveI18nText(_page: Page, _key: string, fallback: string): Promise<string> {
+  return fallback;
 }
 
 test.describe('Suite-22: 功能配置页', () => {

@@ -1405,17 +1405,16 @@
         _updateBleProvisionUI(data) {
             const badge = document.getElementById('ble-prov-state-badge');
             if (badge) {
-                // 状态 → 徽章样式 + i18n 键
+                // 状态 → 徽章样式 + 中文标签
                 const stateMap = {
-                    'idle':        { cls: 'status-disconnected', key: 'ble-prov-state-idle' },
-                    'advertising': { cls: 'status-ap-mode',      key: 'ble-prov-state-advertising' },
-                    'connected':   { cls: 'status-connected',    key: 'ble-prov-state-connected' },
-                    'provisioned': { cls: 'status-connected',    key: 'ble-prov-state-provisioned' }
+                                    'idle':        { cls: 'status-disconnected', text: '未启动' },
+                                    'advertising': { cls: 'status-ap-mode',      text: '广播中' },
+                                    'connected':   { cls: 'status-connected',    text: '已连接' },
+                                    'provisioned': { cls: 'status-connected',    text: '已配网' }
                 };
                 const info = stateMap[data.state] || stateMap['idle'];
                 badge.className = 'status-badge ' + info.cls;
-                badge.setAttribute('data-i18n', info.key);
-                badge.textContent = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(info.key) : badge.textContent;
+                badge.textContent = info.text;
             }
 
             const setText = (id, text) => {
@@ -1423,12 +1422,8 @@
                 if (el) el.textContent = text;
             };
             setText('ble-prov-adv-name', data.advName || '--');
-            setText('ble-prov-connected', data.connected
-                ? ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-yes') : '是')
-                : ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-no') : '否'));
-            setText('ble-prov-result', data.provisioned
-                ? ((typeof i18n !== 'undefined' && i18n.t) ? i18n.t('ble-prov-result-ok') : '成功')
-                : '--');
+            setText('ble-prov-connected', data.connected ? '是' : '否');
+            setText('ble-prov-result', data.provisioned ? '成功' : '--');
 
             // 运行中禁用启动按钮，未运行时禁用停止按钮
             const startBtn = document.getElementById('ble-prov-start-btn');
@@ -1443,14 +1438,12 @@
         _showBleProvisionMessage(ok, message) {
             const okEl = document.getElementById('ble-prov-success');
             const errEl = document.getElementById('ble-prov-error');
-            const t = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t.bind(i18n) : (k => k);
-
             if (okEl) {
-                okEl.textContent = message || t('ble-prov-op-ok');
+                okEl.textContent = message || '操作成功';
                 okEl.classList.toggle('fb-hidden', !ok);
             }
             if (errEl) {
-                errEl.textContent = message || t('ble-prov-op-fail');
+                errEl.textContent = message || '操作失败';
                 errEl.classList.toggle('fb-hidden', !!ok);
             }
             if (this._networkBleMessageTimer) clearTimeout(this._networkBleMessageTimer);

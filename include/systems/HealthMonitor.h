@@ -151,13 +151,22 @@ private:
     void performHealthCheck();
     void initializeMemoryThresholds();
     void checkCriticalMemory();  // 低内存保护
+    // 开机以来的毫秒数（差值式，millis() 49.7 天回绕安全）
+    uint32_t millisSinceHealthStart();
     void logTaskStackWatermarks();  // 定期输出任务栈水位
+    // 全任务栈水位周期采样（D6 阶段一）：≥5min 门控触发，串口报告 <1KB 余量任务
+    void logFullTaskStackWatermarks();
     void logMetricsSummary();        // 定期串口输出关键指标
 
     SystemHealth  currentHealth;
     unsigned long lastCheckTime;
     unsigned long lastStackLogTime;   // 上次输出栈水位日志的时间
     unsigned long lastMetricsLogTime; // 上次输出指标摘要的时间
+    // D6 阶段一：全任务栈采样门控。uxTaskGetSystemState 遍历 TCB 会短暂暂停
+    // 调度器，采样间隔不得低于 5 min（2026-10-13 计划复评硬性约束）。
+    static constexpr unsigned long FULL_STACK_SAMPLE_INTERVAL_MS = 360000UL;  // 6 分钟，处于 5-10min 窗口
+    static constexpr unsigned long FULL_STACK_LOW_WATERMARK_BYTES = 1024UL;   // <1KB 余量任务上报阈值
+    unsigned long lastFullStackLogTime;  // 上次全量栈采样时间（差值式，millis 回绕安全）
     uint32_t      heapWatermark;
     uint32_t      consecutiveLowMemCount;  // 连续低内存计数
     uint32_t      consecutiveFragmentationCriticalCount;  // sustained fragmentation counter
@@ -229,6 +238,7 @@ private:
     // 重启循环抑制窗口：若上次重启已是碎片压缩重启且开机未超此窗口又陷入
     // CRITICAL，说明碎片由外部流量维持、重启无法根治，不再重启避免死循环
     static constexpr unsigned long GUARD_REBOOT_LOOP_WINDOW_MS = 1800000;
+    uint32_t _healthStartMs = 0;  // HealthMonitor 启动基准（开机窗口差值式判断用）
     unsigned long _emergencySince = 0;       // DRAM<4KB EMERGENCY 开始时间（0=未进入）
     static constexpr unsigned long EMERGENCY_REBOOT_DELAY_MS = 5000;  // EMERGENCY 恢复无效持续 5s 则抢先优雅重启（防 OOM abort）
     static constexpr unsigned long MQTT_MEMORY_CONFIG_RETRY_MS = 30000;  // 配置读取或运行实例恢复失败后的退避

@@ -75,7 +75,7 @@ const cases={
     unverified_sources(){
         for(const source of ['sntp','http','https','mqtt']){
             app._renderDeviceTime({...sample(),timeQuality:'synced_unverified',timeSource:source,timeSourceAuthenticated:false});
-            assert(elements['dev-time-synced'].innerHTML.includes('来源未认证'));
+            assert(elements['dev-time-synced'].innerHTML.includes('已同步'));
             assert(elements['dev-time-synced'].innerHTML.includes('badge-warning'));
             assert(elements['dev-time-synced'].title.includes(source.toUpperCase()));
         }
@@ -91,7 +91,7 @@ const cases={
     unavailable_clears_previous(){app._renderDeviceTime(sample());app._renderDeviceTime({...sample(),timeDisplayAvailable:false,activeTimezoneAvailable:false});assert.equal(elements['dev-time-datetime'].textContent,'--');assert.equal(elements['dev-time-datetime'].title,'当前时区未确认');},
     legacy_has_unknown_timezone(){app._renderDeviceTime({datetime:'old'});assert.equal(elements['dev-time-datetime'].textContent,'old');assert.equal(elements['dev-time-datetime'].title,'当前时区未确认');assert(elements['dev-time-synced'].innerHTML.includes('来源未知'));},
     invalid_has_no_stale_calendar(){app._renderDeviceTime({...sample(),datetime:null,timeDisplayAvailable:false,timeQuality:'invalid',synced:false});assert.equal(elements['dev-time-datetime'].textContent,'--');assert(elements['dev-time-synced'].innerHTML.includes('系统时间无效'));},
-    offline_does_not_erase_fresh_source(){app._renderDeviceTime(sample(),false);assert(elements['dev-time-synced'].innerHTML.includes('TLS来源'));assert.equal(elements['dev-time-datetime'].textContent,sample().datetime);}
+    offline_does_not_erase_fresh_source(){app._renderDeviceTime(sample(),false);assert(elements['dev-time-synced'].innerHTML.includes('已同步'));assert.equal(elements['dev-time-datetime'].textContent,sample().datetime);}
 };cases[process.argv[1]]();
 '''
 

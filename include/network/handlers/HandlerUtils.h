@@ -421,6 +421,42 @@ inline bool getParamBool(AsyncWebServerRequest* request, const char* name, bool 
     return defaultVal;
 }
 
+// IR/RF 遥控按键库共用：纯数字无符号整数参数解析（IR 的 timeoutMs、RF 的 bits/pulse 等）
+inline bool parseUnsignedRangeParam(const String& text, uint32_t low, uint32_t high, uint32_t& out) {
+    if (text.isEmpty() || text.length() > 5) return false;
+    uint32_t value = 0;
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        value = value * 10 + static_cast<uint32_t>(text[i] - '0');
+    }
+    if (value < low || value > high) return false;
+    out = value; return true;
+}
+
+// IR/RF 遥控按键库共用：按键库错误码到 HTTP 状态码的映射。
+// prefix 为 "IR"/"RF"；unavailableError 为驱动不可用错误码（无则传 nullptr）。
+inline int remoteKeyErrorStatus(const String& error, const char* prefix, const char* unavailableError) {
+    const String notFound = String(prefix) + "_KEY_NOT_FOUND";
+    const String keysPrefix = String(prefix) + "_KEYS_";
+    const String keysLimit = String(prefix) + "_KEYS_LIMIT";
+    if (error == notFound) return 404;
+    if (error.startsWith(keysPrefix) && error != keysLimit) return 503;
+    if (unavailableError && error == unavailableError) return 503;
+    return 400;
+}
+
+// IR/RF 遥控按键库共用：按键列表 envelope 构造 + 长度自校验。
+// 返回 false 表示响应长度与预期不符（疑似分配截断），调用方负责回 503。
+inline bool sendRemoteKeyListEnvelope(AsyncWebServerRequest* request, const String& keys, size_t count) {
+    String resp = "{\"success\":true,\"data\":{\"count\":" + String((int)count) +
+                  ",\"keys\":" + keys + "}}";
+    const size_t expected = sizeof("{\"success\":true,\"data\":{\"count\":") - 1 +
+                            String((int)count).length() + sizeof(",\"keys\":") - 1 + keys.length() + 2;
+    if (resp.length() != expected) return false;
+    request->send(200, "application/json", resp);
+    return true;
+}
+
 // 列表型 JSON 响应的 Chunked 流式输出（非 inline，避免在多个 handler 中重复展开、膨胀 Flash）
 // 输入 items 会被 std::move 接管，调用者不需手动释放。
 // 输出格式：{header} {item0} ',' {item1} ... {footer}

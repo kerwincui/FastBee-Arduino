@@ -3,8 +3,9 @@
  *
  * Source modules live under web-src/modules/admin so we can keep publish
  * assets lean while still editing smaller focused files in development.
- * Individual module files are emitted for runtime loading, while
- * admin-bundle.js is kept as a tiny compatibility stub.
+ * Individual module files are emitted for runtime loading.
+ * The legacy admin-bundle.js compatibility stub was removed: it had no
+ * runtime consumers and only wasted a publish/gzip slot.
  *
  * Usage:
  *   node scripts/build-admin-bundle.js
@@ -59,21 +60,17 @@ function buildAdminBundle(context = resolveWebBuildContext()) {
         });
     });
 
-    const compatContent = [
-        '/**',
-        ' * Compatibility stub kept intentionally small.',
-        ' * Admin pages now load individual modules to avoid large one-shot downloads on ESP32.',
-        ' */',
-        '(function(){window.__fastbeeAdminBundleCompat=true;})();',
-        ''
-    ].join('\n');
-    fs.writeFileSync(OUTPUT_FILE, compatContent, 'utf8');
+    // Legacy compat stub removed: drop any stale publish-time copy so the
+    // source-coverage gate does not flag it as an orphan.
+    if (fs.existsSync(OUTPUT_FILE)) {
+        fs.rmSync(OUTPUT_FILE, { force: true });
+    }
 
     return {
         outputFile: OUTPUT_FILE,
         sourceDir: SOURCE_DIR,
         fileCount: sourceFiles.length,
-        size: Buffer.byteLength(compatContent, 'utf8'),
+        size: 0,
         modules
     };
 }
@@ -82,8 +79,7 @@ if (require.main === module) {
     const result = withWebPublishLock(() => buildAdminBundle(), { label: 'build-admin-bundle' });
     console.log(`Built admin publish assets from ${result.fileCount} source files`);
     console.log(`Source: ${result.sourceDir}`);
-    console.log(`Compat output: ${result.outputFile}`);
-    console.log(`Compat size: ${result.size} bytes`);
+    console.log('Compat stub: removed (no runtime consumers)');
     console.log(`Generated ${result.modules.length} individual admin module files`);
 }
 

@@ -348,9 +348,9 @@
             return this._runRuleScriptAction(id, () => apiPost(url, { id: id }));
         },
 
-        deleteRuleScript(id) {
+        async deleteRuleScript(id) {
             if (!this.guardDeveloperModeAction()) return;
-            if (!confirm('确定要删除此规则吗？')) return;
+            if (!await FBConfirm({ title: '删除规则', message: '确定要删除此规则吗？该操作不可恢复。', danger: true })) return;
             return this._runRuleScriptAction(id, () => apiDelete('/api/rule-script/', { id: id })).then(res => {
                 if (res && res.success === true) {
                     Notification.success('规则脚本已删除', '规则脚本');

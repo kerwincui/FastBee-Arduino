@@ -134,8 +134,8 @@ assert(otaJs.includes('const capabilityReady =')
     .forEach((id) => assert(otaHtml.includes(`id="${id}"`), `OTA fragment is missing #${id}`));
 assert(otaHtml.includes('id="ota-capability-hint"'),
     'OTA fragment is missing the unsupported-partition hint');
-assert((otaHtml.match(/class="fb-btn fb-btn-primary ota-action-btn"/g) || []).length === 2,
-    'OTA online/upload actions must use the compact ota-action-btn class');
+assert((otaHtml.match(/class="fb-btn fb-btn-primary ota-action-btn"/g) || []).length === 3,
+    'OTA settings save plus online/upload actions must use the compact ota-action-btn class');
 const mainCss = read('web-src/css/main.css');
 assert(mainCss.includes('.ota-inline-action-row .ota-action-btn')
     && mainCss.includes('max-width: 132px')

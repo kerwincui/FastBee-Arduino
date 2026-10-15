@@ -117,7 +117,7 @@ class RemoteWeatherPreviewContractTests(unittest.TestCase):
                 "-DFASTBEE_REMOTE_MODEL_STANDALONE",
                 "-DARDUINOJSON_ENABLE_STD_STRING=1",
                 "-DARDUINOJSON_ENABLE_ARDUINO_STRING=0",
-                f"-I{ROOT / 'include'}", f"-I{json_headers[0].parent}", f"-I{unity}",
+                f"-I{ROOT / 'include'}", f"-I{ROOT / 'test/mocks'}", f"-I{json_headers[0].parent}", f"-I{unity}",
                 str(ROOT / "test/test_remote_resources.cpp"), str(unity / "unity.c"),
                 "-o", str(binary),
             ], capture_output=True, text=True, encoding="utf-8", errors="replace",

@@ -92,8 +92,12 @@ class PeripheralResidentSharedTests(unittest.TestCase):
                                       ROOT / '.pio/libdeps/native/ArduinoJson/src'))
         if not (library / 'ArduinoJson.h').is_file():
             raise RuntimeError('Real ArduinoJson headers required')
-        source_path = ROOT / 'src/network/handlers/PeripheralRouteHandler.cpp'
-        source = source_path.read_text(encoding='utf-8')
+        source_paths = (
+            ROOT / 'src/network/handlers/PeripheralRouteHandler.cpp',
+            ROOT / 'src/core/PeripheralRouteMapper.cpp',
+            ROOT / 'src/core/PeripheralPreflightRouteSupport.cpp',
+        )
+        source = '\n'.join(p.read_text(encoding='utf-8') for p in source_paths)
         original, _ = frozen_graph()
         original = original.rstrip('\n')
         current = definition(source, 'PeripheralRouteHandler::handleGetPeripherals')
@@ -110,7 +114,7 @@ class PeripheralResidentSharedTests(unittest.TestCase):
             'addP1PeripheralParams', 'addPeripheralDiagnosticCapability',
             'addPeripheralListIdentity', 'addPeripheralListParams')
         helpers = '\n\n'.join(definition(source, name) for name in helper_names)
-        helpers += '\ntemplate <typename TJson>\n' + definition(source, 'addPassiveBuzzerFlag')
+        helpers += '\n' + definition(source, 'addPassiveBuzzerFlag')
         read_path = ROOT / 'src/network/handlers/PeripheralRouteReadSupport.h'
         read = read_path.read_text(encoding='utf-8')
         helpers += '\n' + '\n'.join(definition(read, name) for name in ('addUartRuntime', 'addEncoderReading'))
@@ -136,7 +140,7 @@ class PeripheralResidentSharedTests(unittest.TestCase):
                  ROOT / 'include/core/SensorDriverMetadata.h', ROOT / 'include/core/RtcBootSeedConfig.h',
                  ROOT / 'src/network/FixedJsonField.cpp', ROOT / 'src/utils/SharedJsonSerializer.cpp']
         cls.inputs = sorted(local_includes(seeds, [CPP, ROOT / 'include', ROOT / 'test/mocks', library]) | {
-            Path(__file__), MANIFEST, harness_path, source_path, sensor_path, pca_path, read_path,
+            Path(__file__), MANIFEST, harness_path, *source_paths, sensor_path, pca_path, read_path,
             CPP / 'peripheral_list_shared_oracle.inc', CPP / 'peripheral_catalog_shared_oracle.inc'})
         cls.inputs += sorted(library.rglob('*.h')) + sorted(library.rglob('*.hpp'))
         cls.hashes = [hashlib.sha256(p.read_bytes()).hexdigest() for p in cls.inputs]

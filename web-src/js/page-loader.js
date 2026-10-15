@@ -75,9 +75,6 @@ var PageLoader = {
         var root = wrapper.querySelector('#' + pageId);
         if (!root) return null;
         container.appendChild(root);
-        if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
-            i18n.updatePageText(root);
-        }
         return root;
     },
 
@@ -265,9 +262,6 @@ var PageLoader = {
         var hostId = this._modalHosts[modalId];
         var host = hostId ? document.getElementById(hostId) : null;
         (host || document.body).appendChild(modal);
-        if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
-            i18n.updatePageText(modal);
-        }
         return modal;
     },
 
@@ -289,7 +283,7 @@ var PageLoader = {
             var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/modals.html'));
             this._cacheModalTemplates(html, '', [
                 'change-password-modal',
-                'peripheral-modal'
+                'periph-exec-modal'
             ]);
             this._loadedPages['modals'] = true;
         });
@@ -307,6 +301,34 @@ var PageLoader = {
     },
 
     /**
+     * 外设编辑器模板包（pages/peripheral-modals.html）串行懒加载。
+     * 仅首次打开外设编辑器时请求一次；不打开编辑器的会话永不下载该文件。
+     * 模板字符串缓存进 _modalTemplates，与基础包共用同一静态资源串行队列，
+     * 避免与页面/分片请求并发抢连接。
+     */
+    loadPeripheralModals() {
+        if (this._loadedPages['peripheral-modals']) return Promise.resolve();
+        if (this._loadingPages['peripheral-modals']) return this._loadingPages['peripheral-modals'];
+        var self = this;
+        var operation = this._enqueueOp(async () => {
+            var html = await this._fetchWithRetry(this._resolveAssetUrl('/pages/peripheral-modals.html'));
+            this._cacheModalTemplates(html, '', ['peripheral-modal']);
+            this._loadedPages['peripheral-modals'] = true;
+        });
+        var shared = operation.catch(function(error) {
+            delete self._loadedPages['peripheral-modals'];
+            console.error('[PageLoader] Failed to load peripheral modals:', error);
+            throw error;
+        }).finally(function() {
+            if (self._loadingPages['peripheral-modals'] === shared) {
+                delete self._loadingPages['peripheral-modals'];
+            }
+        });
+        this._loadingPages['peripheral-modals'] = shared;
+        return shared;
+    },
+
+    /**
      * 加载 HTML 分片到指定容器（按需懒加载）
      * @param {string} containerId - 目标容器元素 ID
      * @param {string} fragmentName - 分片文件名（不含路径和扩展名）
@@ -318,9 +340,6 @@ var PageLoader = {
             var cachedContainer = document.getElementById(containerId);
             if (cachedContainer && this._fragmentTemplates[fragmentName] != null) {
                 cachedContainer.innerHTML = this._fragmentTemplates[fragmentName];
-                if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
-                    i18n.updatePageText(cachedContainer);
-                }
             }
             if (typeof onLoaded === 'function') onLoaded();
             return;
@@ -334,10 +353,6 @@ var PageLoader = {
                     container.innerHTML = this._fragmentTemplates[fragmentName];
                 }
                 this._loadedPages[cacheKey] = true;
-                // 若当前语言非中文，翻译新加载的分片内容
-                if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
-                    i18n.updatePageText(container);
-                }
             });
             if (typeof onLoaded === 'function') onLoaded();
         } catch(e) {

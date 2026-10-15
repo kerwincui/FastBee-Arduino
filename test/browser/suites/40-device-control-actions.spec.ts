@@ -128,7 +128,7 @@ test('busy rule submits exactly once even across rerender; queued is not executi
 
 test('whole mixed system rule confirms first; numeric input cancels or sends zero without losing it', async ({ page }) => {
   await render(page, { other: [{ id: 'mixed', name: '组合系统操作', actionType: 30, hasSystemAction: true, hasSetMode: true }] });
-  await page.evaluate(() => { const w = window as any; w.__confirm = false; w.confirm = () => w.__confirm; w.__input = null; w.AppState.promptPeriphExecRunValue = async () => w.__input; });
+  await page.evaluate(() => { const w = window as any; w.__confirm = false; w.confirm = () => w.__confirm; w.FBConfirm = async () => w.__confirm; w.__input = null; w.AppState.promptPeriphExecRunValue = async () => w.__input; });
   await page.locator('.dc-ctrl-btn').click();
   expect(await page.evaluate(() => (window as any).__posts.length)).toBe(0);
   await page.evaluate(() => { (window as any).__confirm = true; });

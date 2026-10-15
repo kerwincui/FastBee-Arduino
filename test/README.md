@@ -12,7 +12,7 @@
 | `mocks/` | 设备、网络、Web API 相关 mock |
 | `unit/` | Python 源码契约测试，覆盖 Web/API、部署和跨文件行为 |
 | `browser/` | Playwright 真机 Web 页面测试，必须显式提供 STA 地址 |
-| `e2e/helpers/discover-devices.js` | 可选的局域网设备发现工具；网络扫描不自动运行，解析、排序和去重逻辑纳入默认离线回归 |
+| `helpers/discover-devices.js` | 可选的局域网设备发现工具；网络扫描不自动运行，解析、排序和去重逻辑纳入默认离线回归 |
 | `test_main.cpp` | native 测试主入口和基础框架测试 |
 | `test_web_api.cpp` | Web API 路由和响应格式测试 |
 | `test_network_config.cpp` | 网络配置解析、保存和切换逻辑测试 |
@@ -55,7 +55,9 @@ powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks devi
 
 `native` 环境依赖主机 C/C++ 编译器。Windows 上如果缺少 `gcc/g++`，需要先安装可被 PlatformIO 发现的 MinGW/MSYS2 工具链。请优先使用 `npm run test:native`；它会复用项目的 Windows 等待与汇总逻辑，避免 PlatformIO 已全部通过却返回 `-1` 的已知退出码问题。
 
-`test-all.ps1` 不带参数时只运行静态/主机回归、native 和 9 个固件环境构建。产物校验需显式加入 `artifacts`；真机检查需显式给出 STA `-BaseUrl`，不会使用默认设备地址。
+`test/unit/cpp/*_harness.cpp` 替换全局 `operator new/delete` 时必须成组替换程序实际用到的全部形式（至少含 throwing `operator new`，不能只替换 nothrow 形式）。Windows 没有 ELF 式符号插入：exe 中未替换的 throwing `operator new` 会解析到 `libstdc++-6.dll` 的实现，而已替换的 `operator delete` 在 exe 一侧调用 `free`，跨分配域释放会被 Windows 堆判定为损坏（`0xC0000374`）。`test_modbus_relay_async` 曾因只替换 nothrow new 而以该码确定性失败（2026-10-14 定位并修复）；2026-10-15 D5 批次复核发现 `test_log_deferred_reader`、`test_logger_async_flush`、`test_logger_recent_runtime`、`test_logger_ring_runtime` 四个 logger 套件的 harness 存在同型缺陷（其中 recent 套件的替换块在 `test_logger_recent_runtime.py` 内联生成），已按同一模式补齐 throwing new 与 nothrow delete。
+
+`test-all.ps1` 不带参数时运行静态/主机回归、native 和 9 个固件环境构建；每个环境与 CI 同口径追加 LittleFS 构建（`pio run --target buildfs`）和 `test-build-artifacts.js --current-build` 产物校验，`-SkipFs` 可跳过这两项快路径。发布级产物打包需显式加入 `artifacts`；真机检查需显式给出 STA `-BaseUrl`，不会使用默认设备地址。
 
 ## 关键回归门禁
 

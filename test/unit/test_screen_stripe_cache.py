@@ -19,7 +19,7 @@ class ScreenStripeCacheTests(unittest.TestCase):
             compiler = str(fallback)
         if not compiler:
             self.skipTest("A C++17 compiler is required")
-        runtime = (ROOT / "src/screen/ScreenRuntime.cpp").read_text(encoding="utf-8")
+        runtime = (ROOT / "src/screen/StripeRenderer.h").read_text(encoding="utf-8")
         renderer = runtime[runtime.index("class StripeRenderer"):]
         signatures = [
             "void invalidate()",
@@ -28,6 +28,7 @@ class ScreenStripeCacheTests(unittest.TestCase):
             "bool begin(IDisplayBackend* display, const DisplayConfigParams& config,\n               String& error)",
             "void end()",
             "bool render(const ScreenPanelSnapshot& snapshot,\n                const char* confirmationCardId, String& error)",
+            "bool render(const ScreenPanelSnapshot& snapshot,\n                const char* confirmationCardId, String& error,\n                uint8_t faultFlags)",
             "void drawSwitch(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,\n                    const PixelRect& rect, const Palette& palette) const",
             "void drawAction(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,\n                    const PixelRect& rect, const Palette& palette) const",
             "void drawWeather(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,\n                     const PixelRect& rect, const Palette& palette) const",

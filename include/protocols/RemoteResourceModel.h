@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <cmath>
 #include <cctype>
@@ -244,6 +245,23 @@ inline bool validate(JsonVariantConst config, std::string& error) {
     }
     if (measureJson(config) > MAX_BODY) return fail("Weather settings are too large");
     error.clear(); return true;
+}
+
+// Binding admission may run before the first fetch populates runtime
+// snapshots (cold start after reboot). Accept references declared by the
+// active configuration so a weather card never blocks the whole layout.
+inline bool knowsWeatherSource(JsonVariantConst config, const String& ref) {
+    if (!ref.startsWith("weather.")) return false;
+    for (JsonObjectConst w : config["weatherSources"].as<JsonArrayConst>()) {
+        if (!(w["enabled"] | false)) continue;
+        const String base = String("weather.") + (w["id"] | "");
+        if (ref == base) return true;
+        if (ref.startsWith(base + ".")) {
+            const String field = ref.substring(base.length() + 1);
+            if (field == "temperature" || field == "humidity") return true;
+        }
+    }
+    return false;
 }
 
 // Pure preparation shared by firmware and host tests; never changes the saved document.

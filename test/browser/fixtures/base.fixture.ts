@@ -705,6 +705,31 @@ export const test = base.extend<TestFixtures>({
       test.skip(true, `设备连续${consecutiveDeviceFailures}次不可达，跳过后续测试`);
     }
 
+    // FBConfirm（B4 共享确认弹窗）自动确认，与原生 dialog 自动接受对齐：
+    // 带勾选框的弹窗先勾选再确认；输入弹窗保留预填值后确认。
+    await page.addInitScript(() => {
+      window.__fbHookMutations = 0;
+      window.__fbHookObserver = new MutationObserver((mutations) => {
+        window.__fbHookMutations += mutations.length;
+        for (const m of mutations) {
+          for (const node of Array.from(m.addedNodes)) {
+            const el = node;
+            if (!el || el.nodeType !== 1) continue;
+            const modal = el.id === 'fb-confirm-modal' ? el : (el.querySelector ? el.querySelector('#fb-confirm-modal') : null);
+            if (!modal) continue;
+            window.__fbHookDetected = (window.__fbHookDetected || 0) + 1;
+            setTimeout(() => {
+              const check = modal.querySelector('#fb-confirm-check');
+              const ok = modal.querySelector('#fb-confirm-ok');
+              if (check && ok && ok.disabled) check.click();
+              if (ok && !ok.disabled) ok.click();
+            }, 30);
+          }
+        }
+      });
+      window.__fbHookObserver.observe(document, { childList: true, subtree: true });
+    });
+
     let authenticated = false;
 
     // 尝试通过缓存状态快速恢复

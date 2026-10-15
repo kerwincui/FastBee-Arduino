@@ -5,6 +5,7 @@
 #include "core/Pca9685ConfigSupport.h"
 #include "core/H1ParameterContract.h"
 #include "core/RuntimeFeatureManager.h"
+#include "core/PeripheralFormFields.h"
 #include "network/FixedJsonField.h"
 #include <cassert>
 #include <cstring>
@@ -23,6 +24,29 @@ struct WebHandlerContext {
         return value == request->fields.end() ? fallback : value->second;
     }
 };
+// Adapts the fake transport to the same core form-field contract the firmware
+// route layer uses; lookup semantics mirror WebHandlerContext.
+struct HarnessFormFields final : public FastBee::PeripheralFormFields {
+    explicit HarnessFormFields(AsyncWebServerRequest* request) : request(request) {}
+    bool has(const char* name) const override {
+        return request->hasParam(name, true) || request->hasParam(name);
+    }
+    String value(const char* name, const char* fallback) const override {
+        auto found = request->fields.find(name);
+        return found == request->fields.end() ? String(fallback) : found->second;
+    }
+    int intValue(const char* name, int fallback) const override {
+        auto found = request->fields.find(name);
+        return found == request->fields.end() ? fallback : found->second.toInt();
+    }
+    bool boolValue(const char* name, bool fallback) const override {
+        auto found = request->fields.find(name);
+        return found == request->fields.end() ? fallback
+            : (found->second.equalsIgnoreCase("true") || found->second == "1");
+    }
+private:
+    AsyncWebServerRequest* request;
+};
 static size_t strlcpy(char* dest, const char* source, size_t size) {
     size_t length = std::strlen(source);
     if (size) { std::memcpy(dest, source, std::min(length, size - 1)); dest[std::min(length, size - 1)] = 0; }
@@ -31,13 +55,13 @@ static size_t strlcpy(char* dest, const char* source, size_t size) {
 #include "route_under_test.inc"
 
 static void parentRoundTrip() {
-    WebHandlerContext ctx;
     String error;
     PeripheralConfig created;
     created.type = PeripheralType::IO_EXPANDER;
     AsyncWebServerRequest request{{{"driver", "pcf8574"}, {"busPeripheralId", "shared_i2c"},
         {"address", "0x23"}, {"sampleInterval", "100"}}};
-    assert(applyIoPeripheralRequestParameters(&ctx, &request, created, true, error));
+    HarnessFormFields form(&request);
+    assert(applyIoPeripheralRequestParameters(form, created, true, error));
     assert(created.params.ioExpander.address == 0x23);
     JsonDocument detail;
     addGenericPeripheralFields(detail.to<JsonObject>(), created);
@@ -46,14 +70,16 @@ static void parentRoundTrip() {
     assert(detail["params"]["sampleInterval"] == 100);
     assert(detail["featureActive"] == true);
     AsyncWebServerRequest update{{{"address", "39"}, {"sampleInterval", "1000"}}};
+    HarnessFormFields updateForm(&update);
     PeripheralConfig preflight = created;
-    assert(applyIoPeripheralRequestParameters(&ctx, &update, preflight, false, error));
-    assert(applyIoPeripheralRequestParameters(&ctx, &update, created, false, error));
+    assert(applyIoPeripheralRequestParameters(updateForm, preflight, false, error));
+    assert(applyIoPeripheralRequestParameters(updateForm, created, false, error));
     assert(std::memcmp(&created.params, &preflight.params, sizeof(created.params)) == 0);
     assert(created.params.ioExpander.address == 39 && created.params.ioExpander.sampleInterval == 1000);
     assert(std::strcmp(created.params.ioExpander.busPeripheralId, "shared_i2c") == 0);
     AsyncWebServerRequest alias{{{"driverName", "PCF8574"}, {"i2cAddress", "0x20"}}};
-    assert(applyIoPeripheralRequestParameters(&ctx, &alias, created, false, error));
+    HarnessFormFields aliasForm(&alias);
+    assert(applyIoPeripheralRequestParameters(aliasForm, created, false, error));
     for (const auto& invalid : std::initializer_list<std::pair<const char*, const char*>>{
         {"driver", "MCP23017"}, {"address", "0x38"}, {"address", "32junk"},
         {"address", "32.5"}, {"address", "256"}, {"address", "-1"},
@@ -61,23 +87,24 @@ static void parentRoundTrip() {
         {"sampleInterval", "42949672960"}, {"sampleInterval", ""},
         {"busPeripheralId", "12345678901234567890123456789012345678901"}}) {
         AsyncWebServerRequest bad{{{invalid.first, invalid.second}}};
+        HarnessFormFields badForm(&bad);
         PeripheralConfig copy = created;
-        assert(!applyIoPeripheralRequestParameters(&ctx, &bad, copy, false, error));
+        assert(!applyIoPeripheralRequestParameters(badForm, copy, false, error));
         assert(std::memcmp(&copy.params, &created.params, sizeof(copy.params)) == 0);
     }
     PeripheralConfig pins = created;
     pins.pinCount = 2; pins.pins[0] = 4; pins.pins[1] = 5;
-    assert(!applyIoPeripheralRequestParameters(&ctx, &alias, pins, false, error));
+    assert(!applyIoPeripheralRequestParameters(aliasForm, pins, false, error));
 }
 
 static void logicalOutputRoundTrip() {
-    WebHandlerContext ctx;
     String error;
     PeripheralConfig output;
     output.type = PeripheralType::GPIO_DIGITAL_OUTPUT;
     AsyncWebServerRequest request{{{"ioSource", "expander"}, {"providerId", "pcf"},
         {"channel", "7"}, {"invertLogic", "true"}, {"initialState", "0"}}};
-    assert(applyIoPeripheralRequestParameters(&ctx, &request, output, true, error));
+    HarnessFormFields form(&request);
+    assert(applyIoPeripheralRequestParameters(form, output, true, error));
     assert(output.isExpanderChannel() && output.params.gpio.channel == 7 && output.params.gpio.invertLogic);
     JsonDocument detail;
     addGenericPeripheralFields(detail.to<JsonObject>(), output);
@@ -97,13 +124,15 @@ static void logicalOutputRoundTrip() {
     };
     assert(startupHigh(output) && startupHigh(rebooted) == startupHigh(output));
     AsyncWebServerRequest numeric{{{"ioSource", "1"}, {"channel", "0"}}};
-    assert(applyIoPeripheralRequestParameters(&ctx, &numeric, rebooted, false, error));
+    HarnessFormFields numericForm(&numeric);
+    assert(applyIoPeripheralRequestParameters(numericForm, rebooted, false, error));
     // Request parsing admits the widest supported provider. The manager then
     // checks the selected parent's real 8/16-channel capability.
     for (const char* channel : {"8", "15"}) {
         AsyncWebServerRequest wide{{{"channel", channel}}};
+        HarnessFormFields wideForm(&wide);
         PeripheralConfig copy = rebooted;
-        assert(applyIoPeripheralRequestParameters(&ctx, &wide, copy, false, error));
+        assert(applyIoPeripheralRequestParameters(wideForm, copy, false, error));
         assert(copy.params.gpio.channel == std::atoi(channel));
     }
     for (const auto& invalid : std::initializer_list<std::pair<const char*, const char*>>{
@@ -111,26 +140,28 @@ static void logicalOutputRoundTrip() {
         {"channel", ""}, {"providerId", ""}, {"invertLogic", "yes"}, {"initialState", "2"},
         {"inputMode", "1"}, {"providerId", "12345678901234567890123456789012345678901"}}) {
         AsyncWebServerRequest bad{{{invalid.first, invalid.second}}};
+        HarnessFormFields badForm(&bad);
         PeripheralConfig copy = rebooted;
-        assert(!applyIoPeripheralRequestParameters(&ctx, &bad, copy, false, error));
+        assert(!applyIoPeripheralRequestParameters(badForm, copy, false, error));
     }
     PeripheralConfig invalidType = rebooted;
     invalidType.type = PeripheralType::GPIO_PWM_OUTPUT;
-    assert(!applyIoPeripheralRequestParameters(&ctx, &numeric, invalidType, false, error));
+    assert(!applyIoPeripheralRequestParameters(numericForm, invalidType, false, error));
     AsyncWebServerRequest native{{{"ioSource", "gpio"}}};
-    assert(applyIoPeripheralRequestParameters(&ctx, &native, rebooted, false, error));
+    HarnessFormFields nativeForm(&native);
+    assert(applyIoPeripheralRequestParameters(nativeForm, rebooted, false, error));
     assert(!rebooted.isExpanderChannel() && !rebooted.params.gpio.providerId[0] && !rebooted.params.gpio.channel);
 }
 
 static void sensorRoundTrip() {
-    WebHandlerContext ctx;
     String error;
     PeripheralConfig sensor;
     sensor.type = PeripheralType::SENSOR_GENERIC;
     AsyncWebServerRequest request{{{"driver", "INA226"}, {"busPeripheralId", "shared_i2c"},
         {"address", "64"}, {"sampleInterval", "1000"}, {"shuntResistance", "0.01"},
         {"maxCurrent", "5"}, {"conversionTimeUs", "1100"}, {"averaging", "64"}, {"channel", "power"}}};
-    assert(applySensorRequest(&ctx, &request, sensor, true, error));
+    HarnessFormFields form(&request);
+    assert(applySensorRequest(form, sensor, true, error));
     JsonDocument detail;
     addGenericPeripheralFields(detail.to<JsonObject>(), sensor);
     assert(detail["params"]["driver"] == "INA226" && detail["params"]["averaging"] == 64);
@@ -143,9 +174,11 @@ static void sensorRoundTrip() {
     assert(FastBee::validateSensorConfig(rebooted, error));
     assert(rebooted.params.sensor.averaging == 64 && rebooted.params.sensor.shuntResistance == sensor.params.sensor.shuntResistance);
     AsyncWebServerRequest invalid{{{"maxCurrent", "10"}}};
-    assert(!applySensorRequest(&ctx, &invalid, rebooted, false, error));
+    HarnessFormFields invalidForm(&invalid);
+    assert(!applySensorRequest(invalidForm, rebooted, false, error));
     AsyncWebServerRequest mpu{{{"driver", "MPU6050"}, {"busPeripheralId", "shared_i2c"}, {"mode", "1"}}};
-    assert(applySensorRequest(&ctx, &mpu, sensor, true, error));
+    HarnessFormFields mpuForm(&mpu);
+    assert(applySensorRequest(mpuForm, sensor, true, error));
     detail.clear();
     addGenericPeripheralFields(detail.to<JsonObject>(), sensor);
     assert(detail["params"]["mode"] == 1 && detail["params"]["channel"].isNull());

@@ -21,6 +21,7 @@ thread_local bool passive = false;
 using SemaphoreHandle_t = std::recursive_mutex*;
 constexpr int pdTRUE = 1;
 constexpr unsigned portMAX_DELAY = ~0u;
+#include <freertos/task.h>
 static bool failMutex = false;
 static std::atomic<unsigned> mutexCreates{0}, networkReads{0}, begins{0}, ends{0}, services{0};
 SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() {
@@ -76,6 +77,12 @@ class AsyncWebServerRequest;
 // @dns@
 // @user@
 // @log@
+
+// The extracted LogRouteHandler destructor drains its admitted file-read task
+// through performMaintenance(); the harness never starts one (routes are not
+// registered), so the drain flags stay clear and a no-op definition keeps the
+// destructor linkable without faking the reaper machinery.
+void LogRouteHandler::performMaintenance() {}
 
 using FastBee::FeatureInstanceState;
 using FastBee::FeatureInstanceScope;

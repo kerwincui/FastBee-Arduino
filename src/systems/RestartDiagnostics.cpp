@@ -33,6 +33,11 @@ RTC_NOINIT_ATTR static PreRestartSnapshot s_lastSnapshot;
 // 自救重启，导致 abort 崩溃后的恢复重启被误抑制（实测拖死 ~50 分钟）。
 // 启动时若硬复位原因与快照 reason 矛盾，将快照补写为 OOM_PANIC 独立类别：
 // 内存/栈水位字段仍保留崩溃前状态（诊断价值），reason 不再误伤抑制判定。
+// D5 白名单：本文件全部保留 Serial 直出。理由：
+//  1) 崩溃/重启路径（savePreRestartState、hard fault 补写）系统状态不可信，
+//     LOG_* 依赖 LoggerSystem 单例与互斥锁，不适用于崩溃路径；
+//  2) printSnapshot/logBootDiagnostics 输出多行 ASCII 对齐框，位于
+//     LoggerSystem 初始化之前，且 LOG_* 前缀会破坏框线对齐。
 void RestartDiagnostics::patchSnapshotReasonOnHardFault() {
     esp_reset_reason_t espReason = esp_reset_reason();
     if (espReason != ESP_RST_PANIC && espReason != ESP_RST_INT_WDT &&
@@ -89,6 +94,7 @@ void RestartDiagnostics::collectCurrentState(PreRestartSnapshot& snap) {
     snap.wifiRssi = snap.wifiConnected ? static_cast<int8_t>(WiFi.RSSI()) : 0;
 }
 
+// 保留 Serial 直出（D5 白名单）：ASCII 对齐框布局，LOG_* 前缀会破坏对齐。
 void RestartDiagnostics::printSnapshot(const PreRestartSnapshot& snap) {
     Serial.println("  ┌─── Pre-Restart State Snapshot ───────────────────────┐");
     Serial.printf( "  │ Uptime before restart: %lu ms (%lu s)                \n",
@@ -202,6 +208,7 @@ bool RestartDiagnostics::getLastSnapshot(PreRestartSnapshot& out) {
     return true;
 }
 
+// 保留 Serial 直出（D5 白名单）：崩溃/重启保存路径，不经过 LoggerSystem。
 void RestartDiagnostics::savePreRestartState(RestartReason reason, const char* context) {
     collectCurrentState(s_lastSnapshot);
     s_lastSnapshot.restartReason = static_cast<uint8_t>(reason);
@@ -232,6 +239,8 @@ void RestartDiagnostics::savePreRestartState(RestartReason reason, const char* c
     Serial.flush();
 }
 
+// 保留 Serial 直出（D5 白名单）：启动最早期的重启诊断输出，
+// 此时 LoggerSystem 尚未初始化，且异常重启判定信息属于关键启动日志。
 void RestartDiagnostics::logBootDiagnostics() {
     // 硬复位（panic/WDT）时快照 reason 是陈旧值，先补写再输出/供后续判定
     patchSnapshotReasonOnHardFault();

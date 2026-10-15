@@ -396,7 +396,17 @@ void PointHistory::tick(uint32_t nowMs) {
     if (!_initialized || !_enabled || _writesPaused || !_dirty ||
         _flushInProgress) return;
     const uint32_t now = nowMs ? nowMs : millis();
-    if (elapsed(now, _firstDirtyAt, FLUSH_DEADLINE_MS)) flushNow();
+    if (elapsed(now, _firstDirtyAt, FLUSH_DEADLINE_MS)) {
+        flushNow();
+        return;
+    }
+    // 日志 flush 刚落盘且脏数据已满合并窗口时，搭乘同一 Flash 写窗口；
+    // 全部比较沿用无符号差值，millis() 回绕安全。
+    const uint32_t peerWriteAt = LoggerSystem::getInstance().lastFlashWriteMs();
+    if (peerWriteAt != 0 && elapsed(now, _firstDirtyAt, FLUSH_COALESCE_MIN_MS) &&
+        static_cast<uint32_t>(now - peerWriteAt) <= PEER_WRITE_WINDOW_MS) {
+        flushNow();
+    }
 }
 
 bool PointHistory::flushNow(uint32_t timeoutMs) {

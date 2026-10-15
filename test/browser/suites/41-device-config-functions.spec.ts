@@ -14,6 +14,7 @@ test.beforeEach(async ({ page }) => {
     w.AppState = { currentPage: 'device', registerModule(_n: string, m: any) { Object.assign(this, m); }, onPageHide(n: string, fn: any) { w.__hides[n] = fn; }, _setValue(id: string, value: string) { const e = document.getElementById(id) as HTMLInputElement; if(e) e.value = value; }, _showMessage() {}, setDeveloperModeState(v: boolean) { this.devMode = v; }, isDeveloperModeEnabled() { return this.devMode; } };
     w.Notification = Object.fromEntries(['success','error','warning','info'].map(k => [k, (message: string) => w.__notices.push([k, message])]));
     w.confirm = () => true;
+    w.FBConfirm = async () => true;
     w.apiGet = w.apiGetFresh = async (url: string) => ({success: true, data: url === '/api/device/config' ? w.__config : url.includes('capabilities') ? {ota: true} : url.includes('network') ? {internetAvailable: false} : {}});
     w.apiPut = w.apiPost = async (url: string, body: object) => { w.__writes.push({url, body}); return {success: true}; };
     w.apiRestart = (body: object) => w.apiPost('/restart', body); w.apiFactoryReset = (body: object) => w.apiPost('/reset', body);
@@ -34,7 +35,7 @@ test('failed load blocks saving defaults, preserves entries, and allows retry', 
   await page.evaluate(async () => { const w=window as any; w.apiGet = async () => ({success:false,error:'HTTP 503'}); await w.AppState.loadDeviceConfig(); await w.AppState.saveDeviceBasic(); });
   expect(await page.evaluate(() => (window as any).__writes)).toEqual([]);
   await expect(page.locator('#dev-name')).toHaveValue('采集器');
-  await expect(page.locator('#device-config-load-status')).toContainText('503');
+  expect(await page.evaluate(() => (window as any).__notices)).toContainEqual(['warning', '加载设备配置失败：HTTP 503，请刷新页面重试']);
   await page.evaluate(async () => {const w=window as any; w.apiGet=async()=>({success:true,data:w.__config}); await w.AppState.loadDeviceConfig(); await w.AppState.saveDeviceBasic();});
   await expect.poll(() => page.evaluate(() => (window as any).__writes.length)).toBe(1);
 });

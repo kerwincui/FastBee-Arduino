@@ -281,9 +281,9 @@
                     var isSystem = btn.getAttribute('data-system') === 'true';
                     var ruleName = btn.getAttribute('data-name') || '';
                     if (isSystem) {
-                        if (confirm('确认执行此系统操作？' + '\n' + ruleName)) {
-                            self._executeRule(ruleId, btn);
-                        }
+                        FBConfirm({ title: '执行系统操作', message: '确认执行此系统操作？' + '\n' + ruleName, danger: true }).then(function(ok) {
+                            if (ok) self._executeRule(ruleId, btn);
+                        });
                     } else {
                         self._executeRule(ruleId, btn);
                     }

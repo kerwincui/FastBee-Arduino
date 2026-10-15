@@ -153,8 +153,8 @@ unknown 保留未知；timeoutBudgetMs 为空表示没有该预算字段，不�
 | include/core/H1ParameterJson.h | fbf2b97109f04df119640b0ca27bf631e997a09d9a69495c69426b2c6a78e57c |
 | src/core/H1ParameterJson.cpp | 3d3888d11d9087ef89932e979937213134a767872e6fc84778cfa308becab3fd |
 | include/peripherals/drivers/PCA9685Contract.h | c74b2c49f4abf542fea4a13b2659b8da52b78e6bb6e9c49e416a3777ef620e90 |
-| include/core/FeatureFlags.h | e9deee1e7476afb21a371600a105a833466527e9d30e29ffbf656ef9d74d624f |
-| include/core/ChipConfig.h | b20fb4b259ab89568386e00218b74fb525067d53e3199f593376d90d893062c3 |
+| include/core/FeatureFlags.h | de0d0bd62623a0afef4ee9844e8cdaaaf0537605bb8347a039a8dafdc84ab146 |
+| include/core/ChipConfig.h | 0321dac4a991ab434aa5e903ca6f0d4a7e35941cefff9cf4efa0fed5c7b3207e |
 | include/systems/GpioConfig.h | 70072c627339fde3cd7230f027beb96d04b2ee7605f31404134ff1bceb26eb57 |
 | test/mocks/Arduino.h | d1cba5a59d088df95393710a5144cf85e1b2d7d162ec0b9933469bfad925f930 |
 | scripts/generate-action-contracts.py | 0461f3ded9989139f6d5750f7b32f280adb38a53853027a07082834f28406447 |

@@ -3,14 +3,15 @@
   "preparedAt": "2026-10-05",
   "timezone": "Asia/Shanghai",
   "deviceId": "com16-esp32-f4r0",
-  "status": "DEVICE_FLASH_SNAPSHOT_SANITIZED_PENDING_RELEASE",
+  "status": "R1_WRITTEN_VERIFIED_NETWORK_DISABLED_BY_OWN_CONFIG",
   "deploymentAllowed": false,
   "source": {
     "path": "docs/puzhong-esp32-config.json",
     "format": "fastbee-config-bundle/files[].content",
     "configurationMeaning": "Observed parameters copied without enabling additional loads; credentials redacted; pending private merge and new release deployment",
     "originalPublicPath": "docs/puzhong-esp32-config.json",
-    "observedSnapshot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/d4e9f4b16c34/serial-r1/extracted"
+    "observedSnapshot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/d4e9f4b16c34/serial-r1/extracted",
+    "observedSnapshotLost": "2026-10-15 file lost, see preservation.incident20261015"
   },
   "target": {
     "environment": "esp32-F4R0",
@@ -37,11 +38,11 @@
     "networkDiscoveryEvidence": "artifacts/four-device-com16-network-20261005-r1/report.json"
   },
   "release": {
-    "candidateId": null,
-    "sourceSha256": null,
+    "candidateId": "four-device-20261015-r1",
+    "sourceSha256": "e7a3a4d74cd2e7c34f1b47bc91c8dcff3510c72149aff122636957a977cd4811",
     "sourceStable": null,
-    "firmwareSha256": null,
-    "webSha256": null,
+    "firmwareSha256": "b49d969b433dc573fa5908f515bf1f5dcab2767bb904d16e8fbf0365ebcc7f80",
+    "webSha256": "3dcde469c66138037af14aeb727d6774562e3505fa80c0fea73e67f10d647c2e",
     "precheckReport": null,
     "nineEnvironmentReport": null,
     "rgbBuildReport": null
@@ -158,7 +159,7 @@
     ]
   },
   "preservation": {
-    "privateRoot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/<verified-mac>/<unique-attempt>/",
+    "privateRoot": ".device-config-backups/four-device-20261015/com16-esp32-f4r0/<verified-mac>/<unique-attempt>/",
     "backupReport": "artifacts/four-device-com16-snapshot-20261005-r1/report.json",
     "backupSha256": "26f328b482b4e890c99d6f80f9c13dd3e46d43bcd5aa85612ebb78bf8a367b20",
     "backupVerified": true,
@@ -176,8 +177,15 @@
       "all unrelated non-www files"
     ],
     "rollback": "Use the same device verified full-flash snapshot and per-region deployment report; verify identity, partition and active slot before restore.",
-    "currentSnapshot": ".device-config-backups/four-device-20261005/com16-esp32-f4r0/d4e9f4b16c34/serial-r1/extracted",
-    "backupScope": "full 4MiB flash; stream MD5 and independent flash MD5 verified"
+    "currentSnapshot": ".device-config-backups/four-device-20261015/com16-esp32-f4r0/d4e9f4b16c34/candidate-20261015-r1-r2",
+    "backupScope": "full 4MiB flash; stream MD5 and independent flash MD5 verified",
+    "incident20261015": {
+      "event": "Parallel session mistakenly deleted the entire .device-config-backups/four-device-20261005/ tree on 2026-10-15 21:40-21:49; unrecoverable",
+      "lostScope": "Pre-deployment snapshots, 2026-10-05 verified full-flash backups, and candidate-20261015-r1-r1 private snapshots",
+      "historicalFieldsStatus": "backupReport/backupSha256 retained as historical record; referenced files lost 2026-10-15",
+      "currentAnchor": "Post-incident resampled candidate-state filesystem snapshot (live-filesystem-before.bin/json); does not contain pre-deployment state",
+      "bindingNote": "No binding.json for this device; it is not on the network (network.json mode=0, pre-existing user configuration unchanged)"
+    }
   },
   "load": {
     "healthIntervalSeconds": 30,
@@ -201,16 +209,16 @@
     "identity": "BOOTLOADER_IDENTITY_VERIFIED",
     "backup": "FULL_FLASH_VERIFIED",
     "schemaCapabilityPinsResources": "PENDING",
-    "firmwareWriteVerify": "NOT_RUN",
-    "filesystemWriteVerify": "NOT_RUN",
-    "configReadback": "NOT_RUN",
-    "rebootRecovery": "NOT_RUN",
+    "firmwareWriteVerify": "R1_WRITTEN_VERIFIED",
+    "filesystemWriteVerify": "R1_WRITTEN_VERIFIED",
+    "configReadback": "FS_PRESERVED_MD5_VERIFIED_AND_BINDING_FINGERPRINTED",
+    "rebootRecovery": "SERIAL_HEALTH_OK_NETWORK_DISABLED_BY_OWN_CONFIG",
     "desktopWeb": "NOT_RUN",
     "mobileWeb": "NOT_RUN",
     "physical": "NOT_RUN",
     "exploration2h": "NOT_RUN",
     "mixed24h": "NOT_RUN",
     "soak168h": "NOT_RUN",
-    "evidenceRoot": "artifacts/four-device-com16-snapshot-20261005-r1"
+    "evidenceRoot": "artifacts/four-device-deployment-20261015-r1-r1"
   }
 }

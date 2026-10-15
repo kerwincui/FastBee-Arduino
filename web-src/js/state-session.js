@@ -74,24 +74,6 @@
         document.getElementById('login-page').style.display = 'flex';
         document.getElementById('app-container').classList.add('fb-hidden');
 
-        // 初始化登录页语言选择器
-        var loginLangSelect = document.getElementById('login-language-select');
-        if (loginLangSelect && !loginLangSelect._bound) {
-            loginLangSelect._bound = true;
-            var savedLang = localStorage.getItem('language') || 'zh-CN';
-            loginLangSelect.value = savedLang;
-            // 若已保存英文偏好，立即切换登录页语言
-            if (savedLang !== 'zh-CN' && typeof i18n !== 'undefined') {
-                i18n.setLanguage(savedLang);
-            }
-            loginLangSelect.addEventListener('change', function() {
-                var lang = loginLangSelect.value;
-                localStorage.setItem('language', lang);
-                if (typeof i18n !== 'undefined') {
-                    i18n.setLanguage(lang);
-                }
-            });
-        }
 
         // 预填充已保存的用户名，默认不勾选"保持登录"
         const savedUsername = localStorage.getItem('username');
@@ -163,26 +145,15 @@
             return backgroundPreloadAllowance;
         };
 
-        // Modal templates are fetched lazily on constrained targets. Pulling
-        // the full template bundle during login competes with the first page's
-        // runtime modules and can trigger an otherwise avoidable 503.
-        setTimeout(function() {
-            allowBackgroundPreload().then(function(allow) {
-                if (!allow) {
-                    console.info('[Preloader] modal templates deferred on constrained memory target');
-                    return;
-                }
-                self._loadModals().catch(function() {
-                    // PageLoader already logged the failure. Keep login usable;
-                    // the first modal action will retry the shared lazy request.
-                });
-            });
-        }, 3000);
+        // 模态框模板不再随会话预取：基础包（约 6KB）在使用时按需加载；
+        // 外设编辑器模板包（约 80KB）仅在首次打开外设编辑器时串行懒加载
+        // （见 modules/runtime/peripherals.js 的 _ensurePeripheralModalTemplates）。
+        // 不打开任何弹窗的会话因此少一次请求、少下载约 10KB gzip。
 
         // Background page/API preloading is useful on larger targets but can
-        // starve the classic ESP32/C3 during repeated browser sessions. Reuse
-        // the same health snapshot as modal preloading so login adds one small
-        // probe rather than two competing requests.
+        // starve the classic ESP32/C3 during repeated browser sessions. Gate it
+        // behind one small health probe so login does not add competing
+        // requests on constrained memory targets.
         setTimeout(function() {
             allowBackgroundPreload().then(function(allow) {
                 if (!allow) {
@@ -202,6 +173,19 @@
                 }
             });
         }, 5000);
+    };
+
+    // 仪表盘挂载完成后加载侧栏 logo：复用登录页已缓存的 blob（共享
+    // __fastbeeImageAssets），由 __fastbeeQueueStaticAsset 排队，不会与
+    // 初始请求并发抢连接（见 index.html 头部注释）。保留失败回退。
+    AppState._loadSidebarLogo = function() {
+        var sidebarLogo = document.getElementById('sidebar-logo');
+        if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
+        var lazySrc = sidebarLogo.getAttribute('data-lazy-src');
+        if (lazySrc && typeof window.__fastbeeLoadImageAsset === 'function') {
+            window.__fastbeeLoadImageAsset(sidebarLogo, lazySrc)
+                .catch(function(error) { console.warn('[FastBee] Sidebar image unavailable:', error.message); });
+        } else if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
     };
 
     /**
@@ -240,15 +224,9 @@
         if (typeof this._refreshDeveloperModeState === 'function') {
             this._refreshDeveloperModeState({ silent: true, noCache: true });
         }
-        setTimeout(function() {
-            var sidebarLogo = document.getElementById('sidebar-logo');
-            if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
-            var lazySrc = sidebarLogo.getAttribute('data-lazy-src');
-            if (lazySrc && typeof window.__fastbeeLoadImageAsset === 'function') {
-                window.__fastbeeLoadImageAsset(sidebarLogo, lazySrc)
-                    .catch(function(error) { console.warn('[FastBee] Sidebar image unavailable:', error.message); });
-            } else if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
-        }, 2000);
+        // 仪表盘已挂载并激活：这就是就绪信号，立即（排队）加载侧栏 logo，
+        // 取代原来的固定 2 秒延迟，消除登录后的 alt 文本闪烁。
+        AppState._loadSidebarLogo();
         if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
         return !dashboardPage.querySelector('[data-page-fallback]');
     };
@@ -404,8 +382,13 @@
     /**
      * 退出登录
      */
-    AppState.logout = function() {
-        if (!confirm('确定要退出登录吗？')) return;
+    AppState.logout = async function() {
+        // 依赖 utils.js 提供的 window.FBConfirm（Promise<boolean>）。
+        var confirmed = await window.FBConfirm({
+            title: '退出登录',
+            message: '确定要退出登录吗？'
+        });
+        if (!confirmed) return;
 
         this._showLoginPage();
         document.getElementById('login-form') && document.getElementById('login-form').reset();

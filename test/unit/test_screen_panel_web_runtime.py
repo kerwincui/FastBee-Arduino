@@ -42,6 +42,9 @@ async function probe(minified) {
   context = vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync('web-src/js/utils.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('web-src/js/module-loader.js', 'utf8'), context);
+  // B4 起编辑器确认/输入走异步 FBConfirm；沙箱无 AppState.showModal，真实实现会
+  // 一律按取消处理。桩为"确认并采用默认输入值"（Promise<boolean|string|null>）。
+  sandbox.FBConfirm = async (opts) => (opts && opts.input ? (opts.input.value ?? '') : true);
   sandbox.AppState.registerModule = (name, methods) => sandbox.ModuleLoader.registerModule(name, methods);
   const beforeNavigation = [...requests];
   const load = () => new Promise(resolve => sandbox.ModuleLoader.loadModule('screen-panel', resolve));
@@ -100,16 +103,16 @@ async function probe(minified) {
   const preservedHome = JSON.stringify(editorModel.config.pages[0]);
   for (const preset of ['weather', 'control', 'execute', 'blank', 'blank', 'blank', 'blank']) {
     pagePreset = preset;
-    editor._spAddPage();
+    await editor._spAddPage();
   }
   const eightPages = JSON.stringify(editorModel.config.pages);
-  editor._spAddPage();
+  await editor._spAddPage();
   const pageLimitPreserved = JSON.stringify(editorModel.config.pages) === eightPages;
   editorModel.config.pages.pop();
   editorModel.capabilities.limits.maxCards = 1;
   pagePreset = 'weather';
   const beforeCardLimit = JSON.stringify(editorModel.config);
-  editor._spAddPage();
+  await editor._spAddPage();
   const cardLimitPreserved = beforeCardLimit === JSON.stringify(editorModel.config);
   editorModel.capabilities.limits.maxCards = 24;
   editorModel.selectedPageId = editorModel.config.pages[editorModel.config.pages.length - 1].id;

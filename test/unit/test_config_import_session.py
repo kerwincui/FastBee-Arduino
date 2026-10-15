@@ -95,9 +95,15 @@ class ConfigImportSessionTests(unittest.TestCase):
 
     def test_production_routes_hold_guard_and_compare_replay_bytes(self):
         text = (ROOT/'src/network/handlers/SystemRouteHandler.cpp').read_text(encoding='utf-8')
+        # D2 重构后 lambda 业务下沉到 handle* 方法，按处理器函数体截取
+        handlers = {
+            'import': 'handleConfigTransferImport',
+            'import-begin': 'handleConfigTransferImportBegin',
+            'import-chunk': 'handleConfigTransferImportChunk',
+        }
         def route(name):
-            value = text[text.index('server->on("/api/config/transfer/'+name+'",'):]
-            return value[:value.index('\n    });')]
+            value = text[text.index('void SystemRouteHandler::'+handlers[name]+'('):]
+            return value[:value.index('\n}\n')]
         for name in ('import', 'import-begin', 'import-chunk'):
             block = route(name)
             self.assertLess(block.index('requireAuth'), block.index('importGuard(ordinaryImport)'))

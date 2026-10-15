@@ -1,0 +1,220 @@
+// D6 phase-1 periodic full task-stack sampler harness.
+// Mocks the SDK heap/clock, compiles the real TaskStackSnapshot backend and the
+// real HealthMonitor::logFullTaskStackWatermarks body extracted from source. The
+// periodic path must stay observe-only (no IPC identity submission) and must
+// never allocate on its own.
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <Arduino.h>
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
+#include <freertos/task.h>
+#include "systems/TaskStackSnapshot.h"
+
+using namespace FastBee;
+
+static uint32_t nowMs = 0;
+static uint32_t freeBytes = 50000, largestBytes = 20000;
+static int64_t nowUs = 987654321;
+static unsigned taskCount = 3;
+static uint32_t scenarioHwm[TaskStackSnapshot::CAPACITY] = {0};
+static unsigned sdkCalls = 0;
+static std::vector<std::string> logs;
+
+// The periodic sampler is observe-only: this stub must never be asked to
+// submit an IPC identity request.
+namespace FastBee {
+IpcTaskOwnerAttribution sampleIpcTaskOwners(int64_t, bool explicitRequest) {
+    assert(!explicitRequest);
+    return IpcTaskOwnerAttribution{};
+}
+}
+
+unsigned long millis() { return nowMs; }
+int64_t esp_timer_get_time() { return nowUs; }
+size_t heap_caps_get_free_size(uint32_t caps) { assert(caps == 3); return freeBytes; }
+size_t heap_caps_get_largest_free_block(uint32_t caps) { assert(caps == 3); return largestBytes; }
+void* heap_caps_calloc(size_t count, size_t width, uint32_t caps) {
+    assert(caps == 3 && count == TaskStackSnapshot::CAPACITY && width == sizeof(TaskStatus_t));
+    return std::calloc(count, width);
+}
+void heap_caps_free(void* ptr) { std::free(ptr); }
+
+int xTaskGetSchedulerState() { return 1; }
+void* xTaskGetIdleTaskHandleForCore(int core) {
+    assert(core >= 0 && core < static_cast<int>(configNUMBER_OF_CORES));
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(0x1000 + core));
+}
+void* xTimerGetTimerDaemonTaskHandle() { return reinterpret_cast<void*>(0x2000); }
+unsigned uxTaskGetNumberOfTasks() { return taskCount; }
+unsigned uxTaskGetSystemState(TaskStatus_t* entries, unsigned capacity, unsigned* total) {
+    ++sdkCalls;
+    assert(capacity == TaskStackSnapshot::CAPACITY && total == nullptr);
+    for (unsigned i = 0; i < taskCount && i < capacity; ++i) {
+        // Borrowed pointers model tasks that may vanish right after capture.
+        entries[i] = {reinterpret_cast<void*>(static_cast<uintptr_t>(0x3000 + i)),
+            reinterpret_cast<const char*>(1), 100 + i, i % 5, i + 2, 0, 0,
+            reinterpret_cast<void*>(1), scenarioHwm[i]};
+    }
+    nowUs += 240;
+    return taskCount;
+}
+
+struct LoggerMock {
+    void warning(const char* line) { logs.emplace_back("W:").append(line); }
+    void error(const char* line) { logs.emplace_back("E:").append(line); }
+    void debug(const char* line) { logs.emplace_back("D:").append(line); }
+} LOGGER;
+#define LOG_WARNING(line) LOGGER.warning(line)
+#define LOG_ERROR(line) LOGGER.error(line)
+#define LOG_DEBUG(line) LOGGER.debug(line)
+
+struct HealthMonitor {
+    bool severe = false, critical = false;
+    unsigned long lastFullStackLogTime = 0;
+    // @INTERVAL@
+    // @THRESHOLD@
+    bool isMemorySevere() const { return severe; }
+    bool isMemoryCritical() const { return critical; }
+    void logFullTaskStackWatermarks();
+};
+
+// @sampler@
+
+static size_t countPrefix(const char* prefix) {
+    size_t n = 0;
+    for (const auto& line : logs) {
+        if (line.compare(0, std::strlen(prefix), prefix) == 0) ++n;
+    }
+    return n;
+}
+static bool anyContains(const char* needle) {
+    for (const auto& line : logs) {
+        if (line.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::string mode = argv[1];
+    HealthMonitor monitor;
+    const unsigned long INTERVAL = HealthMonitor::FULL_STACK_SAMPLE_INTERVAL_MS;
+    assert(INTERVAL >= 300000UL && INTERVAL <= 600000UL);
+
+    if (mode == "interval_gate") {
+        nowMs = 0;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0 && monitor.lastFullStackLogTime == 0);
+        nowMs = INTERVAL - 1;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0 && monitor.lastFullStackLogTime == 0);
+        nowMs = INTERVAL;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1 && monitor.lastFullStackLogTime == INTERVAL);
+        logs.clear();
+        monitor.logFullTaskStackWatermarks();  // same tick re-entry stays gated
+        assert(sdkCalls == 1 && logs.empty());
+        nowMs = INTERVAL * 2;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 2);
+        return 0;
+    }
+    if (mode == "wrap") {
+        nowMs = 0xFFFFF000UL;  // 4095s: gate must fire from a cold last=0
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1 && monitor.lastFullStackLogTime == nowMs);
+        nowMs = 5000;  // millis() wrapped: elapsed is still tiny
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1);
+        nowMs = 5000 + INTERVAL;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 2 && monitor.lastFullStackLogTime == nowMs);
+        return 0;
+    }
+    if (mode == "low_report") {
+        nowMs = INTERVAL;
+        taskCount = 3;
+        scenarioHwm[0] = 2000; scenarioHwm[1] = 800; scenarioHwm[2] = 100;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1);
+        assert(countPrefix("E:Health: task stack low:") == 1);
+        assert(countPrefix("W:Health: task stack low:") == 1);
+        assert(anyContains("num=101 prio=3 state=1 hwm=800B"));
+        assert(anyContains("num=102 prio=4 state=2 hwm=100B"));
+        assert(logs.back().find("2/3 tasks <1KB, minHwm=100B took=") != std::string::npos);
+        return 0;
+    }
+    if (mode == "boundary") {
+        nowMs = INTERVAL;
+        taskCount = 2;
+        scenarioHwm[0] = 1024; scenarioHwm[1] = 1023;  // 1024 itself is not <1KB
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1);
+        assert(countPrefix("E:Health: task stack low:") == 0);
+        assert(countPrefix("W:Health: task stack low:") == 1);
+        assert(anyContains("num=101 prio=3 state=1 hwm=1023B"));
+        assert(logs.back().find("1/2 tasks <1KB, minHwm=1023B took=") != std::string::npos);
+        return 0;
+    }
+    if (mode == "ok_report") {
+        nowMs = INTERVAL;
+        taskCount = 2;
+        scenarioHwm[0] = 2048; scenarioHwm[1] = 4096;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1);
+        assert(countPrefix("E:Health: task stack low:") == 0);
+        assert(countPrefix("W:Health: task stack low:") == 0);
+        assert(logs.back().find("D:Health: full stack sample ok: tasks=2 minHwm=2048B took=240us")
+               != std::string::npos);
+        return 0;
+    }
+    if (mode == "skip_severe") {
+        nowMs = INTERVAL;
+        monitor.severe = true;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0);  // memory gate refuses before any SDK scan
+        assert(logs.back() == "D:Health: full stack sample skipped: INTERNAL_MEMORY_BUDGET");
+        assert(monitor.lastFullStackLogTime == INTERVAL);  // gate still advances
+        monitor.severe = false;
+        monitor.logFullTaskStackWatermarks();  // same tick: no retry storm
+        assert(sdkCalls == 0);
+        nowMs = INTERVAL * 2;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 1);
+        return 0;
+    }
+    if (mode == "skip_low_free") {
+        nowMs = INTERVAL;
+        freeBytes = TaskStackSnapshot::MIN_FREE_INTERNAL8 - 1;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0);
+        assert(logs.back() == "D:Health: full stack sample skipped: INTERNAL_MEMORY_BUDGET");
+        return 0;
+    }
+    if (mode == "skip_small_block") {
+        nowMs = INTERVAL;
+        largestBytes = TaskStackSnapshot::MIN_LARGEST_INTERNAL8 - 1;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0);
+        assert(logs.back() == "D:Health: full stack sample skipped: INTERNAL_MEMORY_BUDGET");
+        return 0;
+    }
+    if (mode == "unavailable") {
+        nowMs = INTERVAL;
+        monitor.logFullTaskStackWatermarks();
+        assert(sdkCalls == 0);
+#if defined(ESP_PLATFORM)
+        assert(false && "sdk variant must observe");
+#else
+        assert(logs.back() == "D:Health: full stack sample skipped: SDK_TRACE_UNAVAILABLE");
+#endif
+        return 0;
+    }
+    assert(false && "unknown mode");
+    return 1;
+}

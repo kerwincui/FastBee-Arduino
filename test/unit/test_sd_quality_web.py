@@ -14,7 +14,11 @@ vm.runInNewContext(fs.readFileSync('web-src/modules/runtime/peripheral-io.js','u
   AppState:app,document:{getElementById:id=>id==='peripheral-sd-content'?content:id==='peripheral-sd-path'?path:null},
   apiGet:async(...args)=>{calls.push(['get',...args]);return get(...args);},
   apiPost:async(...args)=>{calls.push(['post',...args]);return post(...args);},
-  Notification:{success:(...args)=>notifications.push(args)},confirm:()=>confirmed,console,TextEncoder
+  Notification:{success:(...args)=>notifications.push(args)},
+  // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean|string|null>）；与同步
+  // confirm 桩共用同一 confirmed 变量，取消语义保持一致。
+  FBConfirm:async(opts)=>opts&&opts.input?(opts.input.value??''):confirmed,
+  confirm:()=>confirmed,console,TextEncoder
 });
 app._setPeripheralIoText=(id,value)=>text[id]=value;
 app._setPeripheralIoOutput=(id,value)=>text[id]=value;
@@ -57,7 +61,7 @@ const cases={
   recovery_failure_is_not_retried:async()=>{post=async()=>({success:false,error:'SD_MOUNT_FAILED'});await app.runPeripheralSdOperation('recover');assert.equal(calls.length,1);assert.equal(text.error,'SD_MOUNT_FAILED');assert.equal(content.value,'keep draft');assert.equal(notifications.length,0);},
   recovery_cancel_and_permission:async()=>{confirmed=false;await app.runPeripheralSdOperation('recover');confirmed=true;app.guardDeveloperModeAction=()=>false;await app.runPeripheralSdOperation('recover');assert.equal(calls.length,0);},
   unknown_action_does_not_post:async()=>{await app.runPeripheralSdOperation('format');assert.equal(calls.length,0);},
-  late_recovery_does_not_refresh_new_device:async()=>{let done;post=()=>new Promise(r=>done=r);const pending=app.runPeripheralSdOperation('recover');app._periphIoSession={};app._periphIoId='sd-new';done({success:true});await pending;assert.equal(calls.length,1);assert.equal(notifications.length,0);},
+  late_recovery_does_not_refresh_new_device:async()=>{let done;post=()=>new Promise(r=>done=r);const pending=app.runPeripheralSdOperation('recover');while(!done)await Promise.resolve();app._periphIoSession={};app._periphIoId='sd-new';done({success:true});await pending;assert.equal(calls.length,1);assert.equal(notifications.length,0);},
   cancellation_and_guards_make_no_calls:async()=>{confirmed=false;await app.runPeripheralSdOperation('delete-file');app.guardDeveloperModeAction=()=>false;await app.runPeripheralSdOperation('mount');app._periphIoBlocked='blocked';await app.runPeripheralSdOperation('read-file');assert.equal(calls.length,0);},
   new_modal_clears_old_summary(){const source=fs.readFileSync('web-src/modules/runtime/peripheral-io.js','utf8');const open=source.slice(source.indexOf('async openPeripheralIoModal('),source.indexOf('closePeripheralIoModal() {'));assert(open.includes('this._renderPeripheralSdData({statusAvailable: false})'));}
 };

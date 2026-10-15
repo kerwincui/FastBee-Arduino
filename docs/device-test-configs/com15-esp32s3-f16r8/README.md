@@ -5,7 +5,7 @@
 - 目标环境：`esp32s3-F16R8`；端口范围：COM15。
 - 已核对COM15的bootloader芯片/MAC/16MiB Flash身份，并通过流MD5与独立Flash MD5校验；历史HTTP采样STA为`192.168.5.19`，不代表复位后的当前地址，启动槽仍需部署前核验。
 - 当前配置规模：8个外设（8启用）、9条规则（9启用）。各启用状态按现场保留，没有主动加负载。
-- 原公开参考：`docs/ecm50a-s3-f16r8`（历史模板运行 JSON 已移除；当前唯一配置见下方 config/）；本次私有来源：`.device-config-backups/four-device-20261005/com15-esp32s3-f16r8/14c19fc152d8/serial-r1/extracted`。
+- 原公开参考：`docs/ecm50a-s3-f16r8`（该目录已于 2026-10-15 随 docs 精简移除，历史见 git 记录；当前唯一配置见下方 config/）；本次私有来源：`.device-config-backups/four-device-20261005/com15-esp32s3-f16r8/14c19fc152d8/serial-r1/extracted`。
 - 配置：[config/](config/)；来源、逐文件SHA与验收状态：[manifest.json](manifest.json)。
 
 ## 实际配置与保全边界

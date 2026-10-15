@@ -73,6 +73,43 @@
         var el = this.showElement(ref, 'flex');
         if (el) {
             var self = this;
+            // 无障碍：补齐 dialog 语义属性（静态模板缺失时兜底）
+            if (!el.getAttribute('role')) el.setAttribute('role', 'dialog');
+            if (el.getAttribute('aria-modal') !== 'true') el.setAttribute('aria-modal', 'true');
+            el._modalReturnFocus = document.activeElement;
+            if (el._modalKeyHandler) el.removeEventListener('keydown', el._modalKeyHandler);
+            el._modalKeyHandler = function(e) {
+                if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    self.hideModal(el);
+                    return;
+                }
+                if (e.key !== 'Tab') return;
+                var nodes = el.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+                var focusables = Array.prototype.filter.call(nodes, function(node) {
+                    return node.offsetParent !== null || node === document.activeElement;
+                });
+                if (!focusables.length) {
+                    e.preventDefault();
+                    return;
+                }
+                var idx = focusables.indexOf(document.activeElement);
+                if (e.shiftKey && idx <= 0) {
+                    e.preventDefault();
+                    focusables[focusables.length - 1].focus();
+                } else if (!e.shiftKey && idx === focusables.length - 1) {
+                    e.preventDefault();
+                    focusables[0].focus();
+                }
+            };
+            el.addEventListener('keydown', el._modalKeyHandler);
+            var firstFocusable = el.querySelector('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+            if (firstFocusable) {
+                firstFocusable.focus();
+            } else {
+                el.setAttribute('tabindex', '-1');
+                el.focus();
+            }
             if (el._modalOverlayHandler) el.removeEventListener('click', el._modalOverlayHandler);
             // 点击遮罩层关闭
             el._modalOverlayHandler = function(e) {
@@ -98,6 +135,12 @@
     AppState.hideModal = function(ref) {
         var el = this.getEl(ref);
         if (!el) return null;
+        if (el._modalKeyHandler) {
+            el.removeEventListener('keydown', el._modalKeyHandler);
+            el._modalKeyHandler = null;
+        }
+        var modalReturnFocus = el._modalReturnFocus;
+        el._modalReturnFocus = null;
         // 清理遮罩点击事件
         if (el._modalOverlayHandler) {
             el.removeEventListener('click', el._modalOverlayHandler);
@@ -119,6 +162,9 @@
         }
         if (modalId && typeof this._resetModalBindingState === 'function') {
             this._resetModalBindingState(modalId);
+        }
+        if (modalReturnFocus && modalReturnFocus.isConnected && typeof modalReturnFocus.focus === 'function') {
+            modalReturnFocus.focus();
         }
         return el;
     };

@@ -221,11 +221,11 @@
             this._resolvePeriphExecRunValuePrompt(value);
         },
 
-        _promptPeriphExecRunValue: function(options, defaults) {
+        _promptPeriphExecRunValue: async function(options, defaults) {
             var opts = options || {};
             var modal = this._ensurePeriphExecRunValueModal();
             if (!modal) {
-                var fallbackValue = prompt(defaults.fallbackMessage, opts.defaultValue != null ? String(opts.defaultValue) : '');
+                var fallbackValue = await FBConfirm({ title: '输入执行值', message: String(defaults.fallbackMessage), input: { label: '执行值', value: opts.defaultValue != null ? String(opts.defaultValue) : '' } });
                 if (fallbackValue === null) return Promise.resolve(null);
                 var normalizedValue = String(fallbackValue || '').trim();
                 if (!normalizedValue.length) { Notification.warning('请输入要设置的值', defaults.warningTitle); return Promise.resolve(null); }
@@ -253,21 +253,6 @@
                 setTimeout(function() { if (input) { input.focus(); input.select(); } }, 0);
             });
         },
-    };
-
-    window.renderModbusMotorReport = function(el, data, waiting, view) {
-        if (!el) return;
-        var labels = {
-            not_produced: '未生成应答报告', disabled: '应答报告未启用',
-            queued_locally: '当时已进入本地队列', retained_locally: '当时已保留，后续结果未知',
-            not_retained: '报告未保留', invalid_payload: '报告载荷无效'
-        };
-        var state = data && data.reportAdmission;
-        var valid = data && Number.isInteger(data.operationId) && data.operationId > 0 &&
-            data.pending === false && typeof data.success === 'boolean' && data.reportDeliveryVerified === false &&
-            typeof state === 'string' && Object.prototype.hasOwnProperty.call(labels, state);
-        el.textContent = (waiting ? '等待报告结果' : valid ? labels[state] : '报告状态未确认') + '；平台接收未确认';
-        el.title = '最近一次在本' + view + '提交的控制报告；这是当时的准入结果，不是当前队列或投递状态。报告失败不会重发控制。';
     };
 
     // Shared with both protocol status and device-control views. Values arriving
@@ -307,5 +292,94 @@
         return value !== null && Number.isInteger(decimals) && decimals >= 0 && decimals <= 6 ? value.toFixed(decimals) : '--';
     };
 
+
+/**
+     * 危险操作共享确认弹窗：标题（动作名+对象）+ 风险摘要 + 确认/取消。
+     * 复用 AppState.showModal/hideModal 的 ARIA 与焦点陷阱能力（state-ui.js）。
+     * options: { title, message, confirmText?, cancelText?, danger?,
+     *            requireCheck?, checkLabel?, input?: { label, value?, password? } }
+     * 无 input → Promise<boolean>；有 input → Promise<string|null>。
+     */
+    window.FBConfirm = function(options) {
+        options = options || {};
+        var title = String(options.title || '确认操作');
+        var message = String(options.message || '');
+        var confirmText = String(options.confirmText || '确认');
+        var cancelText = String(options.cancelText || '取消');
+        var danger = options.danger === true;
+        var requireCheck = options.requireCheck === true;
+        var checkLabel = String(options.checkLabel || '我已了解风险，确认继续');
+        var input = options.input || null;
+
+        return new Promise(function(resolve) {
+            if (typeof AppState === 'undefined' || typeof AppState.showModal !== 'function') {
+                resolve(input ? null : false);
+                return;
+            }
+            var overlay = document.createElement('div');
+            overlay.className = 'modal';
+            overlay.setAttribute('role', 'dialog');
+            overlay.setAttribute('aria-modal', 'true');
+            overlay.setAttribute('aria-labelledby', 'fb-confirm-title');
+            overlay.id = 'fb-confirm-modal';
+            var safeText = function(s) { return String(s).replace(/[&<>"]/g, function(c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+            var messageHtml = safeText(message).replace(/\n/g, '<br>');
+            overlay.innerHTML =
+                '<div class="modal-content">' +
+                '  <div class="modal-header"><h2 class="modal-title" id="fb-confirm-title">' + safeText(title) + '</h2>' +
+                '  <button type="button" class="modal-close-btn" data-fbc-close aria-label="关闭">×</button></div>' +
+                '  <div class="modal-body"><p style="margin:0 0 10px;line-height:1.6;">' + messageHtml + '</p>' +
+                (input ? '    <div class="fb-form-group"><label for="fb-confirm-input">' + safeText(String(input.label || '请输入')) + '</label>' +
+                '    <input type="' + (input.password ? 'password' : 'text') + '" id="fb-confirm-input" class="" value="' +
+                safeText(String(input.value || '')) + '"></div>' : '') +
+                (requireCheck ? '    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;">' +
+                '    <input type="checkbox" id="fb-confirm-check">' + safeText(checkLabel) + '</label>' : '') +
+                '  </div>' +
+                '  <div class="modal-footer">' +
+                '    <button type="button" class="fb-btn" data-fbc-close>' + safeText(cancelText) + '</button>' +
+                '    <button type="button" class="fb-btn ' + (danger ? 'fb-btn-danger' : 'fb-btn-primary') + '" id="fb-confirm-ok"' +
+                (requireCheck ? ' disabled' : '') + '>' + safeText(confirmText) + '</button>' +
+                '  </div>' +
+                '</div>';
+            document.body.appendChild(overlay);
+
+            var settled = false;
+            var done = function(result) {
+                if (settled) return;
+                settled = true;
+                AppState.hideModal(overlay);
+                overlay.remove();
+                resolve(result);
+            };
+            var okBtn = overlay.querySelector('#fb-confirm-ok');
+            var check = overlay.querySelector('#fb-confirm-check');
+            if (check && okBtn) {
+                check.addEventListener('change', function() { okBtn.disabled = !check.checked; });
+            }
+            overlay.querySelectorAll('[data-fbc-close]').forEach(function(el) {
+                el.addEventListener('click', function() { done(input ? null : false); });
+            });
+            if (okBtn) {
+                okBtn.addEventListener('click', function() {
+                    if (input) {
+                        var field = overlay.querySelector('#fb-confirm-input');
+                        done(field ? field.value : '');
+                    } else {
+                        done(true);
+                    }
+                });
+            }
+            var field = overlay.querySelector('#fb-confirm-input');
+            if (field) {
+                field.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); done(field.value); }
+                });
+            }
+            AppState.showModal(overlay);
+            if (requireCheck && check) check.focus();
+            else if (field) field.focus();
+        });
+    };
 
 })();

@@ -2,13 +2,13 @@
 <div id="protocol-page" class="page page-layout-flat">
     <div class="fb-card">
         <div class="fb-card-body">
-            <div class="config-tabs">
-                <div class="config-tab active" data-tab="mqtt">MQTT</div>
-                <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
+            <div class="config-tabs" role="tablist">
+                <div class="config-tab active" data-tab="mqtt" role="tab" aria-selected="true" aria-controls="mqtt" tabindex="0">MQTT</div>
+                <div class="config-tab" data-tab="modbus-rtu" role="tab" aria-selected="false" aria-controls="modbus-rtu" tabindex="-1">Modbus RTU</div>
             </div>
 
             <!-- MQTT 配置 - 按需分片加载 -->
-            <div id="mqtt" class="config-content active">
+            <div id="mqtt" class="config-content active" role="tabpanel">
                 <div id="mqtt-fragment-container">
                     <!-- Fragment: protocol-mqtt.html loaded on demand -->
                 </div>
@@ -16,7 +16,7 @@
 
 
             <!-- Modbus RTU 配置 - 按需分片加载 -->
-            <div id="modbus-rtu" class="config-content">
+            <div id="modbus-rtu" class="config-content" role="tabpanel">
                 <div id="modbus-rtu-fragment-container">
                     <!-- Fragment: protocol-modbus-rtu.html loaded on demand -->
                 </div>

@@ -162,45 +162,8 @@ test.describe('Suite-01: 登录与认证', () => {
     await waitForHealth(`http://${env.deviceIp}`, 60_000);
   });
 
-  // ========== 场景C: 语言切换 ==========
-
-  test('AUTH-013: 登录页切换到英文', async ({ page }) => {
+  test('AUTH-015: 登录后进入主界面', async ({ page }) => {
     await openLogin(page);
-    const langSelect = page.locator('#login-language-select');
-    if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await page.selectOption('#login-language-select', 'en');
-      await page.waitForTimeout(2000); // 等待 i18n 切换
-      // 检查按钮文本是否变化（可能是 Login 或其他英文文本）
-      const btnText = await page.locator('#login-button').textContent();
-      // 如果 i18n 没有切换按钮文本，测试仍然通过（设备可能不支持实时切换）
-      expect(btnText).toBeTruthy();
-    } else {
-      test.skip();
-    }
-  });
-
-  test('AUTH-014: 登录页切换回中文', async ({ page }) => {
-    await openLogin(page);
-    const langSelect = page.locator('#login-language-select');
-    if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await page.selectOption('#login-language-select', 'en');
-      await page.waitForTimeout(500);
-      await page.selectOption('#login-language-select', 'zh-CN');
-      await page.waitForTimeout(1000);
-      const btnText = await page.locator('#login-button').textContent();
-      expect(btnText).toBeTruthy();
-    } else {
-      test.skip();
-    }
-  });
-
-  test('AUTH-015: 英文模式下登录', async ({ page }) => {
-    await openLogin(page);
-    const langSelect = page.locator('#login-language-select');
-    if (await langSelect.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await page.selectOption('#login-language-select', 'en');
-      await page.waitForTimeout(1000);
-    }
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
     await page.click('#login-button');

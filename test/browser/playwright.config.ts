@@ -47,7 +47,7 @@ const reporters: ReporterDescription[] = externalReportDir
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: externalOutputDir || './test-results',
+  outputDir: externalOutputDir || '../../artifacts/test-results',
   fullyParallel: false, // 嵌入式设备串行，避免并发压力
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,

@@ -20,7 +20,7 @@ const REFERENCE_EXCLUDES = new Set([
     'scripts/test-repository-retention.js'
 ]);
 const ALLOWED_STATUS = new Set([
-    'retain', 'retain-generated', 'needs-owner', 'quarantine-pending'
+    'retain', 'retain-generated', 'needs-owner', 'quarantine-pending', 'removed'
 ]);
 
 function normalize(relativePath) {
@@ -84,7 +84,7 @@ function validateManifest(manifest, files, issues, root = ROOT) {
             issues.push(`${label}: owner, classification, and a supported status are required`);
         }
         const fullPath = path.join(root, relativePath);
-        if (!fs.existsSync(fullPath)) issues.push(`${relativePath}: manifest target is missing`);
+        if (entry.status !== 'removed' && !fs.existsSync(fullPath)) issues.push(`${relativePath}: manifest target is missing`);
         const isTracked = files.includes(relativePath);
         if (typeof entry.tracked === 'boolean' && entry.tracked !== isTracked) {
             issues.push(`${relativePath}: tracked=${entry.tracked} does not match Git inventory (${isTracked})`);

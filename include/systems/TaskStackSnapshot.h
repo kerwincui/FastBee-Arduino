@@ -42,8 +42,10 @@ struct TaskStackSnapshot {
     IpcTaskOwnerAttribution ipcAttribution{};
 };
 
-// Explicit diagnostics only: the SDK may suspend scheduling while scanning.
-// This function is never called by periodic health checks or normal GETs.
+// The SDK may suspend scheduling while scanning. Permitted callers: the
+// explicit POST route and the D6 phase-1 periodic health sampler, which is
+// interval-gated (>=5 min) and admitted by the memory/cooldown budget below.
+// Normal GETs never trigger a scan.
 TaskStackSnapshot captureTaskStackSnapshot(bool severeMemoryPressure, bool requestIpcIdentity = true);
 const char* taskStackCaptureReason(TaskStackCaptureStatus status);
 

@@ -47,41 +47,41 @@ public:
      * @param webServerPtr Web服务器指针
      */
     explicit FBNetworkManager(AsyncWebServer* webServerPtr = nullptr);
-    
+
     /**
      * @brief 析构函数
      */
     ~FBNetworkManager();
-    
+
     /**
      * @brief 初始化网络管理器
      * @return 初始化是否成功
      */
     bool initialize();
-    
+
     /**
      * @brief 设置 WiFi凭证（用于测试或硬编码配置）
      * @param ssid WiFi名称
      * @param password WiFi密码
      */
     void setWiFiCredentials(const String& ssid, const String& password);
-    
+
     /**
      * @brief 断开所有网络连接
      */
     void disconnect();
-    
+
     /**
      * @brief 更新网络状态（需要在主循环中调用）
      */
     void update();
-    
+
     /**
      * @brief 获取网络配置
      * @return WiFi配置
      */
     WiFiConfig getConfig() const;
-    
+
     /**
      * @brief 更新网络配置
      * @param newConfig 新配置
@@ -90,7 +90,7 @@ public:
      */
     bool updateConfig(const WiFiConfig& newConfig, bool saveToStorage = true,
                       String* resourceError = nullptr);
-    
+
     /**
      * @brief 清除待处理的网络重启标志
      * 用于配置保存后改为设备重启时，取消运行时 restartNetwork()
@@ -102,13 +102,19 @@ public:
      * @return 网络状态信息
      */
     NetworkStatusInfo getStatusInfo() const;
-    
+
+    /**
+     * @brief 用 WiFi 底层链路状态修补状态信息（Web 状态接口读取用，不改动连接逻辑）
+     * @param info 待修补的状态信息
+     */
+    void patchStatusInfoWithWiFiLink(NetworkStatusInfo& info) const;
+
     /**
      * @brief 扫描可用WiFi网络
      * @return JSON格式的网络列表
      */
     String scanNetworks();
-    
+
     /**
      * @brief 连接到指定网络
      * @param ssid WiFi名称
@@ -116,12 +122,12 @@ public:
      * @return 连接是否成功
      */
     bool connectToNetwork(const String& ssid, const String& password);
-    
+
     /**
      * @brief 断开当前网络连接
      */
     void disconnectNetwork();
-    
+
     /**
      * @brief 重启网络
      * @return 重启是否成功
@@ -133,31 +139,31 @@ public:
     FastBee::MqttClientLifetime::Read acquireWorkerBudgetBaselineRead() {
         return FastBee::MqttClientLifetime::Read(_networkTransitionLifetime);
     }
-    
+
     /**
      * @brief 检查互联网连接
      * @return 是否连接到互联网
      */
     bool checkInternetConnection();
-    
+
     /**
      * @brief 设置连接成功回调
      * @param callback 回调函数
      */
     void setConnectionCallback(NetworkEventCallback callback);
-    
+
     /**
      * @brief 设置断开连接回调
      * @param callback 回调函数
      */
     void setDisconnectionCallback(NetworkEventCallback callback);
-    
+
     /**
      * @brief 设置IP冲突回调
      * @param callback 回调函数
      */
     void setIPConflictCallback(NetworkEventCallback callback);
-    
+
     /**
      * @brief 设置网络切换前回调
      * @details 在 restartNetwork() 销毁网络适配器之前调用，
@@ -171,20 +177,20 @@ public:
      * @param enabled 是否启用自动重连
      */
     void setAutoReconnect(bool enabled);
-    
+
     /**
      * @brief 获取配置的JSON字符串
      * @return JSON格式的配置
      */
     String getConfigJSON();
-    
+
     /**
      * @brief 从JSON更新配置
      * @param jsonConfig JSON格式的配置
      * @return 更新是否成功
      */
     bool updateConfigFromJSON(const String& jsonConfig);
-    
+
     /**
      * @brief 重置为默认配置
      * @return 重置是否成功
@@ -194,41 +200,41 @@ public:
     // 恢复出厂流程使用：清除 network.json 失效时可能回退读取的 NVS 副本。
     // 不改变当前连接，也不触发网络重启。
     bool clearPersistentFallback();
-    
+
     /**
      * @brief 获取网络统计信息
      * @return JSON格式的统计信息
      */
     String getStatistics();
-    
+
     /**
      * @brief 递增发送计数
      */
     void incrementTxCount();
-    
+
     /**
      * @brief 递增接收计数
      */
     void incrementRxCount();
-    
+
     /**
      * @brief 检查IP冲突
      * @return 是否检测到IP冲突
      */
     bool checkIPConflict();
-    
+
     /**
      * @brief 获取WiFi管理器
      * @return WiFi管理器指针
      */
     WiFiManager* getWiFiManager();
-    
+
     /**
      * @brief 获取IP管理器
      * @return IP管理器指针
      */
     IPManager* getIPManager();
-    
+
     /**
      * @brief 获取DNS管理器
      * @return DNS管理器指针
@@ -265,7 +271,7 @@ public:
 #if FASTBEE_ENABLE_CELLULAR
     CellularAdapter* getCellularAdapter() { return cellularAdapter.get(); }
 #endif
-    
+
     // 静态工具方法
     static bool isValidIP(const String& ip);
     static bool isValidSubnet(const String& subnet);
@@ -273,7 +279,7 @@ public:
     static String getChipID();
     static uint8_t rssiToPercentage(int32_t rssi);
     static String getWiFiModeString();
-    
+
     // 内部方法
     bool startAPMode();
     void stopAPMode();
@@ -303,11 +309,11 @@ private:
     // 网络组件
     AsyncWebServer* webServer;
     Preferences preferences;
-    
+
     // 配置和状态
     WiFiConfig wifiConfig;
     NetworkStatusInfo statusInfo;
-    
+
     // 子模块
     std::unique_ptr<WiFiManager> wifiManager;
     std::unique_ptr<IPManager> ipManager;
@@ -318,7 +324,7 @@ private:
 #if FASTBEE_ENABLE_CELLULAR
     std::unique_ptr<CellularAdapter> cellularAdapter;
 #endif
-    
+
     // 连接状态
     bool isInitialized;
     bool autoReconnectEnabled;
@@ -328,7 +334,7 @@ private:
     unsigned long pendingRestartTime;  // 延迟重启时间
     bool pendingMDNSRestart;      // 是否有待处理的 mDNS 重启
     unsigned long pendingMDNSRestartTime; // mDNS 延迟重启时间
-    
+
     // 以太网自动重连
 #if FASTBEE_ENABLE_ETHERNET
     bool ethReconnectPending;         // 以太网重连待执行
@@ -346,19 +352,19 @@ private:
     static constexpr int CELL_MAX_RECONNECT_ATTEMPTS = 8;
     static constexpr int CELL_FULL_RESTART_EVERY = 3;                 // 每 3 次重建适配器，释放串口/Modem 状态
 #endif
-    
+
     // 时间相关
     unsigned long lastReconnectAttempt;
     unsigned long lastStatusUpdate;
     unsigned long lastConflictCheck;
-    
+
     // 回调函数
     NetworkEventCallback connectionCallback;
     NetworkEventCallback disconnectionCallback;
     NetworkEventCallback ipConflictCallback;
     PreNetworkSwitchCallback _preNetworkSwitchCb;  // 网络切换前回调（停止 MQTT 等依赖适配器的协议）
     FastBee::MqttClientLifetime _networkTransitionLifetime;
-    
+
     // 私有方法
     bool restartNetwork(bool* deferred);
     bool initializeFileSystem();

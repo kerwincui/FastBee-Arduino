@@ -550,31 +550,6 @@ test.describe('Suite-20: 433MHz RF 遥控管理（嵌入式面板）', () => {
     await closeModal(authPage);
   });
 
-  // ========== 场景J: i18n 与表单字段 ==========
-
-  test('RF-090: data-i18n 属性完整性', async ({ authPage }) => {
-    await authPage.waitForSelector('#peripheral-modal', { state: 'attached', timeout: 20000 });
-    const section = authPage.locator('#rf-manage-section');
-    const i18nEls = section.locator('[data-i18n]');
-    const count = await i18nEls.count();
-    expect(count).toBeGreaterThanOrEqual(10);
-    // 验证关键 i18n 键存在
-    const keys: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const key = await i18nEls.nth(i).getAttribute('data-i18n');
-      if (key) keys.push(key);
-    }
-    expect(keys).toContain('rf-manage-title');
-    expect(keys).toContain('rf-learn-start');
-    expect(keys).toContain('rf-learn-stop');
-    expect(keys).toContain('rf-key-name');
-    expect(keys).toContain('rf-key-code');
-    expect(keys).toContain('rf-key-bits');
-    expect(keys).toContain('rf-key-pulse');
-    expect(keys).toContain('rf-key-save');
-    expect(keys).toContain('rf-keys-clear');
-  });
-
   test('RF-091: RF 参数表单字段完整性', async ({ authPage }) => {
     await openAddModal(authPage);
     await switchToRfType(authPage);

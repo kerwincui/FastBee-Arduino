@@ -1,0 +1,6 @@
+{
+    "platformioCore": "6.1.19",
+    "platform": "pioarduino/platform-espressif32 55.03.38",
+    "reason": "pioarduino 55.03.38 要求 platformio core >=6.1.19；core 6.2.x 与该平台组合会在每次 pio 调用时重解析平台 GitHub URL，网络不稳时依赖复核偶发失败（2026-10-14 D11 构建证据）。penv 钉在 6.1.19，构建/部署入口前置自检不一致即报错。",
+    "remediation": "~/.platformio/penv/Scripts/python.exe -m pip install platformio==6.1.19"
+}

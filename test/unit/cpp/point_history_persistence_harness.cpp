@@ -18,6 +18,7 @@ inline void convertFromJson(JsonVariantConst value, String& output) {
     output = value.as<std::string>();
 }
 static uint32_t clockMs = 1000;
+static uint32_t peerFlashWriteMs = 0;
 static uint32_t historyMillis() { return clockMs; }
 static SemaphoreHandle_t historyCreateMutex() { return reinterpret_cast<void*>(1); }
 static bool readerContention = false;
@@ -31,8 +32,13 @@ static BaseType_t historyTakeMutex(SemaphoreHandle_t, TickType_t timeout) {
 #define xSemaphoreCreateMutex historyCreateMutex
 #define xSemaphoreTake historyTakeMutex
 #define LOGGER_SYSTEM_H
-struct HistoryLogger { void warning(const char*) {} } historyLogger;
-#define LOGGER historyLogger
+class LoggerSystem {
+public:
+    static LoggerSystem& getInstance() { static LoggerSystem logger; return logger; }
+    void warning(const char*) {}
+    uint32_t lastFlashWriteMs() const { return peerFlashWriteMs; }
+};
+#define LOGGER LoggerSystem::getInstance()
 #define private public
 #include "core/PointHistory.h"
 #undef private
@@ -48,6 +54,7 @@ static const std::string configPath = PointHistory::CONFIG_FILE;
 
 static std::unique_ptr<PointHistory> fresh(bool erase = true) {
     readerContention = false;
+    peerFlashWriteMs = 0;
     if (erase) LittleFS = {};
     auto history = std::unique_ptr<PointHistory>(new PointHistory());
     assert(history->initialize());
@@ -112,11 +119,62 @@ static void deadline() {
         assert(LittleFS.writeOpens == writes);
         assert(history->firstDirtyAt() == first);
     }
+    // 旧的 30 s 窗口不再触发落盘，周期写合并后由 FLUSH_DEADLINE_MS 兜底。
     clockMs = first + 30000;
+    history->tick(clockMs);
+    assert(history->isDirty() && LittleFS.writeOpens == writes);
+    clockMs = first + PointHistory::FLUSH_DEADLINE_MS;
     history->tick(clockMs);
     assert(!history->isDirty() && LittleFS.writeOpens == writes + 1);
     history->tick(clockMs + 60000);
     assert(LittleFS.writeOpens == writes + 1);
+}
+static void coalesce() {
+    // 日志刚落盘但脏数据未满合并窗口：不触发。
+    auto history = fresh(); enable(*history); sample(*history, 1);
+    const uint32_t first = history->firstDirtyAt();
+    const size_t writes = LittleFS.writeOpens;
+    peerFlashWriteMs = first + 30000;
+    clockMs = first + 30001;
+    history->tick(clockMs);
+    assert(history->isDirty() && LittleFS.writeOpens == writes);
+    // 脏数据满 FLUSH_COALESCE_MIN_MS 且日志刚落盘：搭乘同一写窗口提前落盘。
+    peerFlashWriteMs = first + PointHistory::FLUSH_COALESCE_MIN_MS + 500;
+    clockMs = first + PointHistory::FLUSH_COALESCE_MIN_MS + 501;
+    history->tick(clockMs);
+    assert(!history->isDirty() && LittleFS.writeOpens == writes + 1);
+    // 日志落盘时间已超出对齐窗口：不触发，继续等兜底窗口。
+    auto second = fresh(); enable(*second); sample(*second, 1);
+    const uint32_t firstSecond = second->firstDirtyAt();
+    const size_t writesSecond = LittleFS.writeOpens;
+    peerFlashWriteMs = firstSecond + PointHistory::FLUSH_COALESCE_MIN_MS;
+    clockMs = firstSecond + PointHistory::FLUSH_COALESCE_MIN_MS +
+              PointHistory::PEER_WRITE_WINDOW_MS + 1;
+    second->tick(clockMs);
+    assert(second->isDirty() && LittleFS.writeOpens == writesSecond);
+}
+static void wraparound() {
+    // millis() 回绕前后，兜底窗口与合并窗口都不能误判。
+    auto history = fresh(); enable(*history);
+    clockMs = UINT32_MAX - 5000;
+    assert(history->recordSample("sensor.temp", 22.5, "C", "mapping-a", 1, clockMs));
+    const uint32_t first = history->firstDirtyAt();
+    const size_t writes = LittleFS.writeOpens;
+    clockMs = first + 10000;
+    history->tick(clockMs);
+    assert(history->isDirty() && LittleFS.writeOpens == writes);
+    clockMs = first + PointHistory::FLUSH_DEADLINE_MS;
+    history->tick(clockMs);
+    assert(!history->isDirty() && LittleFS.writeOpens == writes + 1);
+    auto second = fresh(); enable(*second);
+    clockMs = UINT32_MAX - 3000;
+    assert(second->recordSample("sensor.temp", 22.5, "C", "mapping-a", 1, clockMs));
+    const uint32_t firstSecond = second->firstDirtyAt();
+    const size_t writesSecond = LittleFS.writeOpens;
+    clockMs = firstSecond + PointHistory::FLUSH_COALESCE_MIN_MS + 100;
+    peerFlashWriteMs = clockMs - 500;
+    second->tick(clockMs);
+    assert(!second->isDirty() && LittleFS.writeOpens == writesSecond + 1);
 }
 static void during_write() {
     auto history = fresh(); enable(*history); sample(*history, 1);
@@ -125,7 +183,7 @@ static void during_write() {
     assert(history->isDirty());
     assert(history->firstDirtyAt() == 3000);
     assert(parsed(dataPath)["series"][0]["samples"].size() == 1);
-    clockMs = 33000; history->tick(clockMs);
+    clockMs = 3000 + PointHistory::FLUSH_DEADLINE_MS; history->tick(clockMs);
     assert(!history->isDirty());
     assert(parsed(dataPath)["series"][0]["samples"].size() == 2);
 }
@@ -335,6 +393,8 @@ int main(int argc, char** argv) {
     const std::string name(argv[1]);
     if (name == "roundtrip") roundtrip();
     else if (name == "deadline") deadline();
+    else if (name == "coalesce") coalesce();
+    else if (name == "wraparound") wraparound();
     else if (name == "during_write") during_write();
     else if (name == "backup_restore") backup_restore();
     else if (name == "malformed") malformed();

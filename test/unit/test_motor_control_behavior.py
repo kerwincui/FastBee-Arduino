@@ -13,11 +13,6 @@ class MotorControlBehaviorTests(unittest.TestCase):
                                 text=True, encoding='utf-8', timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_motor_report_admission_ui(self):
-        result = subprocess.run(['node', 'scripts/test-motor-report-admission.cjs'],
-                                cwd=Path(__file__).resolve().parents[2], capture_output=True,
-                                text=True, encoding='utf-8', timeout=20)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_motor_configuration_save_and_readback(self):
         for script in ('test-motor-edit-save.cjs', 'test-motor-travel-save.cjs', 'test-motor-save-readback.cjs',

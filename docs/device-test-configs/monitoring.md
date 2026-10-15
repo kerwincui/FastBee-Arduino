@@ -6,7 +6,7 @@
 
 ## 启动前
 
-先完成本轮身份/备份、同源固件与FS写入校验、有效配置读回及功能检查。公开建议manifest不能作为观测binding。私有binding必须填写真实STA地址、MAC、固件版本/大小、制品SHA及各有效配置摘要；放在被Git忽略的本机私有目录，不含登录密码。
+先完成本轮身份/备份、同源固件与FS写入校验、有效配置读回及功能检查。公开建议manifest不能作为观测binding。私有binding必须填写真实STA地址、MAC、固件版本/大小、制品SHA及各有效配置摘要；放在被Git忽略的本机私有目录，不含登录密码。绑定由 `scripts/make-candidate-binding.py` 在部署验证完成后生成（含 deploymentEvidence 所需的 identity 证据），替换原先手工编写。
 
 device、features、peripherals、periph_exec及按实际需要的rule_scripts、screen_panel、point_history使用 `/api/config/transfer/export?name=...` 的原始字节SHA，要求当前开发模式已授权开启。生产白名单禁止原始导出network/protocol，因此这两项分别使用 `/api/network/config?compact=1`、`/api/protocol/config?compact=1` 的脱敏data视图：network只剔除动态status块（RSSI等），其余内容按键排序、无额外空白、UTF-8规范化后取SHA，算法见工具的`config_fingerprint`。不能把磁盘原始network/protocol SHA填到这些视图项。
 

@@ -10,7 +10,7 @@ const devicePort = process.env.DEVICE_PORT || '80';
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: './test-results/focused',
+  outputDir: '../../artifacts/test-results/focused',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 1,

@@ -50,6 +50,8 @@ class RtcBootSeedTests(unittest.TestCase):
             "src/core/PeripheralManagerRtc.cpp", "include/core/PeripheralManager.h",
             "src/core/FastBeeFramework.cpp", "src/peripherals/drivers/DS1302Driver.cpp",
             "src/network/handlers/PeripheralRouteHandler.cpp",
+            "src/core/PeripheralRouteMapper.cpp",
+            "src/core/PeripheralParamApply.cpp",
             "test/unit/cpp/rtc_boot_seed_harness.cpp",
             "test/unit/cpp/rtc_boot_mocks/core/PeripheralManager.h",
             "test/unit/cpp/rtc_boot_form_harness.cpp.in",
@@ -81,7 +83,12 @@ class RtcBootSeedTests(unittest.TestCase):
             if result.returncode:
                 raise AssertionError(result.stdout + result.stderr)
             cls.binaries[compiled] = binary
-        route = (ROOT / "src/network/handlers/PeripheralRouteHandler.cpp").read_text(encoding="utf-8")
+        route_paths = (
+            "src/core/PeripheralRouteMapper.cpp",
+            "src/network/handlers/PeripheralRouteHandler.cpp",
+            "src/core/PeripheralParamApply.cpp",
+        )
+        route = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in route_paths)
         functions = "\n\n".join(definition(route, name) for name in
                                ("void addP1PeripheralParams(", "bool applyP1PeripheralParams("))
         template = (ROOT / "test/unit/cpp/rtc_boot_form_harness.cpp.in").read_text(encoding="utf-8")

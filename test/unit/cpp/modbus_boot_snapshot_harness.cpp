@@ -14,7 +14,16 @@ struct Logger {
     template<class... T> void warningf(T...) {}
     template<class... T> void info(T...) {}
     template<class... T> void infof(T...) {}
+    template<class... T> void error(T...) {}
+    template<class... T> void errorf(T...) {}
 } LOGGER;
+// D5 起生产代码统一走 LOG_* 宏；桩映射到上面的 LOGGER 空实现。
+#define LOG_INFO(...) LOGGER.info(__VA_ARGS__)
+#define LOG_INFOF(...) LOGGER.infof(__VA_ARGS__)
+#define LOG_WARNING(...) LOGGER.warning(__VA_ARGS__)
+#define LOG_WARNINGF(...) LOGGER.warningf(__VA_ARGS__)
+#define LOG_ERROR(...) LOGGER.error(__VA_ARGS__)
+#define LOG_ERRORF(...) LOGGER.errorf(__VA_ARGS__)
 constexpr int MALLOC_CAP_INTERNAL=1, MODBUS_MASTER=1, ONESHOT_SUCCESS=0, ONESHOT_CONTROL_REJECTED=1;
 static bool retireAtLease=false,retireAtPoll=false,retireAtDelay=false,retireAtWrite=false,retireAtEvent=false;
 static bool restoreAfterRaw=false;
@@ -24,7 +33,7 @@ struct ModbusHandler; struct OneShotResult;
 struct PeripheralManager {
     bool current=true;
     OneShotResult submitOrdinaryModbusRelay(ModbusHandler&,const FastBee::ModbusControlTarget&,uint8_t,uint16_t,uint16_t,
-        const FastBee::OrdinaryControlContext&,FastBee::OrdinaryControlResult&,uint16_t);
+        const FastBee::OrdinaryControlContext&,FastBee::OrdinaryControlResult&,uint16_t,bool toggle=false,uint64_t workerGeneration=0);
     OneShotResult submitOrdinaryModbusFrame(ModbusHandler&,const FastBee::ModbusControlTarget&,
         const FastBee::ModbusOutputFrame&,const FastBee::OrdinaryControlContext&,
         FastBee::OrdinaryControlResult&,uint16_t);
@@ -107,7 +116,7 @@ struct ModbusHandler {
 };
 OneShotResult PeripheralManager::submitOrdinaryModbusRelay(ModbusHandler& bus,const FastBee::ModbusControlTarget& target,
     uint8_t fc,uint16_t address,uint16_t value,const FastBee::OrdinaryControlContext& context,
-    FastBee::OrdinaryControlResult& result,uint16_t timeout) {
+    FastBee::OrdinaryControlResult& result,uint16_t timeout,bool,uint64_t) {
     assert(context.request.operation);result.evaluated=result.accepted=true;
     return fc==5?bus.writeCoilOnce(target.slave,address,value!=0,true,timeout,0):
         bus.writeRegisterOnce(target.slave,address,value,true,timeout,0);

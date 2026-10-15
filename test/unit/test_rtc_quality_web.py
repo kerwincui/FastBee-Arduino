@@ -13,6 +13,9 @@ let get=async()=>({success:true,data:sample()}),post=async()=>({success:true}),c
 const context={AppState:app,document:{getElementById:id=>id==='peripheral-ds1302-datetime'?input:null},
   apiGet:async(...args)=>{calls.push(['get',...args]);return get(...args);},
   apiPost:async(...args)=>{calls.push(['post',...args]);return post(...args);},
+  // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean|string|null>）；与同步
+  // confirm 桩共用同一 confirmed 变量，取消语义保持一致。
+  FBConfirm:async(opts)=>opts&&opts.input?(opts.input.value??''):confirmed,
   confirm:()=>confirmed,console,Date,TextEncoder};
 vm.runInNewContext(fs.readFileSync('web-src/modules/runtime/peripheral-io.js','utf8'),context);
 app._setPeripheralIoText=(id,value)=>text[id]=value;

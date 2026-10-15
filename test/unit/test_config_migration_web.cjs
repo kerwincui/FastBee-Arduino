@@ -16,6 +16,8 @@ function setup(options = {}) {
     const ctx = {AppState: app, document, window: {}, console, TextEncoder, TextDecoder,
         URL, setTimeout, clearTimeout, setInterval, clearInterval, Notification: {},
         confirm: message => {confirmations.push(message); return options.confirm !== false;},
+        // B4 起共享确认弹窗为异步 FBConfirm（Promise<boolean>），与 confirm 桩同语义。
+        FBConfirm: async options_ => {confirmations.push(options_ && options_.message ? options_.message : String(options_)); return options.confirm !== false;},
         apiGetFresh: async url => {calls.push({url}); return {success: true, data: options.state || {phase: 'empty'}};},
         apiPost: async (url, body) => {
             calls.push({url, body});

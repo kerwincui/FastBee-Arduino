@@ -330,6 +330,7 @@ void ModbusRouteHandler::relayTask(void* argument) {
     }
     xSemaphoreGive(job->slot);
     delete job;
+    // 保留 Serial 直出（D5 白名单）：继电器处理栈指标原始行，保持无前缀格式。
     Serial.printf("[RELAY_METRICS] stack=%lu free=%lu bytes\n",
                   static_cast<unsigned long>(RELAY_TASK_STACK_BYTES),
                   static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));

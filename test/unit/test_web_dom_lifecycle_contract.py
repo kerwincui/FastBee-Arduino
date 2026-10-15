@@ -234,12 +234,13 @@ class WebDomLifecycleContractTests(unittest.TestCase):
             self.assertIn("'" + modal_id + "'", PAGE_LOADER)
         self.assertIn("throw error;", PAGE_LOADER)
         self.assertIn("AppState._modalsLoaded = false", STATE)
-        self.assertIn("self._loadModals().catch(function()", STATE_SESSION)
+        # B6: modal templates no longer join the session boot preload; the
+        # first modal action fetches them through _ensureModalForAction, and
+        # the peripheral editor bundle loads through its own lazy package.
+        self.assertNotIn("self._loadModals()", STATE_SESSION)
         self.assertIn("backgroundPreloadAllowance", STATE_SESSION)
-        self.assertIn("modal templates deferred on constrained memory target", STATE_SESSION)
-        allowance_check = STATE_SESSION.index("allowBackgroundPreload().then(function(allow)")
-        modal_preload = STATE_SESSION.index("self._loadModals().catch(function()")
-        self.assertLess(allowance_check, modal_preload)
+        self.assertIn("await PageLoader.loadPeripheralModals()", STATE)
+        self.assertIn("this._ensureModalForAction('change-password-modal')", STATE_SESSION)
         self.assertNotIn("document.querySelector('.modal') !== null", BASE_FIXTURE)
         self.assertIn("this.ensureModalAsync(modalId)", (ROOT / "web-src/js/state-ui.js").read_text(encoding="utf-8"))
         self.assertIn("var modalNavSeq = expectedNavSeq", STATE)

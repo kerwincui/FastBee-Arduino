@@ -39,14 +39,14 @@ process.env.TEST_DELAY_MS = process.env.TEST_DELAY_MS || '0';
 
 export default defineConfig({
   testDir: './suites',
-  outputDir: suiteArtifacts ? path.join(suiteArtifacts, 'browser') : './test-results/offline-ui',
+  outputDir: suiteArtifacts ? path.join(suiteArtifacts, 'browser') : '../../artifacts/test-results/offline-ui',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
   timeout: 240_000,
   reporter: suiteArtifacts ? [['list'], ['json', { outputFile: path.join(suiteArtifacts, 'browser-results.json') }]] : [['list']],
-  grep: /UI-005E|UI-007A|UI-025A|UI-026A|UI-027|FCFG-004A|WEB-(?:SEC|UX|GENERIC|MATRIX|PANEL)-|WEB-00[1-4]|AI-/,
+  grep: /UI-005E|UI-005F|UI-005G|UI-007A|UI-007C|UI-031|UI-025A|UI-026A|UI-027|FCFG-004A|WEB-(?:SEC|UX|GENERIC|MATRIX|PANEL)-|WEB-00[1-4]|AI-/,
   webServer: {
     command: 'node offline-ui-server.mjs',
     url: `${baseURL}/api/health`,
