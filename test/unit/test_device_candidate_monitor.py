@@ -116,6 +116,32 @@ class CandidateMonitorTests(unittest.TestCase):
             self.clock.mono, self.clock.wall, self.clock.sleep)
         return observer, transport
 
+    @staticmethod
+    def screen_app_slot_report(**overrides):
+        report = {"schemaVersion": 2, "written": True, "verified": True, "writeStarted": True,
+            "filesystemWritten": False, "appSlot": 1, "port": "COM4", "firmwareSha256": "a" * 64}
+        report.update(overrides)
+        return report
+
+    def bind_split_evidence(self, firmware_report, filesystem_report=None):
+        if filesystem_report is None:
+            filesystem_report = {"written": True, "verified": True, "phase": "filesystem",
+                "applicationWritten": False, "port": "COM4", "firmwareSha256": "a" * 64,
+                "webSha256": "b" * 64, "filesystemSha256": "c" * 64}
+        firmware_hash = self.write("firmware-deploy.json", firmware_report)
+        filesystem_hash = self.write("filesystem-deploy.json", filesystem_report)
+        identity_base = {"mac": "14:63:93:90:2F:64", "port": "COM4", "sourceSha256": "d" * 64}
+        firmware_identity_hash = self.write("identity-firmware.json",
+            dict(identity_base, deploymentReportSha256=firmware_hash))
+        filesystem_identity_hash = self.write("identity-filesystem.json",
+            dict(identity_base, deploymentReportSha256=filesystem_hash))
+        self.contract["deploymentEvidence"] = [
+            {"path": "firmware-deploy.json", "sha256": firmware_hash, "phase": "firmware",
+             "identityPath": "identity-firmware.json", "identitySha256": firmware_identity_hash},
+            {"path": "filesystem-deploy.json", "sha256": filesystem_hash, "phase": "filesystem",
+             "identityPath": "identity-filesystem.json", "identitySha256": filesystem_identity_hash}]
+        return self.bind()
+
     def test_report_replace_retries_windows_contention_without_sampling_clock_or_failure_reset(self):
         observer, _ = self.make(seconds=120)
         observer.fail('existing_device_failure')
@@ -508,6 +534,42 @@ class CandidateMonitorTests(unittest.TestCase):
         self.contract["deploymentEvidence"][0]["identitySha256"] = self.write("identity.json", identity)
         with self.assertRaises(monitor.ObservationError):
             self.bind()
+
+    def test_schema2_app_slot_report_accepted_as_split_firmware_phase(self):
+        self.binding = self.bind_split_evidence(self.screen_app_slot_report())
+        self.assertEqual(len(self.binding.evidence), 4)
+        self.binding.check()
+        observer, _ = self.make(seconds=120)
+        self.assertEqual(observer.run()["status"], "HTTP_SCOPE_PASS")
+
+    def test_schema2_app_slot_report_rejections(self):
+        cases = [
+            (dict(written=False), "deployment_not_verified"),
+            (dict(verified=False), "deployment_not_verified"),
+            (dict(writeStarted=False), "application_not_written"),
+            (dict(filesystemWritten=True), "deployment_phase"),
+            (dict(appSlot=None), "deployment_phase"),
+            (dict(schemaVersion=1), "deployment_phase_mismatch"),
+            (dict(firmwareSha256="e" * 64), "deployment_firmware_mismatch"),
+            (dict(port="COM9"), "deployment_port_mismatch"),
+        ]
+        for overrides, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(monitor.ObservationError) as raised:
+                    self.bind_split_evidence(self.screen_app_slot_report(**overrides))
+                self.assertEqual(raised.exception.code, code)
+
+    def test_schema2_app_slot_report_not_accepted_as_all_phase(self):
+        firmware_hash = self.write("firmware-deploy.json", self.screen_app_slot_report())
+        identity_hash = self.write("identity-firmware.json",
+            {"mac": "14:63:93:90:2F:64", "port": "COM4",
+             "deploymentReportSha256": firmware_hash, "sourceSha256": "d" * 64})
+        self.contract["deploymentEvidence"] = [
+            {"path": "firmware-deploy.json", "sha256": firmware_hash, "phase": "all",
+             "identityPath": "identity-firmware.json", "identitySha256": identity_hash}]
+        with self.assertRaises(monitor.ObservationError) as raised:
+            self.bind()
+        self.assertEqual(raised.exception.code, "deployment_phase_mismatch")
 
     def test_transport_truncation_and_nonfinite_fields(self):
         import requests

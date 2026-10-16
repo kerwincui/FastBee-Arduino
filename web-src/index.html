@@ -406,7 +406,6 @@
         // 先尝试卸载所有旧的 SW
         navigator.serviceWorker.getRegistrations().then(function(registrations) {
             registrations.forEach(function(reg) {
-                console.log('[FastBee] Unregistering old SW:', reg.scope);
                 reg.unregister();
             });
         }).catch(function(err) {

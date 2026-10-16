@@ -55,6 +55,14 @@ const DEFAULT_WEB_ASSET_BUDGETS = Object.freeze({
 // was 315 KiB. The separately measured recovery reserve above makes the
 // pre-plan combined ceiling 317 KiB and base/shared ceiling 278.5 KiB.
 // The system-plan shared reserve above applies in addition to this history.
+// 2026-10-16: the screen UI refresh (theme variables, status-dot glow and
+// layout edge metrics) measures 40539 B lazy gzip on esp32s3-F16R8
+// (screen-panel.js 16380 + screen-panel-model.js 15702 + screen-panel.html
+// 3784 + screen-panel.css 4673). The B7 build-time CSS strip already removes
+// every provably dead rule and both panel modules are terser-minified with
+// property mangling, so no behavior-preserving slimming remains; the extra
+// space is borrowed from base/shared headroom (measured 313363 B, about
+// 2.0 KiB below the resulting allowance) per the note at the allocation below.
 const CAPABILITY_WEB_ASSET_BUDGETS = Object.freeze({
     screenPanel: Object.freeze({
         assets: Object.freeze([
@@ -63,11 +71,13 @@ const CAPABILITY_WEB_ASSET_BUDGETS = Object.freeze({
             'pages/screen-panel.html',
             'css/screen-panel.css'
         ]),
-        // Ordering and the sleep switch borrow 1 KiB from base/shared;
-        // combined publish, boot and per-bundle ceilings remain unchanged.
-        lazyGzip: 39.5 * 1024,
+        // Ordering, the sleep switch and the 2026-10-16 screen UI refresh
+        // (measured 40539 B lazy, 91 B over the old allowance) borrow 2.5 KiB
+        // from base/shared headroom; combined publish, boot and per-bundle
+        // ceilings remain unchanged.
+        lazyGzip: 41 * 1024,
         sharedGzip: 0.5 * 1024,
-        reallocatedBaseGzip: 4 * 1024,
+        reallocatedBaseGzip: 5.5 * 1024,
         gzipFiles: 4,
         staticHtmlNodesTotal: 220
     })

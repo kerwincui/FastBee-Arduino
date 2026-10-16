@@ -791,7 +791,7 @@ test.describe('Device screen offline workflow', () => {
       await expect(buttons.nth(1)).toHaveClass('sp-motor-stop');
       await expect(buttons.nth(2)).toHaveClass('sp-motor-reverse');
       const colors = await buttons.evaluateAll(elements => elements.map(element => getComputedStyle(element).backgroundColor));
-      expect(colors).toEqual(['rgb(24, 116, 70)', 'rgb(168, 56, 66)', 'rgb(32, 91, 174)']);
+      expect(colors).toEqual(['rgba(90, 207, 155, 0.18)', 'rgba(240, 112, 117, 0.18)', 'rgba(69, 201, 218, 0.16)']);
       const boxes = await buttons.evaluateAll(elements => elements.map(element => {
         const box = element.getBoundingClientRect();
         return { x: box.x, y: box.y, width: box.width, height: box.height, fits: element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight };

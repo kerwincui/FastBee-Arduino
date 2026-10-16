@@ -43,7 +43,12 @@ parser.add_argument('--device-id', required=True)
 parser.add_argument('--mac', required=True)
 parser.add_argument('--url', required=True)
 parser.add_argument('--port-name', required=True)
-parser.add_argument('--deployment-report', required=True)
+parser.add_argument('--deployment-report', required=True,
+                    help='phase=all deployment report, or the firmware-phase report when '
+                         '--filesystem-report is given (screen-variant app-slot deploys)')
+parser.add_argument('--filesystem-report',
+                    help='optional separate phase=filesystem deployment report; combined with '
+                         '--deployment-report as firmware+filesystem evidence entries')
 parser.add_argument('--source-sha256', required=True)
 parser.add_argument('--web-sha256', required=True)
 parser.add_argument('--out', required=True)
@@ -90,16 +95,62 @@ report = json.loads(deployment.read_text(encoding='utf-8-sig'))
 if not (report.get('written') is True and report.get('verified') is True):
     raise SystemExit('deployment not verified')
 
+filesystem = None
+fs_report = None
+if args.filesystem_report:
+    # Two-report mode: --deployment-report is the firmware-phase evidence (screen-variant
+    # app-slot reports carry no phase field), --filesystem-report the filesystem phase.
+    if report.get('phase') is None and not (
+            report.get('schemaVersion') == 2 and type(report.get('appSlot')) is int
+            and report.get('filesystemWritten') is False):
+        raise SystemExit('firmware report missing phase')
+    filesystem = Path(args.filesystem_report).resolve()
+    fs_report = json.loads(filesystem.read_text(encoding='utf-8-sig'))
+    if not (fs_report.get('written') is True and fs_report.get('verified') is True):
+        raise SystemExit('filesystem deployment not verified')
+    if fs_report.get('phase') != 'filesystem':
+        raise SystemExit('filesystem report phase mismatch')
+    if fs_report.get('firmwareSha256') != report['firmwareSha256']:
+        raise SystemExit('firmware hash mismatch between reports')
+    if fs_report.get('port') != args.port_name:
+        raise SystemExit('filesystem report port mismatch')
+    if fs_report.get('webSha256') != args.web_sha256:
+        raise SystemExit('filesystem report web hash mismatch')
+    if not monitor.SHA.fullmatch(str(fs_report.get('filesystemSha256', ''))):
+        raise SystemExit('filesystem report missing filesystemSha256')
+
 out = Path(args.out).resolve()
 # 输出目录可能不存在（新批次目录）；排他 'x' 写入仍需父目录在场。
 out.parent.mkdir(parents=True, exist_ok=True)
-deployment_sha = monitor.digest(deployment.read_bytes())
-identity = dict(mac=args.mac, port=args.port_name,
-                deploymentReportSha256=deployment_sha, sourceSha256=args.source_sha256)
-identity_path = out.parent / 'identity.json'
-with identity_path.open('x', encoding='utf-8') as stream:
-    json.dump(identity, stream, indent=2)
-    stream.write('\n')
+
+
+def write_identity(suffix, report_sha):
+    identity = dict(mac=args.mac, port=args.port_name,
+                    deploymentReportSha256=report_sha, sourceSha256=args.source_sha256)
+    identity_path = out.parent / ('identity%s.json' % suffix)
+    with identity_path.open('x', encoding='utf-8') as stream:
+        json.dump(identity, stream, indent=2)
+        stream.write('\n')
+    return identity_path
+
+
+def evidence_entry(phase, report_path, identity_path):
+    return dict(phase=phase,
+                path=os.path.relpath(report_path, out.parent).replace('\\', '/'),
+                sha256=monitor.digest(report_path.read_bytes()),
+                identityPath=identity_path.name,
+                identitySha256=monitor.digest(identity_path.read_bytes()))
+
+
+if fs_report is None:
+    evidence = [evidence_entry('all', deployment, write_identity('', monitor.digest(deployment.read_bytes())))]
+else:
+    evidence = [
+        evidence_entry('firmware', deployment,
+                       write_identity('-firmware', monitor.digest(deployment.read_bytes()))),
+        evidence_entry('filesystem', filesystem,
+                       write_identity('-filesystem', monitor.digest(filesystem.read_bytes())))]
+
 binding = dict(
     schemaVersion=1,
     deviceId=args.device_id,
@@ -114,11 +165,7 @@ binding = dict(
     hasPsram=bool(info.get('memory', {}).get('psram', {}) or info.get('psram')),
     intervals=dict(health=30, resources=60, page=600, config=600),
     configs=configs,
-    deploymentEvidence=[dict(phase='all',
-                             path=os.path.relpath(deployment, out.parent).replace('\\', '/'),
-                             sha256=deployment_sha,
-                             identityPath='identity.json',
-                             identitySha256=monitor.digest(identity_path.read_bytes()))])
+    deploymentEvidence=evidence)
 with out.open('x', encoding='utf-8') as stream:
     json.dump(binding, stream, indent=2)
     stream.write('\n')

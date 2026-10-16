@@ -162,7 +162,7 @@ int main() {
     assert(canvas.labels.back()==u8"待配置" && canvas.buttonColor==palette.cardBorder);
     std::strcpy(card.controlRef,"execution.once");
     renderer.drawAction(canvas,card,rect,palette);
-    assert(canvas.labels.back()==u8"执行一次" && canvas.buttonColor==palette.backgroundAlt && canvas.buttonBorder==palette.accent);
+    assert(canvas.labels.back()==u8"执行一次" && canvas.buttonColor==blend565(palette.accent,palette.card,20) && canvas.buttonBorder==palette.accent);
     card.pending=true; renderer.drawAction(canvas,card,rect,palette);
     assert(canvas.labels.back()==u8"执行中"); card.pending=false;
     canvas.labels.clear(); card.hasWeatherTemperature=true; card.weatherTemperature=23.5;

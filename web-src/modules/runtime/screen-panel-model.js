@@ -578,6 +578,7 @@
     function templateMetrics(page, config, context) {
         var size = context._spReferenceSize(page, config);
         var gap = Math.max(8, Math.round(size.width / 48));
+        var edge = Math.max(6, Math.round(size.width / 60));
         var template = page.layoutId || 'mixed-grid';
         var cols = size.width >= 720 ? 3 : 2;
         var contentHeight = Math.max(64, size.height - DEVICE_FOOTER_HEIGHT);
@@ -585,17 +586,17 @@
         if (template === 'data-detail') { cols = 1; rowHeight = Math.max(58, Math.round(contentHeight / 6)); }
         if (template === 'tile-grid') { cols = size.width >= 640 ? 3 : 2; rowHeight = Math.max(72, Math.round(contentHeight / 4.2)); }
         if (template === 'info-home') { cols = 2; rowHeight = Math.max(72, Math.round(contentHeight / 4)); }
-        return { width: size.width, height: size.height, contentHeight: contentHeight, gap: gap, cols: cols, rowHeight: rowHeight };
+        return { width: size.width, height: size.height, contentHeight: contentHeight, gap: gap, edge: edge, cols: cols, rowHeight: rowHeight };
     }
 
     function layoutTemplatePage(page, config, context) {
         var metrics = templateMetrics(page, config, context);
         if (page.cards.length === 1 && page.cards[0].kind === 'motor') {
-            page.cards[0].rect = { x: 12, y: 8, w: Math.max(1, metrics.width - 24), h: Math.max(1, metrics.contentHeight - 16) }; return;
+            page.cards[0].rect = { x: metrics.edge, y: metrics.edge, w: Math.max(1, metrics.width - metrics.edge * 2), h: Math.max(1, metrics.contentHeight - metrics.edge * 2) }; return;
         }
         if (page.layoutId === 'data-detail' && page.cards.length === 5 && page.cards.every(function(card) { return SYSTEM_ACTION_KINDS.includes(card.kind); })) {
             var detailGap = Math.min(metrics.gap, 8);
-            var detailX = Math.max(detailGap, Math.round(metrics.width / 40));
+            var detailX = Math.max(detailGap, metrics.edge);
             var detailColumns = Math.floor((metrics.contentHeight - detailGap * 6) / 5) < 44 ? 2 : 1;
             var detailRows = Math.ceil(page.cards.length / detailColumns);
             var detailWidth = Math.max(1, Math.floor((metrics.width - detailX * 2 - detailGap * (detailColumns - 1)) / detailColumns));
@@ -676,24 +677,29 @@
         var usedRows = placements.reduce(function(max, item) { return Math.max(max, item.row + item.rowSpan); }, 0);
         if (!usedRows) return;
         var layoutGap = metrics.gap;
-        var fittedRowHeight = Math.floor((metrics.contentHeight - layoutGap * (usedRows + 1)) / usedRows);
+        var layoutEdge = metrics.edge;
+        var fittedRowHeight = Math.floor((metrics.contentHeight - layoutEdge * 2 - layoutGap * (usedRows - 1)) / usedRows);
         if (fittedRowHeight < 44) {
-            layoutGap = Math.max(2, Math.min(layoutGap,
-                Math.floor((metrics.contentHeight - 44 * usedRows) / (usedRows + 1))));
-            fittedRowHeight = Math.floor((metrics.contentHeight - layoutGap * (usedRows + 1)) / usedRows);
+            if (usedRows > 1) {
+                layoutGap = Math.max(2, Math.min(layoutGap,
+                    Math.floor((metrics.contentHeight - layoutEdge * 2 - 44 * usedRows) / (usedRows - 1))));
+            }
+            layoutEdge = Math.max(2, Math.min(layoutEdge,
+                Math.floor((metrics.contentHeight - 44 * usedRows - layoutGap * (usedRows - 1)) / 2)));
+            fittedRowHeight = Math.floor((metrics.contentHeight - layoutEdge * 2 - layoutGap * (usedRows - 1)) / usedRows);
         }
         var rowHeights = Array(usedRows).fill(1);
         placements.forEach(function(item) {
             var required = Math.ceil((minimumCardSize(item.card).h - layoutGap * (item.rowSpan - 1)) / item.rowSpan);
             for (var row = item.row; row < item.row + item.rowSpan; row++) rowHeights[row] = Math.max(rowHeights[row], required);
         });
-        var extra = Math.max(0, metrics.contentHeight - layoutGap * (usedRows + 1) - rowHeights.reduce(function(sum, height) { return sum + height; }, 0));
+        var extra = Math.max(0, metrics.contentHeight - layoutEdge * 2 - layoutGap * (usedRows - 1) - rowHeights.reduce(function(sum, height) { return sum + height; }, 0));
         rowHeights = rowHeights.map(function(height, row) { return height + Math.floor(extra / usedRows) + (row < extra % usedRows ? 1 : 0); });
-        var colWidth = (metrics.width - layoutGap * (metrics.cols + 1)) / metrics.cols;
+        var colWidth = (metrics.width - layoutEdge * 2 - layoutGap * (metrics.cols - 1)) / metrics.cols;
         placements.forEach(function(item) {
             item.card.rect = {
-                x: Math.round(layoutGap + item.col * (colWidth + layoutGap)),
-                y: layoutGap * (item.row + 1) + rowHeights.slice(0, item.row).reduce(function(sum, height) { return sum + height; }, 0),
+                x: Math.round(layoutEdge + item.col * (colWidth + layoutGap)),
+                y: layoutEdge + layoutGap * item.row + rowHeights.slice(0, item.row).reduce(function(sum, height) { return sum + height; }, 0),
                 w: Math.round(colWidth * item.colSpan + layoutGap * (item.colSpan - 1)),
                 h: rowHeights.slice(item.row, item.row + item.rowSpan).reduce(function(sum, height) { return sum + height; }, 0) + layoutGap * (item.rowSpan - 1)
             };

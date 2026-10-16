@@ -13,7 +13,8 @@ const suites = [
     ['config-migration-preview', 'test-config-migration-preview-browser.cjs'],
     ['rtc-quality', 'test-rtc-quality-browser.cjs'],
     ['sd-quality', 'test-sd-quality-browser.cjs'],
-    ['ads1115-form', 'test-ads1115-form.cjs']
+    ['ads1115-form', 'test-ads1115-form.cjs'],
+    ['motor-protocol-editor', 'test-motor-protocol-editor.cjs']
 ];
 
 function run() {

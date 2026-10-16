@@ -534,7 +534,6 @@
                         const normalizedName = this._normalizeConfigFileName(file.name);
                         const detectedName = this._detectConfigFileName(normalizedName, parsed);
                         if (detectedName !== normalizedName) {
-                            console.info(`[device-config] Auto-detected config type: ${file.name} → ${detectedName}`);
                             // 在页面上显示自动重命名提示
                             this._setConfigTransferStatus(
                                 '已自动识别：' + file.name + ' → ' + this._getConfigTransferLabel(detectedName)

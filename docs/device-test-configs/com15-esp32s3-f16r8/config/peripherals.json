@@ -111,7 +111,7 @@
         15
       ],
       "params": {
-        "initialState": 1,
+        "initialState": 0,
         "pwmChannel": 0,
         "pwmFrequency": 1000,
         "pwmResolution": 8,

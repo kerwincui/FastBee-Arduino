@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 class ConfigWizardRunnerTests(unittest.TestCase):
     def test_failed_and_missing_report_do_not_hide_independent_suites(self):
         scripts = ["test-periph-exec-template-browser.cjs", "test-config-migration-preview-browser.cjs",
-                   "test-rtc-quality-browser.cjs", "test-sd-quality-browser.cjs", "test-ads1115-form.cjs"]
+                   "test-rtc-quality-browser.cjs", "test-sd-quality-browser.cjs", "test-ads1115-form.cjs",
+                   "test-motor-protocol-editor.cjs"]
         with tempfile.TemporaryDirectory(prefix="fastbee-wizard-runner-") as temporary:
             fixture = Path(temporary)
             (fixture / "scripts").mkdir()
@@ -22,7 +23,7 @@ class ConfigWizardRunnerTests(unittest.TestCase):
                 source = "const fs=require('fs'),path=require('path'),out=process.argv[2];\n"
                 source += "fs.mkdirSync(out);\n"
                 # A nonzero child and a zero-exit child with missing evidence
-                # must both fail without skipping the remaining three suites.
+                # must both fail without skipping the remaining four suites.
                 if index != 1:
                     source += "fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({status:'PASS',cases:[{status:'PASS'}]}));\n"
                 source += "process.exitCode=" + ("2" if index == 0 else "0") + ";\n"
@@ -46,8 +47,8 @@ class ConfigWizardRunnerTests(unittest.TestCase):
                         report = json.loads(report_path.read_text(encoding="utf-8"))
                         self.assertEqual(report["status"], "FAIL")
                         self.assertFalse(report["devicesAccessed"])
-                        self.assertEqual([row["status"] for row in report["stages"]], ["FAIL", "FAIL", "PASS", "PASS", "PASS"])
-                        self.assertEqual([row["exitCode"] for row in report["stages"]], [2, 0, 0, 0, 0])
+                        self.assertEqual([row["status"] for row in report["stages"]], ["FAIL", "FAIL", "PASS", "PASS", "PASS", "PASS"])
+                        self.assertEqual([row["exitCode"] for row in report["stages"]], [2, 0, 0, 0, 0, 0])
                         self.assertTrue(all(Path(row["log"]).is_file() and row["logSha256"] for row in report["stages"]))
                         self.assertTrue(all(Path(row["evidence"]).is_dir() for row in report["stages"]))
                         self.assertTrue(all(Path(row["evidence"]).parent == expected_root and

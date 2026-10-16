@@ -1317,8 +1317,9 @@ function validateHostRegressionRegistration(issues, summary) {
     const hostCommands = `${expandNpmScript('test')} ${staticCommands}`;
     const regressionCommands = expandNpmScript('test:regression');
 
-    const validators = fs.readdirSync(path.join(ROOT_DIR, 'scripts'))
-        .filter((name) => /^validate-.*\.js$/.test(name))
+    const scriptsDir = path.join(ROOT_DIR, 'scripts');
+    const validators = fs.readdirSync(scriptsDir)
+        .filter((name) => /^validate-.*\.(js|cjs|mjs)$/.test(name))
         .sort();
     const wrappedValidators = new Map([
         ['validate-fim-manifest.js', 'scripts/test-fim-manifest-validator.js']
@@ -1334,8 +1335,36 @@ function validateHostRegressionRegistration(issues, summary) {
         ['test-build-artifacts.js', 'test:artifacts'],
         ['test-device-health.js', 'test:health']
     ]);
-    const nodeTests = fs.readdirSync(path.join(ROOT_DIR, 'scripts'))
-        .filter((name) => /^test-.*\.js$/.test(name))
+    // 注册语料：package.json 全部脚本（主机回归链与手动设备入口）、test/unit 主机包装器
+    // 内容，以及被引用 scripts 的传递引用。脚本只被自身注释或文档提及不算注册。
+    const referencedScripts = new Set();
+    const referencePattern = /(?:scripts\/)?((?:test|validate)-[\w-]+\.(?:js|cjs|mjs))/g;
+    const corpusQueue = [
+        { text: hostCommands }, { text: staticCommands }, { text: regressionCommands },
+        { text: Object.values(scripts).join('\n') }
+    ];
+    const unitDir = path.join(ROOT_DIR, 'test', 'unit');
+    fs.readdirSync(unitDir)
+        .filter((name) => /^test_.*\.(py|cjs|mjs|js)$/.test(name))
+        .sort()
+        .forEach((name) => corpusQueue.push({ text: readText(path.join(unitDir, name)) }));
+    const enqueuedScripts = new Set();
+    for (let index = 0; index < corpusQueue.length; index += 1) {
+        const part = corpusQueue[index];
+        referencePattern.lastIndex = 0;
+        let match;
+        while ((match = referencePattern.exec(part.text)) !== null) {
+            const name = match[1];
+            if (name !== part.self) referencedScripts.add(name);
+            if (enqueuedScripts.has(name)) continue;
+            const filePath = path.join(scriptsDir, name);
+            if (!fs.existsSync(filePath)) continue;
+            enqueuedScripts.add(name);
+            corpusQueue.push({ text: readText(filePath), self: name });
+        }
+    }
+    const nodeTests = fs.readdirSync(scriptsDir)
+        .filter((name) => /^test-.*\.(js|cjs|mjs)$/.test(name))
         .sort();
     nodeTests.forEach((name) => {
         const explicitScript = explicitTestScripts.get(name);
@@ -1343,8 +1372,36 @@ function validateHostRegressionRegistration(issues, summary) {
             if (!(scripts[explicitScript] || '').includes(`scripts/${name}`)) {
                 issues.push(`package.json: ${explicitScript} does not register scripts/${name}`);
             }
-        } else if (!hostCommands.includes(`scripts/${name}`)) {
-            issues.push(`package.json: default host regression does not register scripts/${name}`);
+        } else if (!referencedScripts.has(name)) {
+            issues.push(`package.json: no npm script, host wrapper or registered script references scripts/${name}`);
+        }
+    });
+
+    // 设备类 Python 脚本不进主机 npm 链，逐一显式豁免并要求主机包装器仍引用它；
+    // 未列入名单的 test-*.py 视为零引用孤儿脚本。
+    const devicePyExemptions = new Map([
+        ['test-device-soak.py', 'test/unit/test_device_soak_acceptance.py'],
+        ['test-modbus-device.py', 'test/unit/test_modbus_device_acceptance.py'],
+        ['test-modbus-serial-readback.py', 'test/unit/test_modbus_serial_readback.py'],
+        ['test-soil-adc-device.py', 'test/unit/test_soil_adc_acceptance.py']
+    ]);
+    const pythonTests = fs.readdirSync(scriptsDir)
+        .filter((name) => /^test-.*\.py$/.test(name))
+        .sort();
+    pythonTests.forEach((name) => {
+        const wrapper = devicePyExemptions.get(name);
+        if (!wrapper) {
+            issues.push(`scripts/${name}: device python script has no registration or explicit exemption`);
+            return;
+        }
+        let wrapperSource = '';
+        try {
+            wrapperSource = readText(path.join(ROOT_DIR, wrapper));
+        } catch (error) {
+            wrapperSource = '';
+        }
+        if (!wrapperSource.includes(`scripts/${name}`)) {
+            issues.push(`scripts/${name}: exemption wrapper ${wrapper} no longer references it`);
         }
     });
 
@@ -1386,7 +1443,7 @@ function validateHostRegressionRegistration(issues, summary) {
         !testAllText.includes('refuses the device AP address 192.168.4.1')) {
         issues.push('scripts/test-all.ps1: live-device checks must require an explicit non-AP STA URL');
     }
-    summary.hostScripts = validators.length + nodeTests.length + 1;
+    summary.hostScripts = validators.length + nodeTests.length + pythonTests.length + 1;
 }
 
 function main() {

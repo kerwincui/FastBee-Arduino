@@ -15,9 +15,13 @@ def load(name):
 
 
 class Ecm50aRelayConfigTests(unittest.TestCase):
-    def test_onboard_nc_lamp_initializes_high_without_changing_relay_two(self):
+    def test_onboard_nc_lamp_initializes_low_lamp_off_without_changing_relay_two(self):
+        # 2026-10-16 需求变更：板载继电器 do1 与 Modbus 通道 1 所接的灯均为 NC 接线
+        # （线圈不吸合时灯亮、吸合时灯灭），用户明确要求设备启动时两盏灯都关闭。
+        # do1 为低电平触发继电器，因此启动引脚必须为 LOW（吸合）灯才灭，
+        # 契约由旧的 initialState=1（启动灯亮）改为 initialState=0（启动灯灭）。
         outputs = {p["id"]: p for p in load("peripherals.json")["peripherals"]}
-        for ident, pin, initial in (("do1", 15, 1), ("do2", 16, 0)):
+        for ident, pin, initial in (("do1", 15, 0), ("do2", 16, 0)):
             with self.subTest(peripheral=ident):
                 config = outputs[ident]
                 self.assertTrue(config["enabled"])

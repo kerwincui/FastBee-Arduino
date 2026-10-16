@@ -26,8 +26,8 @@ Palette paletteFor(const char* theme) {
     // Unknown or missing themes (including drifted legacy values) fall back
     // to the dark palette; the configuration layer only admits the ids from
     // ScreenThemeVocabulary.h.
-    return {rgb565(15, 22, 34), rgb565(23, 35, 49),
-            rgb565(29, 42, 57), rgb565(53, 72, 89),
+    return {rgb565(11, 17, 27), rgb565(17, 26, 38),
+            rgb565(26, 38, 54), rgb565(48, 66, 84),
             rgb565(238, 246, 252), rgb565(157, 180, 198),
             rgb565(69, 201, 218), rgb565(90, 207, 155),
             rgb565(246, 189, 91), rgb565(240, 112, 117)};

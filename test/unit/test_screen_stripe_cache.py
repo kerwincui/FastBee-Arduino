@@ -42,9 +42,12 @@ class ScreenStripeCacheTests(unittest.TestCase):
             rgb_signature = runtime[rgb_start:runtime.index("{", rgb_start)].strip()
             start = runtime.index("uint16_t blend565(")
             blend_signature = runtime[start:runtime.index("{", start)].strip()
+            text_start = runtime.index("uint16_t textOn565(")
+            text_signature = runtime[text_start:runtime.index("{", text_start)].strip()
             (temporary / "production_blend.inc").write_text(
                 rgb_signature + " {" + braced_block(runtime, rgb_signature) + "}\n" +
-                blend_signature + " {" + braced_block(runtime, blend_signature) + "}", encoding="utf-8")
+                blend_signature + " {" + braced_block(runtime, blend_signature) + "}\n" +
+                text_signature + " {" + braced_block(runtime, text_signature) + "}", encoding="utf-8")
             executable = temporary / ("stripe.exe" if os.name == "nt" else "stripe")
             env = dict(os.environ)
             env["PATH"] = str(pathlib.Path(compiler).parent) + os.pathsep + env.get("PATH", "")

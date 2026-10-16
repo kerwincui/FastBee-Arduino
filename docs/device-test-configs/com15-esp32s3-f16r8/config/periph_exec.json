@@ -118,7 +118,7 @@
     },
     {
       "id": "s3_modbus_relay_boot_off",
-      "name": "启动后关闭Modbus继电器通道1",
+      "name": "启动后关闭Modbus继电器通道1接灯(NC)",
       "enabled": true,
       "execMode": 0,
       "triggers": [
@@ -131,6 +131,42 @@
           "intervalSec": 0,
           "timePoint": "",
           "eventId": "system_ready",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "modbus:0",
+          "actionType": 18,
+          "actionValue": "{\"ctrl\":[{\"d\":0,\"c\":0,\"a\":\"off\"}]}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 1,
+      "scriptContent": "",
+      "reportAfterExec": true,
+      "allowPanelControl": false,
+      "recordHistory": false
+    },
+    {
+      "id": "s3_modbus_relay_nc_keep_off",
+      "name": "定时确保Modbus通道1接灯(NC)关闭",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 5,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
           "pollResponseTimeout": 1000,
           "pollMaxRetries": 2,
           "pollInterPollDelay": 100
@@ -249,14 +285,6 @@
           "targetPeriphId": "do1",
           "actionType": 30,
           "actionValue": "",
-          "useReceivedValue": false,
-          "syncDelayMs": 0,
-          "execMode": 0
-        },
-        {
-          "targetPeriphId": "modbus:0",
-          "actionType": 18,
-          "actionValue": "{\"ctrl\":[{\"d\":0,\"c\":0,\"a\":\"toggle\"}]}",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0

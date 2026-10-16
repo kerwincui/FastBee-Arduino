@@ -9,6 +9,7 @@ const ROOT = path.resolve(__dirname, '..');
 const MANIFEST_PATH = path.join(ROOT, 'docs', 'repository-retention-manifest.json');
 const IMAGE_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i;
 const SCRIPT_PATTERN = /^scripts\/[^/]+\.(?:js|mjs)$/i;
+const DOCS_BINARY_PATTERN = /^docs\/.+\.(?:docx?|pdf|zip|xlsx?|pptx?|7z|rar)$/i;
 const REFERENCE_ROOTS = new Set([
     '.github', 'docs', 'scripts', 'test', 'web-src',
     'README.md', 'README.en.md', 'package.json', 'platformio.ini'
@@ -42,6 +43,11 @@ function sha256(fullPath) {
     return crypto.createHash('sha256').update(fs.readFileSync(fullPath)).digest('hex');
 }
 
+function todayLocalDate(now = new Date()) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 function isReferenceSource(relativePath) {
     if (REFERENCE_EXCLUDES.has(relativePath)) return false;
     const first = relativePath.split('/')[0];
@@ -62,7 +68,8 @@ function findAssetReferences(assetPath, files, root = ROOT) {
     return references.sort();
 }
 
-function validateManifest(manifest, files, issues, root = ROOT) {
+function validateManifest(manifest, files, issues, root = ROOT, warnings = []) {
+    const today = todayLocalDate();
     if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.entries)) {
         issues.push('retention manifest must use schemaVersion=1 and contain entries[]');
         return new Map();
@@ -92,6 +99,9 @@ function validateManifest(manifest, files, issues, root = ROOT) {
         if (entry.status === 'quarantine-pending' && !entry.reviewAfter) {
             issues.push(`${relativePath}: quarantine-pending entry requires reviewAfter`);
         }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(entry.reviewAfter || '') && entry.reviewAfter < today) {
+            warnings.push(`${relativePath}: reviewAfter ${entry.reviewAfter} has expired`);
+        }
         entries.set(relativePath, entry);
     });
     return entries;
@@ -101,9 +111,10 @@ function auditRepository(options = {}) {
     const root = path.resolve(options.root || ROOT);
     const manifestPath = path.resolve(options.manifestPath || MANIFEST_PATH);
     const issues = [];
+    const warnings = [];
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const files = committableFiles(root);
-    const entries = validateManifest(manifest, files, issues, root);
+    const entries = validateManifest(manifest, files, issues, root, warnings);
 
     const images = files.filter((file) => file.startsWith('images/') && IMAGE_PATTERN.test(file));
     const references = {};
@@ -116,6 +127,18 @@ function auditRepository(options = {}) {
             issues.push(`${image}: image asset is missing from the retention manifest`);
         } else if (entry.status === 'retain' && references[image].length === 0) {
             issues.push(`${image}: retained documentation asset has no live consumer`);
+        }
+    });
+
+    const docsBinaries = files.filter((file) =>
+        DOCS_BINARY_PATTERN.test(file) && fs.existsSync(path.join(root, file)));
+    docsBinaries.forEach((asset) => {
+        references[asset] = findAssetReferences(asset, files, root);
+        const entry = entries.get(asset);
+        if (!entry) {
+            issues.push(`${asset}: binary document asset is missing from the retention manifest`);
+        } else if (entry.status === 'retain' && references[asset].length === 0) {
+            issues.push(`${asset}: retained binary document asset has no live consumer`);
         }
     });
 
@@ -149,7 +172,7 @@ function auditRepository(options = {}) {
         }
     });
 
-    return { issues, images, references, unreferenced, duplicates, invalidScripts };
+    return { issues, warnings, images, docsBinaries, references, unreferenced, duplicates, invalidScripts };
 }
 
 function main() {
@@ -160,6 +183,7 @@ function main() {
         console.error(`Repository retention audit failed: ${error.message}`);
         process.exit(1);
     }
+    report.warnings.forEach((warning) => console.error(`Repository retention audit warning: ${warning}`));
     if (report.issues.length > 0) {
         console.error('Repository retention audit failed:');
         report.issues.forEach((issue) => console.error(`- ${issue}`));
@@ -167,8 +191,10 @@ function main() {
     }
     console.log(
         `Repository retention audit OK: ${report.images.length} images, ` +
+        `${report.docsBinaries.length} binary documents, ` +
         `${report.unreferenced.length} unreferenced, ${report.duplicates.length} duplicate group, ` +
-        `${report.invalidScripts.length} quarantined invalid script`
+        `${report.invalidScripts.length} quarantined invalid script, ` +
+        `${report.warnings.length} warning`
     );
 }
 

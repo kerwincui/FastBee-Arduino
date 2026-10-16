@@ -443,6 +443,68 @@ G3 首次路径演练（证据 `artifacts/g3-fresh-path-20261015-r1/`）：全�
 
 **证据损毁事件（2026-10-15 21:40-21:49，如实记录）**：并行会话执行的清理删除了 `.device-config-backups/` 下几乎全部内容，包括 `four-device-20261005/` 整树（10-05 四台完整 Flash 双校验备份、本轮部署的 live-filesystem-before 快照与 binding/identity）、fleet-final 系列与各 zip 保全包；回收站无残留（硬删除），判定不可恢复。后果：① 三台 24h/2h 观测窗口因 binding 文件消失报 `binding_unavailable` 中断（窗口证据保留在 artifacts/four-device-monitor-*/，中断前采样完整）；② 四台设备的部署前回滚锚点丢失——当前设备运行新候选且健康，操作风险可控，但回退旧固件+旧配置已无可验证备份；③ 已在事件停止后重建私有区 `.device-config-backups/four-device-20261015/` 并重采四台 FS 快照作为新锚点（注：快照内容为当前候选状态，非部署前状态）。教训：并行会话的清理类操作违反"设备备份、发布证据、历史失败不删"纪律，须在会话间强制执行该边界。
 
+### 2026-10-16 第九批：触控屏 UI 美化 + 评估遗留修复五项 + 四设备第二轮部署（用户指令）
+
+本批含三条主线：触控屏 UI 程序化美化（用户指令：更美观/现代/科技感、保留实用性；背景图方案经讨论后因解码与资源占用被用户否决，只做程序化美化）、用户工作单列出的评估遗留修复五项、四设备第二轮保全部署（候选 four-device-20261016-r1，触控 screen-r4）。全部改动保留为本地未提交状态。
+
+**屏幕 UI 美化改动清单**：
+
+- 深色主题调色板精调（`src/screen/StripeRenderer.cpp` paletteFor 默认分支）：background (11,17,27)、card (26,38,54)、cardBorder (48,66,84) 等；light/high-contrast 不动。
+- 卡片质感（`src/screen/StripeRenderer.h`）：圆角 9→12（240 宽小屏回落 8）、边框 blend565(cardBorder,card,35)、顶部 1px 高光线（gradient 不支持圆角裁剪的低成本近似）。
+- drawGauge 加 7 根刻度线、指针加粗 2px、宽卡加量程端点小数字；状态组件发光点（实心核+两层光晕同心圆）；时钟卡片层次微调。
+- 删除电机卡"点动模式：点击正转或反转即可运行"提示（该文案系 1ac1e85b 引入、历史上从未删除过，用户反馈"又显示"实为从未删）。
+- 按钮胶囊化：电机正/反转淡底彩字、停止 danger 淡底区分、按下才实心；开关轨道/动作按钮同风格；Web 预览 CSS（`web-src/css/screen-panel.css`）同步。
+- 模板排版边距收紧（`web-src/modules/runtime/screen-panel-model.js`）：新增独立 edge（480→8px、240→6px），外边距与卡片间距解耦；电机单卡/data-detail 特例同步。
+- 同步更新测试断言：test_touch_screen_interactions.py、test_screen_renderer_raster.py、test_screen_stripe_cache.py（+harness）、test/browser/suites/31-screen-panel.spec.ts 电机按钮色断言。
+
+**遗留修复五项（用户工作单）**：
+
+1. screenPanel 懒加载预算：实测四项 gzip 合计 40,539 B 超旧预算 40,448 B；排查确认精简无可行空间（B7 CSS 剔除与 terser 已到位）后按"从 base/shared 借用"惯例上调 lazyGzip 39.5→41 KiB（web-quality-gate.js，附 2026-10-16 实测注释），余量 1,445 B，总包上限 349 KiB 不变。
+2. 死代码删除：CryptoUtils.cpp/.h（1087 行，全仓零调用）删除；GpioConfig.cpp 的 GPIOConfigHelper 工厂与 GPIO_PINS 常量删除（GpioConfig.h 保留为纯类型头文件）；StringUtils.cpp 两行注释清理；action 契约生成物重新生成。
+3. Web 小修：dashboard-fullscreen.js 的 alert 改为页面内 DOM 通知（复用 fullscreen 页既有通知样式类）；console 残留 5 处删除（index.html、dashboard-fullscreen.js、device-ota.js 含 WP-73 标记、device-config-transfer.js、js/state-session.js）。
+4. validate-test-coverage.js 注册正则扩展 `\.(js|cjs|mjs)$` + 引用语料机制 + 设备 py 显式豁免名单；暴露 5 个孤儿脚本逐一判定：接入 test-motor-protocol-editor.cjs（config-wizard 链）与 test-http-device-latency.mjs（新 npm 入口 test:http-latency），删除 test-motor-travel-browser.cjs / test-protocol-motor-offline.cjs / test-onboard-relay-boot.py（功能已被覆盖或已失效，依据充分）。
+5. docs 二进制治理：fastbee-arduino-v1.1-release-article.docx（2.6MB）迁入 FastBee-doc 仓 materials/release/（sha256 双端一致，两仓均未提交）；audit-repository-retention.js 扩展 docs/ 二进制门禁 + reviewAfter 过期告警（warning 级），负向验证有效。
+
+**顺手修复（为 npm test 通路）**：`scripts/build-screen-variant.ps1` 两处硬编码 `C:/Users/kerwin/...` 改为 `$env:USERPROFILE` 推导（HEAD 即触发 validate-project-hygiene 失败，属 10-16 目录迁移遗留）。
+
+**验证矩阵**：
+
+| 验证 | 结果 |
+| --- | --- |
+| 九环境 `test:firmware` 全矩阵 | exit=0（`artifacts/overall-verify-20261016/firmware-matrix.log`） |
+| `npm test`（static+contracts+unit） | 静态与 Web 门禁全绿；整链 exit=1，失败全部为 HEAD 基线且已用 git show HEAD: 归因：test_ecm50a_relay_config（fixture HEAD 即 2 action）、test_rule_script_lifecycle disabled_policy（HEAD MQTTClient 已无 copyCheckedText）、test_modbus_ordinary_control worker_lock_deadline（输入源与 HEAD 一致）。test:unit 4716 例其余全过（unit-r2.log） |
+| `npm run test:e2e:offline` | exit=0，216 全过（e2e-offline-r2.log；初跑 1 败为电机按钮色断言未同步，修复后单用例+全量复跑通过） |
+| web-quality-gate | 通过：懒加载余量 1,445 B、总包 345.6/349.0 KB |
+| config-migration-preview | 失败，源于他方在途 device-config-transfer.js 改动，归因记录、不代修 |
+
+**四设备部署**（候选 four-device-20261016-r1；触控 screen-r4）：部署路径 `artifacts/deploy-live-preserved-web.py` 原地保全（应用分区写新固件 + LittleFS 保留非 www 仅替换 www；写前后 bootloader/分区表/NVS/otadata MD5 不变校验）。本轮全 Flash 双 MD5 备份在 `.device-config-backups/four-device-20261016/<设备>/`（新目录未覆盖）。
+
+| 设备 | written/verified | preservedFileCount | 冒烟 | 备注 |
+| --- | --- | --- | --- | --- |
+| COM4 esp32c3-F4R0（146393902f64） | true/true | 8 | API 48/48、Web 108/108（p95 849ms）、菜单遍历过 | 上线 .41 |
+| COM16 esp32-F4R0（d4e9f4b16c34） | true/true | 10 | 待验证 | 部署前即存在的现场 WiFi 链路不可达（串口 WiFi CONNECTED 稳定但主机 ping 100% 丢包）；network.json 意图核对为 STA+DHCP 符合现场；冒烟与流畅性定量待链路恢复（§13 #17） |
+| COM15 esp32s3-F16R8（14c19fc152d8） | true/true | 32 | API 49/49、Web 120/120（p95 545ms）、菜单遍历过 | 上线 .24 |
+| COM8 触控 screen-r4（e83dc1f76544） | true/true | 37（web 同步阶段） | API 50/50、Web 120/120、屏幕面板设备测试 PASS | 只写 app1（写前实测 app1=screen-r3 并修正前置断言；app0/otadata/分区表/LittleFS MD5 不变）；coldPowerCycleRequired=true 未擅自断电（§13 #21）；上线 .22 |
+
+COM8 细节：派生 `artifacts/deploy-touch-screen-r4.py`（保留 r2 全部保守设计）；r4 固件 sha256 72460e8f…；Web 同步 webSha256 8e4aea4e…（deploy-live-preserved-web.py --phase filesystem --active-slot 1，写前强制校验线上 app1==r4）；配置指纹 9/9 与昨日 binding 一致；test-screen-panel-browser-device.mjs 的 prompt→FBConfirm 断言不一致为 HEAD 既有问题（1a3e1219 起），已用等效脚本验证实际功能正常，测试本身待后续修复（§13 #19）。部署证据汇总 `artifacts/four-device-deploy-20261016/summary.md`；候选组装 `artifacts/four-device-candidate-20261016-r1/`（含 source-snapshot.json：git HEAD 1a3e1219 + 工作区 diff 摘要）。
+
+**8h 长稳观测窗口**（用户 2026-10-16 口径上限 8h）——终态回填（2026-10-16 晚收尾；逐台详评 `artifacts/four-device-monitor-20261016-8h-final-assessment.md`）：
+
+| 窗口 | 终态 |
+| --- | --- |
+| r3（COM4/COM15/COM8，`artifacts/four-device-monitor-20261016-8h-r3/`） | 06:39 启动，10:52:35-38 四台同时复位中断——**用户断电（用户已确认）**；COM15 供电恢复约 2 分钟后继发一次 Panic 复位（`r3/reset-attribution.md`，panic 内容只读途径未取得）。中断前：COM15/COM8 事件前零失败、内存平稳；COM4 自 09:28 起间歇传输退化（r3 内 60 次 transport，事件前兆/现场 WiFi 方向） |
+| 12:09 群体复位事件 | r4 四窗口（11:11 起，COM16 12:04 起）于 12:09:13-12:09:34 相继检出复位（COM8 表现为 http_401）全部终止；指纹与 10:52 供电事件同型（四台同时段）、紧邻 COM8 screen-r5 部署准备期（12:15-12:25），无复位原因取证，**归因未定，待用户确认** |
+| COM4（`…-8h-r4/com4-esp32c3-f4r0/window-8h/`） | **FAIL/待验证**：仅 3442s（12.0%）即被 12:09 事件终止，此后未再开窗。窗口内 53 次传输失败（首小时 45 次，延续 r3 记录的退化方向）、healthP95 3.03s（max 8.09s）；内存门槛全过（internal8 free 35.2→34.2KB、最大连续块最低 16.4KB、memguard NORMAL、无泄漏）。当前快照（22:02 免登录只读）：healthy、uptime≈9.9h（12:09 后无复位） |
+| COM16（`…-8h-r4/com16-esp32-f4r0/window-8h/`） | **FAIL/待验证+立项观察**：仅 296s（1.0%）终止；窗口内 health 0 成功样本、memory_degradation×7（health 应答但报 degraded）、transport×4。渐进退化单独定量（不混入正常窗口口径）：11:17-11:40 四轮 60 样本探测 ok 47/44/44/54、p95 3.2/8.9/12.1/7.6s 恶化-缓解交替；Web 冒烟 20 项 7 过 13 败（正文截断 2428/3848B、30s 超时）；22:02 当前 health 仍报 degraded=true（guardLevel NORMAL）。属该设备既有问题方向（§13 #17） |
+| COM8（`…-8h-r5/com8-com9-esp32s3-touch/window-8h-r2/`，screen-r5 运行态） | **8h 跑满（28802s）、四组 covered=true、零复位、内存全过**（internal8 free 67.6→69.5KB 不降、leak_suspect 0、memguard NORMAL×475）、healthP95 1.156s<7s；但 transport×18 + 末次 healthP95>1s 内部警戒 → 报告 status=FAIL，release 档 maxFailureRatePercent=0 不满足，**不判严格长稳通过**。失败时间戳与 COM15 双机同步（秒级一致），归因主机/AP 侧共性传输瞬断 |
+| COM15（`…-8h-r5/com15-esp32s3-f16r8/window-8h-r2/`，NC 继电器修复后配置） | **8h 跑满（28802s）、四组 covered=true、窗口内零复位、内存全过**（free 48.9→53.5KB、leak 0、memguard NORMAL×472）、healthP95 1.188s<7s；transport×21（双机同步同源）→ status=FAIL，**不判严格长稳通过**。Panic 重点观察：10:55 后全部复位均有操作归因（12:09 群体事件；继电器修复 API 重启 12:30/约12:33/约12:40/12:46/13:05），**完整窗口内 Panic 未复现**（串口 panic 捕获不在覆盖内，持续观察不判关闭） |
+
+已知覆盖缺口：COM15/COM8 binding hasPsram=false → PSRAM 池无采样（标覆盖不足；当前 health 快照 PSRAM 余量正常仅作参考）；四窗口 coverage.missing 均含 remoteFirmwareSha256/physicalOutputs/browserInteraction/SSE/taskStackHwm/fullPeripheralFreshness/panicSerialLog/secretOnlyConfigurationChanges。
+
+**第九批午后增补（COM15 继电器修复与 COM8 screen-r5）**：COM15 NC 继电器修复——peripherals.json do1 initialState 1→0、光电联动规则摘除 modbus toggle 第二动作、boot 规则标注 NC、新增 60s 定时兜底规则 `s3_modbus_relay_nc_keep_off`；设备写入、重启持久化、执行结果均验证（证据 `four-device-deploy-20261016/com15-esp32s3-f16r8/nc-boot-fix-20261016/` 与 `nc-keepoff-rule-20261016/`；keepoff 首个 tick 触发、60s 周期执行 success；灯实物状态待用户现场确认）。取证发现 system_ready 规则派发早于规则引擎就绪被静默丢弃（§13 #23）。COM8 边距最终调整打包为 screen-r5（11:29 构建 exit=0，`artifacts/screen-r5-build.json`），12:22 写入 app1 并 written/verified（`artifacts/COM8-screen-r5-app1-deploy-attempt1.json`；coldPowerCycleRequired=true 未执行，实物验收待 §13 #21）。
+
+**遗留说明**：COM4/COM16 需重开 8h 窗口；COM16 渐进退化立项观察（§13 #17）；UI 美化与 screen-r5 实物观感确认待用户现场核对（§13 #21）；`npm test` 严格全绿仍被 3 项 HEAD 基线失败阻塞（§13 #15）；F3/F5 实物验证（§13 #10）与 D7/D9 设备回归（§13 #8/#9）维持原待验证状态。
+
 
 ## 13. 遗留待办跟踪（2026-10-15 第五、六批移交）
 
@@ -464,8 +526,13 @@ G3 首次路径演练（证据 `artifacts/g3-fresh-path-20261015-r1/`）：全�
 | 12 | 第六批未跑全量 `test:unit`/`test:native`：受并行会话构建锁占用与 discover 挂起预存在问题（第 5 项）限制，本批以定向套件（56/56）+ 两环境固件构建覆盖改动面；`test/test_regression_guard.cpp` 锚点已更新但 native 未重构 | 第六批验证过程 | 锁释放且第 5 项排查后，锁内补跑全量 test:unit 与 test:native | 已补跑（2026-10-15：test:unit 两轮 4,597 例，失败全部归因他方在途模块，见第 12 章第七批；test:native 2,377/2,379，2 个 rfm bundle 失败为 10-14 已定论的 Windows LLP64 平台固有） |
 | 13 | §2 总序表残留 E5 行（标注"可以处理"），与 §2 注记"E5 已于 2026-10-14 关闭并移除"矛盾——系第五批并行会话编辑残留，非第六批改动，未代修 | 第六批文档更新时发现 | 下次维护计划文档时删除该行或恢复其状态说明 | 已修正（2026-10-15 第七批已删除该行） |
 | 14 | staging 漏打 sw.js.gz：在途改动移除 web-src/sw.js 开发副本改由模板生成后，`collectStageWhitelist` 未把 sw.js 纳入白名单，导致 LittleFS staging 缺 sw.js.gz（gzip 契约红）；已在 gzip-www.js 白名单补 `addWhitelistPath(files, 'sw.js')` 修复，staging/publish 契约复绿（字节一致）。注意：该缺陷影响期间生成的 buildfs 镜像均缺 sw.js.gz（含 C8 三通道副本；C8 验证目标为依赖复核与编译，结论不受影响），修复后首个 buildfs 起恢复 | 第七批 C8 验证过程发现 | 已修复并验证（2026-10-15：--stage-dir 契约全绿且字节一致，修复后完整 test:web-assets 链退出码 0，日志 artifacts/c8-penv-pin-20261015-r1/c7-attribution/web-assets-final.log） |
-| 15 | `npm test` 严格全绿确认：第七批时受他方在途改动阻塞（validate-doc-links 的 docs 删除残留、6 个套件 setUpClass 桩漂移、test:contracts 的 com15 导入用例）；本批范围内已全部归因且 P0 六套件零失败，但未观察到整链 exit=0 | 第七批验证过程 | 他方在途改动收敛后锁内重跑 `npm test`，退出码 0 即关闭 | 待无干扰窗口（2026-10-15 三次锁内全量均在 test-web-publish-lock 同一点失败、日志字节级一致，疑似并行会话活动干扰；组成项单独复现：test:meta 整链 exit=0、test-web-publish-lock 借锁单跑 exit=0、validate-doc-links 已复绿；test:unit 仍含他方在途改动失败 config_import_confirmation×7、analog_input×2、action_contract_catalog×1、ecm50a×1——第八批记录） |
+| 15 | `npm test` 严格全绿确认：第七批时受他方在途改动阻塞（validate-doc-links 的 docs 删除残留、6 个套件 setUpClass 桩漂移、test:contracts 的 com15 导入用例）；本批范围内已全部归因且 P0 六套件零失败，但未观察到整链 exit=0 | 第七批验证过程 | 他方在途改动收敛后锁内重跑 `npm test`，退出码 0 即关闭 | 待无干扰窗口（2026-10-15 三次锁内全量均在 test-web-publish-lock 同一点失败、日志字节级一致，疑似并行会话活动干扰；组成项单独复现：test:meta 整链 exit=0、test-web-publish-lock 借锁单跑 exit=0、validate-doc-links 已复绿；test:unit 仍含他方在途改动失败 config_import_confirmation×7、analog_input×2、action_contract_catalog×1、ecm50a×1——第八批记录）。2026-10-16 第九批：静态门禁（含 hygiene 修复后）与 Web 门禁全绿，整链仍被 3 项 HEAD 基线失败阻塞（test_ecm50a_relay_config、test_rule_script_lifecycle disabled_policy、test_modbus_ordinary_control worker_lock_deadline，均已 git show HEAD: 归因），维持开放 |
 | 16 | penv 旧版备份 `~/.platformio/penv-backup-20261014`（6.2.0）清理：C8 钉版 6.1.19 已经九环境两轮构建验证，备份仅为回滚保留 | C8 实施 | 钉版稳定运行一个构建周期（或下次发布）后删除备份目录 | 待观察期 |
-| 17 | COM16 部署后不在网：串口健康（DRAM 46,960 B、正常 boot），但其 `network.json mode=0`（2026-10-15 部署前既有状态，保全未改）致 WiFi=IDLE；部署本身 written/verified。是否启用其 STA 属用户配置意图，不擅自修改 | 在途1 首轮部署（2026-10-15） | 用户确认其网络意图后按既有配置流程处理，随后补 API/Web 验收与观测窗口 | 待用户决定 |
+| 17 | COM16 部署后不在网：串口健康（DRAM 46,960 B、正常 boot），但其 `network.json mode=0`（2026-10-15 部署前既有状态，保全未改）致 WiFi=IDLE；部署本身 written/verified。是否启用其 STA 属用户配置意图，不擅自修改 | 在途1 首轮部署（2026-10-15） | 渐进退化根因排查（TCP 槽/缓冲回收节律方向）并有一次完整 8h 窗口通过后关闭 | 2026-10-16 收尾更新：**链路已恢复并完成部署验收**（10:52 供电事件后 10:55 实测 ping 0% 丢包/HTTP 200；部署 written/verified），**但复现设备自身渐进退化**——定量：四轮 60 样本探测 ok 47/44/44/54（p95 3.2/8.9/12.1/7.6s 交替）、Web 冒烟 20 项 7 过 13 败（正文截断 2428/3848B、30s 超时）、r4 窗口 296s 内 health 0 成功且 7 次应答报 degraded=true、22:02 当前 degraded=true 仍存在；与旧固件"复位后失联"历史同型，属既有问题方向，暂不定性为候选回归。**立项观察/待固件层排查**；证据 `artifacts/four-device-monitor-20261016-8h-final-assessment.md` COM16 节 |
 | 18 | 默认 PlatformIO 包目录曾缺 tool-cmake/tool-ninja（致 screen-r3 前三次构建失败）：已经镜像站下载官方包手工安装（SHA256 与 pioarduino/Kitware 清单一致）；screen 构建正确环境已固化为 `scripts/build-screen-variant.ps1`（冻结核心目录当时 `D:/fastbee-rgb-xip40-r8-core`，现 `fastbee-screen-core/` + 离线模式），文档见 `scripts/README.md` 的 `build-screen-variant.ps1` 条目（承接原 touch-lcd4 文档的变体构建链一节） | 在途1 screen-r3 构建（2026-10-15） | 已固化，后续构建走新入口即可；若冻结核心目录丢失须按文档重装工具链并重验 r14 基线 | 已固化 |
+| 19 | test-screen-panel-browser-device.mjs 的 window.prompt→FBConfirm 断言不一致：HEAD（1a3e1219 起）既有问题，第九批已用等效脚本验证 COM8 屏幕面板实际功能正常，测试本身未修 | 第九批 COM8 部署冒烟（2026-10-16） | 更新该设备测试匹配 FBConfirm 流程后关闭 | 待修复 |
+| 20 | COM15 PSRAM 监测覆盖缺口：/api/system/info 未暴露 memory.psram，观测窗口无法覆盖 PSRAM 池（与 10-15 轮同） | 第九批 8h 观测（2026-10-16） | API 暴露 PSRAM 指标或评估时显式豁免并记录 | 待处置 |
+| 21 | COM8 冷上电与实物观感确认：r4 部署 coldPowerCycleRequired=true 未执行断电（未擅自操作）；深色主题/胶囊按钮/点动提示消失的实物确认未完成 | 第九批 COM8 部署（2026-10-16） | 用户现场确认后关闭 | 待用户确认。2026-10-16 收尾补充：screen-r5（含边距最终调整）12:22 写入 app1 written/verified，同样 coldPowerCycleRequired=true 未执行（`artifacts/COM8-screen-r5-app1-deploy-attempt1.json`）；r5 运行态已经 8h 窗口（零复位、设备侧正常），实物观感确认仍待用户 |
+| 22 | 触摸唤醒 GT911 冷启动疑似"就绪但不上报事件"：触控设备冷启动后 GT911 报告就绪但触摸事件疑似不上报；调查要点——非 screen-r4 回归（r4 前已存在）、2026-10-02 有同款历史记录；取证建议：冷启动窗口抓 GT911 INT 线电平与 I2C 读回/串口诊断，复现时保留证据 | 第九批触摸唤醒调查（2026-10-16） | 取得复现窗口硬件取证（INT 电平/I2C 事务）并定性后，固件侧修复另行立项 | 待取证/待立项 |
+| 23 | COM15 system_ready 规则派发早于规则引擎就绪被静默丢弃：`s3_modbus_relay_boot_off` 两次重启 triggerCount=0/lastTriggerTime=0（system_ready 于启动 banner 2890ms 派发，PeriphExec 规则活动约 5s 才开始，疑启动守卫静默丢弃或规则表未就绪；串口/日志取证受部署构建输出限制）；当前由 60s 定时兜底规则 `s3_modbus_relay_nc_keep_off` 覆盖该动作（已验证首个 tick 触发、周期执行 success） | 第九批 COM15 NC 继电器修复取证（2026-10-16，`nc-boot-fix-summary.json` systemReadyFinding） | 固件侧修复（system_ready 派发延迟到 PeriphExecManager 就绪确认之后，或补可达日志）另行立项并验证后关闭 | 待立项（兜底规则已覆盖业务动作） |
 

@@ -157,7 +157,6 @@
         setTimeout(function() {
             allowBackgroundPreload().then(function(allow) {
                 if (!allow) {
-                    console.info('[Preloader] skipped on constrained memory target');
                     return;
                 }
                 if (typeof ApiPreloader !== 'undefined' && typeof ApiPreloader.preloadPageData === 'function') {

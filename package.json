@@ -17,6 +17,7 @@
     "test:e2e:offline": "npm --prefix test/browser run test:offline-ui",
     "test:device-control": "node scripts/test-device-control-regression.js",
     "test:com15-recovery": "node scripts/test-com15-recovery-offline.mjs",
+    "test:http-latency": "node scripts/test-http-device-latency.mjs",
     "test:web-configuration": "node scripts/test-web-configuration.js",
     "test:config-wizards": "node scripts/run-config-wizard-tests.js",
     "test:e2e:debug": "npm --prefix test/browser run test -- --debug",

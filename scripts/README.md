@@ -39,7 +39,7 @@ node scripts/audit-device-docs.mjs \
 | `fleet-stability-monitor.mjs` | Playwright 登录、全部可见菜单、资源请求、内存趋势和响应时间长期验收；支持部署后 live fleet JSON。它会登录和注销，因此不属于零 POST 的严格只读监控 | 见下方 8 小时 Web 功能验收命令 |
 | `e2e-ota-test.js` | OTA 升级端到端测试：状态查询/URL 校验/begin-cancel 会话；追加 `--firmware fw.bin` 执行完整升级与重启恢复验证 | `node scripts/e2e-ota-test.js --url http://<device-sta-ip> --user admin --pass 123456 --allow-begin` |
 
-npm 脚本入口以 `package.json` 的 `scripts` 字段为准；每个入口必须按 `validate-test-coverage.js` 的登记要求挂进 `test`/`test:host`/`test:static`/`test:contracts` 等链上，否则门禁会报“default host regression does not register”。本文只列常用命令，新增或下线入口时同时更新两处。
+npm 脚本入口以 `package.json` 的 `scripts` 字段为准；`scripts/` 下每个 `test-*`/`validate-*` 的 `.js`/`.cjs`/`.mjs` 脚本必须按 `validate-test-coverage.js` 的登记要求被 npm 脚本（含 `test`/`test:host`/`test:static`/`test:contracts` 链或手动设备入口）、`test/unit` 主机包装器或已注册脚本引用，零引用脚本会被门禁判为孤儿。设备类 `test-*.py` 脚本不进 npm 链，须在门禁的显式豁免名单中登记并保持对应主机包装器引用。本文只列常用命令，新增或下线入口时同时更新两处。
 
 `deploy.ps1` 默认会清理继承的 `PLATFORMIO_DATA_DIR`，避免上传旧的 LittleFS staging；只有需要指定外部 PlatformIO 数据目录时才传入 `-DataDir <path>`。
 
@@ -96,6 +96,8 @@ python scripts/make-candidate-binding.py `
   --deployment-report <deployment.json> --source-sha256 <64位hex> --web-sha256 <64位hex> `
   --out <私有目录>/binding.json
 ```
+
+固件与文件系统分开部署的情形（如触屏 screen 变体的 app 槽写入 + 独立 web 同步），用 `--filesystem-report <phase=filesystem报告>` 追加第二份报告：此时 `--deployment-report` 作为 firmware 阶段证据（schemaVersion=2 无 phase 字段的 app 槽报告按 firmware 受理），生成 firmware/filesystem 两条 deploymentEvidence，各配独立的 identity-firmware.json / identity-filesystem.json（deploymentReportSha256 分别绑定各自报告）。单报告用法及既有 binding 口径不变。
 
 ## 测试矩阵
 

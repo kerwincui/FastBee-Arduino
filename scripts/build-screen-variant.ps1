@@ -41,7 +41,7 @@ $handle = Enter-FastBeeFirmwareBuildLock -ProjectRoot $taskRoot -Label "$Candida
 try {
     # penv guard: pin PlatformIO penv first on PATH and drop external Python
     # overrides so old Git/mingw64 runtimes cannot hijack pio subprocesses.
-    $penvScripts = 'C:/Users/kerwin/.platformio/penv/Scripts'
+    $penvScripts = Join-Path $env:USERPROFILE '.platformio/penv/Scripts'
     if (Test-Path -LiteralPath $penvScripts) {
         $env:PATH = $penvScripts + [System.IO.Path]::PathSeparator + $env:PATH
     }
@@ -57,7 +57,7 @@ try {
     $env:PLATFORMIO_PACKAGES_DIR = "$taskCore/packages"
     $env:PLATFORMIO_PLATFORMS_DIR = "$taskCore/platforms"
     $env:IDF_COMPONENT_CHECK_NEW_VERSION = '0'
-    & 'C:/Users/kerwin/.platformio/penv/Scripts/python.exe' (Join-Path $taskRoot $taskBuilder)
+    & (Join-Path $env:USERPROFILE '.platformio/penv/Scripts/python.exe') (Join-Path $taskRoot $taskBuilder)
     if ($LASTEXITCODE -ne 0) { throw "$Candidate build failed: $LASTEXITCODE" }
 }
 finally { Exit-FastBeeFirmwareBuildLock -Handle $handle }

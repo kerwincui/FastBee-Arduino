@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const { chromium } = require('../test/browser/node_modules/playwright');
 const root = path.resolve(process.env.FASTBEE_TEST_MOTOR_SOURCE || path.join(__dirname, '..'));
 const outArg = process.argv.find(value => value.startsWith('--out='));
-const out = path.resolve(root, outArg ? outArg.slice(6) : 'artifacts/motor-protocol-generic-r7/browser');
+const positional = process.argv.slice(2).find(value => !value.startsWith('--'));
+if (!outArg && !positional) throw new Error('Pass a new output directory; existing evidence is never overwritten');
+const out = path.resolve(root, outArg ? outArg.slice(6) : positional);
 async function main() {
     fs.mkdirSync(out, { recursive: true });
     const css = fs.readFileSync(path.join(root, 'web-src/css/main.css'), 'utf8');
@@ -85,7 +87,9 @@ async function main() {
             results.push({ width, status:'PASS', savedProfile:saved.motorProtocol, deviceRequests:0 });
             await page.close();
         }
-        fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ status:'PASS', results, physicalMotorTested:false }, null, 2));
+        fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ status: 'PASS',
+            cases: results.map(result => ({ name: 'editor-' + result.width + 'px', status: result.status })),
+            results, physicalMotorTested: false }, null, 2));
         console.log('Motor editor: no protocol selector, advanced values, validation and zero requests passed at 1440/390px.');
     } finally { await browser.close(); }
 }

@@ -395,7 +395,7 @@ String StringUtils::md5(const String& str) {
 }
 
 String StringUtils::sha256(const String& str) {
-    // 仅用于快速哈希，非密码学安全；安全场景请使用 CryptoUtils::hash()
+    // 仅用于快速哈希，非密码学安全
     uint32_t h = 0;
     for (size_t i = 0; i < str.length(); i++) {
         h = (h * 31) + str[i];
@@ -438,7 +438,7 @@ String StringUtils::base64Encode(const String& str) {
 }
 
 String StringUtils::base64Decode(const String& str) {
-    // 仅为接口占位，完整实现请使用 CryptoUtils::base64Decode()
+    // 仅为接口占位
     return "";
 }
 

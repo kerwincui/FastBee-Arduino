@@ -343,10 +343,6 @@
                 this._sseSource = new EventSource('/api/events');
                 var self = this;
 
-                this._sseSource.onopen = function() {
-                    console.log('[Fullscreen] SSE connected');
-                };
-
                 this._sseSource.onerror = function() {
                     console.warn('[Fullscreen] SSE connection error');
                 };
@@ -403,11 +399,51 @@
             this.destroy();
             // 尝试关闭窗口（仅对脚本打开的窗口有效）
             window.close();
-            // 如果 window.close() 被浏览器阻止，显示提示
+            // 如果 window.close() 被浏览器阻止，在页面内提示用户手动关闭
+            var self = this;
             setTimeout(function() {
-                var msg = '请手动关闭此标签页';
-                alert(msg);
+                self._showCloseNotice('浏览器已阻止自动关闭，请手动关闭此标签页');
             }, 300);
+        },
+
+        // 页面内提示横幅：fullscreen.html 未加载 notification.js，这里直接按相同样式类构建 DOM
+        _showCloseNotice: function(text) {
+            if (document.getElementById('fullscreen-close-notice')) return;
+            var container = document.getElementById('notification-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'notification-container';
+                container.className = 'notification-container';
+                document.body.appendChild(container);
+            }
+            var notice = document.createElement('div');
+            notice.id = 'fullscreen-close-notice';
+            notice.className = 'notification notification-info';
+            notice.setAttribute('role', 'status');
+
+            var header = document.createElement('div');
+            header.className = 'notification-header';
+            var title = document.createElement('div');
+            title.className = 'notification-title';
+            title.textContent = '提示';
+            var closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'notification-close';
+            closeBtn.setAttribute('aria-label', '关闭提示');
+            closeBtn.textContent = '×';
+            closeBtn.addEventListener('click', function() {
+                if (notice.parentNode) notice.parentNode.removeChild(notice);
+            });
+            header.appendChild(title);
+            header.appendChild(closeBtn);
+
+            var body = document.createElement('div');
+            body.className = 'notification-body';
+            body.textContent = text;
+
+            notice.appendChild(header);
+            notice.appendChild(body);
+            container.appendChild(notice);
         },
 
         // ============ 工具方法 ============

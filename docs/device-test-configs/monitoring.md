@@ -27,7 +27,7 @@ device、features、peripherals、periph_exec及按实际需要的rule_scripts�
 | configs | `[{ "name": "device.json", "sha256": "<该文件原始SHA256>" }, ...]`，六个基础文件必需；network/protocol改用上述规范化脱敏视图SHA |
 | deploymentEvidence | 每项含path、sha256、phase、identityPath、identitySha256；path相对binding文件 |
 
-deploymentEvidence可以一条phase=all报告，或firmware/filesystem两条报告，必须具有本次written/verified；应用阶段需applicationWritten=true；两者firmwareSha256相同，FS还需webSha256/filesystemSha256。每阶段独立身份索引文件含mac、port、deploymentReportSha256、sourceSha256，并有对应真实识别/写入证据；索引不是重新生成旧PASS的凭据。两个S3不能交换索引或报告。工具固定这些文件摘要，变化/缺失立即停止。
+deploymentEvidence可以一条phase=all报告，或firmware/filesystem两条报告，必须具有本次written/verified；应用阶段需applicationWritten=true；两者firmwareSha256相同，FS还需webSha256/filesystemSha256。触屏等screen变体的app槽写入报告（schemaVersion=2）不携带phase字段，且按构造不含文件系统写入（filesystemWritten=false）；此类报告仅受理为firmware阶段证据，applicationWritten由writeStarted&&written&&verified&&!filesystemWritten映射，文件系统阶段须另配标准的phase=filesystem报告。每阶段独立身份索引文件含mac、port、deploymentReportSha256、sourceSha256，并有对应真实识别/写入证据；索引不是重新生成旧PASS的凭据。两个S3不能交换索引或报告。工具固定这些文件摘要，变化/缺失立即停止。
 
 目前设备API未提供运行固件SHA。工具绑定独立Flash校验报告，持续检查MAC、firmwareVersion、sketchSize与uptime；同版本同大小重刷无法仅凭HTTP密码学识别。因此明确保留remoteFirmwareSha256覆盖缺口，不声称具备该保证。
 

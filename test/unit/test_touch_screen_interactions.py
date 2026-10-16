@@ -133,7 +133,7 @@ r.drawMotor(c,s,{0,0,448,400},{});bool speed=false,pulse=false,input=false;for(c
 auto has=[&](const char* text){for(const auto& label:c.labels)if(label.find(text)!=std::string::npos)return true;return false;};
 s.motorCommandKnown=true;s.motorCommandSuccess=true;s.motorKnown=false;strcpy(s.value,"stop");
 c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("停止指令已应答")&&has("点动模式")&&!has("已停止"));
+assert(has("停止指令已应答")&&has("参考位置未确认")&&!has("已停止"));
 s.motorSoftLimitEnabled=s.motorReferenceKnown=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
 assert(has("启动前自动读取参数")&&!has("禁止启动"));
 s.motorSoftLimitEnabled=s.motorReferenceKnown=false;
@@ -141,7 +141,7 @@ s.motorCommandSuccess=false;strcpy(s.value,"reverse");c.labels.clear();r.drawMot
 assert(has("反转指令失败")&&!has("反转指令已应答"));
 s.motorKnown=true;s.motorPulse=1600;s.motorSoftLimitEnabled=false;
 c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
-assert(has("点动模式")&&!has("软限位仅按指令估算"));
+assert(has("参考位置未确认")&&!has("软限位仅按指令估算"));
 s.motorSoftLimitEnabled=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});
 assert(!has("软限位未启用")&&has("参考位置未确认"));
 s.motorReferenceKnown=true;c.labels.clear();r.drawMotor(c,s,{0,0,448,400},{});

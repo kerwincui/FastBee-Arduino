@@ -762,7 +762,7 @@ void controlTargets() {
         } else if(visual==ScreenVisualType::SELECT) {
             controls={screenSelectButton(bounds,false),screenSelectButton(bounds,true)};
         } else if(visual==ScreenVisualType::SWITCH) {
-            // The whole card is the toggle hot zone; the pill remains the
+            // The whole card is the toggle hot zone; the track remains the
             // visual anchor and is still where pressed pixels change.
             for(auto point : {bounds.x+1, bounds.x+bounds.w/2, bounds.x+bounds.w-2})
                 assert(renderer.hitTest(snapshot,point,bounds.y+bounds.h/2)==0);
@@ -780,7 +780,7 @@ void controlTargets() {
             const uint16_t colors[]={darkPalette.success,darkPalette.danger,darkPalette.accent};
             for(unsigned column=0;column<3;++column){
                 const auto button=layout.command(column);
-                assert(baseline[1+(button.y+8)*480+button.x+button.w/2]==colors[column]);
+                assert(baseline[1+(button.y+8)*480+button.x+button.w/2]==optimized::blend565(colors[column],darkPalette.card,22));
             }
             const auto ready=card;
             for(unsigned state=0;state<6;++state){
@@ -796,10 +796,10 @@ void controlTargets() {
                 for(unsigned column=0;column<3;++column){
                     const auto button=layout.command(column);
                     const auto sample=1+(button.y+8)*480+button.x+button.w/2;
-                    assert(idle[sample]==colors[column]);
+                    assert(idle[sample]==optimized::blend565(colors[column],darkPalette.card,22));
                     renderer.setPressed(card.id,button.x+button.w/2,button.y+button.h/2);
                     assert(renderer.render(snapshot,"",error));
-                    assert(display.pixels[sample]==optimized::blend565(colors[column],optimized::paletteFor(snapshot.themeId).card,185));
+                    assert(display.pixels[sample]==colors[column]);
                     renderer.setPressed(nullptr);assert(renderer.render(snapshot,"",error));
                     assert(display.pixels==idle);
                 }

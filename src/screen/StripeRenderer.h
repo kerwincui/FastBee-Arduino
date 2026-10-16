@@ -627,7 +627,7 @@ public:
         }
         if (card.visualType == ScreenVisualType::SWITCH) {
             // The whole card is the toggle hot zone (>=44px even on small
-            // legacy cards); the pill stays as the visual anchor only.
+            // legacy cards); the track stays as the visual anchor only.
             return true;
         }
         if (card.visualType == ScreenVisualType::NUMBER_CONTROL) {
@@ -955,7 +955,14 @@ private:
         // existing pixel clipping instead of dropping visible overflow.
         if (rect.h >= 96 && !canvas.intersectsRows(rect.y,
                 static_cast<int32_t>(rect.y) + rect.h)) return;
-        canvas.roundedRect(rect.x, rect.y, rect.w, rect.h, 9, palette.card, palette.cardBorder);
+        const uint8_t cardRadius = _width >= 360 ? 12 : 8;
+        canvas.roundedRect(rect.x, rect.y, rect.w, rect.h, cardRadius, palette.card,
+                           blend565(palette.cardBorder, palette.card, 35));
+        // gradient() fills whole stripes without rounded clipping, so the top
+        // sheen stays a single soft line inside the corner insets.
+        canvas.line(rect.x + cardRadius, rect.y + 1,
+                    rect.x + rect.w - cardRadius - 1, rect.y + 1,
+                    blend565(palette.text, palette.card, 14));
         if (rect.w >= 96 && rect.h >= 80) {
             // Quiet surfaces keep the live values and command affordances prominent.
             canvas.line(rect.x + 12, rect.y + 29, rect.x + rect.w - 13, rect.y + 29,
@@ -1073,7 +1080,12 @@ private:
         const char* value = card.value[0] ? card.value : qualityText(card.quality);
         if (card.value[0] && strcmp(card.sourceRef, "system.network") == 0)
             value = panelNetworkStatusText(card.value);
-        canvas.circle(rect.x + 19, rect.y + rect.h / 2 + 6, 7, color, true);
+        const int16_t dotX = rect.x + 19;
+        const int16_t dotY = rect.y + rect.h / 2 + 6;
+        // Glow dot: two faint halos around the solid status core.
+        canvas.circle(dotX, dotY, 9, blend565(color, palette.card, 25), true);
+        canvas.circle(dotX, dotY, 7, blend565(color, palette.card, 50), true);
+        canvas.circle(dotX, dotY, 5, color, true);
         canvas.text(rect.x + 34, rect.y + rect.h / 2,
                     value, textColor, rect.w - 44, 1);
     }
@@ -1160,12 +1172,35 @@ private:
         const int16_t cx = rect.x + rect.w / 2;
         const int16_t cy = rect.y + rect.h / 2 + 7;
         canvas.circle(cx, cy, radius, palette.cardBorder, false);
+        for (int tick = 0; tick <= 6; ++tick) {
+            const float tickAngle = -2.35f + tick * (4.70f / 6.0f);
+            const int16_t outerX = cx + static_cast<int16_t>(cosf(tickAngle) * (radius - 1));
+            const int16_t outerY = cy + static_cast<int16_t>(sinf(tickAngle) * (radius - 1));
+            canvas.line(outerX, outerY,
+                        cx + static_cast<int16_t>(cosf(tickAngle) * (radius - 6)),
+                        cy + static_cast<int16_t>(sinf(tickAngle) * (radius - 6)),
+                        blend565(palette.cardBorder, palette.card, 40));
+        }
         const float angle = -2.35f + normalizedValue(card) * 4.70f;
-        canvas.line(cx, cy,
-                    cx + static_cast<int16_t>(cosf(angle) * (radius - 4)),
-                    cy + static_cast<int16_t>(sinf(angle) * (radius - 4)),
-                    palette.accent);
+        const int16_t tipX = cx + static_cast<int16_t>(cosf(angle) * (radius - 4));
+        const int16_t tipY = cy + static_cast<int16_t>(sinf(angle) * (radius - 4));
+        canvas.line(cx, cy, tipX, tipY, palette.accent);
+        // A second stroke offset one pixel perpendicular thickens the needle.
+        const int16_t offX = static_cast<int16_t>(lroundf(-sinf(angle)));
+        const int16_t offY = static_cast<int16_t>(lroundf(cosf(angle)));
+        if (offX || offY)
+            canvas.line(cx + offX, cy + offY, tipX + offX, tipY + offY, palette.accent);
         canvas.circle(cx, cy, 3, palette.accent, true);
+        if (card.hasRange && rect.w >= 150 && rect.h >= 104) {
+            const unsigned precision = std::min<unsigned>(card.precision, 6);
+            char limit[24];
+            snprintf(limit, sizeof(limit), "%.*f", precision, static_cast<double>(card.rangeMin));
+            canvas.text(rect.x + 8, rect.y + rect.h - 32, limit, palette.muted, rect.w / 2 - 12, 1);
+            snprintf(limit, sizeof(limit), "%.*f", precision, static_cast<double>(card.rangeMax));
+            const int16_t limitWidth = static_cast<int16_t>(strlen(limit)) * 6;
+            canvas.text(rect.x + rect.w - 8 - limitWidth, rect.y + rect.h - 32,
+                        limit, palette.muted, rect.w / 2 - 12, 1);
+        }
         canvas.text(rect.x + 8, rect.y + rect.h - 19,
                     card.value[0] ? card.value : "--", palette.text,
                     rect.w - 16, 1);
@@ -1337,7 +1372,7 @@ private:
             for (int col = 0; col < 3; ++col) {
                 const auto button = layout.adjust(row, col);
                 const uint16_t color = card.pending ? palette.muted : col == 2 ? palette.accent : palette.text;
-                canvas.roundedRect(button.x, button.y, button.w, button.h, 6,
+                canvas.roundedRect(button.x, button.y, button.w, button.h, 4,
                     controlPressed(card, button) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt,
                     col == 2 ? color : palette.cardBorder);
                 canvas.text(button.x + (button.w - (col == 2 ? 24 : 12)) / 2, button.y + (button.h - 12) / 2,
@@ -1347,20 +1382,22 @@ private:
         for (int col = 0; col < 2; ++col) {
             const auto button = layout.direction(col);
             const uint16_t color = col ? palette.accent : palette.success;
-            canvas.roundedRect(button.x, button.y, button.w, button.h, 7,
-                controlPressed(card, button) ? blend565(color, palette.card, 185) : color, color);
+            const bool pressed = controlPressed(card, button);
+            canvas.roundedRect(button.x, button.y, button.w, button.h, 4,
+                pressed ? color : blend565(color, palette.card, 22), color);
             canvas.text(button.x + (button.w - 48) / 2, button.y + (button.h - 24) / 2, col ? "反转" : "正转",
-                        textOn565(color), button.w - 12, 2);
+                        pressed ? textOn565(color) : color, button.w - 12, 2);
         }
         const auto stop = layout.stop();
         const uint16_t stopColor = palette.danger;
-        canvas.roundedRect(stop.x, stop.y, stop.w, stop.h, 7,
-            controlPressed(card, stop) ? blend565(stopColor, palette.card, 185) : stopColor, stopColor);
-        canvas.text(stop.x + (stop.w - 48) / 2, stop.y + (stop.h - 24) / 2, "停止", textOn565(stopColor), stop.w - 12, 2);
+        const bool stopPressed = controlPressed(card, stop);
+        canvas.roundedRect(stop.x, stop.y, stop.w, stop.h, 4,
+            stopPressed ? stopColor : blend565(stopColor, palette.card, 22), stopColor);
+        canvas.text(stop.x + (stop.w - 48) / 2, stop.y + (stop.h - 24) / 2, "停止",
+                    stopPressed ? textOn565(stopColor) : stopColor, stop.w - 12, 2);
         const char* safety = !strcmp(card.error, "TRAVEL_RANGE_EXCEEDED") ? "已到软件限位，请反向或核对位置" :
             card.motorUiFeedback[0] ? card.motorUiFeedback : card.error[0] ? panelErrorText(card.error) :
             card.motorReadError[0] ? "电机通信失败，请检查控制器电源与接线" :
-            !card.motorSoftLimitEnabled ? "点动模式：点击正转或反转即可运行" :
             !card.motorReferenceKnown ? "软限位已配置，参考位置未确认" :
             !card.motorKnown ? "启动前自动读取参数；停止仍可请求" :
             !card.motorPulse ? "启动时自动设置默认点动参数" :
@@ -1420,7 +1457,7 @@ private:
         const int16_t y = rect.y + rect.h / 2 - 4;
         const uint16_t track = !unconfigured && card.quality == ScreenValueQuality::GOOD
             ? (on ? palette.success : palette.muted) : palette.cardBorder;
-        canvas.roundedRect(x, y, width, height, 7, track,
+        canvas.roundedRect(x, y, width, height, 4, track,
             controlPressed(card, {x, y, width, height}) ? palette.accent : track);
         canvas.circle(on ? x + width - 13 : x + 13, y + 13, 9,
                       unconfigured ? palette.muted : palette.text, true);
@@ -1439,13 +1476,15 @@ private:
         const int16_t buttonY = rect.y + std::max<int16_t>(34, rect.h / 2 - 1);
         const int16_t buttonW = rect.w - 20;
         const int16_t buttonH = std::min<int16_t>(44, rect.h - (buttonY - rect.y) - 6);
-        canvas.roundedRect(buttonX, buttonY, buttonW, buttonH, 6,
+        const bool pressed = controlPressed(card, {buttonX, buttonY, buttonW, buttonH});
+        canvas.roundedRect(buttonX, buttonY, buttonW, buttonH, 4,
                            unconfigured || card.pending ? palette.cardBorder :
-                               controlPressed(card, {buttonX, buttonY, buttonW, buttonH}) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt,
+                               pressed ? palette.accent : blend565(palette.accent, palette.card, 20),
                            unconfigured ? palette.cardBorder : palette.accent);
         canvas.text(buttonX + 8, buttonY + (buttonH - 12) / 2,
                     unconfigured ? "待配置" : card.pending ? "执行中" : card.kind == ScreenCardKind::SYSTEM ? (!strcmp(card.systemActionId, "sleep") ? "轻触息屏 / 触摸唤醒" : card.title) : "执行一次",
-                    unconfigured ? palette.muted : palette.text, buttonW - 16, 1);
+                    unconfigured || card.pending ? palette.muted :
+                        pressed ? textOn565(palette.accent) : palette.accent, buttonW - 16, 1);
     }
 
     void drawNumberControl(StripeCanvas& canvas,
@@ -1495,8 +1534,8 @@ private:
     void drawNavigation(StripeCanvas& canvas, const ScreenPanelCardSnapshot& card,
                         const PixelRect& rect, const Palette& palette) const {
         const auto button = navigationButton(rect);
-        canvas.roundedRect(button.x, button.y, button.w, button.h, 6,
-            controlPressed(card, button) ? blend565(palette.accent, palette.card, 50) : palette.backgroundAlt, palette.accent);
+        canvas.roundedRect(button.x, button.y, button.w, button.h, 4,
+            controlPressed(card, button) ? blend565(palette.accent, palette.card, 50) : blend565(palette.accent, palette.card, 20), palette.accent);
         const int16_t cx = button.x + button.w - 18;
         const int16_t cy = button.y + button.h / 2;
         canvas.line(cx - 5, cy - 7, cx + 3, cy, palette.accent);
@@ -1527,9 +1566,9 @@ private:
         char dateText[16];
         strftime(clockText, sizeof(clockText), "%H:%M", &timeInfo);
         strftime(dateText, sizeof(dateText), "%Y-%m-%d", &timeInfo);
-        canvas.text(rect.x + 9, rect.y + 28, clockText,
+        canvas.text(rect.x + 9, rect.y + (rect.h >= 80 ? 34 : 28), clockText,
                     palette.text, rect.w - 18, 2);
-        canvas.text(rect.x + 9, rect.y + rect.h - 19, dateText,
+        canvas.text(rect.x + 9, rect.y + rect.h - 20, dateText,
                     palette.muted, rect.w - 18, 1);
     }
 

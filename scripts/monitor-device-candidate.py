@@ -179,9 +179,21 @@ class Binding:
                     "deployment_not_verified")
             require(report.get("firmwareSha256") == b["firmwareSha256"], "deployment_firmware_mismatch")
             require(report.get("port") in b.get("ports", []), "deployment_port_mismatch")
-            require(report.get("phase") == item["phase"], "deployment_phase_mismatch")
+            report_phase = report.get("phase")
+            application_written = report.get("applicationWritten")
+            if report_phase is None and report.get("schemaVersion") == 2:
+                # Screen-variant app-slot deploy reports carry no phase field; they
+                # are application-only writes by construction (no filesystem write).
+                require(type(report.get("appSlot")) is int
+                        and report.get("filesystemWritten") is False, "deployment_phase")
+                report_phase = "firmware"
+                if application_written is None:
+                    application_written = bool(report.get("writeStarted") and report.get("written")
+                                               and report.get("verified")
+                                               and not report.get("filesystemWritten"))
+            require(report_phase == item["phase"], "deployment_phase_mismatch")
             if item["phase"] in ("all", "firmware"):
-                require(report.get("applicationWritten") is True, "application_not_written")
+                require(application_written is True, "application_not_written")
                 phases.add("firmware")
             if item["phase"] in ("all", "filesystem"):
                 require(report.get("webSha256") == b["webSha256"], "deployment_web_mismatch")

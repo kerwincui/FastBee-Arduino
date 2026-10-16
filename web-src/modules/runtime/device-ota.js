@@ -581,7 +581,6 @@
                 clearInterval(this._otaRecoveryTimer);
                 this._otaRecoveryTimer = null;
             }
-            console.debug('[device-ota] All timers stopped (WP-73)');
         },
         
         // WP-73: Cleanup when module unloads
