@@ -114,6 +114,21 @@ Write-Output 'SIX_RULE_SCRIPT_CONTRACT_CASES_PASS'
         self.assertIn("No enabled NTP_SYNC publish topic", block)
         self.assertIn("MQTT/NTP publish prerequisite is not configured", block)
 
+    def test_modbus_transfer_type_semantics_in_smoke_and_soak(self):
+        # modbusRtu.transferType 是 JSON/HEX 透传双格式开关，runtime 与 periph-exec
+        # 两个 section 的所有响应路径都必须包含它，冒烟和浸泡语义保持一致。
+        for script_name, script in (
+            ("smoke", SMOKE_SCRIPT),
+            ("soak", SOAK_SCRIPT),
+        ):
+            with self.subTest(script=script_name):
+                for check_name in ("protocol-config", "protocol-periph-exec-config"):
+                    start = script.index(f'"{check_name}" {{')
+                    end = script.index("\n        }", start)
+                    block = script[start:end]
+                    self.assertIn('Get-ObjectValue -Object $modbusRtu -Name "transferType"', block)
+                    self.assertIn("missing modbusRtu.transferType", block)
+
     def test_raw_config_export_refreshes_an_expired_session(self):
         start = SMOKE_SCRIPT.index("function Invoke-RawWithRetry")
         end = SMOKE_SCRIPT.index("function Invoke-LoginRequest", start)

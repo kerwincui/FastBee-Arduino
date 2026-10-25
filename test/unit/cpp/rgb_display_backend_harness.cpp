@@ -453,6 +453,42 @@ int main() {
         assert(display->setSleep(false) && wire.registers[5]==140);
         display->end();assert(wire.registers[3]==0xeb && !manager.owner);
     }
+    // CH32 wake emits one final ON command, not another OFF immediately before it.
+    {
+        auto config=configuration(); String error; config.backlightActiveHigh=false;
+        auto display=createRgbDisplayBackend(config,error);assert(display->begin(config,error));
+        auto* backend=static_cast<RgbDisplayBackend*>(display.get());
+        const size_t sequenceStart=wire.writes.size();
+        assert(display->setSleep(true));
+        assert(display->setBrightness(49));
+        wire.fail=true;
+        assert(!display->setSleep(false));
+        assert(backend->_sleeping && backend->_brightness==49);
+        wire.fail=false;
+        assert(display->setSleep(false) && !backend->_sleeping);
+        std::vector<std::pair<uint8_t,uint8_t>> pwmWrites;
+        for(size_t i=sequenceStart;i<wire.writes.size();++i)
+            if(wire.writes[i].first==5)pwmWrites.push_back(wire.writes[i]);
+        assert(pwmWrites.size()==2);
+        assert(pwmWrites[0]==std::make_pair(uint8_t(5),uint8_t(255)));
+        assert(pwmWrites[1]==std::make_pair(uint8_t(5),uint8_t(117)));
+        display->end();
+    }
+    // Mixed CH32 control with GPIO backlight keeps GPIO writes and failures.
+    {
+        auto config=configuration(); String error;
+        config.backlight=45; config.backlightActiveHigh=false;
+        auto display=createRgbDisplayBackend(config,error);assert(display->begin(config,error));
+        auto* backend=static_cast<RgbDisplayBackend*>(display.get());
+        assert(display->setSleep(true) && lastBacklightDuty==255);
+        failBacklightWrite=true;
+        assert(!display->setBrightness(49));
+        assert(backend->_sleeping && backend->_brightness==50);
+        failBacklightWrite=false;
+        assert(display->setBrightness(49) && lastBacklightDuty==255);
+        assert(display->setSleep(false) && lastBacklightDuty==117);
+        display->end();
+    }
     // CH32 and GPIO PWM obey configured polarity. 0 remains visible; only
     // explicit sleep/end extinguishes it, and wake restores the latest value.
     for(bool activeHigh : {false,true}) for(bool gpio : {false,true}) {

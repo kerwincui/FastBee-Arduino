@@ -15,7 +15,7 @@
 - **本地自动化**：平台、定时、事件、轮询 4 类触发器；动作覆盖 GPIO、PWM/DAC、传感器读取、Modbus、显示、电机、脚本和事件上报。
 - **设备维护**：认证与会话、健康监控、低内存保护、SSE 实时推送、配置导入导出，以及带 A/B 分区设备的 OTA。
 
-当前发布固件的设备通信协议为 **MQTT/MQTTS 和 Modbus RTU 主站**。设备 Web 管理、HTTP NTP 和 HTTP OTA 不等同于通用 HTTP 上报协议；原始 TCP、Modbus TCP、CoAP 和通用 HTTP 客户端不属于当前发布能力。
+当前发布固件的设备通信协议为 **MQTT/MQTTS 和 Modbus RTU 主站**。Modbus RTU 主站与 IoT 平台之间支持 **JSON 结构化数据** 和 **原始 HEX 帧透传** 两种双向数据格式，由协议配置中的 `modbusRtu.transferType` 运行时切换（`0=JSON`，`1=透传`）：JSON 模式按寄存器映射上报 `[{"id","value"}]` 并解析平台下行写指令；透传模式上报校验通过的原始 ADU 帧，平台也可直接下发 HEX/二进制 RTU 帧读写从站。设备 Web 管理、HTTP NTP 和 HTTP OTA 不等同于通用 HTTP 上报协议；原始 TCP、Modbus TCP、CoAP 和通用 HTTP 客户端不属于当前发布能力。
 
 ## 工作方式
 

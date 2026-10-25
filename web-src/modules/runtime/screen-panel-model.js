@@ -223,7 +223,7 @@
                 if (kind === 'page-link') item.display = 'page-link';
                 if (SYSTEM_ACTION_KINDS.indexOf(kind) >= 0) {
                     item.systemActionId = kind;
-                    item.display = kind;
+                    item.display = kind === 'sleep-time' && item.display === 'switch' ? 'switch' : kind;
                 }
                 if (kind === 'brightness') item.actionValue = normalizeBrightnessPercent(item.actionValue);
                 item.targetPageId = String(item.targetPageId || item.pageId || '');
@@ -298,7 +298,7 @@
                         else if (card.kind === 'clock') { wireKind = 'clock'; visualType = 'clock'; }
                         else if (card.kind === 'weather') { wireKind = 'weather'; visualType = 'weather'; }
                         else if (card.kind === 'page-link') { wireKind = 'page-link'; visualType = 'navigation'; }
-                        else if (SYSTEM_ACTION_KINDS.indexOf(card.kind) >= 0) { wireKind = 'system'; visualType = card.kind === 'brightness' ? 'slider' : card.kind === 'touch-beep' ? 'switch' : ['sleep-time', 'confirm-idle'].includes(card.kind) ? 'select' : 'action'; }
+                        else if (SYSTEM_ACTION_KINDS.indexOf(card.kind) >= 0) { wireKind = 'system'; visualType = card.kind === 'brightness' ? 'slider' : card.kind === 'touch-beep' ? 'switch' : card.kind === 'sleep-time' && card.display === 'switch' ? 'switch' : ['sleep-time', 'confirm-idle'].includes(card.kind) ? 'select' : 'action'; }
                         else if (card.kind === 'status') visualType = 'status';
                         else if (card.kind === 'gauge') visualType = 'gauge';
                         else if (card.kind === 'bar') visualType = 'bar';
@@ -1137,6 +1137,10 @@
                 return '<div class="sp-system-preview"><output>' + (value ? value + '%' : '最低亮度') + '</output><input type="range" min="0" max="100" value="' + value + '" disabled aria-label="亮度预览"></div>';
             }
             if (kind === 'sleep-time' || kind === 'confirm-idle') {
+                if (kind === 'sleep-time' && card.display === 'switch') {
+                    var keepAwake = finiteNumber(settings.idleSleepSeconds, 120) === 0;
+                    return '<div class="sp-system-preview"><button role="switch" aria-checked="' + keepAwake + '" disabled>' + (keepAwake ? '开启' : '关闭') + '</button></div>';
+                }
                 value = kind === 'sleep-time' ? finiteNumber(settings.idleSleepSeconds, 120) : finiteNumber(settings.controlConfirmIdleSeconds, 60);
                 return '<div class="sp-system-preview sp-preset-preview"><button disabled aria-label="上一选项">−</button><output>' + (value ? value + ' 秒' : '永不') + '</output><button disabled aria-label="下一选项">＋</button></div>';
             }

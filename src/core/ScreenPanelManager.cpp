@@ -1205,7 +1205,7 @@ bool ScreenPanelManager::validateConfig(JsonVariantConst submitted,
                 }
                 if ((visual == ScreenVisualType::SLIDER && systemActionId != "brightness") ||
                     (visual == ScreenVisualType::SELECT && systemActionId != "sleep-time" && systemActionId != "confirm-idle") ||
-                    (visual == ScreenVisualType::SWITCH && systemActionId != "touch-beep") ||
+                    (visual == ScreenVisualType::SWITCH && systemActionId != "touch-beep" && systemActionId != "sleep-time") ||
                     (systemActionId == "touch-beep" && visual != ScreenVisualType::SWITCH) ||
                     (systemActionId == "confirm-idle" && visual != ScreenVisualType::SELECT)) {
                     error = cardPath + " has an incompatible system widget"; return false;
@@ -2342,6 +2342,7 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                 ScreenPanelCardSnapshot fresh{};
                 auto& cardOut = fresh;
                 cardOut.kind = out.cards[cardIndex].kind;
+                cardOut.visualType = out.cards[cardIndex].visualType;
                 copyText(cardOut.unit, String(card["unit"] | ""));
                 if ((cardOut.kind == ScreenCardKind::WEATHER &&
                      !(card["sourceRef"] | "")[0]) ||
@@ -2398,7 +2399,11 @@ bool ScreenPanelManager::getSnapshotImpl(ScreenPanelSnapshot& out,
                     const String actionId = card["systemActionId"] | "";
                     if (actionId == "touch-beep") copyText(cardOut.value, out.touchBeepEnabled ? "true" : "false");
                     else if (actionId == "confirm-idle") copyText(cardOut.value, String(out.controlConfirmIdleSeconds));
-                    else if (actionId == "sleep-time") copyText(cardOut.value, String(out.idleSleepSeconds));
+                    else if (actionId == "sleep-time") {
+                        if (cardOut.visualType == ScreenVisualType::SWITCH)
+                            copyText(cardOut.value, out.idleSleepSeconds == 0 ? "true" : "false");
+                        else copyText(cardOut.value, String(out.idleSleepSeconds));
+                    }
                 }
 
                 if (out.cards[cardIndex].visualType == ScreenVisualType::MOTOR_CONTROL) {

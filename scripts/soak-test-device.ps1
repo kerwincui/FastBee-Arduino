@@ -387,8 +387,13 @@ function Test-CheckSemantics {
         }
         "protocol-config" {
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
+            $modbusRtu = Get-ObjectValue -Object $data -Name "modbusRtu"
+            if ($null -eq $modbusRtu) {
                 return "missing modbusRtu config"
+            }
+            # JSON/HEX 透传双格式开关（0=JSON, 1=透传）必须始终可见
+            if ($null -eq (Get-ObjectValue -Object $modbusRtu -Name "transferType")) {
+                return "missing modbusRtu.transferType"
             }
         }
         "protocol-mqtt-config" {
@@ -397,7 +402,11 @@ function Test-CheckSemantics {
         }
         "protocol-periph-exec-config" {
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) { return "missing modbusRtu config" }
+            $modbusRtu = Get-ObjectValue -Object $data -Name "modbusRtu"
+            if ($null -eq $modbusRtu) { return "missing modbusRtu config" }
+            if ($null -eq (Get-ObjectValue -Object $modbusRtu -Name "transferType")) {
+                return "missing modbusRtu.transferType"
+            }
         }
         "modbus-status" {
             if ($null -eq $data) { return "missing data" }

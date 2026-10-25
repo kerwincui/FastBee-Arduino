@@ -254,17 +254,17 @@
           {
             "id": "card-mulhhkai562bg",
             "kind": "system",
-            "visualType": "action",
-            "title": "提示音",
+            "visualType": "switch",
+            "title": "屏幕常亮",
             "precision": 1,
-            "systemActionId": "buzzer",
+            "systemActionId": "sleep-time",
             "rect": {
               "x": 256,
               "y": 248,
               "w": 210,
               "h": 90
             },
-            "requireConfirmation": true,
+            "requireConfirmation": false,
             "historyMode": "none"
           },
           {

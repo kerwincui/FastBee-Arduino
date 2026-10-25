@@ -97,8 +97,8 @@
       },
       {
         "path": "config/screen_panel.json",
-        "bytes": 8020,
-        "sha256": "b8188ed8eba148ce99f750c8158838f27462bb2081e39069e3860b3a295b4f7e"
+        "bytes": 8028,
+        "sha256": "8c66e77d7a3de9424dff5497c60028984bce6328a525cef8af9180fc3362d83c"
       }
     ],
     "publicCounts": {

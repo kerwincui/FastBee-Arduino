@@ -96,7 +96,11 @@ void test_screen_panel_touch_preferences_and_widgets_are_bounded() {
     JsonObject card = addCard(config, "beep", "system", "switch", 16, 16, 448, 80);
     card["systemActionId"] = "touch-beep";
     TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
-    card["visualType"] = "action";
+    card["systemActionId"] = "sleep-time"; card["visualType"] = "switch";
+    TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
+    card["visualType"] = "select";
+    TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
+    card["systemActionId"] = "touch-beep"; card["visualType"] = "action";
     TEST_ASSERT_FALSE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));
     card["systemActionId"] = "confirm-idle"; card["visualType"] = "select";
     TEST_ASSERT_TRUE(ScreenPanelManager::validateConfig(config.as<JsonVariantConst>(), normalized, error));

@@ -37,6 +37,24 @@ for(const minified of [false,true]) {
    if(display)assert.equal(loaded.pages[0].cards[0].confirm,false);
    m.config=loaded;assert.deepEqual(plain(app._spValidateConfig(loaded).errors),[],kind+':'+display);
   }
+  const keepAwake=h.defaultConfig();
+  keepAwake.settings.idleSleepSeconds=0;
+  keepAwake.pages[0].layoutMode='canvas';
+  keepAwake.pages[0].cards=[{id:'keep-awake',kind:'sleep-time',display:'switch',title:'屏幕常亮',precision:1,rect:{x:8,y:8,w:220,h:144}}];
+  const keepWire=h.sanitizeConfig(keepAwake,m.choices);
+  assert.equal(keepWire.pages[0].cards[0].visualType,'switch');
+  const keepLoaded=h.normalizeConfig(keepWire);
+  assert.equal(keepLoaded.pages[0].cards[0].display,'switch');
+  assert.deepEqual(plain(h.sanitizeConfig(keepLoaded,m.choices)),plain(keepWire));
+  assert.deepEqual(plain(app._spValidateConfig(keepLoaded).errors),[]);
+  const keepPreview=app._spSystemPreview(keepLoaded.pages[0].cards[0],keepLoaded.settings);
+  assert.ok(keepPreview.includes('role="switch"'));
+  assert.ok(keepPreview.includes('aria-checked="true"'));
+  keepLoaded.settings.idleSleepSeconds=30;
+  assert.ok(app._spSystemPreview(keepLoaded.pages[0].cards[0],keepLoaded.settings).includes('aria-checked="false"'));
+  const sleepSelect=h.normalizeConfig({pages:[{id:'system',layoutMode:'canvas',cards:[
+   {id:'sleep-select',kind:'sleep-time',display:'select',rect:{x:8,y:8,w:220,h:144}}]}]});
+  assert.equal(h.sanitizeConfig(sleepSelect,m.choices).pages[0].cards[0].visualType,'select');
  } else if(process.argv[1]==='unbound') {
   m.config=h.normalizeConfig({pages:[{id:'home',title:'Controls',layoutMode:'canvas',cards:[
    {id:'control',kind:'control',display:'action',rect:{x:8,y:8,w:220,h:144}}]}]});

@@ -355,6 +355,20 @@ static void failure() {
     f.refresh(); assert(f.cache.rebuildCount() == 2);
 }
 
+static void sleepTimeSwitch() {
+    Fixture f;
+    auto card = f.layout["pages"][0]["cards"].as<JsonArray>().add<JsonObject>();
+    card["id"] = "keep-awake"; card["kind"] = "system";
+    card["visualType"] = "switch"; card["systemActionId"] = "sleep-time";
+    f.layout["settings"]["idleSleepSeconds"] = 0; f.publish(); f.refresh();
+    assert(f.out->cards[2].visualType == ScreenVisualType::SWITCH);
+    assert(strcmp(f.out->cards[2].value, "true") == 0);
+    f.layout["settings"]["idleSleepSeconds"] = 30; f.publish(); f.refresh();
+    assert(strcmp(f.out->cards[2].value, "false") == 0);
+    card["visualType"] = "select"; f.publish(); f.refresh();
+    assert(strcmp(f.out->cards[2].value, "30") == 0);
+}
+
 static void consistent() {
     Fixture f;
     auto cards = f.layout["pages"][0]["cards"].to<JsonArray>();
@@ -399,7 +413,8 @@ int main(int argc, char** argv) {
     const std::map<std::string, void(*)()> scenarios = {
         {"reuse", reuse}, {"pages", pages}, {"sensor", sensor}, {"weather", weather},
         {"history", history}, {"operations", operations}, {"motor", motor}, {"revision", revision},
-        {"failure", failure}, {"web", web}, {"consistent", consistent}
+        {"failure", failure}, {"web", web}, {"consistent", consistent},
+        {"sleep-time-switch", sleepTimeSwitch}
     };
     scenarios.at(argv[1])();
     assert(pools.empty());

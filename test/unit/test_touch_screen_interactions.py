@@ -107,6 +107,56 @@ int main(){
 }
 '''.replace('PRODUCTION', production))
 
+    def test_sleep_time_switch_toggles_keep_awake_and_preserves_failures(self):
+        runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
+        header = (ROOT / 'include/core/ScreenPanelManager.h').read_text(encoding='utf-8')
+        types = header[header.index('enum class ScreenCardKind'):header.index('class ScreenPanelManager')]
+        content = block(runtime, 'bool handleContentTap(')
+        production = block(content, 'if (card.kind == ScreenCardKind::SYSTEM && !strcmp(card.systemActionId, "sleep-time") && card.visualType == ScreenVisualType::SWITCH)')
+        self.compile_run(r'''
+#define FASTBEE_TEST_NEEDS_STRLCPY
+#include <Arduino.h>
+#include <array>
+#include <cassert>
+#include <cstring>
+#include "screen/ScreenInteraction.h"
+using namespace FastBee::Screen;
+TYPES
+#undef assert
+#define assert(expression) do { if (!(expression)) { std::fprintf(stderr,"CHECK line %d: %s\n",__LINE__,#expression); std::exit(1); } } while(false)
+struct ScreenPanelManager {
+ int writes=0; uint32_t value=999; bool fail=false;
+ static ScreenPanelManager& instance(){static ScreenPanelManager manager;return manager;}
+ bool queueSetting(const String& key,uint32_t next,String& error){
+  assert(key=="idleSleepSeconds");++writes;value=next;
+  if(fail){error="save failed";return false;}error="";return true;
+ }
+};
+bool apply(ScreenPanelSnapshot& snapshot,ScreenPanelCardSnapshot& card){PRODUCTION}
+int main(){
+ auto& manager=ScreenPanelManager::instance();
+ ScreenPanelSnapshot snapshot{};snapshot.idleSleepSeconds=30;
+ ScreenPanelCardSnapshot card{};card.kind=ScreenCardKind::SYSTEM;
+ card.visualType=ScreenVisualType::SWITCH;
+ std::strcpy(card.systemActionId,"sleep-time");
+ std::strcpy(card.value,"false");card.numericValue=30;std::strcpy(card.error,"old");
+ assert(apply(snapshot,card));
+ assert(manager.writes==1&&manager.value==0);
+ assert(snapshot.idleSleepSeconds==0&&card.numericValue==0);
+ assert(!std::strcmp(card.value,"true")&&!card.error[0]);
+ assert(apply(snapshot,card));
+ assert(manager.writes==2&&manager.value==30);
+ assert(snapshot.idleSleepSeconds==30&&card.numericValue==30);
+ assert(!std::strcmp(card.value,"false")&&!card.error[0]);
+ manager.fail=true;
+ assert(apply(snapshot,card));
+ assert(manager.writes==3&&manager.value==0);
+ assert(snapshot.idleSleepSeconds==30&&card.numericValue==30);
+ assert(!std::strcmp(card.value,"false"));
+ assert(!std::strcmp(card.error,"save failed"));
+}
+'''.replace('TYPES', types).replace('PRODUCTION', production), [ROOT / 'test/mocks', ROOT / 'include'])
+
     def test_motor_text_uses_device_speed_precision(self):
         runtime = (ROOT / 'src/screen/ScreenRuntime.cpp').read_text(encoding='utf-8')
         renderer = (ROOT / 'src/screen/StripeRenderer.h').read_text(encoding='utf-8')

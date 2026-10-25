@@ -135,7 +135,8 @@
     {
       "name": "protocol-config",
       "method": "GET",
-      "path": "/api/protocol/config?compact=1&section=runtime"
+      "path": "/api/protocol/config?compact=1&section=runtime",
+      "description": "运行时协议配置，语义检查覆盖 modbusRtu.transferType（0=JSON，1=原始HEX帧透传）"
     },
     {
       "name": "protocol-mqtt-config",
@@ -145,7 +146,8 @@
     {
       "name": "protocol-periph-exec-config",
       "method": "GET",
-      "path": "/api/protocol/config?compact=1&section=periph-exec"
+      "path": "/api/protocol/config?compact=1&section=periph-exec",
+      "description": "外设执行协议配置，语义检查覆盖 modbusRtu.transferType（JSON/HEX 双格式开关）"
     },
     {
       "name": "modbus-status",

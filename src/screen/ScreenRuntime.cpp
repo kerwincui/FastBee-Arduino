@@ -509,6 +509,17 @@ bool handleContentTap(StripeRenderer& renderer, ScreenPanelSnapshot& snapshot,
         } else strlcpy(card.error, error.c_str(), sizeof(card.error));
         return true;
     }
+    if (card.kind == ScreenCardKind::SYSTEM && !strcmp(card.systemActionId, "sleep-time") && card.visualType == ScreenVisualType::SWITCH) {
+        const uint32_t value = snapshot.idleSleepSeconds == 0 ? 30 : 0;
+        String error;
+        if (ScreenPanelManager::instance().queueSetting("idleSleepSeconds", value, error)) {
+            snapshot.idleSleepSeconds = value;
+            card.numericValue = value;
+            strlcpy(card.value, value == 0 ? "true" : "false", sizeof(card.value));
+            card.error[0] = '\0';
+        } else strlcpy(card.error, error.c_str(), sizeof(card.error));
+        return true;
+    }
     if (card.visualType == ScreenVisualType::SLIDER) {
         // Brightness is changed only by the drag path in the worker.  Labels
         // and card padding are deliberately inert.

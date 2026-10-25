@@ -122,6 +122,9 @@ class ScreenSnapshotCacheTests(unittest.TestCase):
     def test_cards_and_chart_share_one_sample_when_publisher_advances_mid_refresh(self):
         self.scenario('consistent')
 
+    def test_sleep_time_switch_snapshot_uses_live_boolean_state(self):
+        self.scenario('sleep-time-switch')
+
     def test_complete_manager_native_translation_unit_and_unity_cases(self):
         temporary = Path(self.directory.name)
         main = temporary / 'native-panel-main.cpp'

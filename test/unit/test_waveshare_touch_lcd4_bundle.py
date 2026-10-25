@@ -210,7 +210,12 @@ class WaveshareTouchLcd4BundleTests(unittest.TestCase):
                             for action in allowed_rules[0]["actions"]))
         system_actions = [card["systemActionId"] for card in pages["system"]["cards"]
                           if card["kind"] == "system"]
-        self.assertEqual(["brightness", "sleep-time", "touch-beep", "buzzer", "restart", "sleep"], system_actions)
+        self.assertEqual(["brightness", "sleep-time", "touch-beep", "sleep-time", "restart", "sleep"], system_actions)
+        keep_awake = next(card for card in pages["system"]["cards"] if card["id"] == "card-mulhhkai562bg")
+        self.assertEqual("switch", keep_awake["visualType"])
+        self.assertEqual("sleep-time", keep_awake["systemActionId"])
+        self.assertEqual("屏幕常亮", keep_awake["title"])
+        self.assertFalse(keep_awake["requireConfirmation"])
         brightness = [card["actionValue"] for card in pages["system"]["cards"]
                       if card.get("systemActionId") == "brightness"]
         self.assertEqual([70], brightness)

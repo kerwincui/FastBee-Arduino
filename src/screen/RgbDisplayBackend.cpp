@@ -419,6 +419,11 @@ public:
     }
     bool setBrightness(uint8_t percent) override {
         percent = normalizeBrightnessPercent(percent);
+        // Cache only when the sleeping backlight is CH32 PWM.
+        if (_ch32 && !_backlightAttached && _sleeping) {
+            _brightness = percent;
+            return true;
+        }
         if (!applyBrightness(percent, _sleeping)) return false;
         _brightness = percent;
         return true;
